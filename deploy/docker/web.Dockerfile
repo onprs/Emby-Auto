@@ -6,7 +6,7 @@ RUN npm ci --workspace @emby-auto/web --include-workspace-root=false
 COPY apps/web/ apps/web/
 RUN npm run build --workspace @emby-auto/web
 
-FROM nginx:1.29-alpine
+FROM nginx:1.31-alpine
 LABEL org.opencontainers.image.licenses="MIT"
 COPY deploy/docker/nginx.conf /etc/nginx/conf.d/default.conf
 COPY deploy/nginx/locations.conf /etc/nginx/emby-auto-locations.conf
