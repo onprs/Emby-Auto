@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 220" width="100%" height="100%">
+  <defs>
+    <!-- 背景渐变：深邃的极简暗色调，适合现代 GitHub 风格 -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d1117" />
+      <stop offset="100%" stop-color="#161b22" />
+    </linearGradient>
+
+    <!-- 工作流渐变：从检索蓝过渡到处理紫，最终归入 Emby 绿 -->
+    <linearGradient id="workflowGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#01B4E4" />
+      <stop offset="55%" stop-color="#6366F1" />
+      <stop offset="100%" stop-color="#52B54B" />
+    </linearGradient>
+
+    <!-- 图标光晕效果，增加一点科技感，但不打破简约感 -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="15" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- 1. 基础横版底座，带圆角 -->
+  <rect width="100%" height="100%" rx="16" fill="url(#bgGrad)" />
+
+  <!-- 添加细微的极简网格背景装饰 -->
+  <path d="M 0 20 L 800 20 M 0 40 L 800 40 M 0 60 L 800 60 M 0 80 L 800 80 M 0 100 L 800 100 M 0 120 L 800 120 M 0 140 L 800 140 M 0 160 L 800 160 M 0 180 L 800 180 M 0 200 L 800 200 M 0 220 L 800 220" stroke="rgba(255,255,255,0.01)" stroke-width="1" />
+
+  <!-- 2. 左侧图标区 (Icon Area) -->
+  <g transform="translate(130, 110)">
+    <!-- 底部环境光晕 -->
+    <circle cx="0" cy="0" r="35" fill="#52B54B" opacity="0.15" filter="url(#glow)" />
+
+    <!-- 外层自动化运转轨道 (Auto-looping track) -->
+    <circle cx="0" cy="0" r="50" fill="none" stroke="#21262d" stroke-width="4" stroke-dasharray="6 6" />
+
+    <!-- 内层流转轨道，也带斜度 -->
+    <circle cx="0" cy="0" r="40" fill="none" stroke="url(#workflowGrad)" stroke-width="4" stroke-dasharray="160 80" stroke-linecap="round" transform="rotate(-45)" />
+
+    <!-- 核心 Emby 播放按钮 (视觉修正：稍微向右偏移以确保视觉居中) -->
+    <polygon points="-12,-18 -12,18 16,0" fill="#52B54B" stroke="#52B54B" stroke-width="8" stroke-linejoin="round" />
+  </g>
+
+  <!-- 3. 文字设计区 (Typography Area) - 核心改动：加入倾斜和设计感 -->
+  <!-- transform 属性中加入了倾斜 (skewX(-8)) -->
+  <g transform="translate(230, 105) skewX(-8)">
+    <!-- 主标题文本，利用粗细对比体现设计感，整体向右上方倾斜，更有动感 -->
+    <text x="0" y="0" font-family="system-ui, -apple-system, sans-serif" font-size="60" fill="#ffffff" font-weight="800" letter-spacing="-1">
+      <tspan fill="#52B54B">Emby</tspan>
+      <tspan fill="#ffffff" font-weight="200">Auto</tspan>
+    </text>
+
+    <!-- 副标题/描述，也保持同样的倾斜 -->
+    <text x="5" y="32" font-family="system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="14" fill="#8B949E" font-weight="400" letter-spacing="3">
+      SELF-HOSTED MEDIA AUTOMATION PLATFORM
+    </text>
+  </g>
+
+  <!-- 4. 工作流展示区 (Workflow Pipeline) -->
+  <!-- 通过一条极简的连接线与 7 个节点，展示完整的系统流转过程 -->
+  <g transform="translate(235, 190)">
+    <!-- 贯穿线 -->
+    <line x1="0" y1="0" x2="480" y2="0" stroke="#30363D" stroke-width="2" />
+    <line x1="0" y1="0" x2="480" y2="0" stroke="url(#workflowGrad)" stroke-width="2" opacity="0.6" />
+
+    <!-- 节点 1：检索 -->
+    <circle cx="0" cy="0" r="4" fill="#01B4E4" />
+    <text x="0" y="-12" font-family="system-ui, -apple-system, 'PingFang SC', sans-serif" font-size="11" fill="#8B949E" text-anchor="middle">检索</text>
+
+    <!-- 节点 2：RSS -->
+    <circle cx="80" cy="0" r="4" fill="#0EA5E9" />
+    <text x="80" y="-12" font-family="system-ui, -apple-system, 'PingFang SC', sans-serif" font-size="11" fill="#8B949E" text-anchor="middle">RSS</text>
+
+    <!-- 节点 3：下载 -->
+    <circle cx="160" cy="0" r="4" fill="#3B82F6" />
+    <text x="160" y="-12" font-family="system-ui, -apple-system, 'PingFang SC', sans-serif" font-size="11" fill="#8B949E" text-anchor="middle">qBit</text>
+
+    <!-- 节点 4：映射 -->
+    <circle cx="240" cy="0" r="4" fill="#6366F1" />
+    <text x="240" y="-12" font-family="system-ui, -apple-system, 'PingFang SC', sans-serif" font-size="11" fill="#8B949E" text-anchor="middle">TMDb</text>
+
+    <!-- 节点 5：处理 -->
+    <circle cx="320" cy="0" r="4" fill="#8B5CF6" />
+    <text x="320" y="-12" font-family="system-ui, -apple-system, 'PingFang SC', sans-serif" font-size="11" fill="#8B949E" text-anchor="middle">FFmpeg</text>
+
+    <!-- 节点 6：审核 -->
+    <circle cx="400" cy="0" r="4" fill="#10B981" />
+    <text x="400" y="-12" font-family="system-ui, -apple-system, 'PingFang SC', sans-serif" font-size="11" fill="#8B949E" text-anchor="middle">审核</text>
+
+    <!-- 节点 7：Emby入库 (最终目标节点放大，强化归宿感) -->
+    <circle cx="480" cy="0" r="6" fill="#52B54B" />
+    <!-- 给最终节点添加一点呼吸发光效果 -->
+    <circle cx="480" cy="0" r="12" fill="#52B54B" opacity="0.2" />
+    <text x="480" y="-12" font-family="system-ui, -apple-system, 'PingFang SC', sans-serif" font-size="12" fill="#52B54B" font-weight="bold" text-anchor="middle">入库</text>
+  </g>
+</svg>

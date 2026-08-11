@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: |
+            backend/go.sum
+            tools/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install pinned Go tools
+        run: npm run tools:download
+
+      - name: Run static checks, unit tests, and builds
+        run: npm run check
+
+      - name: Validate public Compose configuration
+        run: npm run deploy:check
+
+      - name: Validate direct Linux deployment templates
+        run: npm run deploy:direct:check
+
+      - name: Start integration PostgreSQL
+        run: docker compose -f compose.yaml up -d --wait postgres
+
+      - name: Apply application and River migrations
+        run: |
+          npm run db:migrate
+          npm run db:river:migrate
+
+      - name: Run migration and integration checks
+        run: npm run check:integration
+
+      - name: Stop integration PostgreSQL
+        if: always()
+        run: docker compose -f compose.yaml down --volumes
+
+  direct-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and validate direct Linux release
+        env:
+          SKIP_NPM_CI: "1"
+          TARGET_GOARCH: ${{ matrix.goarch }}
+        run: |
+          npm run deploy:direct:build
+          npm run deploy:direct:check-release
+
+  container-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build deployment images
+        run: docker compose --env-file deploy/.env.example -f deploy/compose.yaml build
+
+      - name: Validate deployment release
+        run: bash scripts/deploy/check-compose.sh release
