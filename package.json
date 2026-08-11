@@ -1,0 +1,58 @@
+{
+  "name": "emby-auto",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "build": "go -C backend build ./... && npm run build --workspace @emby-auto/web",
+    "acceptance:external": "bash scripts/acceptance/check-external-services.sh",
+    "check": "npm run lint && npm run test:unit && npm run build && npm run check:generated",
+    "check:integration": "npm run db:check-migrations && npm run db:check-schema && npm run test:integration",
+    "test": "npm run test:unit",
+    "test:unit": "go -C backend test ./... && npm run test --workspace @emby-auto/web",
+    "test:integration": "bash scripts/dev/test-integration.sh",
+    "test:race": "go -C backend test -race ./internal/service ./internal/repository ./internal/worker",
+    "test:web": "npm run test --workspace @emby-auto/web",
+    "test:e2e:full": "npm run test:e2e:full --workspace @emby-auto/web",
+    "deploy:build": "docker compose --env-file deploy/.env.example -f deploy/compose.yaml build",
+    "deploy:check": "bash scripts/deploy/check-compose.sh static",
+    "deploy:check-release": "bash scripts/deploy/check-compose.sh release",
+    "deploy:direct:build": "bash scripts/deploy/build-direct-release.sh",
+    "deploy:direct:check": "bash scripts/deploy/check-direct.sh static",
+    "deploy:direct:check-release": "bash scripts/deploy/check-direct.sh release",
+    "check:generated": "bash scripts/check-generated.sh",
+    "db:check-migrations": "bash scripts/dev/check-migrations.sh",
+    "db:check-schema": "bash scripts/dev/check-schema.sh",
+    "db:down": "bash scripts/dev/migrate.sh app down",
+    "db:migrate": "bash scripts/dev/migrate.sh app up",
+    "db:river:down": "bash scripts/dev/migrate.sh river down",
+    "db:river:migrate": "bash scripts/dev/migrate.sh river up",
+    "db:river:status": "bash scripts/dev/migrate.sh river status",
+    "db:shell": "bash scripts/dev/postgres.sh shell",
+    "db:start": "bash scripts/dev/postgres.sh start",
+    "db:status": "bash scripts/dev/postgres.sh status",
+    "db:stop": "bash scripts/dev/postgres.sh stop",
+    "generate": "npm run generate:openapi && npm run generate:sqlc && npm run generate:sdk",
+    "generate:openapi": "bash scripts/dev/go-tool.sh oapi-codegen --config ../contracts/oapi-codegen.yaml ../contracts/openapi.yaml",
+    "generate:sdk": "openapi-ts",
+    "generate:sqlc": "bash scripts/dev/go-tool.sh sqlc generate",
+    "lint": "npm run lint:openapi && npm run lint:go",
+    "lint:go": "bash scripts/dev/go-tool.sh golangci-lint run ./...",
+    "lint:openapi": "redocly lint contracts/openapi.yaml",
+    "legacy:migrate": "bash scripts/dev/run-go.sh run ./cmd/legacy-migrate",
+    "start:api": "bash scripts/dev/run-go.sh run ./cmd/api",
+    "start:worker": "bash scripts/dev/run-go.sh run ./cmd/worker",
+    "tools:download": "bash scripts/dev/download-go.sh"
+  },
+  "devDependencies": {
+    "@hey-api/openapi-ts": "0.99.0",
+    "@redocly/cli": "2.39.0",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

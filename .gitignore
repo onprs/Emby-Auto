@@ -1,0 +1,50 @@
+# 本地参考与私有运维文件
+/old/
+/plan/
+/AGENTS.md
+/deploy/1panel/
+/deploy/RELEASE-CHECKLIST.md
+/scripts/deploy/build-1panel-release.sh
+/scripts/deploy/check-1panel.sh
+/scripts/deploy/release-manifest.sh
+/scripts/acceptance/check-linux-release.sh
+
+# 依赖与构建产物
+/node_modules/
+/apps/web/node_modules/
+/apps/web/dist/
+/.tools/
+/runtime/
+/backend/runtime/
+/coverage/
+/backend/coverage/
+*.cover
+*.out
+*.exe
+
+# 本地配置与敏感文件
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.local
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.bak
+*.backup
+*.dump
+
+# 日志与测试产物
+*.log
+/test-results/
+/apps/web/test-results/
+/apps/web/playwright-report/
+
+# 编辑器与操作系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

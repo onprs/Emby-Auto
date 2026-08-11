@@ -1,0 +1,5248 @@
+openapi: 3.1.0
+info:
+  title: Emby Auto API
+  version: 0.22.0
+  description: Contract for the Emby Auto API and generated clients.
+servers:
+  - url: /
+    description: Same-origin API served directly or through a reverse proxy
+security:
+  - sessionCookie: []
+tags:
+  - name: Health
+    description: Process and dependency health checks.
+  - name: Setup
+    description: One-time installation bootstrap.
+  - name: Auth
+    description: Administrator session authentication.
+  - name: Config
+    description: Runtime integration and filesystem configuration.
+  - name: Agent
+    description: Read-only audit records for constrained automatic Agent fallback.
+  - name: Search
+    description: Asynchronous release search and persisted candidates.
+  - name: Acquisitions
+    description: Commands that turn selected sources into download workflows.
+  - name: TMDb
+    description: TMDb catalog synchronization.
+  - name: Mapping
+    description: Episode mapping preview and versioned persistence.
+  - name: Emby
+    description: Emby filesystem refresh requests and catalog data persisted by this application.
+  - name: RSS
+    description: RSS subscription and polling commands.
+  - name: Tasks
+    description: Media processing, human review, and Emby import commands.
+  - name: Events
+    description: Real-time domain event delivery.
+  - name: Downloads
+    description: Download lifecycle, file resolution, and cancellation commands.
+  - name: Operations
+    description: Persisted asynchronous operation status and attempts.
+  - name: Dashboard
+    description: Aggregate status, system metrics, and background runtime controls.
+paths:
+  /api/v1/health/live:
+    get:
+      operationId: getHealthLive
+      summary: Check whether the API process is alive
+      tags: [Health]
+      security: []
+      responses:
+        "200":
+          description: The API process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /api/v1/health/ready:
+    get:
+      operationId: getHealthReady
+      summary: Check whether the API can serve database-backed requests
+      tags: [Health]
+      security: []
+      responses:
+        "200":
+          description: The API and its required dependencies are ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/setup/status:
+    get:
+      operationId: getSetupStatus
+      summary: Read one-time installation status
+      tags: [Setup]
+      security: []
+      responses:
+        "200":
+          description: Current installation state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SetupStatus"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/setup/initialize:
+    post:
+      operationId: initializeSetup
+      summary: Initialize PostgreSQL, the first administrator, and runtime configuration
+      tags: [Setup]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InitializeSetupRequest"
+      responses:
+        "200":
+          description: Installation completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SetupStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/auth/login:
+    post:
+      operationId: login
+      summary: Create an administrator session
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: The administrator is authenticated.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/auth/logout:
+    post:
+      operationId: logout
+      summary: Revoke the current administrator session
+      tags: [Auth]
+      responses:
+        "204":
+          description: The session was revoked.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/auth/session:
+    get:
+      operationId: getSession
+      summary: Read the current administrator session
+      tags: [Auth]
+      responses:
+        "200":
+          description: The current administrator session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/config:
+    get:
+      operationId: getConfiguration
+      summary: Read runtime configuration with masked secrets
+      tags: [Config]
+      responses:
+        "200":
+          description: The current runtime configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Configuration"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    put:
+      operationId: updateConfiguration
+      summary: Replace runtime configuration using optimistic concurrency
+      tags: [Config]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateConfigurationRequest"
+      responses:
+        "200":
+          description: The updated runtime configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Configuration"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/agent/resolutions:
+    get:
+      operationId: listAgentResolutions
+      summary: List Agent resolutions
+      tags: [Agent]
+      parameters:
+        - name: cursor
+          in: query
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          schema: { type: integer, format: int32, minimum: 1, maximum: 100, default: 50 }
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/AgentResolutionStatus" }
+        - name: capability
+          in: query
+          schema: { $ref: "#/components/schemas/AgentResolutionCapability" }
+        - name: resourceType
+          in: query
+          schema: { type: string, maxLength: 128 }
+        - name: resourceId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Agent resolution page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentResolutionPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /api/v1/agent/resolutions/{resolutionId}:
+    get:
+      operationId: getAgentResolution
+      summary: Get one Agent resolution
+      tags: [Agent]
+      parameters:
+        - name: resolutionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Agent resolution.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentResolution" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /api/v1/searches:
+    get:
+      operationId: listSearches
+      summary: List search runs
+      tags: [Search]
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [queued, running, completed, failed, cancelled]
+        - name: query
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 512
+      responses:
+        "200":
+          description: A page of search runs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchRunPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      operationId: createSearch
+      summary: Create an asynchronous release search
+      tags: [Search]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSearchRequest"
+      responses:
+        "202":
+          description: The search operation was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchCommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/searches/{searchId}:
+    get:
+      operationId: getSearch
+      summary: Read a search run and its persisted release candidates
+      tags: [Search]
+      parameters:
+        - name: searchId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The search run and current candidates.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/acquisitions:
+    get:
+      operationId: listAcquisitions
+      summary: List complete lifecycle tasks
+      description: Each acquisition is one user-facing task spanning source intake, download, media processing, review, and verified library import.
+      tags: [Acquisitions]
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: sourceKind
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [search, rss, manual]
+        - name: tmdbSeriesId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: phase
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [mapping_pending, downloading, processing, awaiting_review, importing, completed, attention]
+        - name: sortBy
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [content, source_kind, progress, updated_at]
+            default: updated_at
+        - name: sortOrder
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        "200":
+          description: A page of acquisitions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcquisitionPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      operationId: createAcquisition
+      summary: Select a release candidate and schedule its download
+      tags: [Acquisitions]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAcquisitionRequest"
+      responses:
+        "202":
+          description: The acquisition and download operation were accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcquisitionCommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/tmdb/series/{tmdbSeriesId}/sync:
+    post:
+      operationId: syncTMDbSeries
+      summary: Schedule synchronization of one TMDb TV series
+      tags: [TMDb]
+      parameters:
+        - name: tmdbSeriesId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SyncTMDbSeriesRequest"
+      responses:
+        "202":
+          description: TMDb synchronization was scheduled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogCommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/acquisitions/{acquisitionId}/episode-mapping/preview:
+    post:
+      operationId: previewAcquisitionEpisodeMapping
+      summary: Preview mappings for selected video files
+      tags: [Mapping]
+      parameters:
+        - name: acquisitionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EpisodeMappingPlanRequest"
+      responses:
+        "200":
+          description: Mapping preview.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpisodeMappingPreview"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/acquisitions/{acquisitionId}/episode-mapping:
+    put:
+      operationId: saveAcquisitionEpisodeMapping
+      summary: Save a versioned episode mapping profile
+      tags: [Mapping]
+      parameters:
+        - name: acquisitionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveEpisodeMappingRequest"
+      responses:
+        "200":
+          description: Mapping profile saved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SavedEpisodeMapping"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/emby/scans:
+    get:
+      operationId: listEmbyScans
+      summary: List runs that updated the local catalog from Emby
+      tags: [Emby]
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: History of local catalog updates read from Emby.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmbyScanPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      operationId: createEmbyScan
+      summary: Schedule an update of the local catalog from Emby
+      description: Reads Emby's current libraries and items and stores that catalog in this application. This does not ask Emby to scan its filesystem.
+      tags: [Emby]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Local catalog update from Emby scheduled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmbyScanCommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/emby/scans/{scanId}:
+    get:
+      operationId: getEmbyScan
+      summary: Read one local catalog update run
+      tags: [Emby]
+      parameters:
+        - name: scanId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Result of updating the local catalog from Emby.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmbyScan"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/emby/refresh:
+    post:
+      operationId: refreshEmbyLibrary
+      summary: Ask Emby to scan its media files
+      description: Calls Emby's library refresh endpoint. A succeeded operation means Emby accepted the request; Emby performs the filesystem scan asynchronously.
+      tags: [Emby]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Request to ask Emby to scan its media files scheduled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/emby/libraries:
+    get:
+      operationId: listEmbyLibraries
+      summary: List current Emby libraries
+      tags: [Emby]
+      responses:
+        "200":
+          description: Current Emby libraries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EmbyLibrary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/emby/libraries/{libraryId}/items:
+    get:
+      operationId: listEmbyLibraryItems
+      summary: List persisted items in one Emby library
+      tags: [Emby]
+      parameters:
+        - name: libraryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: itemType
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [Series, Season, Episode, Movie]
+        - name: name
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 256
+        - name: providerId
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 256
+        - name: present
+          in: query
+          required: false
+          schema:
+            type: boolean
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 200
+            default: 100
+      responses:
+        "200":
+          description: Emby library item page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmbyLibraryItemPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/rss/feed-lookup:
+    post:
+      operationId: lookupRSSFeed
+      summary: Fetch an RSS feed and suggest a TMDb search query for it
+      tags: [RSS]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RSSFeedLookupRequest"
+      responses:
+        "200":
+          description: The RSS feed lookup result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RSSFeedLookup"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/rss/subscriptions:
+    get:
+      operationId: listRSSSubscriptions
+      summary: List active RSS subscriptions
+      tags: [RSS]
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: sortBy
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [name, series_title, source_season, enabled, progress, next_poll_at]
+            default: name
+        - name: sortOrder
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+      responses:
+        "200":
+          description: A page of RSS subscriptions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RSSSubscriptionPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      operationId: createRSSSubscription
+      summary: Create an RSS subscription and its continuous poll operation
+      tags: [RSS]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRSSSubscriptionRequest"
+      responses:
+        "201":
+          description: The RSS subscription was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RSSSubscription"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/rss/subscriptions/{subscriptionId}:
+    parameters:
+      - name: subscriptionId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getRSSSubscription
+      summary: Read an RSS subscription
+      tags: [RSS]
+      responses:
+        "200":
+          description: The RSS subscription.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RSSSubscription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    put:
+      operationId: updateRSSSubscription
+      summary: Replace an RSS subscription using optimistic concurrency
+      tags: [RSS]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRSSSubscriptionRequest"
+      responses:
+        "200":
+          description: The updated RSS subscription.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RSSSubscription"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      operationId: deleteRSSSubscription
+      summary: Archive an RSS subscription and cascade cleanup of its content
+      description: Stops active tasks, removes qBittorrent items, download caches, and temporary files for this subscription, and archives it. Imported Emby content is preserved unless deleteImported is explicitly true. Returns an operation that tracks the cascading cleanup.
+      tags: [RSS]
+      parameters:
+        - name: expectedVersion
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+        - name: deleteImported
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: The RSS subscription deletion operation was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/rss/subscriptions/{subscriptionId}/poll:
+    post:
+      operationId: pollRSSSubscription
+      summary: Schedule one immediate RSS poll
+      tags: [RSS]
+      parameters:
+        - name: subscriptionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: The RSS poll operation was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/tasks:
+    get:
+      operationId: listTasks
+      summary: List media tasks for review and import
+      tags: [Tasks]
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: state
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/TaskState"
+        - name: phase
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [processing, awaiting_review, importing, failed, cleanup_failed]
+      responses:
+        "200":
+          description: A page of media tasks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/tasks/{taskId}:
+    parameters:
+      - name: taskId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getTask
+      summary: Read a media task and its artifacts
+      tags: [Tasks]
+      responses:
+        "200":
+          description: The media task.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/tasks/{taskId}/review:
+    post:
+      operationId: reviewTask
+      summary: Approve or reject a finalized media item
+      description: Approval atomically records the review and queues verified Emby library import. Rejection records a terminal review without scheduling import.
+      tags: [Tasks]
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReviewTaskRequest"
+      responses:
+        "200":
+          description: The reviewed media task.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/tasks/{taskId}/import:
+    post:
+      operationId: importTask
+      summary: Queue Emby import for an approved media task
+      tags: [Tasks]
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImportTaskRequest"
+      responses:
+        "202":
+          description: The Emby import operation was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskCommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/acquisitions/{acquisitionId}:
+    parameters:
+      - name: acquisitionId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getAcquisition
+      summary: Read one complete lifecycle task and its stage results
+      tags: [Acquisitions]
+      responses:
+        "200":
+          description: The acquisition.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Acquisition"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      operationId: deleteAcquisition
+      summary: Delete one lifecycle task and all non-library resources it owns
+      description: Stops active work, removes qBittorrent items, source downloads and temporary media, then deletes the acquisition workflow records. Files already imported into an Emby library are preserved.
+      tags: [Acquisitions]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: The acquisition deletion operation was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/downloads:
+    get:
+      operationId: listDownloads
+      summary: List downloads
+      tags: [Downloads]
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/DownloadStatus"
+        - name: phase
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [active, waiting, downloading, paused, completed, failed]
+        - name: query
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 512
+        - name: sortBy
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [attempt, status, client_state, progress, updated_at]
+            default: updated_at
+        - name: sortOrder
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        "200":
+          description: A page of downloads.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DownloadPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/downloads/{downloadId}:
+    get:
+      operationId: getDownload
+      summary: Read a download, its files and its selection decisions
+      tags: [Downloads]
+      parameters:
+        - name: downloadId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The download.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Download"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      operationId: deleteDownload
+      summary: Delete the lifecycle task that owns a download and all non-library resources
+      tags: [Downloads]
+      parameters:
+        - name: downloadId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: expectedVersion
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: The lifecycle deletion operation was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/downloads/{downloadId}/retry:
+    post:
+      operationId: retryDownload
+      summary: Re-enqueue a failed download from its failed stage
+      tags: [Downloads]
+      parameters:
+        - name: downloadId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetryDownloadRequest"
+      responses:
+        "202":
+          description: The download retry operation was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DownloadCommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/downloads/{downloadId}/cancel:
+    post:
+      operationId: cancelDownload
+      summary: Cancel a non-terminal download
+      tags: [Downloads]
+      parameters:
+        - name: downloadId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CancelDownloadRequest"
+      responses:
+        "202":
+          description: The download cancel operation was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DownloadCommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/downloads/{downloadId}/file-resolution:
+    put:
+      operationId: saveDownloadFileResolution
+      summary: Resolve a persisted download manifest before payload download
+      tags: [Downloads]
+      parameters:
+        - name: downloadId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveDownloadFileResolutionRequest"
+      responses:
+        "202":
+          description: The validated file resolution was accepted for application.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DownloadCommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/downloads/{downloadId}/file-selection:
+    put:
+      operationId: saveDownloadFileSelection
+      summary: Correct the selected video/subtitle files before materialization
+      tags: [Downloads]
+      parameters:
+        - name: downloadId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveFileSelectionRequest"
+      responses:
+        "202":
+          description: The file-selection correction and re-materialization were accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DownloadCommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/tasks/{taskId}/retry:
+    post:
+      operationId: retryTask
+      summary: Retry a failed media task from its failed branch
+      tags: [Tasks]
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetryTaskRequest"
+      responses:
+        "202":
+          description: The task retry operation was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskCommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/tasks/{taskId}/cancel:
+    post:
+      operationId: cancelTask
+      summary: Cancel a non-terminal media task
+      tags: [Tasks]
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CancelTaskRequest"
+      responses:
+        "202":
+          description: The task cancel operation was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskCommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/tasks/{taskId}/artifacts/{artifactId}/content:
+    get:
+      operationId: getTaskArtifactContent
+      summary: Stream one registered task artifact for human review
+      tags: [Tasks]
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Range
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The full artifact content.
+          headers:
+            Content-Type:
+              schema:
+                type: string
+            Content-Length:
+              schema:
+                type: integer
+            Accept-Ranges:
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "206":
+          description: A partial artifact content range.
+          headers:
+            Content-Type:
+              schema:
+                type: string
+            Content-Range:
+              schema:
+                type: string
+            Accept-Ranges:
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "416":
+          description: The requested range cannot be satisfied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/rss/subscriptions/{subscriptionId}/entries:
+    get:
+      operationId: listRSSEntries
+      summary: List persisted entries of one RSS subscription
+      tags: [RSS]
+      parameters:
+        - name: subscriptionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [discovered, enqueueing, enqueued, enqueue_failed]
+        - name: group
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [confirmed, skipped]
+        - name: sortBy
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [title, episode, progress, discovered_at]
+            default: discovered_at
+        - name: sortOrder
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        "200":
+          description: A page of RSS entries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RSSEntryPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/tmdb/series/search:
+    get:
+      operationId: searchTMDbSeries
+      summary: Search TMDb TV series by name
+      tags: [TMDb]
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+      responses:
+        "200":
+          description: TMDb TV series matching the query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TMDbSeriesSearchResultPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/tmdb/movies/search:
+    get:
+      operationId: searchTMDbMovies
+      summary: Search TMDb movies by name
+      tags: [TMDb]
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+      responses:
+        "200":
+          description: TMDb movies matching the query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TMDbMovieSearchResultPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/tmdb/series/{tmdbSeriesId}/catalog:
+    get:
+      operationId: getTMDbSeriesCatalog
+      summary: Read the locally synced catalog of one TMDb series
+      tags: [TMDb]
+      parameters:
+        - name: tmdbSeriesId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        "200":
+          description: The locally synced TMDb series catalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TMDbSeriesCatalog"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/operations:
+    get:
+      operationId: listOperations
+      summary: List asynchronous operations for audit
+      tags: [Operations]
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: resourceType
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: resourceId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [queued, running, succeeded, failed, cancelled]
+      responses:
+        "200":
+          description: A page of operations.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/operations/{operationId}:
+    get:
+      operationId: getOperation
+      summary: Read one operation and its attempt history
+      tags: [Operations]
+      parameters:
+        - name: operationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/events/history:
+    get:
+      operationId: listEvents
+      summary: Read persisted domain events for one resource
+      tags: [Events]
+      parameters:
+        - name: resourceType
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: resourceId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: A page of persisted events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/config/secrets/reveal:
+    post:
+      operationId: revealConfigurationSecrets
+      summary: Reveal configured secrets for direct editing in the same-origin settings UI
+      description: >-
+        Authenticated-administrator exception to the masked configuration contract. Returns
+        only secrets that are currently configured so each password input can be populated
+        directly without requiring the other secrets. Every success or error response uses
+        Cache-Control: no-store, max-age=0. Plaintext must not be logged, emitted as an event,
+        placed in a client query cache, persisted in browser storage, or included in a URL.
+      tags: [Config]
+      responses:
+        "200":
+          description: The configured plaintext secrets; unconfigured properties are omitted.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/SecretNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevealedSecrets"
+        "401":
+          $ref: "#/components/responses/SecretRevealUnauthorized"
+        "503":
+          $ref: "#/components/responses/SecretRevealServiceUnavailable"
+  /api/v1/config/test:
+    post:
+      operationId: testConnectivity
+      summary: Test connectivity to one external dependency
+      tags: [Config]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConnectivityTestRequest"
+      responses:
+        "200":
+          description: The connectivity test result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectivityTestResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      summary: Read aggregate counts and recent activity for the overview
+      tags: [Dashboard]
+      responses:
+        "200":
+          description: The dashboard summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/dashboard/background-runtime:
+    get:
+      operationId: getBackgroundRuntime
+      summary: Read the Worker background runtime state
+      tags: [Dashboard]
+      responses:
+        "200":
+          description: The current Worker runtime state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackgroundRuntime"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    put:
+      operationId: updateBackgroundRuntime
+      summary: Start or stop all Worker background execution
+      tags: [Dashboard]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateBackgroundRuntimeRequest"
+      responses:
+        "200":
+          description: The Worker reached the requested runtime state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackgroundRuntime"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/dashboard/system-metrics:
+    get:
+      operationId: getDashboardSystemMetrics
+      summary: Read the API host's rolling CPU, memory, network, and disk metrics
+      tags: [Dashboard]
+      responses:
+        "200":
+          description: In-memory host metrics ordered from oldest to newest.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemMetricsSnapshot"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/events:
+    get:
+      operationId: streamEvents
+      summary: Stream domain events after an optional public event cursor
+      tags: [Events]
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: A server-sent event stream. Event IDs are public event UUIDs.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            X-Accel-Buffering:
+              schema:
+                type: string
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: emby_auto_session
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
+  headers:
+    SecretNoStore:
+      description: Prevents storage of plaintext secret responses by browsers and intermediaries.
+      required: true
+      schema:
+        type: string
+        enum: ["no-store, max-age=0"]
+  responses:
+    BadRequest:
+      description: The request is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    Unauthorized:
+      description: Authentication is required or failed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    Conflict:
+      description: The command conflicts with current resource state.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    NotFound:
+      description: The requested resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    ServiceUnavailable:
+      description: A required dependency is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    SecretRevealUnauthorized:
+      description: Authentication is required or failed.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/SecretNoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    SecretRevealServiceUnavailable:
+      description: The secret configuration store is unavailable.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/SecretNoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+  schemas:
+    HealthStatus:
+      type: object
+      additionalProperties: false
+      required: [status, checkedAt]
+      properties:
+        status:
+          type: string
+          enum: [live, ready]
+        checkedAt:
+          type: string
+          format: date-time
+    SetupStatus:
+      type: object
+      additionalProperties: false
+      required: [state, databaseConfigured, databaseManagedExternally, administratorConfigured]
+      properties:
+        state:
+          type: string
+          enum: [required, initializing, completed]
+        databaseConfigured:
+          type: boolean
+        databaseManagedExternally:
+          type: boolean
+        administratorConfigured:
+          type: boolean
+    SetupDatabase:
+      type: object
+      additionalProperties: false
+      required: [host, port, database, username, password, sslMode]
+      properties:
+        host:
+          type: string
+          minLength: 1
+          maxLength: 255
+        port:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 65535
+        database:
+          type: string
+          minLength: 1
+          maxLength: 128
+        username:
+          type: string
+          minLength: 1
+          maxLength: 128
+        password:
+          type: string
+          maxLength: 1024
+        sslMode:
+          type: string
+          enum: [disable, require, verify-ca, verify-full]
+    SetupAdministrator:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 128
+        password:
+          type: string
+          minLength: 8
+          maxLength: 1024
+    SetupQBittorrentConfiguration:
+      type: object
+      additionalProperties: false
+      required: [url, username, password]
+      properties:
+        url:
+          type: string
+          minLength: 1
+          maxLength: 2048
+        username:
+          type: string
+          minLength: 1
+          maxLength: 256
+        password:
+          type: string
+          minLength: 1
+          maxLength: 4096
+    SetupEmbyConfiguration:
+      type: object
+      additionalProperties: false
+      required: [url, apiKey]
+      properties:
+        url:
+          type: string
+          minLength: 1
+          maxLength: 2048
+        apiKey:
+          type: string
+          minLength: 1
+          maxLength: 4096
+    SetupTMDbConfiguration:
+      type: object
+      additionalProperties: false
+      required: [apiToken]
+      properties:
+        apiToken:
+          type: string
+          minLength: 1
+          maxLength: 4096
+    SetupRuntimeConfiguration:
+      type: object
+      additionalProperties: false
+      required: [qBittorrent, emby, tmdb, paths, transcode]
+      properties:
+        qBittorrent:
+          $ref: "#/components/schemas/SetupQBittorrentConfiguration"
+        emby:
+          $ref: "#/components/schemas/SetupEmbyConfiguration"
+        tmdb:
+          $ref: "#/components/schemas/SetupTMDbConfiguration"
+        paths:
+          $ref: "#/components/schemas/PathConfiguration"
+        transcode:
+          $ref: "#/components/schemas/TranscodeProfileConfiguration"
+    InitializeSetupRequest:
+      type: object
+      additionalProperties: false
+      required: [administrator, configuration]
+      properties:
+        database:
+          $ref: "#/components/schemas/SetupDatabase"
+        administrator:
+          $ref: "#/components/schemas/SetupAdministrator"
+        configuration:
+          $ref: "#/components/schemas/SetupRuntimeConfiguration"
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 128
+        password:
+          type: string
+          minLength: 8
+          maxLength: 1024
+    Session:
+      type: object
+      additionalProperties: false
+      required: [user, expiresAt]
+      properties:
+        user:
+          $ref: "#/components/schemas/AdminUser"
+        expiresAt:
+          type: string
+          format: date-time
+    AdminUser:
+      type: object
+      additionalProperties: false
+      required: [id, username]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+    Configuration:
+      type: object
+      additionalProperties: false
+      required: [version, qBittorrent, emby, tmdb, networkProxy, agent, paths, transcode]
+      properties:
+        version:
+          type: integer
+          format: int32
+          minimum: 0
+        qBittorrent:
+          $ref: "#/components/schemas/QBittorrentConfiguration"
+        emby:
+          $ref: "#/components/schemas/EmbyConfiguration"
+        tmdb:
+          $ref: "#/components/schemas/TMDbConfiguration"
+        networkProxy:
+          $ref: "#/components/schemas/NetworkProxyConfiguration"
+        agent:
+          $ref: "#/components/schemas/AgentConfiguration"
+        paths:
+          $ref: "#/components/schemas/PathConfiguration"
+        transcode:
+          $ref: "#/components/schemas/TranscodeProfileConfiguration"
+    QBittorrentConfiguration:
+      type: object
+      additionalProperties: false
+      required: [url, username, password, downloadRateLimitKibPerSecond, uploadRateLimitKibPerSecond]
+      properties:
+        url:
+          type: string
+        username:
+          type: string
+        password:
+          $ref: "#/components/schemas/SecretStatus"
+        downloadRateLimitKibPerSecond:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 2147483647
+          description: Per-torrent download rate limit in KiB/s. Zero disables the limit.
+        uploadRateLimitKibPerSecond:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 2147483647
+          description: Per-torrent upload rate limit in KiB/s. Zero disables the limit.
+    EmbyConfiguration:
+      type: object
+      additionalProperties: false
+      required: [url, apiKey]
+      properties:
+        url:
+          type: string
+        apiKey:
+          $ref: "#/components/schemas/SecretStatus"
+    TMDbConfiguration:
+      type: object
+      additionalProperties: false
+      required: [apiToken]
+      properties:
+        apiToken:
+          $ref: "#/components/schemas/SecretStatus"
+    NetworkProxyConfiguration:
+      type: object
+      additionalProperties: false
+      required: [enabled, url]
+      properties:
+        enabled:
+          type: boolean
+        url:
+          type: string
+          maxLength: 2048
+    AgentResolutionMode:
+      type: string
+      enum: [off, suggest, validated_auto]
+    AgentConfiguration:
+      type: object
+      additionalProperties: false
+      required:
+        - enabled
+        - protocol
+        - baseUrl
+        - model
+        - apiKey
+        - useNetworkProxy
+        - requestTimeoutSeconds
+        - rssCoordinateMode
+        - downloadFileSelectionMode
+        - catalogMatchEnabled
+        - episodeMappingEnabled
+        - allowAutomaticEpisodeMapping
+        - subtitleVideoMatchMode
+      properties:
+        enabled:
+          type: boolean
+        protocol:
+          type: string
+          enum: [openai_chat_completions]
+        baseUrl:
+          type: string
+          maxLength: 2048
+        model:
+          type: string
+          maxLength: 256
+        apiKey:
+          $ref: "#/components/schemas/SecretStatus"
+        useNetworkProxy:
+          type: boolean
+        requestTimeoutSeconds:
+          type: integer
+          format: int32
+          minimum: 10
+          maximum: 120
+        rssCoordinateMode:
+          $ref: "#/components/schemas/AgentResolutionMode"
+        downloadFileSelectionMode:
+          $ref: "#/components/schemas/AgentResolutionMode"
+        catalogMatchEnabled:
+          type: boolean
+        episodeMappingEnabled:
+          type: boolean
+        allowAutomaticEpisodeMapping:
+          type: boolean
+        subtitleVideoMatchMode:
+          $ref: "#/components/schemas/AgentResolutionMode"
+    AgentConfigurationUpdate:
+      type: object
+      additionalProperties: false
+      required:
+        - enabled
+        - protocol
+        - baseUrl
+        - model
+        - apiKey
+        - useNetworkProxy
+        - requestTimeoutSeconds
+        - rssCoordinateMode
+        - downloadFileSelectionMode
+        - catalogMatchEnabled
+        - episodeMappingEnabled
+        - allowAutomaticEpisodeMapping
+        - subtitleVideoMatchMode
+      properties:
+        enabled:
+          type: boolean
+        protocol:
+          type: string
+          enum: [openai_chat_completions]
+        baseUrl:
+          type: string
+          maxLength: 2048
+        model:
+          type: string
+          maxLength: 256
+        apiKey:
+          $ref: "#/components/schemas/SecretUpdate"
+        useNetworkProxy:
+          type: boolean
+        requestTimeoutSeconds:
+          type: integer
+          format: int32
+          minimum: 10
+          maximum: 120
+        rssCoordinateMode:
+          $ref: "#/components/schemas/AgentResolutionMode"
+        downloadFileSelectionMode:
+          $ref: "#/components/schemas/AgentResolutionMode"
+        catalogMatchEnabled:
+          type: boolean
+        episodeMappingEnabled:
+          type: boolean
+        allowAutomaticEpisodeMapping:
+          type: boolean
+        subtitleVideoMatchMode:
+          $ref: "#/components/schemas/AgentResolutionMode"
+    AgentConnectivityTestConfiguration:
+      type: object
+      additionalProperties: false
+      required: [protocol, baseUrl, model, apiKey, useNetworkProxy]
+      properties:
+        protocol:
+          type: string
+          enum: [openai_chat_completions]
+        baseUrl:
+          type: string
+          maxLength: 2048
+        model:
+          type: string
+          maxLength: 256
+        apiKey:
+          $ref: "#/components/schemas/SecretUpdate"
+        useNetworkProxy:
+          type: boolean
+    PathConfiguration:
+      type: object
+      additionalProperties: false
+      required: [downloadRoot, workRoot, stagingRoot, animeLibraryRoot, movieLibraryRoot, ffmpegPath, ffprobePath]
+      properties:
+        downloadRoot:
+          type: string
+        workRoot:
+          type: string
+        stagingRoot:
+          type: string
+        animeLibraryRoot:
+          type: string
+        movieLibraryRoot:
+          type: string
+        ffmpegPath:
+          type: string
+        ffprobePath:
+          type: string
+    TranscodeProfileConfiguration:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - videoCodec
+        - encoder
+        - container
+        - fileExtension
+        - qualityMode
+        - qualityValue
+        - audioPolicy
+        - preset
+        - pixelFormat
+        - threadCount
+        - maxConcurrency
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        videoCodec:
+          type: string
+          enum: [h264, hevc, av1]
+        encoder:
+          type: string
+          enum: [libx264, h264_nvenc, libx265, hevc_nvenc, libsvtav1, libaom-av1, av1_nvenc]
+        container:
+          type: string
+          enum: [matroska, mp4, webm]
+        fileExtension:
+          type: string
+          pattern: "^[a-z0-9]+$"
+        qualityMode:
+          type: string
+          enum: [crf, cq, bitrate]
+        qualityValue:
+          type: number
+          format: double
+          minimum: 0
+          multipleOf: 0.001
+        audioPolicy:
+          type: string
+          enum: [copy, transcode]
+        audioCodec:
+          type: string
+          enum: [aac, ac3, eac3, flac, opus, vorbis]
+        preset:
+          type: string
+          minLength: 1
+        pixelFormat:
+          type: string
+          enum: [yuv420p, yuv420p10le, yuv422p, yuv422p10le, yuv444p, yuv444p10le, nv12, p010le]
+        threadCount:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 256
+        maxConcurrency:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 64
+    SecretStatus:
+      type: object
+      additionalProperties: false
+      required: [configured, masked]
+      properties:
+        configured:
+          type: boolean
+        masked:
+          type: string
+    UpdateConfigurationRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion, qBittorrent, emby, tmdb, networkProxy, agent, paths, transcode]
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+          minimum: 0
+        qBittorrent:
+          $ref: "#/components/schemas/QBittorrentConfigurationUpdate"
+        emby:
+          $ref: "#/components/schemas/EmbyConfigurationUpdate"
+        tmdb:
+          $ref: "#/components/schemas/TMDbConfigurationUpdate"
+        networkProxy:
+          $ref: "#/components/schemas/NetworkProxyConfiguration"
+        agent:
+          $ref: "#/components/schemas/AgentConfigurationUpdate"
+        paths:
+          $ref: "#/components/schemas/PathConfiguration"
+        transcode:
+          $ref: "#/components/schemas/TranscodeProfileConfiguration"
+    QBittorrentConfigurationUpdate:
+      type: object
+      additionalProperties: false
+      required: [url, username, password, downloadRateLimitKibPerSecond, uploadRateLimitKibPerSecond]
+      properties:
+        url:
+          type: string
+        username:
+          type: string
+        password:
+          $ref: "#/components/schemas/SecretUpdate"
+        downloadRateLimitKibPerSecond:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 2147483647
+        uploadRateLimitKibPerSecond:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 2147483647
+    EmbyConfigurationUpdate:
+      type: object
+      additionalProperties: false
+      required: [url, apiKey]
+      properties:
+        url:
+          type: string
+        apiKey:
+          $ref: "#/components/schemas/SecretUpdate"
+    TMDbConfigurationUpdate:
+      type: object
+      additionalProperties: false
+      required: [apiToken]
+      properties:
+        apiToken:
+          $ref: "#/components/schemas/SecretUpdate"
+    SecretUpdate:
+      type: object
+      additionalProperties: false
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [keep, set, clear]
+        value:
+          type: string
+          minLength: 1
+          maxLength: 4096
+    RevealedSecrets:
+      type: object
+      additionalProperties: false
+      description: Configured plaintext secrets returned only by the authenticated settings reveal exception.
+      properties:
+        qbPassword:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: Decrypted qBittorrent password when configured.
+        embyApiKey:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: Decrypted Emby API key when configured.
+        tmdbApiToken:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: Decrypted TMDb API read access token when configured.
+        agentApiKey:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: Decrypted Agent API key when configured.
+    AgentResolutionStatus:
+      type: string
+      enum: [queued, running, proposed, review_required, applied, rejected, failed, cancelled, expired]
+    AgentResolutionCapability:
+      type: string
+      enum: [rss_coordinate, rss_release_adjudication, rss_preacquisition_mapping, download_file_resolution, catalog_candidate, episode_mapping]
+    AgentProposalValidation:
+      type: object
+      additionalProperties: false
+      required: [verdict, reasonCodes]
+      properties:
+        verdict:
+          type: string
+          enum: [auto_applicable, review_required, invalid]
+        reasonCodes:
+          type: array
+          maxItems: 32
+          items: { type: string, maxLength: 128 }
+    AgentRSSCoordinateProposal:
+      type: object
+      additionalProperties: false
+      required: [capability, entryId, sourceSeason, sourceEpisode, evidenceCodes, decision]
+      properties:
+        capability: { type: string, const: rss_coordinate }
+        entryId: { type: string, format: uuid }
+        sourceSeason: { type: integer, format: int32, minimum: 1 }
+        sourceEpisode: { type: integer, format: int32, minimum: 1 }
+        evidenceCodes:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 128 }
+        decision: { type: string, enum: [resolved, review_required] }
+    AgentRSSReleaseDisposition:
+      type: object
+      additionalProperties: false
+      required: [entryId, disposition, evidenceCodes]
+      properties:
+        entryId: { type: string, format: uuid }
+        disposition: { type: string, enum: [select, ignore, review_required] }
+        sourceSeason: { type: integer, format: int32, minimum: 1 }
+        sourceEpisode: { type: integer, format: int32, minimum: 1 }
+        relatedEntryId: { type: string, format: uuid }
+        evidenceCodes:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 128 }
+    AgentRSSReleaseAdjudicationProposal:
+      type: object
+      additionalProperties: false
+      required: [capability, batchId, scopedEntryIds, entries, decision]
+      properties:
+        capability: { type: string, const: rss_release_adjudication }
+        batchId: { type: string, format: uuid }
+        scopedEntryIds:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { type: string, format: uuid }
+        entries:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { $ref: "#/components/schemas/AgentRSSReleaseDisposition" }
+        decision: { type: string, enum: [resolved, review_required] }
+    AgentRSSPreacquisitionMappingProposal:
+      type: object
+      additionalProperties: false
+      required: [capability, scopeId, sourceSeason, sourceEpisode, targetSeason, targetEpisode, evidenceCodes, decision]
+      properties:
+        capability: { type: string, const: rss_preacquisition_mapping }
+        scopeId: { type: string, format: uuid }
+        sourceSeason: { type: integer, format: int32, minimum: 1 }
+        sourceEpisode: { type: integer, format: int32, minimum: 1 }
+        targetSeason: { type: integer, format: int32, minimum: 1 }
+        targetEpisode: { type: integer, format: int32, minimum: 1 }
+        evidenceCodes:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 128 }
+        decision: { type: string, enum: [resolved, review_required] }
+    AgentDownloadVideoProposal:
+      type: object
+      additionalProperties: false
+      required: [fileId, sourceSeason, sourceEpisode]
+      properties:
+        fileId: { type: string, format: uuid }
+        sourceSeason: { type: integer, format: int32, minimum: 1 }
+        sourceEpisode: { type: integer, format: int32, minimum: 1 }
+    AgentDownloadSubtitleProposal:
+      type: object
+      additionalProperties: false
+      required: [fileId, videoFileId]
+      properties:
+        fileId: { type: string, format: uuid }
+        videoFileId: { type: string, format: uuid }
+    AgentDownloadFileResolutionProposal:
+      type: object
+      additionalProperties: false
+      required: [capability, videos, subtitles, decision]
+      properties:
+        capability: { type: string, const: download_file_resolution }
+        videos:
+          type: array
+          minItems: 1
+          maxItems: 128
+          items: { $ref: "#/components/schemas/AgentDownloadVideoProposal" }
+        subtitles:
+          type: array
+          maxItems: 1024
+          items: { $ref: "#/components/schemas/AgentDownloadSubtitleProposal" }
+        decision: { type: string, enum: [resolved, review_required] }
+    AgentCatalogCandidateProposal:
+      type: object
+      additionalProperties: false
+      required: [capability, query, candidateIds, evidenceCodes, decision]
+      properties:
+        capability: { type: string, const: catalog_candidate }
+        query: { type: string, minLength: 1, maxLength: 512 }
+        candidateIds:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { type: integer, format: int64, minimum: 1 }
+        evidenceCodes:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 128 }
+        decision: { type: string, enum: [resolved, review_required] }
+    AgentEpisodeMappingProposal:
+      type: object
+      additionalProperties: false
+      required: [capability, acquisitionId, sourceFileId, targetSeason, targetEpisode, evidenceCodes, decision]
+      properties:
+        capability: { type: string, const: episode_mapping }
+        acquisitionId: { type: string, format: uuid }
+        sourceFileId: { type: string, format: uuid }
+        targetSeason: { type: integer, format: int32, minimum: 1 }
+        targetEpisode: { type: integer, format: int32, minimum: 1 }
+        evidenceCodes:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 128 }
+        decision: { type: string, enum: [resolved, review_required] }
+    AgentProposal:
+      oneOf:
+        - $ref: "#/components/schemas/AgentRSSCoordinateProposal"
+        - $ref: "#/components/schemas/AgentRSSReleaseAdjudicationProposal"
+        - $ref: "#/components/schemas/AgentRSSPreacquisitionMappingProposal"
+        - $ref: "#/components/schemas/AgentDownloadFileResolutionProposal"
+        - $ref: "#/components/schemas/AgentCatalogCandidateProposal"
+        - $ref: "#/components/schemas/AgentEpisodeMappingProposal"
+      discriminator:
+        propertyName: capability
+        mapping:
+          rss_coordinate: "#/components/schemas/AgentRSSCoordinateProposal"
+          rss_release_adjudication: "#/components/schemas/AgentRSSReleaseAdjudicationProposal"
+          rss_preacquisition_mapping: "#/components/schemas/AgentRSSPreacquisitionMappingProposal"
+          download_file_resolution: "#/components/schemas/AgentDownloadFileResolutionProposal"
+          catalog_candidate: "#/components/schemas/AgentCatalogCandidateProposal"
+          episode_mapping: "#/components/schemas/AgentEpisodeMappingProposal"
+    AgentResolution:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - operationId
+        - version
+        - capability
+        - resourceType
+        - resourceId
+        - status
+        - trigger
+        - model
+        - promptVersion
+        - toolsetVersion
+        - toolCallCount
+        - createdAt
+        - updatedAt
+      properties:
+        id: { type: string, format: uuid }
+        operationId: { type: string, format: uuid }
+        version: { type: integer, format: int32, minimum: 1 }
+        capability: { $ref: "#/components/schemas/AgentResolutionCapability" }
+        resourceType: { type: string }
+        resourceId: { type: string, format: uuid }
+        resourceVersion: { type: integer, format: int32, minimum: 1 }
+        trigger: { type: string, enum: [automatic, user, retry] }
+        status: { $ref: "#/components/schemas/AgentResolutionStatus" }
+        model: { type: string }
+        promptVersion: { type: string }
+        toolsetVersion: { type: string }
+        proposal: { $ref: "#/components/schemas/AgentProposal" }
+        validation: { $ref: "#/components/schemas/AgentProposalValidation" }
+        errorCode: { type: string }
+        errorMessage: { type: string }
+        inputTokens: { type: integer, format: int64, minimum: 0 }
+        outputTokens: { type: integer, format: int64, minimum: 0 }
+        toolCallCount: { type: integer, format: int32, minimum: 0 }
+        latencyMilliseconds: { type: integer, format: int64, minimum: 0 }
+        reviewDecision: { type: string, enum: [accepted, rejected] }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
+        reviewedAt: { type: string, format: date-time }
+        appliedAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    AgentResolutionPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/AgentResolution" }
+        nextCursor: { type: string, format: uuid }
+    CreateSearchRequest:
+      type: object
+      additionalProperties: false
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 512
+    SearchCommandAccepted:
+      type: object
+      additionalProperties: false
+      required: [search, operationId, status]
+      properties:
+        search:
+          $ref: "#/components/schemas/SearchRun"
+        operationId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+    SearchRun:
+      type: object
+      additionalProperties: false
+      required: [id, query, status, candidates, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        query:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, completed, failed, cancelled]
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        candidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReleaseCandidate"
+    SearchRunSummary:
+      type: object
+      additionalProperties: false
+      required: [id, query, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        query:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, completed, failed, cancelled]
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    SearchRunPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchRunSummary"
+        nextCursor:
+          type: string
+          format: uuid
+    ReleaseCandidate:
+      type: object
+      additionalProperties: false
+      required: [id, searchRunId, provider, title, downloadable, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        searchRunId:
+          type: string
+          format: uuid
+        provider:
+          type: string
+        title:
+          type: string
+        downloadUri:
+          type: string
+          format: uri
+        downloadable:
+          type: boolean
+        unavailableReason:
+          type: string
+          enum: [download_uri_missing]
+        publishedAt:
+          type: string
+          format: date-time
+        sizeBytes:
+          type: integer
+          format: int64
+          minimum: 0
+        seeders:
+          type: integer
+          format: int32
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+    CreateAcquisitionRequest:
+      type: object
+      additionalProperties: false
+      required: [candidateId, mediaType]
+      properties:
+        candidateId:
+          type: string
+          format: uuid
+        mediaType:
+          $ref: "#/components/schemas/TaskMediaType"
+        tmdbSeriesId:
+          type: integer
+          format: int64
+          minimum: 1
+        seriesTitle:
+          type: string
+          minLength: 1
+          maxLength: 512
+        tmdbMovieId:
+          type: integer
+          format: int64
+          minimum: 1
+        movieTitle:
+          type: string
+          minLength: 1
+          maxLength: 512
+        releaseYear:
+          type: integer
+          format: int32
+          minimum: 1870
+          maximum: 9999
+        mappingProfileId:
+          type: string
+          format: uuid
+        sourceSeason:
+          type: integer
+          format: int32
+          minimum: 1
+        sourceEpisode:
+          type: integer
+          format: int32
+          minimum: 0
+        singleEpisode:
+          type: boolean
+    AcquisitionCommandAccepted:
+      type: object
+      additionalProperties: false
+      required: [acquisitionId, downloadId, operationId, status]
+      properties:
+        acquisitionId:
+          type: string
+          format: uuid
+        downloadId:
+          type: string
+          format: uuid
+        operationId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+    SyncTMDbSeriesRequest:
+      type: object
+      additionalProperties: false
+      required: [seriesTitle]
+      properties:
+        seriesTitle:
+          type: string
+          minLength: 1
+          maxLength: 512
+    CatalogCommandAccepted:
+      type: object
+      additionalProperties: false
+      required: [seriesId, operationId, status]
+      properties:
+        seriesId:
+          type: string
+          format: uuid
+        operationId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+    EpisodeMappingAnchor:
+      type: object
+      additionalProperties: false
+      required: [sourceFileId, targetSeason, targetEpisode]
+      properties:
+        sourceFileId:
+          type: string
+          format: uuid
+        targetSeason:
+          type: integer
+          format: int32
+          minimum: 1
+        targetEpisode:
+          type: integer
+          format: int32
+          minimum: 1
+    EpisodeMappingPlanRequest:
+      type: object
+      additionalProperties: false
+      required: [anchor]
+      properties:
+        anchor:
+          $ref: "#/components/schemas/EpisodeMappingAnchor"
+    SaveEpisodeMappingRequest:
+      type: object
+      additionalProperties: false
+      required: [anchor]
+      properties:
+        anchor:
+          $ref: "#/components/schemas/EpisodeMappingAnchor"
+    EpisodeMappingRow:
+      type: object
+      additionalProperties: false
+      required: [sourceFileId, relativePath, sourceSeason, sourceEpisode, status, matchSource]
+      properties:
+        sourceFileId:
+          type: string
+          format: uuid
+        relativePath:
+          type: string
+        sourceSeason:
+          type: integer
+          format: int32
+          minimum: 1
+        sourceEpisode:
+          type: integer
+          format: int32
+          minimum: 1
+        absoluteEpisode:
+          type: integer
+          format: int32
+          minimum: 1
+        status:
+          type: string
+          enum: [mapped, pending]
+        targetSeason:
+          type: integer
+          format: int32
+          minimum: 0
+        targetEpisode:
+          type: integer
+          format: int32
+          minimum: 1
+        targetTitle:
+          type: string
+        matchSource:
+          type: string
+          enum: [anchor, explicit, absolute, pending]
+        errorCode:
+          type: string
+    EpisodeMappingPreview:
+      type: object
+      additionalProperties: false
+      required: [acquisitionId, seriesId, anchor, rows]
+      properties:
+        acquisitionId:
+          type: string
+          format: uuid
+        seriesId:
+          type: string
+          format: uuid
+        anchor:
+          $ref: "#/components/schemas/EpisodeMappingAnchor"
+        rows:
+          type: array
+          items:
+            $ref: "#/components/schemas/EpisodeMappingRow"
+    SavedEpisodeMapping:
+      type: object
+      additionalProperties: false
+      required: [profileId, version, preview]
+      properties:
+        profileId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int32
+          minimum: 1
+        preview:
+          $ref: "#/components/schemas/EpisodeMappingPreview"
+    EmbyScan:
+      type: object
+      additionalProperties: false
+      required: [id, operationId, status, libraryCount, itemCount, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        operationId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+        libraryCount:
+          type: integer
+          format: int32
+          minimum: 0
+        itemCount:
+          type: integer
+          format: int32
+          minimum: 0
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    EmbyScanCommandAccepted:
+      type: object
+      additionalProperties: false
+      required: [scan, operationId, status]
+      properties:
+        scan:
+          $ref: "#/components/schemas/EmbyScan"
+        operationId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+    EmbyScanPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/EmbyScan"
+        nextCursor:
+          type: string
+          format: uuid
+    EmbyLibrary:
+      type: object
+      additionalProperties: false
+      required: [id, embyId, name, locations, present, lastSeenAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        embyId:
+          type: string
+        name:
+          type: string
+        collectionType:
+          type: string
+        locations:
+          type: array
+          items:
+            type: string
+        present:
+          type: boolean
+        lastSeenAt:
+          type: string
+          format: date-time
+    EmbyLibraryItem:
+      type: object
+      additionalProperties: false
+      required: [id, embyId, libraryId, itemType, name, providerIds, present, lastSeenAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        embyId:
+          type: string
+        libraryId:
+          type: string
+          format: uuid
+        parentEmbyId:
+          type: string
+        itemType:
+          type: string
+          enum: [Series, Season, Episode, Movie]
+        name:
+          type: string
+        path:
+          type: string
+        providerIds:
+          type: object
+          additionalProperties:
+            type: string
+        seasonNumber:
+          type: integer
+          format: int32
+          minimum: 0
+        episodeNumber:
+          type: integer
+          format: int32
+          minimum: 1
+        present:
+          type: boolean
+        importedTaskId:
+          type: string
+          format: uuid
+        lastSeenAt:
+          type: string
+          format: date-time
+    EmbyLibraryItemPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/EmbyLibraryItem"
+        nextCursor:
+          type: string
+          format: uuid
+    RSSFeedLookupRequest:
+      type: object
+      additionalProperties: false
+      required: [feedUrl]
+      properties:
+        feedUrl:
+          type: string
+          format: uri
+          maxLength: 4096
+    RSSFeedLookup:
+      type: object
+      additionalProperties: false
+      required: [feedUrl, suggestedQuery, suggestedQueries, sampleTitles, candidates, catalogMatchSource]
+      properties:
+        feedUrl:
+          type: string
+          format: uri
+        feedTitle:
+          type: string
+        suggestedQuery:
+          type: string
+          description: First deterministic TMDb query. Empty when nothing usable was found.
+        suggestedQueries:
+          type: array
+          maxItems: 8
+          uniqueItems: true
+          description: Ordered deterministic queries derived from the feed and release titles.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 512
+        sampleTitles:
+          type: array
+          maxItems: 5
+          items:
+            type: string
+            maxLength: 2048
+        candidates:
+          type: array
+          maxItems: 40
+          description: TMDb candidates merged from every deterministic query.
+          items:
+            $ref: "#/components/schemas/TMDbSeriesSearchResult"
+        catalogMatchSource:
+          type: string
+          enum: [deterministic, agent_pending, none]
+        agentResolutionId:
+          type: string
+          format: uuid
+          description: Catalog Agent resolution scheduled after every deterministic query returned no candidates.
+    RSSSubscription:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - seriesId
+        - tmdbSeriesId
+        - seriesTitle
+        - name
+        - feedUrl
+        - includeKeywords
+        - excludeKeywords
+        - enabled
+        - autoEpisodeMapping
+        - autoReview
+        - cleanupSourceOnCompletion
+        - sourceSeason
+        - pollIntervalSeconds
+        - overallProgress
+        - taskCount
+        - completedTaskCount
+        - attentionTaskCount
+        - version
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        seriesId:
+          type: string
+          format: uuid
+        tmdbSeriesId:
+          type: integer
+          format: int64
+          minimum: 1
+        seriesTitle:
+          type: string
+        mappingProfileId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        feedUrl:
+          type: string
+          format: uri
+        includeKeywords:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          description: Optional case-insensitive title substrings. When configured, an entry title must contain at least one include keyword.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+        excludeKeywords:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          description: Optional case-insensitive title substrings. An entry is rejected when its title contains any exclude keyword; exclusion takes precedence over inclusion.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+        enabled:
+          type: boolean
+        autoEpisodeMapping:
+          type: boolean
+          description: Automatically maps selected RSS episode files after deterministic validation; when deterministic mapping is inconclusive, the configured Agent Episode Mapping capability may be used as fallback.
+        autoReview:
+          type: boolean
+          description: Automatically records an approved review and queues verified Emby import when an RSS episode finishes media validation.
+        cleanupSourceOnCompletion:
+          type: boolean
+          description: Remove this subscription's qBittorrent items, download cache, and processing files after every mapped source episode has been imported. Imported library files and history records are always preserved.
+        sourceSeason:
+          type: integer
+          format: int32
+          minimum: 1
+        pollIntervalSeconds:
+          type: integer
+          format: int32
+          minimum: 60
+          maximum: 86400
+        lastPolledAt:
+          type: string
+          format: date-time
+        nextPollAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+          description: Time when the configured final source episode completed and the subscription became non-runnable.
+        overallProgress:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Weighted mean lifecycle progress of all effective acquisition tasks owned by this subscription.
+        taskCount:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Number of effective acquisition tasks included in the subscription progress.
+        completedTaskCount:
+          type: integer
+          format: int32
+          minimum: 0
+        attentionTaskCount:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Number of included acquisition tasks that currently require operator attention.
+        retryableTaskCount:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Number of failed tasks for this subscription that can be retried.
+        version:
+          type: integer
+          format: int32
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    RSSSubscriptionPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RSSSubscription"
+        nextCursor:
+          type: string
+          format: uuid
+    CreateRSSSubscriptionRequest:
+      type: object
+      additionalProperties: false
+      required: [tmdbSeriesId, seriesTitle, name, feedUrl, includeKeywords, excludeKeywords, enabled, autoEpisodeMapping, autoReview, cleanupSourceOnCompletion, sourceSeason, pollIntervalSeconds]
+      properties:
+        tmdbSeriesId:
+          type: integer
+          format: int64
+          minimum: 1
+        seriesTitle:
+          type: string
+          minLength: 1
+          maxLength: 512
+        mappingProfileId:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 256
+        feedUrl:
+          type: string
+          format: uri
+          maxLength: 4096
+        includeKeywords:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          description: Optional case-insensitive title substrings. When configured, an entry title must contain at least one include keyword.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+        excludeKeywords:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          description: Optional case-insensitive title substrings. An entry is rejected when its title contains any exclude keyword; exclusion takes precedence over inclusion.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+        enabled:
+          type: boolean
+        autoEpisodeMapping:
+          type: boolean
+          description: Automatically maps selected RSS episode files using deterministic rules first and Agent fallback only when the corresponding Agent capability is enabled.
+        autoReview:
+          type: boolean
+          description: Automatically records an approved review and queues verified Emby import when an RSS episode finishes media validation.
+        cleanupSourceOnCompletion:
+          type: boolean
+          description: Remove source torrents and processing caches after the subscription completes.
+        sourceSeason:
+          type: integer
+          format: int32
+          minimum: 1
+        pollIntervalSeconds:
+          type: integer
+          format: int32
+          minimum: 60
+          maximum: 86400
+    UpdateRSSSubscriptionRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion, name, feedUrl, includeKeywords, excludeKeywords, enabled, autoEpisodeMapping, autoReview, cleanupSourceOnCompletion, sourceSeason, pollIntervalSeconds]
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+          minimum: 1
+        mappingProfileId:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 256
+        feedUrl:
+          type: string
+          format: uri
+          maxLength: 4096
+        includeKeywords:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          description: Optional case-insensitive title substrings. When configured, an entry title must contain at least one include keyword.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+        excludeKeywords:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          description: Optional case-insensitive title substrings. An entry is rejected when its title contains any exclude keyword; exclusion takes precedence over inclusion.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
+        enabled:
+          type: boolean
+        autoEpisodeMapping:
+          type: boolean
+        autoReview:
+          type: boolean
+        cleanupSourceOnCompletion:
+          type: boolean
+          description: Remove source torrents and processing caches after the subscription completes.
+        sourceSeason:
+          type: integer
+          format: int32
+          minimum: 1
+        pollIntervalSeconds:
+          type: integer
+          format: int32
+          minimum: 60
+          maximum: 86400
+    TaskMediaType:
+      type: string
+      enum: [episode, movie]
+    TaskState:
+      type: string
+      enum:
+        - media_queued
+        - processing
+        - finalizing
+        - awaiting_review
+        - approved
+        - rejected
+        - import_queued
+        - importing
+        - imported
+        - failed
+        - cancelled
+    Task:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - acquisitionId
+        - downloadId
+        - mediaType
+        - state
+        - videoState
+        - subtitleState
+        - version
+        - operations
+        - actions
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        acquisitionId:
+          type: string
+          format: uuid
+        downloadId:
+          type: string
+          format: uuid
+        mediaType:
+          $ref: "#/components/schemas/TaskMediaType"
+        movieTitle:
+          type: string
+        releaseYear:
+          type: integer
+          format: int32
+          minimum: 1870
+          maximum: 9999
+        seriesTitle:
+          type: string
+        sourceSeason:
+          type: integer
+          format: int32
+          minimum: 1
+        sourceEpisode:
+          type: integer
+          format: int32
+          minimum: 1
+        targetSeason:
+          type: integer
+          format: int32
+          minimum: 0
+        targetEpisode:
+          type: integer
+          format: int32
+          minimum: 1
+        targetEpisodeTitle:
+          type: string
+        state:
+          $ref: "#/components/schemas/TaskState"
+        videoState:
+          type: string
+          enum: [transcode_queued, transcoding, video_ready, failed, cancelled]
+        subtitleState:
+          type: string
+          enum: [subtitle_queued, extracting_or_converting, ass_ready, failed, cancelled]
+        version:
+          type: integer
+          format: int32
+          minimum: 1
+        failureStage:
+          type: string
+          enum: [video, subtitle, finalize, import]
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        artifacts:
+          $ref: "#/components/schemas/ArtifactSet"
+        review:
+          $ref: "#/components/schemas/TaskReview"
+        import:
+          $ref: "#/components/schemas/TaskImport"
+        cleanup:
+          $ref: "#/components/schemas/TaskCleanup"
+        embyItemId:
+          type: string
+          format: uuid
+        embyLibraryId:
+          type: string
+          format: uuid
+        operations:
+          type: array
+          items:
+            $ref: "#/components/schemas/OperationSummary"
+        actions:
+          $ref: "#/components/schemas/TaskActions"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    OperationSummary:
+      type: object
+      additionalProperties: false
+      required: [id, kind, status, maxAttempts, attemptCount, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+        maxAttempts:
+          type: integer
+          format: int32
+          minimum: 1
+        attemptCount:
+          type: integer
+          format: int32
+          minimum: 0
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    TaskActions:
+      type: object
+      additionalProperties: false
+      required: [canRetry, canCancel, canReview, canImport]
+      properties:
+        canRetry:
+          type: boolean
+        canCancel:
+          type: boolean
+        canReview:
+          type: boolean
+        canImport:
+          type: boolean
+    TaskPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Task"
+        nextCursor:
+          type: string
+          format: uuid
+    ArtifactSet:
+      type: object
+      additionalProperties: false
+      required: [id, basename, video, subtitle]
+      properties:
+        id:
+          type: string
+          format: uuid
+        basename:
+          type: string
+        video:
+          $ref: "#/components/schemas/MediaArtifact"
+        subtitle:
+          $ref: "#/components/schemas/MediaArtifact"
+    MediaArtifact:
+      type: object
+      additionalProperties: false
+      required: [id, kind, filePath, format, sizeBytes, checksumSha256]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [video, subtitle]
+        filePath:
+          type: string
+        format:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+          minimum: 1
+        checksumSha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+    TaskReview:
+      type: object
+      additionalProperties: false
+      required: [id, decision, notes, reviewedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        decision:
+          type: string
+          enum: [approved, rejected]
+        notes:
+          type: string
+        reviewedBy:
+          type: string
+          format: uuid
+        reviewedAt:
+          type: string
+          format: date-time
+    TaskImport:
+      type: object
+      additionalProperties: false
+      required: [id, attempt, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          format: int32
+          minimum: 1
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+        destinationVideoPath:
+          type: string
+        destinationSubtitlePath:
+          type: string
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    TaskCleanup:
+      type: object
+      additionalProperties: false
+      required: [id, attempt, status, torrentRemoved, stagedFilesRemoved, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          format: int32
+          minimum: 1
+        status:
+          type: string
+          enum: [queued, running, completed, failed, cancelled]
+        torrentRemoved:
+          type: boolean
+        stagedFilesRemoved:
+          type: boolean
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ReviewTaskRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion, decision, notes]
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+          minimum: 1
+        decision:
+          type: string
+          enum: [approved, rejected]
+        notes:
+          type: string
+          maxLength: 4096
+    ImportTaskRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion]
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+          minimum: 1
+    TaskCommandAccepted:
+      type: object
+      additionalProperties: false
+      required: [task, operationId, status]
+      properties:
+        task:
+          $ref: "#/components/schemas/Task"
+        operationId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+    CommandAccepted:
+      type: object
+      additionalProperties: false
+      required: [operationId, status]
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+    ApiError:
+      type: object
+      additionalProperties: false
+      required: [code, message, details, requestId]
+      properties:
+        code:
+          type: string
+          minLength: 1
+        message:
+          type: string
+          minLength: 1
+        details:
+          type: object
+          additionalProperties: true
+        requestId:
+          type: string
+          minLength: 1
+    Acquisition:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - mediaType
+        - seriesId
+        - sourceKind
+        - tasks
+        - mapping
+        - aggregateStatus
+        - currentStage
+        - overallProgress
+        - stages
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        archived:
+          type: boolean
+        archivedAt:
+          type: string
+          format: date-time
+        mediaType:
+          $ref: "#/components/schemas/TaskMediaType"
+        seriesId:
+          type: string
+          format: uuid
+        tmdbSeriesId:
+          type: integer
+          format: int64
+          minimum: 1
+        seriesTitle:
+          type: string
+        tmdbMovieId:
+          type: integer
+          format: int64
+          minimum: 1
+        movieTitle:
+          type: string
+        releaseYear:
+          type: integer
+          format: int32
+          minimum: 1870
+          maximum: 9999
+        sourceKind:
+          type: string
+          enum: [search, rss, manual]
+        sourceSeason:
+          type: integer
+          format: int32
+          minimum: 1
+        sourceEpisode:
+          type: integer
+          format: int32
+          minimum: 0
+        singleEpisode:
+          type: boolean
+        mappingProfileId:
+          type: string
+          format: uuid
+        mappingDecisionSource:
+          type: string
+          enum: [deterministic, user, agent_auto, agent_accepted, legacy]
+        mappingAgentResolutionId:
+          type: string
+          format: uuid
+        releaseCandidateId:
+          type: string
+          format: uuid
+        rssEntryId:
+          type: string
+          format: uuid
+        downloadId:
+          type: string
+          format: uuid
+        download:
+          $ref: "#/components/schemas/AcquisitionDownloadSummary"
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/AcquisitionTaskSummary"
+        mapping:
+          $ref: "#/components/schemas/AcquisitionMappingCompleteness"
+        aggregateStatus:
+          $ref: "#/components/schemas/AcquisitionAggregateStatus"
+        currentStage:
+          $ref: "#/components/schemas/AcquisitionStageKey"
+        overallProgress:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        stages:
+          type: array
+          minItems: 9
+          maxItems: 9
+          items:
+            $ref: "#/components/schemas/AcquisitionStage"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    AcquisitionAggregateStatus:
+      type: string
+      enum: [pending, downloading, mapping_pending, materializing, processing, awaiting_review, importing, completed, failed, rejected, cancelled]
+    AcquisitionProgress:
+      type: object
+      additionalProperties: false
+      required: [aggregateStatus, currentStage, overallProgress]
+      properties:
+        aggregateStatus:
+          $ref: "#/components/schemas/AcquisitionAggregateStatus"
+        currentStage:
+          $ref: "#/components/schemas/AcquisitionStageKey"
+        overallProgress:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Fine-grained weighted progress across the complete acquisition lifecycle.
+    AcquisitionStageKey:
+      type: string
+      enum: [source, download, mapping, transcode, subtitle, rename, organize, review, import]
+    AcquisitionStageStatus:
+      type: string
+      enum: [pending, blocked, running, waiting, completed, failed, rejected, cancelled, skipped]
+    AcquisitionStage:
+      type: object
+      additionalProperties: false
+      required: [key, status, progress, completedItems, totalItems]
+      properties:
+        key:
+          $ref: "#/components/schemas/AcquisitionStageKey"
+        status:
+          $ref: "#/components/schemas/AcquisitionStageStatus"
+        progress:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        completedItems:
+          type: integer
+          format: int32
+          minimum: 0
+        totalItems:
+          type: integer
+          format: int32
+          minimum: 0
+        updatedAt:
+          type: string
+          format: date-time
+    AcquisitionDownloadSummary:
+      type: object
+      additionalProperties: false
+      required: [id, attempt, status, progress, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          format: int32
+          minimum: 1
+        status:
+          $ref: "#/components/schemas/DownloadStatus"
+        progress:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        failureStage:
+          type: string
+          enum: [enqueue, sync, materialize]
+        clientState:
+          type: string
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+    AcquisitionTaskSummary:
+      type: object
+      additionalProperties: false
+      required: [id, mediaType, downloadId, state, videoState, subtitleState, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        mediaType:
+          $ref: "#/components/schemas/TaskMediaType"
+        downloadId:
+          type: string
+          format: uuid
+        sourceSeason:
+          type: integer
+          format: int32
+          minimum: 1
+        sourceEpisode:
+          type: integer
+          format: int32
+          minimum: 1
+        targetSeason:
+          type: integer
+          format: int32
+          minimum: 0
+        targetEpisode:
+          type: integer
+          format: int32
+          minimum: 1
+        targetEpisodeTitle:
+          type: string
+        state:
+          $ref: "#/components/schemas/TaskState"
+        videoState:
+          type: string
+          enum: [transcode_queued, transcoding, video_ready, failed, cancelled]
+        subtitleState:
+          type: string
+          enum: [subtitle_queued, extracting_or_converting, ass_ready, failed, cancelled]
+        artifactBasename:
+          type: string
+        reviewDecision:
+          type: string
+          enum: [approved, rejected]
+        reviewedAt:
+          type: string
+          format: date-time
+        importStatus:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+        destinationVideoPath:
+          type: string
+        destinationSubtitlePath:
+          type: string
+        embyRefreshStatus:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+        cleanupStatus:
+          type: string
+          enum: [queued, running, completed, failed, cancelled]
+        failureStage:
+          type: string
+          enum: [video, subtitle, finalize, import]
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+    AcquisitionMappingCompleteness:
+      type: object
+      additionalProperties: false
+      required: [selectedVideoCount, mappedVideoCount, complete]
+      properties:
+        selectedVideoCount:
+          type: integer
+          format: int32
+          minimum: 0
+        mappedVideoCount:
+          type: integer
+          format: int32
+          minimum: 0
+        complete:
+          type: boolean
+    AcquisitionPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Acquisition"
+        nextCursor:
+          type: string
+          format: uuid
+    DownloadStatus:
+      type: string
+      enum: [enqueue_pending, file_resolution_pending, downloading, completed, selecting_files, materialized, failed, cancelled]
+    Download:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - acquisitionId
+        - attempt
+        - clientName
+        - status
+        - progress
+        - version
+        - files
+        - actions
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        acquisitionId:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          format: int32
+          minimum: 1
+        clientName:
+          type: string
+        clientState:
+          type: string
+        lastSyncedAt:
+          type: string
+          format: date-time
+        torrentHash:
+          type: string
+        status:
+          $ref: "#/components/schemas/DownloadStatus"
+        progress:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        savePath:
+          type: string
+        version:
+          type: integer
+          format: int32
+          minimum: 1
+        failureStage:
+          type: string
+          enum: [enqueue, file_resolution, sync, materialize]
+        fileResolutionSource:
+          type: string
+          enum: [deterministic, agent_auto, agent_accepted, user]
+        agentResolutionId:
+          type: string
+          format: uuid
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/DownloadFile"
+        actions:
+          $ref: "#/components/schemas/DownloadActions"
+    DownloadActions:
+      type: object
+      additionalProperties: false
+      required: [canRetry, canCancel, canDelete, canEditFileSelection, canResolveFiles, canRequestAgent]
+      properties:
+        canRetry:
+          type: boolean
+        canCancel:
+          type: boolean
+        canDelete:
+          type: boolean
+        canEditFileSelection:
+          type: boolean
+        canResolveFiles:
+          type: boolean
+        canRequestAgent:
+          type: boolean
+    DownloadFile:
+      type: object
+      additionalProperties: false
+      required: [id, fileIndex, relativePath, sizeBytes, mediaKind, selected]
+      properties:
+        id:
+          type: string
+          format: uuid
+        fileIndex:
+          type: integer
+          format: int32
+          minimum: 0
+        relativePath:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+          minimum: 0
+        mediaKind:
+          type: string
+          enum: [unknown, video, subtitle, extra, other]
+        selected:
+          type: boolean
+        sourceSeason:
+          type: integer
+          format: int32
+          minimum: 1
+        sourceEpisode:
+          type: integer
+          format: int32
+          minimum: 1
+        language:
+          type: string
+        exclusionReason:
+          type: string
+          enum: [extra_content, unsupported_media, episode_not_detected, alternate_video, alternate_subtitle, no_matching_video, not_selected]
+    DownloadPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Download"
+        nextCursor:
+          type: string
+          format: uuid
+    RetryDownloadRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion]
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+          minimum: 1
+    CancelDownloadRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion]
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+          minimum: 1
+    DownloadFileResolutionItem:
+      type: object
+      additionalProperties: false
+      required: [fileId, selected]
+      properties:
+        fileId:
+          type: string
+          format: uuid
+        selected:
+          type: boolean
+        sourceSeason:
+          type: integer
+          format: int32
+          minimum: 1
+        sourceEpisode:
+          type: integer
+          format: int32
+          minimum: 1
+    SaveDownloadFileResolutionRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion, files]
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+          minimum: 1
+        files:
+          type: array
+          minItems: 1
+          maxItems: 2048
+          items:
+            $ref: "#/components/schemas/DownloadFileResolutionItem"
+    FileSelectionItem:
+      type: object
+      additionalProperties: false
+      required: [fileId, selected]
+      properties:
+        fileId:
+          type: string
+          format: uuid
+        selected:
+          type: boolean
+    SaveFileSelectionRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion, files]
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+          minimum: 1
+        files:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/FileSelectionItem"
+    DownloadCommandAccepted:
+      type: object
+      additionalProperties: false
+      required: [download, operationId, status]
+      properties:
+        download:
+          $ref: "#/components/schemas/Download"
+        operationId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+    RetryTaskRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion]
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+          minimum: 1
+    CancelTaskRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion]
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+          minimum: 1
+    RSSEntry:
+      type: object
+      additionalProperties: false
+      required: [id, subscriptionId, title, status, classification, duplicateCount, downloadUriAvailable, adjudicationState, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        subscriptionId:
+          type: string
+          format: uuid
+        releaseCandidateId:
+          type: string
+          format: uuid
+        acquisitionId:
+          type: string
+          format: uuid
+        acquisitionProgress:
+          $ref: "#/components/schemas/AcquisitionProgress"
+        downloadId:
+          type: string
+          format: uuid
+        title:
+          type: string
+        status:
+          type: string
+          enum: [discovered, enqueueing, enqueued, enqueue_failed]
+        classification:
+          type: string
+          enum: [pending, enqueued, enqueue_failed, duplicate, rejected, unconsumable]
+        duplicateCount:
+          type: integer
+          format: int32
+          minimum: 0
+        downloadUriAvailable:
+          type: boolean
+        publishedAt:
+          type: string
+          format: date-time
+        sourceSeason:
+          type: integer
+          format: int32
+          minimum: 1
+        sourceEpisode:
+          type: integer
+          format: int32
+          minimum: 1
+        coordinateSource:
+          type: string
+          enum: [deterministic, agent_auto, agent_accepted, user]
+        agentResolutionId:
+          type: string
+          format: uuid
+        adjudicationBatchId:
+          type: string
+          format: uuid
+        adjudicationState:
+          type: string
+          enum: [not_required, pending, selected, ignored]
+        adjudicationSource:
+          type: string
+          enum: [agent_auto, agent_accepted]
+        adjudicationResolutionId:
+          type: string
+          format: uuid
+        relatedEntryId:
+          type: string
+          format: uuid
+        rejectReason:
+          type: string
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        importedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    RSSEntryPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RSSEntry"
+        nextCursor:
+          type: string
+          format: uuid
+    TMDbSeriesSearchResult:
+      type: object
+      additionalProperties: false
+      required: [tmdbSeriesId, name]
+      properties:
+        tmdbSeriesId:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+        originalName:
+          type: string
+        firstAirDate:
+          type: string
+          format: date
+        overview:
+          type: string
+    TMDbMovieSearchResult:
+      type: object
+      additionalProperties: false
+      required: [tmdbMovieId, title]
+      properties:
+        tmdbMovieId:
+          type: integer
+          format: int64
+          minimum: 1
+        title:
+          type: string
+        originalTitle:
+          type: string
+        releaseDate:
+          type: string
+          format: date
+        releaseYear:
+          type: integer
+          format: int32
+          minimum: 1870
+          maximum: 9999
+        overview:
+          type: string
+    TMDbMovieSearchResultPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TMDbMovieSearchResult"
+    TMDbSeriesSearchResultPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TMDbSeriesSearchResult"
+    TMDbSeriesCatalog:
+      type: object
+      additionalProperties: false
+      required: [seriesId, tmdbSeriesId, title, synced, seasons]
+      properties:
+        seriesId:
+          type: string
+          format: uuid
+        tmdbSeriesId:
+          type: integer
+          format: int64
+          minimum: 1
+        title:
+          type: string
+        originalTitle:
+          type: string
+        synced:
+          type: boolean
+        lastSyncedAt:
+          type: string
+          format: date-time
+        seasons:
+          type: array
+          items:
+            $ref: "#/components/schemas/TMDbSeasonCatalog"
+    TMDbSeasonCatalog:
+      type: object
+      additionalProperties: false
+      required: [seasonNumber, name, episodeCount, special, episodes]
+      properties:
+        seasonNumber:
+          type: integer
+          format: int32
+          minimum: 0
+        name:
+          type: string
+        episodeCount:
+          type: integer
+          format: int32
+          minimum: 0
+        special:
+          type: boolean
+        episodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/TMDbEpisodeCatalog"
+    TMDbEpisodeCatalog:
+      type: object
+      additionalProperties: false
+      required: [episodeNumber, title]
+      properties:
+        episodeNumber:
+          type: integer
+          format: int32
+          minimum: 1
+        title:
+          type: string
+        airDate:
+          type: string
+          format: date
+    Operation:
+      type: object
+      additionalProperties: false
+      required: [id, kind, status, idempotencyKey, maxAttempts, attemptCount, attempts, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+        resourceType:
+          type: string
+        resourceId:
+          type: string
+          format: uuid
+        resourceHref:
+          type: string
+          pattern: "^/"
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+        idempotencyKey:
+          type: string
+        maxAttempts:
+          type: integer
+          format: int32
+          minimum: 1
+        attemptCount:
+          type: integer
+          format: int32
+          minimum: 0
+        heartbeatAt:
+          type: string
+          format: date-time
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        attempts:
+          type: array
+          items:
+            $ref: "#/components/schemas/OperationAttempt"
+    OperationAttempt:
+      type: object
+      additionalProperties: false
+      required: [id, attempt, status, startedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        attempt:
+          type: integer
+          format: int32
+          minimum: 1
+        status:
+          type: string
+          enum: [running, succeeded, failed, cancelled]
+        workerId:
+          type: string
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        heartbeatAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+    OperationPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Operation"
+        nextCursor:
+          type: string
+          format: uuid
+    EventRecord:
+      type: object
+      additionalProperties: false
+      required: [id, topic, occurredAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        topic:
+          type: string
+        resourceType:
+          type: string
+        resourceId:
+          type: string
+          format: uuid
+        operationId:
+          type: string
+          format: uuid
+        data:
+          type: object
+          additionalProperties: true
+        occurredAt:
+          type: string
+          format: date-time
+    EventPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/EventRecord"
+        nextCursor:
+          type: string
+          format: uuid
+    ConnectivityTestRequest:
+      type: object
+      additionalProperties: false
+      required: [target]
+      properties:
+        target:
+          type: string
+          enum: [qbittorrent, tmdb, emby, media_tools, network_proxy, agent]
+        qBittorrent:
+          $ref: "#/components/schemas/QBittorrentConfigurationUpdate"
+        emby:
+          $ref: "#/components/schemas/EmbyConfigurationUpdate"
+        tmdb:
+          $ref: "#/components/schemas/TMDbConfigurationUpdate"
+        networkProxy:
+          $ref: "#/components/schemas/NetworkProxyConfiguration"
+        agent:
+          $ref: "#/components/schemas/AgentConnectivityTestConfiguration"
+    ConnectivityTestResult:
+      type: object
+      additionalProperties: false
+      required: [target, success, checkedAt]
+      properties:
+        target:
+          type: string
+          enum: [qbittorrent, tmdb, emby, media_tools, network_proxy, agent]
+        success:
+          type: boolean
+        code:
+          type: string
+        message:
+          type: string
+        checkedAt:
+          type: string
+          format: date-time
+    DashboardAgentResolutionStats:
+      type: object
+      additionalProperties: false
+      required: [total, reviewPending, applied, autoApplied, accepted, rejected, failed, inputTokens, outputTokens, averageLatencyMilliseconds]
+      properties:
+        total: { type: integer, format: int32, minimum: 0 }
+        reviewPending: { type: integer, format: int32, minimum: 0 }
+        applied: { type: integer, format: int32, minimum: 0 }
+        autoApplied: { type: integer, format: int32, minimum: 0 }
+        accepted: { type: integer, format: int32, minimum: 0 }
+        rejected: { type: integer, format: int32, minimum: 0 }
+        failed: { type: integer, format: int32, minimum: 0 }
+        inputTokens: { type: integer, format: int64, minimum: 0 }
+        outputTokens: { type: integer, format: int64, minimum: 0 }
+        averageLatencyMilliseconds: { type: integer, format: int64, minimum: 0 }
+    DashboardStatusCounts:
+      type: object
+      additionalProperties: false
+      required: [downloading, processing, awaitingReview, importing, attention, failed, cleanupFailed, mappingPending]
+      properties:
+        downloading:
+          type: integer
+          format: int32
+          minimum: 0
+        processing:
+          type: integer
+          format: int32
+          minimum: 0
+        awaitingReview:
+          type: integer
+          format: int32
+          minimum: 0
+        importing:
+          type: integer
+          format: int32
+          minimum: 0
+        attention:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Distinct acquisitions that currently require user action.
+        failed:
+          type: integer
+          format: int32
+          minimum: 0
+        cleanupFailed:
+          type: integer
+          format: int32
+          minimum: 0
+        mappingPending:
+          type: integer
+          format: int32
+          minimum: 0
+    DashboardRecentOperation:
+      type: object
+      additionalProperties: false
+      required: [id, kind, status, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+        resourceType:
+          type: string
+        resourceId:
+          type: string
+          format: uuid
+        resourceHref:
+          type: string
+          pattern: "^/"
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+    DashboardAttentionItem:
+      type: object
+      additionalProperties: false
+      required: [acquisition, reason]
+      properties:
+        acquisition:
+          $ref: "#/components/schemas/Acquisition"
+        reason:
+          type: string
+          enum: [mapping_required, workflow_failed, cleanup_failed, emby_refresh_failed, review_rejected]
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+    DashboardRecentImport:
+      type: object
+      additionalProperties: false
+      required: [taskId, acquisitionId, mediaType, completedAt]
+      properties:
+        taskId:
+          type: string
+          format: uuid
+        acquisitionId:
+          type: string
+          format: uuid
+        mediaType:
+          $ref: "#/components/schemas/TaskMediaType"
+        seriesTitle:
+          type: string
+        movieTitle:
+          type: string
+        releaseYear:
+          type: integer
+          format: int32
+          minimum: 1870
+          maximum: 9999
+        seasonNumber:
+          type: integer
+          format: int32
+          minimum: 0
+        episodeNumber:
+          type: integer
+          format: int32
+          minimum: 1
+        destinationPath:
+          type: string
+        completedAt:
+          type: string
+          format: date-time
+    DashboardRecentScan:
+      type: object
+      additionalProperties: false
+      required: [id, operationId, status, libraryCount, itemCount, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        operationId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+        libraryCount:
+          type: integer
+          format: int32
+          minimum: 0
+        itemCount:
+          type: integer
+          format: int32
+          minimum: 0
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+    DashboardDependencyStatus:
+      type: object
+      additionalProperties: false
+      required: [configured]
+      properties:
+        configured:
+          type: boolean
+        lastTestSuccess:
+          type: boolean
+        lastTestCode:
+          type: string
+        lastTestMessage:
+          type: string
+        lastTestedAt:
+          type: string
+          format: date-time
+    DashboardLinks:
+      type: object
+      additionalProperties: false
+      required: [downloading, processing, awaitingReview, importing, failed, cleanupFailed, mappingPending]
+      properties:
+        downloading:
+          type: string
+          pattern: "^/"
+        processing:
+          type: string
+          pattern: "^/"
+        awaitingReview:
+          type: string
+          pattern: "^/"
+        importing:
+          type: string
+          pattern: "^/"
+        failed:
+          type: string
+          pattern: "^/"
+        cleanupFailed:
+          type: string
+          pattern: "^/"
+        mappingPending:
+          type: string
+          pattern: "^/"
+    SystemMetricsAvailability:
+      type: object
+      additionalProperties: false
+      required: [cpu, memory, network, diskIO, diskCapacity]
+      properties:
+        cpu:
+          type: boolean
+        memory:
+          type: boolean
+        network:
+          type: boolean
+        diskIO:
+          type: boolean
+        diskCapacity:
+          type: boolean
+    SystemMetricSample:
+      type: object
+      additionalProperties: false
+      required: [sampledAt]
+      properties:
+        sampledAt:
+          type: string
+          format: date-time
+        cpuUsedPercent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+        memoryUsedPercent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+        networkReceiveBytesPerSecond:
+          type: number
+          format: double
+          minimum: 0
+        networkSendBytesPerSecond:
+          type: number
+          format: double
+          minimum: 0
+        diskReadBytesPerSecond:
+          type: number
+          format: double
+          minimum: 0
+        diskWriteBytesPerSecond:
+          type: number
+          format: double
+          minimum: 0
+    SystemMemoryUsage:
+      type: object
+      additionalProperties: false
+      required: [usedBytes, totalBytes]
+      properties:
+        usedBytes:
+          type: integer
+          format: int64
+          minimum: 0
+        totalBytes:
+          type: integer
+          format: int64
+          minimum: 0
+    SystemDiskUsage:
+      type: object
+      additionalProperties: false
+      required: [path, usedBytes, totalBytes, usedPercent]
+      properties:
+        path:
+          type: string
+          minLength: 1
+        usedBytes:
+          type: integer
+          format: int64
+          minimum: 0
+        totalBytes:
+          type: integer
+          format: int64
+          minimum: 0
+        usedPercent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+    BackgroundRuntime:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [running, stopped, transitioning]
+    UpdateBackgroundRuntimeRequest:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [running, stopped]
+    SystemMetricsSnapshot:
+      type: object
+      additionalProperties: false
+      required: [sampledAt, sampleIntervalSeconds, historyWindowSeconds, availability, samples, disks]
+      properties:
+        sampledAt:
+          type: string
+          format: date-time
+        sampleIntervalSeconds:
+          type: integer
+          format: int32
+          minimum: 1
+        historyWindowSeconds:
+          type: integer
+          format: int32
+          minimum: 1
+        availability:
+          $ref: "#/components/schemas/SystemMetricsAvailability"
+        samples:
+          type: array
+          maxItems: 60
+          items:
+            $ref: "#/components/schemas/SystemMetricSample"
+        memory:
+          $ref: "#/components/schemas/SystemMemoryUsage"
+        disks:
+          type: array
+          items:
+            $ref: "#/components/schemas/SystemDiskUsage"
+    DashboardSummary:
+      type: object
+      additionalProperties: false
+      required: [counts, attentionItems, recentOperations, recentImports, recentScans, dependencies, agentResolutions, links]
+      properties:
+        counts:
+          $ref: "#/components/schemas/DashboardStatusCounts"
+        attentionItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardAttentionItem"
+        recentOperations:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardRecentOperation"
+        recentImports:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardRecentImport"
+        recentScans:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardRecentScan"
+        dependencies:
+          type: object
+          additionalProperties: false
+          required: [qBittorrent, tmdb, emby, mediaTools, networkProxy, agent]
+          properties:
+            qBittorrent:
+              $ref: "#/components/schemas/DashboardDependencyStatus"
+            tmdb:
+              $ref: "#/components/schemas/DashboardDependencyStatus"
+            emby:
+              $ref: "#/components/schemas/DashboardDependencyStatus"
+            mediaTools:
+              $ref: "#/components/schemas/DashboardDependencyStatus"
+            networkProxy:
+              $ref: "#/components/schemas/DashboardDependencyStatus"
+            agent:
+              $ref: "#/components/schemas/DashboardDependencyStatus"
+        agentResolutions:
+          $ref: "#/components/schemas/DashboardAgentResolutionStats"
+        links:
+          $ref: "#/components/schemas/DashboardLinks"

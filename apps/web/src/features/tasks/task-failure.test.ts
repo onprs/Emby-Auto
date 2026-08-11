@@ -1,0 +1,260 @@
+import { describe, expect, it } from 'vitest';
+
+import type { Acquisition, Task } from '@/api/generated/types.gen';
+import { acquisitionFailureInfo, sanitizeTechnicalDetails, taskFailureInfo } from '@/features/tasks/task-failure';
+
+function task(overrides: Partial<Task>): Task {
+  return {
+    id: '11111111-1111-1111-1111-111111111111',
+    acquisitionId: '22222222-2222-2222-2222-222222222222',
+    downloadId: '33333333-3333-3333-3333-333333333333',
+    mediaType: 'episode',
+    seriesTitle: '测试番剧',
+    sourceSeason: 1,
+    sourceEpisode: 1,
+    targetSeason: 1,
+    targetEpisode: 1,
+    state: 'failed',
+    videoState: 'failed',
+    subtitleState: 'ass_ready',
+    version: 2,
+    failureStage: 'video',
+    operations: [],
+    actions: { canRetry: true, canCancel: false, canReview: false, canImport: false },
+    createdAt: '2026-07-25T01:00:00Z',
+    updatedAt: '2026-07-25T02:00:00Z',
+    ...overrides,
+  };
+}
+
+function acquisition(overrides: Partial<Acquisition>): Acquisition {
+  return {
+    id: '44444444-4444-4444-4444-444444444444',
+    mediaType: 'episode',
+    seriesId: '55555555-5555-5555-5555-555555555555',
+    seriesTitle: '测试番剧',
+    sourceKind: 'rss',
+    tasks: [],
+    mapping: { selectedVideoCount: 0, mappedVideoCount: 0, complete: false },
+    aggregateStatus: 'failed',
+    currentStage: 'download',
+    overallProgress: 0.1,
+    stages: [
+      { key: 'source', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+      { key: 'download', status: 'failed', progress: 0, completedItems: 0, totalItems: 1 },
+      { key: 'mapping', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+      { key: 'transcode', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+      { key: 'subtitle', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+      { key: 'rename', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+      { key: 'organize', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+      { key: 'review', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+      { key: 'import', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+    ],
+    createdAt: '2026-07-25T01:00:00Z',
+    updatedAt: '2026-07-25T02:00:00Z',
+    ...overrides,
+  };
+}
+
+describe('taskFailureInfo', () => {
+  it('describes an unsupported source instead of exposing the FFmpeg exception', () => {
+    const info = taskFailureInfo(task({
+      errorCode: 'ffmpeg_transcode_failed',
+      errorMessage: 'C:\\media\\downloads\\show\\episode01.mkv: Invalid data found when processing input',
+    }));
+
+    expect(info?.summary).toBe('视频转码失败：源文件格式不受支持');
+    expect(info?.relatedResource).toContain('源视频');
+    expect(info?.canRetry).toBe(false);
+    expect(info?.recommendation).toContain('重新下载');
+    expect(info?.summary).not.toContain('ffmpeg_transcode_failed');
+  });
+
+  it('describes an unavailable Emby service and keeps recovery available', () => {
+    const info = taskFailureInfo(task({
+      failureStage: 'import',
+      errorCode: 'emby_refresh_failed',
+      errorMessage: 'dial tcp 127.0.0.1:8096: connect: connection refused',
+      operations: [{
+        id: '66666666-6666-6666-6666-666666666666',
+        kind: 'emby.import',
+        status: 'failed',
+        maxAttempts: 3,
+        attemptCount: 2,
+        errorCode: 'emby_refresh_failed',
+        errorMessage: 'connection refused',
+        updatedAt: '2026-07-25T02:00:00Z',
+      }],
+    }));
+
+    expect(info?.summary).toBe('入库失败：无法连接 Emby 服务');
+    expect(info?.canRetry).toBe(true);
+    expect(info?.retryKind).toBe('task');
+    expect(info?.recommendation).toContain('服务连接');
+    expect(info?.attemptLabel).toContain('2/3');
+  });
+
+  it.each([
+    ['The process cannot access the file because it is being used by another process', '清理失败：文件正在被其他进程占用', '关闭占用文件的程序'],
+    ['remove C:\\media\\staging\\episode01.mkv: Access is denied', '清理失败：没有文件删除权限', '检查目录权限'],
+  ])('maps cleanup failure %s', (message, summary, recommendation) => {
+    const info = taskFailureInfo(task({
+      state: 'imported',
+      videoState: 'video_ready',
+      errorCode: undefined,
+      errorMessage: undefined,
+      failureStage: undefined,
+      actions: { canRetry: false, canCancel: false, canReview: false, canImport: false },
+      cleanup: {
+        id: '77777777-7777-7777-7777-777777777777',
+        attempt: 3,
+        status: 'failed',
+        torrentRemoved: true,
+        stagedFilesRemoved: false,
+        errorCode: 'cleanup_delete_failed',
+        errorMessage: message,
+        createdAt: '2026-07-25T01:00:00Z',
+        updatedAt: '2026-07-25T03:00:00Z',
+      },
+    }));
+
+    expect(info?.summary).toBe(summary);
+    expect(info?.retryKind).toBe('cleanup');
+    expect(info?.canRetry).toBe(true);
+    expect(info?.attemptLabel).toContain('第 3 次');
+    expect(info?.recommendation).toContain(recommendation);
+  });
+
+  it.each([
+    ['subtitle_output_commit_failed', 'subtitle', '字幕处理失败：无法保存字幕结果', true],
+    ['source_video_path_invalid', 'video', '视频转码失败：源视频路径不安全', false],
+    ['library_path_invalid', 'import', '入库失败：媒体库路径不安全', false],
+  ] as const)('maps backend code %s without relying on an English exception', (errorCode, failureStage, summary, canRetry) => {
+    const info = taskFailureInfo(task({ errorCode, errorMessage: undefined, failureStage }));
+
+    expect(info?.summary).toBe(summary);
+    expect(info?.canRetry).toBe(canRetry);
+  });
+
+  it('guides configuration failures to settings without offering a pointless retry', () => {
+    const info = taskFailureInfo(task({ errorCode: 'configuration_unavailable', errorMessage: 'runtime configuration is unavailable' }));
+
+    expect(info?.summary).toBe('视频转码失败：媒体处理配置不可用');
+    expect(info?.canRetry).toBe(false);
+    expect(info?.retryKind).toBe('none');
+    expect(info?.recommendation).toContain('设置');
+  });
+
+  it('requires a new download when the source file is missing', () => {
+    const info = taskFailureInfo(task({ errorCode: 'source_video_probe_failed', errorMessage: 'open D:\\downloads\\episode01.mkv: The system cannot find the file specified' }));
+
+    expect(info?.summary).toBe('视频转码失败：源文件不存在');
+    expect(info?.canRetry).toBe(false);
+    expect(info?.recommendation).toContain('重新下载');
+  });
+
+  it('uses the fixed unknown-error copy and never puts raw internals in the summary', () => {
+    const info = taskFailureInfo(task({ errorCode: 'process_error', errorMessage: '{"stack":"panic at worker.go:20"}' }));
+
+    expect(info?.summary).toBe('视频转码失败：未能识别具体失败原因，请查看技术详情或运行日志。');
+    expect(info?.detail).toBe('未能识别具体失败原因，请查看技术详情或运行日志。');
+    expect(info?.summary).not.toContain('process_error');
+    expect(info?.summary).not.toContain('panic');
+  });
+});
+
+describe('acquisitionFailureInfo', () => {
+  it('shows an expired torrent in the main task list', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      downloadId: '88888888-8888-8888-8888-888888888888',
+      download: {
+        id: '88888888-8888-8888-8888-888888888888',
+        attempt: 1,
+        status: 'failed',
+        progress: 0,
+        failureStage: 'enqueue',
+        errorCode: 'qbittorrent_enqueue_failed',
+        errorMessage: 'torrent download returned HTTP 404 Not Found',
+        updatedAt: '2026-07-25T02:00:00Z',
+      },
+    }));
+
+    expect(info?.summary).toBe('下载失败：种子文件已失效');
+    expect(info?.canRetry).toBe(false);
+    expect(info?.recommendation).toContain('更换下载资源');
+  });
+
+  it('sends incomplete episode mapping to the mapping workflow instead of retrying', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      downloadId: '88888888-8888-8888-8888-888888888888',
+      download: {
+        id: '88888888-8888-8888-8888-888888888888',
+        attempt: 1,
+        status: 'failed',
+        progress: 1,
+        failureStage: 'materialize',
+        errorCode: 'episode_mapping_required',
+        updatedAt: '2026-07-25T02:00:00Z',
+      },
+    }));
+
+    expect(info).toBeNull();
+  });
+
+  it('labels post-download materialization failures as media preparation failures', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      downloadId: '88888888-8888-8888-8888-888888888888',
+      download: {
+        id: '88888888-8888-8888-8888-888888888888',
+        attempt: 1,
+        status: 'failed',
+        progress: 1,
+        failureStage: 'materialize',
+        errorCode: 'media_storage_unavailable',
+        updatedAt: '2026-07-25T02:00:00Z',
+      },
+    }));
+
+    expect(info?.summary).toBe('准备媒体处理失败：无法保存处理进度');
+    expect(info?.canRetry).toBe(true);
+    expect(info?.retryKind).toBe('download');
+    expect(info?.retryLabel).toBe('重试准备处理');
+  });
+
+  it('shows disk exhaustion as a recoverable download failure', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      downloadId: '88888888-8888-8888-8888-888888888888',
+      download: {
+        id: '88888888-8888-8888-8888-888888888888',
+        attempt: 2,
+        status: 'failed',
+        progress: 0.42,
+        failureStage: 'sync',
+        errorCode: 'download_storage_unavailable',
+        errorMessage: 'write C:\\media\\downloads\\episode01.mkv: no space left on device',
+        updatedAt: '2026-07-25T02:00:00Z',
+      },
+    }));
+
+    expect(info?.summary).toBe('下载失败：磁盘空间不足');
+    expect(info?.canRetry).toBe(true);
+    expect(info?.retryKind).toBe('download');
+    expect(info?.attemptLabel).toContain('第 2 次');
+  });
+});
+
+describe('sanitizeTechnicalDetails', () => {
+  it('removes credentials, auth headers, cookies, and absolute server paths', () => {
+    const raw = 'Authorization: Bearer abc.def.ghi password=hunter2 Cookie: sid=secret {"apiKey":"json-secret"} C:\\media\\downloads\\show\\episode01.mkv /srv/emby/work/subtitle.ass';
+    const sanitized = sanitizeTechnicalDetails(raw);
+
+    expect(sanitized).not.toContain('abc.def.ghi');
+    expect(sanitized).not.toContain('hunter2');
+    expect(sanitized).not.toContain('sid=secret');
+    expect(sanitized).not.toContain('json-secret');
+    expect(sanitized).not.toContain('C:\\media\\downloads\\show');
+    expect(sanitized).not.toContain('/srv/emby/work');
+    expect(sanitized).toContain('episode01.mkv');
+    expect(sanitized).toContain('subtitle.ass');
+  });
+});
