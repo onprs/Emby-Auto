@@ -80,6 +80,12 @@ sqlc 查询发生变化时，应更新 `backend/db/query` 中的源查询并重�
 
 完整 E2E 必须使用隔离测试环境。自动测试不得连接生产 qBittorrent、Emby、TMDb 账户或正式媒体目录。外部服务验收所需凭据只能通过进程环境注入。
 
+## 分支与提交规范
+
+- 分支命名：`feat/<描述>`、`fix/<描述>`、`docs/<描述>`、`chore/<描述>`、`refactor/<描述>`、`test/<描述>`。
+- 提交消息遵循 Conventional Commits（`feat:`、`fix:`、`docs:`、`chore:`、`test:`、`refactor:`），描述具体、与改动一致。
+- 维护者在仓库内创建短生命周期分支；外部贡献者 fork 后在自己的 fork 中创建分支。
+
 ## Pull Request 要求
 
 Pull Request 应包含：
@@ -92,6 +98,13 @@ Pull Request 应包含：
 - 需要部署者执行的升级步骤。
 
 提交前确认工作树不包含无关生成漂移、依赖锁文件变化或格式化噪声。
+
+## 合并规则
+
+- 所有 PR 必须通过 CI 全部状态检查：`verify`、`container-build`、`direct-build (amd64)`、`direct-build (arm64)`。
+- 必须由至少 1 名维护者 review 并 approve，对话全部解决，且分支基于最新 `main`。
+- 只允许 squash merge，保持 `main` 线性历史；禁止直接推送 `main`。
+- 版本发布使用 `v0.x.y` 标签，`v*` 标签触发 CI 构建公开发布包并附加到 GitHub Release；发布节奏与内容由维护者决定。
 
 ## 仓库数据边界
 
