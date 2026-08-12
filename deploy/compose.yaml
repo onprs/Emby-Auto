@@ -1,0 +1,99 @@
+name: emby-auto
+
+x-backend-environment: &backend-environment
+  API_ADDRESS: 0.0.0.0:8080
+  BOOTSTRAP_CONFIG_PATH: /data/bootstrap.json
+  DATABASE_CONNECT_TIMEOUT: 5s
+  SHUTDOWN_TIMEOUT: 30s
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  SESSION_TTL: ${SESSION_TTL:-168h}
+  SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+  RIVER_GENERAL_WORKERS: ${RIVER_GENERAL_WORKERS:-10}
+  RIVER_TRANSCODE_WORKERS: ${RIVER_TRANSCODE_WORKERS:-1}
+  OPERATION_HEARTBEAT_INTERVAL: ${OPERATION_HEARTBEAT_INTERVAL:-10s}
+  DOWNLOAD_SYNC_INTERVAL: ${DOWNLOAD_SYNC_INTERVAL:-15s}
+  RSS_SCHEDULE_CONCURRENCY: ${RSS_SCHEDULE_CONCURRENCY:-4}
+  EMBY_MEDIA_OWNER_UID: ${APP_UID:-10001}
+
+x-backend-volumes: &backend-volumes
+  - app-data:/data
+  - ${DOWNLOAD_ROOT:-/srv/emby-auto/downloads}:${DOWNLOAD_ROOT:-/srv/emby-auto/downloads}
+  - ${WORK_ROOT:-/srv/emby-auto/work}:${WORK_ROOT:-/srv/emby-auto/work}
+  - ${STAGING_ROOT:-/srv/emby-auto/staging}:${STAGING_ROOT:-/srv/emby-auto/staging}
+  - ${ANIME_LIBRARY_ROOT:-/srv/emby-auto/media/anime}:${ANIME_LIBRARY_ROOT:-/srv/emby-auto/media/anime}
+  - ${MOVIE_LIBRARY_ROOT:-/srv/emby-auto/media/movies}:${MOVIE_LIBRARY_ROOT:-/srv/emby-auto/media/movies}
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-emby_auto}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 deploy/.env 中设置 POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER:-emby_auto}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    image: emby-auto-backend:${EMBY_AUTO_IMAGE_TAG:-local}
+    build:
+      context: ..
+      dockerfile: deploy/docker/backend.Dockerfile
+      args:
+        APP_UID: ${APP_UID:-10001}
+        APP_GID: ${APP_GID:-10001}
+    command: ["emby-auto-api"]
+    environment: *backend-environment
+    volumes: *backend-volumes
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/api/v1/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  worker:
+    image: emby-auto-backend:${EMBY_AUTO_IMAGE_TAG:-local}
+    command: ["emby-auto-worker"]
+    environment: *backend-environment
+    volumes: *backend-volumes
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    image: emby-auto-web:${EMBY_AUTO_IMAGE_TAG:-local}
+    build:
+      context: ..
+      dockerfile: deploy/docker/web.Dockerfile
+    ports:
+      - ${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:80
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  app-data:
+  postgres-data:

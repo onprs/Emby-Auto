@@ -1,0 +1,63 @@
+name: 缺陷报告
+description: 报告可复现的功能或行为错误
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 请先移除凭据、真实媒体名称、订阅地址、主机信息和文件路径。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 提交哈希、发布版本或镜像标签
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: 部署方式
+      options:
+        - Docker Compose
+        - 本地开发环境
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 说明实际行为与影响
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 脱敏诊断信息
+      description: 可附相关错误码和最小日志；不要粘贴密钥、Cookie、订阅 URL 或真实路径。
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issue，未发现相同问题。
+          required: true
+        - label: 我已确认内容中不含凭据和私有数据。
+          required: true

@@ -1,0 +1,37 @@
+[Unit]
+Description=Emby Auto Worker
+Documentation=file:/opt/emby-auto/current/DEPLOYMENT.md file:/opt/emby-auto/current/DEPLOYMENT.en.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=emby
+Group=emby
+EnvironmentFile=/etc/emby-auto/runtime.env
+WorkingDirectory=/var/lib/emby-auto
+StateDirectory=emby-auto
+StateDirectoryMode=0700
+ExecStart=/opt/emby-auto/current/bin/emby-auto-worker
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=120s
+UMask=0027
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+ProtectSystem=full
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
