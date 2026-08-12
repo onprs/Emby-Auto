@@ -80,6 +80,12 @@ Expected values in tests must come from independent, concrete business cases rat
 
 Run full E2E tests only in an isolated test environment. Automated tests must not connect to production qBittorrent, Emby, or TMDb accounts or production media directories. Inject external-service acceptance credentials through the process environment only.
 
+## Branch and Commit Conventions
+
+- Branch names: `feat/<description>`, `fix/<description>`, `docs/<description>`, `chore/<description>`, `refactor/<description>`, `test/<description>`.
+- Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:`) and stay specific and consistent with the change.
+- Maintainers create short-lived branches in the repository; external contributors create branches in their own fork.
+
 ## Pull Request Requirements
 
 A pull request must document:
@@ -92,6 +98,13 @@ A pull request must document:
 - Any upgrade steps required from deployers.
 
 Before submission, confirm that the worktree contains no unrelated generated drift, lockfile changes, or formatting noise.
+
+## Merge Rules
+
+- Every PR must pass all CI status checks: `verify`, `container-build`, `direct-build (amd64)`, and `direct-build (arm64)`.
+- At least one maintainer review and approval is required, all conversations must be resolved, and the branch must be based on the latest `main`.
+- Only squash merges are allowed to keep `main` linear; direct pushes to `main` are forbidden.
+- Releases use `v0.x.y` tags; a `v*` tag triggers CI to build the public release bundles and attach them to the GitHub Release. Release cadence and content are decided by maintainers.
 
 ## Repository Data Boundary
 

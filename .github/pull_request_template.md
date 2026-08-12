@@ -2,6 +2,8 @@
 
 <!-- 说明变更目的、关联 Issue 和用户可见结果。 / Describe the purpose, linked issue, and user-visible outcome. -->
 
+> 分支命名与提交规范见 [CONTRIBUTING.md](CONTRIBUTING.md)。/ See [CONTRIBUTING.md](CONTRIBUTING.md) for branch and commit conventions.
+
 ## 兼容性与风险 / Compatibility and Risk
 
 <!-- 说明 API、数据库迁移、任务状态、媒体文件、部署或回滚影响。无影响时明确填写“无 / None”。 -->

@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: |
+            backend/go.sum
+            tools/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Compose release images
+        run: npm run deploy:build
+
+      - name: Validate Compose release
+        run: npm run deploy:check-release
+
+      - name: Build direct release (amd64)
+        env:
+          SKIP_NPM_CI: '1'
+          TARGET_GOARCH: amd64
+        run: |
+          bash scripts/deploy/build-direct-release.sh runtime/release/emby-auto-direct-amd64
+          DIRECT_RELEASE_DIR=runtime/release/emby-auto-direct-amd64 bash scripts/deploy/check-direct.sh release
+
+      - name: Build direct release (arm64)
+        env:
+          SKIP_NPM_CI: '1'
+          TARGET_GOARCH: arm64
+        run: |
+          bash scripts/deploy/build-direct-release.sh runtime/release/emby-auto-direct-arm64
+          DIRECT_RELEASE_DIR=runtime/release/emby-auto-direct-arm64 bash scripts/deploy/check-direct.sh release
+
+      - name: Assemble Compose release bundle
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          bundle_dir="runtime/release/compose"
+          mkdir -p "${bundle_dir}"
+          cp deploy/compose.yaml deploy/.env.example LICENSE "${bundle_dir}/"
+          cp -r deploy/docker deploy/nginx "${bundle_dir}/"
+          cp docs/deployment.md "${bundle_dir}/DEPLOYMENT.md"
+          cp docs/deployment.en.md "${bundle_dir}/DEPLOYMENT.en.md"
+          tar -C "${bundle_dir}" -czf "runtime/release/emby-auto-compose-${tag}.tar.gz" .
+          echo "bundle=emby-auto-compose-${tag}.tar.gz" >> "${GITHUB_ENV}"
+
+      - name: Generate release checksums
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          cd runtime/release
+          sha256sum "emby-auto-compose-${tag}.tar.gz" \
+            emby-auto-direct-amd64-linux-amd64.tar.gz \
+            emby-auto-direct-arm64-linux-arm64.tar.gz > SHA256SUMS
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          cd runtime/release
+          gh release create "${tag}" \
+            "emby-auto-compose-${tag}.tar.gz" \
+            emby-auto-direct-amd64-linux-amd64.tar.gz \
+            emby-auto-direct-arm64-linux-arm64.tar.gz \
+            SHA256SUMS \
+            --latest --verify-tag --generate-notes
