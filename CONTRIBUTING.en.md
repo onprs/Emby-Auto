@@ -86,6 +86,16 @@ Run full E2E tests only in an isolated test environment. Automated tests must no
 - Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:`) and stay specific and consistent with the change.
 - Maintainers create short-lived branches in the repository; external contributors create branches in their own fork.
 
+## Parallel Development
+
+- Keep branches short-lived: one PR solves one focused problem and gets merged promptly; avoid long-lived placeholders or unrelated churn.
+- Search Issues and existing PRs before starting, and announce what you are working on to avoid overlapping changes; parallel changes touching the same module or contract should be aligned via an Issue first.
+- When PRs depend on each other, mention the dependency (PR/Issue numbers) in the description and merge the dependency first; never smuggle unmerged dependencies into another PR.
+- Before merging, sync the branch to the latest `main` (via Update branch or a local rebase) and re-trigger CI; merge only when the branch is up to date and all checks pass.
+- Resolve conflicts against the latest `main` and re-run the relevant checks; when a conflict involves someone else's change, confirm the intended semantics with the author.
+- Releases do not freeze development: a `v*` tag can be created from `main` at any time, in parallel with regular merges.
+- Remote branches are deleted automatically after merge; clean up local branches accordingly.
+
 ## Pull Request Requirements
 
 A pull request must document:
