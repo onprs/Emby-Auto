@@ -180,6 +180,8 @@ test.describe('application shell', () => {
       includeKeywords: [],
       excludeKeywords: [],
       enabled: true,
+      includeKeywords: [],
+      excludeKeywords: [],
       autoEpisodeMapping: false,
       autoReview: false,
       cleanupSourceOnCompletion: false,
