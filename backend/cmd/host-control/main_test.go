@@ -104,24 +104,42 @@ func TestExecuteRequestRejectsInvalidWorkerStatus(t *testing.T) {
 }
 
 // sampleNetDev 模拟宿主的 /proc/net/dev：物理网卡（eth0、ens18）应计入，
-// loopback（lo）与虚拟接口（docker0、veth*、br-*、tun0）应排除。
+// loopback（lo）与逻辑接口（docker0、veth*、br0、br-*、tun0、bond0、wg0、
+// VLAN 子接口 eth0.100）应排除，避免同一批流量被重复计数。
 const sampleNetDev = `Inter-|   Receive                                                |  Transmit
  face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
     lo:    1000      10    0    0    0     0          0         0     2000      10    0    0    0     0       0          0
   eth0:  100000   10000    0    0    0     0          0         0  200000   10000    0    0    0     0       0          0
  docker0:    500      50    0    0    0     0          0         0     600      50    0    0    0     0       0          0
 vethAbc:    400      40    0    0    0     0          0         0     500      40    0    0    0     0       0          0
+    br0:  300000   30000    0    0    0     0          0         0  400000   30000    0    0    0     0       0          0
  br-123:    300      30    0    0    0     0          0         0     400      30    0    0    0     0       0          0
   tun0:     200      20    0    0    0     0          0         0     300      20    0    0    0     0       0          0
+ bond0: 5000000  500000    0    0    0     0          0         0 6000000  500000    0    0    0     0       0          0
+   wg0:  700000   70000    0    0    0     0          0         0  800000   70000    0    0    0     0       0          0
+eth0.100: 90000   9000    0    0    0     0          0         0  100000   9000    0    0    0     0       0          0
  ens18: 2000000  200000    0    0    0     0          0         0 4000000  200000    0    0    0     0       0          0
 `
+
+// fixtureSysfs 在临时目录创建模拟 sysfs：只有 eth0 与 ens18 是真实设备背板的
+// 物理网卡（有 device 条目），其余接口均为逻辑接口。
+func fixtureSysfs(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, name := range []string{"eth0", "ens18"} {
+		if err := os.MkdirAll(filepath.Join(root, "class", "net", name, "device"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
 
 func TestReadHostNetworkCountersSumsPhysicalInterfacesOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "net-dev")
 	if err := os.WriteFile(path, []byte(sampleNetDev), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	received, sent, err := readHostNetworkCounters(path)
+	received, sent, err := readHostNetworkCounters(path, fixtureSysfs(t))
 	if err != nil {
 		t.Fatalf("readHostNetworkCounters() error = %v", err)
 	}
@@ -132,7 +150,7 @@ func TestReadHostNetworkCountersSumsPhysicalInterfacesOnly(t *testing.T) {
 }
 
 func TestReadHostNetworkCountersRejectsMissingFile(t *testing.T) {
-	if _, _, err := readHostNetworkCounters(filepath.Join(t.TempDir(), "missing")); err == nil {
+	if _, _, err := readHostNetworkCounters(filepath.Join(t.TempDir(), "missing"), fixtureSysfs(t)); err == nil {
 		t.Fatal("readHostNetworkCounters() error = nil")
 	}
 }
@@ -146,12 +164,30 @@ func TestReadHostNetworkCountersAllInterfacesExcluded(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	received, sent, err := readHostNetworkCounters(path)
+	received, sent, err := readHostNetworkCounters(path, fixtureSysfs(t))
 	if err != nil {
 		t.Fatalf("readHostNetworkCounters() error = %v", err)
 	}
 	if received != 0 || sent != 0 {
 		t.Fatalf("counters = %d/%d, want 0/0", received, sent)
+	}
+}
+
+func TestReadHostNetworkCountersExcludesLogicalInterfacesSharingPhysicalTraffic(t *testing.T) {
+	// bridge(bond0 成员场景由 eth0 计入)、bond0、VLAN 子接口 eth0.100 与 wg0
+	// 都与底层物理网卡累计同一批流量，必须排除；只统计有 sysfs device 的
+	// eth0/ens18，避免 Dashboard 显示约两倍流量。
+	sysfsRoot := fixtureSysfs(t)
+	path := filepath.Join(t.TempDir(), "net-dev")
+	if err := os.WriteFile(path, []byte(sampleNetDev), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	received, sent, err := readHostNetworkCounters(path, sysfsRoot)
+	if err != nil {
+		t.Fatalf("readHostNetworkCounters() error = %v", err)
+	}
+	if received != 2_100_000 || sent != 4_200_000 {
+		t.Fatalf("counters = %d/%d, want 2100000/4200000", received, sent)
 	}
 }
 

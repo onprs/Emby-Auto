@@ -29,6 +29,7 @@ const (
 	defaultSocketPath        = "/run/emby-auto-host/control.sock"
 	defaultRuntimeHelperPath = "/usr/local/libexec/emby-auto-worker-runtime"
 	hostNetworkDevPath       = "/proc/net/dev"
+	sysfsNetRoot             = "/sys"
 	maxMessageBytes          = 16 << 10
 	requestTimeout           = 2 * time.Minute
 )
@@ -204,7 +205,7 @@ func executeRequest(ctx context.Context, runtimeHelperPath string, request contr
 		return controlResponse{UID: &uid}
 	}
 	if request.Command == "host-network-counters" {
-		received, sent, err := readHostNetworkCounters(hostNetworkDevPath)
+		received, sent, err := readHostNetworkCounters(hostNetworkDevPath, sysfsNetRoot)
 		if err != nil {
 			return controlResponse{Error: err.Error()}
 		}
@@ -274,18 +275,22 @@ func validateRequest(request controlRequest) error {
 	return errors.New("command must be worker-status, worker-start, worker-stop, media-owner, or host-network-counters")
 }
 
-// virtualInterfacePrefixes 是 Linux 上不承载物理流量的常见虚拟接口前缀：
-// Docker/libvirt 网桥与 veth、VPN 隧道、overlay 与 dummy 设备。宿主网络速度
-// 只统计物理网卡，避免容器内部流量被重复计入或干扰判断。
-var virtualInterfacePrefixes = []string{
-	"docker", "veth", "br-", "virbr", "vnet",
-	"tun", "tap", "sit", "ip6tnl", "gretap", "erspan", "vxlan", "dummy",
+// deviceBackedInterface 判断接口是否为真实设备背板的物理网卡：
+// 内核 sysfs 只给 PCI/USB/virtio 等真实设备背板的网卡提供
+// /sys/class/net/<name>/device 条目；bridge、bond、VLAN 子接口、WireGuard、
+// veth、tun/tap、dummy 与 loopback 等逻辑接口都没有。这些逻辑接口与底层物理
+// 网卡同时累计同一批流量，若一起求和会把宿主网络速度重复计为约两倍，
+// 因此只统计有 device 条目的物理接口。
+func deviceBackedInterface(sysfsRoot, name string) bool {
+	info, err := os.Stat(filepath.Join(sysfsRoot, "class", "net", name, "device"))
+	return err == nil && info.IsDir()
 }
 
-// readHostNetworkCounters 解析宿主 /proc/net/dev，返回排除 loopback 与虚拟接口后
-// 的接收/发送字节计数。格式与内核 procfs 一致：接口行以 "name:" 开头，随后是
-// 接收与发送两组以空格分隔的计数器，rx 为第 1 列、tx 为第 9 列。
-func readHostNetworkCounters(path string) (received, sent uint64, err error) {
+// readHostNetworkCounters 解析宿主 /proc/net/dev，返回物理网卡（由 sysfs
+// device 条目识别）的接收/发送字节计数。格式与内核 procfs 一致：接口行以
+// "name:" 开头，随后是接收与发送两组以空格分隔的计数器，rx 为第 1 列、
+// tx 为第 9 列。
+func readHostNetworkCounters(path, sysfsRoot string) (received, sent uint64, err error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return 0, 0, fmt.Errorf("read host network counters: %w", err)
@@ -295,14 +300,13 @@ func readHostNetworkCounters(path string) (received, sent uint64, err error) {
 		return 0, 0, fmt.Errorf("host network counters file %s has no interface rows", path)
 	}
 
-	loopbacks := hostLoopbackInterfaceNames()
 	for _, line := range lines[2:] {
 		separator := strings.LastIndex(line, ":")
 		if separator == -1 {
 			continue
 		}
 		name := strings.ToLower(strings.TrimSpace(line[:separator]))
-		if name == "" || isExcludedHostInterface(name, loopbacks) {
+		if name == "" || !deviceBackedInterface(sysfsRoot, name) {
 			continue
 		}
 		fields := strings.Fields(line[separator+1:])
@@ -321,34 +325,6 @@ func readHostNetworkCounters(path string) (received, sent uint64, err error) {
 		sent += tx
 	}
 	return received, sent, nil
-}
-
-func isExcludedHostInterface(name string, loopbacks map[string]struct{}) bool {
-	if _, ok := loopbacks[name]; ok {
-		return true
-	}
-	for _, prefix := range virtualInterfacePrefixes {
-		if strings.HasPrefix(name, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-// hostLoopbackInterfaceNames 收集宿主 loopback 接口名：
-// 以 "lo" 兜底，再按 net.Interfaces 的 loopback 标志补充（如 "lo:0" 别名）。
-func hostLoopbackInterfaceNames() map[string]struct{} {
-	loopbacks := map[string]struct{}{"lo": {}}
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return loopbacks
-	}
-	for _, networkInterface := range interfaces {
-		if networkInterface.Flags&net.FlagLoopback != 0 {
-			loopbacks[strings.ToLower(networkInterface.Name)] = struct{}{}
-		}
-	}
-	return loopbacks
 }
 
 func resolveMediaOwnerUID(lookup func(string) (*user.User, error)) (uint32, error) {
