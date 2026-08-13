@@ -27,9 +27,13 @@ test.describe('application shell', () => {
     const networkCard = resources.getByLabel('网络速度图表');
     const diskCard = resources.getByLabel('磁盘', { exact: true });
     await expect(networkCard).toContainText('4.0 MiB/s');
-    await expect(diskCard).toContainText('sda1');
-    await expect(diskCard).toContainText('/data/video/video1');
+    await expect(diskCard).toContainText('nvme0n1');
+    await expect(diskCard).toContainText('sda');
+    await expect(diskCard).not.toContainText('/data/video/video1');
+    await expect(diskCard).not.toContainText('不同颜色代表不同磁盘设备');
+    await expect(diskCard).not.toContainText('容量与 I/O 实时负载');
     await expect(resources.getByLabel('磁盘资源图表')).toContainText('读取 8.0 MiB/s');
+    await expect(resources.getByLabel('磁盘资源图表')).toContainText('写入 4.0 MiB/s');
     if (!mobile) {
       const [networkBox, diskBox] = await Promise.all([networkCard.boundingBox(), diskCard.boundingBox()]);
       expect(networkBox).not.toBeNull();

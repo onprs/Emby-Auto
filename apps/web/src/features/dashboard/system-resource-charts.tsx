@@ -35,7 +35,7 @@ type ChartPoint = {
 
 const percentDomain: [number, number] = [0, 100];
 
-// 磁盘容量条与图标按顺序从色板取色，同一磁盘固定同一颜色，图例见磁盘容量区说明。
+// 磁盘容量条与设备标记按顺序从色板取色。
 const DISK_COLORS = ['#7c3aed', '#0ea5e9', '#f59e0b', '#10b981', '#f43f5e', '#0284c7'];
 
 export function SystemResourceCharts({ metrics, pending, error, onRetry }: SystemResourceChartsProps) {
@@ -124,12 +124,9 @@ export function SystemResourceCharts({ metrics, pending, error, onRetry }: Syste
           aria-label="磁盘"
         >
           <CardHeader>
-            <div className="flex min-w-0 items-start justify-between gap-4">
-              <div className="min-w-0">
-                <CardTitle>磁盘</CardTitle>
-                <p className="mt-1 text-xs text-zinc-500">容量与 I/O 实时负载</p>
-              </div>
-              <HardDrive aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-zinc-400" />
+            <div className="flex min-w-0 items-center justify-between gap-4">
+              <CardTitle>磁盘</CardTitle>
+              <HardDrive aria-hidden="true" className="size-5 shrink-0 text-zinc-400" />
             </div>
           </CardHeader>
           <CardContent>
@@ -151,16 +148,13 @@ export function SystemResourceCharts({ metrics, pending, error, onRetry }: Syste
               />
             </div>
             <div className="mt-4 border-t border-zinc-100 pt-4" aria-label="磁盘容量">
-              <div className="flex flex-col gap-1 xl:flex-row xl:items-baseline xl:justify-between xl:gap-3">
-                <p className="text-sm font-medium text-zinc-700">磁盘容量</p>
-                <p className="text-xs text-zinc-500">不同颜色代表不同磁盘设备</p>
-              </div>
+              <p className="text-sm font-medium text-zinc-700">磁盘容量</p>
               {metrics.disks.length === 0 ? (
                 <p className="mt-2 text-xs text-zinc-500">磁盘容量不可用</p>
               ) : (
                 <ul className="mt-3 grid max-h-56 gap-y-3 overflow-y-auto overscroll-contain pr-1">
                   {metrics.disks.map((disk, index) => (
-                    <DiskUsageRow key={disk.device} disk={disk} color={diskColor(index)} />
+                    <DiskUsageRow key={`${disk.device}:${disk.path}`} disk={disk} color={diskColor(index)} />
                   ))}
                 </ul>
               )}
@@ -176,24 +170,20 @@ function diskColor(index: number): string {
   return DISK_COLORS[index % DISK_COLORS.length];
 }
 
-// deviceName 展示设备短名：Linux 块设备去掉 /dev/ 前缀（/dev/sda1 → sda1），
-// Windows 盘符与 overlay 等伪设备保持原样。
+// deviceName 保留兼容旧响应：Linux /dev 路径只展示设备短名。
 function deviceName(device: string): string {
   return device.replace(/^\/dev\//, '');
 }
 
 function DiskUsageRow({ disk, color }: { disk: SystemDiskUsage; color: string }) {
   const name = deviceName(disk.device);
-  const showPath = disk.path !== '' && disk.path !== disk.device;
-  const fullTitle = showPath ? `${disk.device} · ${disk.path}` : disk.device;
   return (
     <li className="min-w-0" aria-label={`${name} 磁盘容量`}>
       {/* 半宽卡片在中等视口保持纵向排列，避免设备信息与容量文本互相挤压。 */}
       <div className="flex min-w-0 flex-col gap-1 text-xs xl:flex-row xl:items-center xl:justify-between xl:gap-3">
         <span className="flex min-w-0 items-center gap-2">
           <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: color }} aria-hidden="true" />
-          <span className="truncate font-medium text-zinc-700" title={fullTitle}>{name}</span>
-          {showPath ? <span className="truncate text-zinc-400" title={fullTitle}>{disk.path}</span> : null}
+          <span className="truncate font-medium text-zinc-700" title={name}>{name}</span>
         </span>
         <span className="min-w-0 break-words pl-4 text-zinc-500 xl:shrink-0 xl:pl-0">{formatBytes(disk.usedBytes)} / {formatBytes(disk.totalBytes)} · {formatPercent(disk.usedPercent)}</span>
       </div>

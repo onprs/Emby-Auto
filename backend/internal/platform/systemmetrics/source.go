@@ -95,16 +95,23 @@ func (source GopsutilSource) Read(ctx context.Context, diskPaths []string) HostR
 		}
 		reading.NetworkAvailable = true
 	}
-	if counters, err := disk.IOCountersWithContext(ctx); err == nil {
-		for _, counter := range counters {
-			reading.DiskReadBytes += counter.ReadBytes
-			reading.DiskWrittenBytes += counter.WriteBytes
-		}
-		reading.DiskIOAvailable = true
-	}
-	if disks := readDiskUsages(ctx, diskPaths); len(disks) > 0 {
+	diskDetails := readDiskUsageDetails(ctx, diskPaths)
+	if len(diskDetails) > 0 {
 		reading.DisksAvailable = true
-		reading.Disks = disks
+		reading.Disks = make([]domain.SystemDiskUsage, 0, len(diskDetails))
+		for _, detail := range diskDetails {
+			reading.Disks = append(reading.Disks, detail.usage)
+		}
+	}
+	diskDevices := displayedDiskDevices(diskDetails)
+	if len(diskDevices) > 0 {
+		if counters, err := ioCountersWithContext(ctx, diskDevices...); err == nil {
+			if read, written, ok := sumDiskIOCounters(counters, diskDevices); ok {
+				reading.DiskReadBytes = read
+				reading.DiskWrittenBytes = written
+				reading.DiskIOAvailable = true
+			}
+		}
 	}
 	return reading
 }
@@ -123,46 +130,132 @@ func loopbackInterfaceNames() map[string]struct{} {
 	return loopbacks
 }
 
-// usageWithContext、partitionsWithContext 与 getWorkingDirectory 可在测试中替换为 fake，
-// 以覆盖 readDiskUsages 的完整采集链路。
+// usageWithContext、partitionsWithContext、ioCountersWithContext、getWorkingDirectory
+// 与 resolveDiskDevices 可在测试中替换为 fake，以覆盖完整磁盘采集链路。
 var (
 	usageWithContext      = disk.UsageWithContext
 	partitionsWithContext = disk.PartitionsWithContext
+	ioCountersWithContext = disk.IOCountersWithContext
 	getWorkingDirectory   = os.Getwd
+	resolveDiskDevices    = platformDiskDevices
 )
 
+type diskUsageDetail struct {
+	usage     domain.SystemDiskUsage
+	ioDevices []string
+}
+
 func readDiskUsages(ctx context.Context, configuredPaths []string) []domain.SystemDiskUsage {
+	details := readDiskUsageDetails(ctx, configuredPaths)
+	usages := make([]domain.SystemDiskUsage, 0, len(details))
+	for _, detail := range details {
+		usages = append(usages, detail.usage)
+	}
+	return usages
+}
+
+func readDiskUsageDetails(ctx context.Context, configuredPaths []string) []diskUsageDetail {
 	// all=true 保留 bind mount：容器里业务目录（/data/video/*）都是宿主目录的
 	// bind 子目录，all=false 会全部跳过，导致磁盘容量只显示根设备。
 	partitions, _ := partitionsWithContext(ctx, true)
 	workingDirectory, _ := getWorkingDirectory()
 
-	usages := make([]domain.SystemDiskUsage, 0, 4)
+	details := make([]diskUsageDetail, 0, 4)
 	for _, mount := range selectDiskMounts(configuredPaths, workingDirectory, partitions) {
 		usage, err := usageWithContext(ctx, mount.Sample)
 		if err != nil || usage == nil || usage.Total == 0 {
 			continue
 		}
-		device := mount.Device
-		if device != "" {
-			// Windows 上 gopsutil 设备名带盘符反斜杠（C:\），统一规范化为盘符（C:）。
-			device = displayMount(device)
-		} else {
-			// 分区枚举不完整时用展示路径兜底，保证 device 非空（契约 minLength:1）。
-			device = mount.Display
+		devices := normalizeDiskDevices(resolveDiskDevices(mount.Sample, mount.Device))
+		if len(devices) == 0 {
+			device := displayMount(mount.Device)
+			if device == "" {
+				// 分区枚举不完整时用展示路径兜底，保证 device 非空（契约 minLength:1）。
+				device = displayMount(mount.Display)
+			}
+			devices = []string{device}
 		}
-		usages = append(usages, domain.SystemDiskUsage{
-			Device:      device,
-			Path:        displayMount(mount.Display),
-			UsedBytes:   saturatingInt64(usage.Used),
-			TotalBytes:  saturatingInt64(usage.Total),
-			UsedPercent: clampPercent(usage.UsedPercent),
+		details = append(details, diskUsageDetail{
+			usage: domain.SystemDiskUsage{
+				Device:      strings.Join(devices, ", "),
+				Path:        displayMount(mount.Display),
+				UsedBytes:   saturatingInt64(usage.Used),
+				TotalBytes:  saturatingInt64(usage.Total),
+				UsedPercent: clampPercent(usage.UsedPercent),
+			},
+			ioDevices: devices,
 		})
 	}
-	sort.Slice(usages, func(left, right int) bool {
-		return strings.ToLower(usages[left].Path) < strings.ToLower(usages[right].Path)
+	sort.Slice(details, func(left, right int) bool {
+		return strings.ToLower(details[left].usage.Path) < strings.ToLower(details[right].usage.Path)
 	})
-	return usages
+	return details
+}
+
+func normalizeDiskDevices(devices []string) []string {
+	seen := make(map[string]struct{}, len(devices))
+	normalized := make([]string, 0, len(devices))
+	for _, device := range devices {
+		device = displayMount(strings.TrimSpace(device))
+		key := diskCounterKey(device)
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, device)
+	}
+	sort.Slice(normalized, func(left, right int) bool {
+		return strings.ToLower(normalized[left]) < strings.ToLower(normalized[right])
+	})
+	return normalized
+}
+
+func displayedDiskDevices(details []diskUsageDetail) []string {
+	devices := make([]string, 0, len(details))
+	for _, detail := range details {
+		devices = append(devices, detail.ioDevices...)
+	}
+	return normalizeDiskDevices(devices)
+}
+
+func sumDiskIOCounters(counters map[string]disk.IOCountersStat, devices []string) (uint64, uint64, bool) {
+	byDevice := make(map[string]disk.IOCountersStat, len(counters))
+	for name, counter := range counters {
+		key := diskCounterKey(counter.Name)
+		if key == "" {
+			key = diskCounterKey(name)
+		}
+		if key != "" {
+			byDevice[key] = counter
+		}
+	}
+
+	uniqueDevices := normalizeDiskDevices(devices)
+	if len(uniqueDevices) == 0 {
+		return 0, 0, false
+	}
+	var read uint64
+	var written uint64
+	for _, device := range uniqueDevices {
+		counter, exists := byDevice[diskCounterKey(device)]
+		if !exists {
+			return 0, 0, false
+		}
+		read += counter.ReadBytes
+		written += counter.WriteBytes
+	}
+	return read, written, true
+}
+
+func diskCounterKey(device string) string {
+	device = strings.TrimRight(strings.TrimSpace(device), `/\`)
+	if separator := strings.LastIndexAny(device, `/\`); separator >= 0 {
+		device = device[separator+1:]
+	}
+	return strings.ToLower(device)
 }
 
 // mountCandidate 是磁盘挂载候选：stat 为分区信息，root 表示来自工作目录或根挂载（非业务路径命中）。
@@ -365,6 +458,10 @@ func volumeRoot(path string) string {
 }
 
 func displayMount(mount string) string {
+	mount = strings.TrimSpace(mount)
+	if mount == "" {
+		return ""
+	}
 	cleaned := filepath.Clean(mount)
 	if volume := filepath.VolumeName(cleaned); volume != "" {
 		return volume

@@ -105,7 +105,7 @@ func TestSelectDiskMountsWorkingDirectoryOnBusinessDisk(t *testing.T) {
 }
 
 // TestReadDiskUsagesContainerBindMounts 覆盖完整采集链路（selectDiskMounts + 容量采样 +
-// device 兜底）：生产容器中根设备展示为 "/" 时必须保留真实设备名，而不是 overlay。
+// 物理设备解析）：生产容器中根卷与业务分区必须显示底层物理设备名。
 func TestReadDiskUsagesContainerBindMounts(t *testing.T) {
 	partitions := []disk.PartitionStat{
 		{Device: "overlay", Mountpoint: "/", Fstype: "overlay"},
@@ -117,6 +117,7 @@ func TestReadDiskUsagesContainerBindMounts(t *testing.T) {
 	originalUsage := usageWithContext
 	originalPartitions := partitionsWithContext
 	originalWorkingDirectory := getWorkingDirectory
+	originalResolveDiskDevices := resolveDiskDevices
 	usageWithContext = fakeUsage(map[string]*disk.UsageStat{
 		"/app":               {Path: "/app", Total: 1_000_000, Used: 600_000, UsedPercent: 60},
 		"/data/video/video1": {Path: "/data/video/video1", Total: 2_000_000, Used: 1_000_000, UsedPercent: 50},
@@ -125,10 +126,21 @@ func TestReadDiskUsagesContainerBindMounts(t *testing.T) {
 		return partitions, nil
 	}
 	getWorkingDirectory = func() (string, error) { return "/app", nil }
+	resolveDiskDevices = func(samplePath, _ string) []string {
+		switch samplePath {
+		case "/app":
+			return []string{"nvme0n1"}
+		case "/data/video/video1":
+			return []string{"sda"}
+		default:
+			return nil
+		}
+	}
 	defer func() {
 		usageWithContext = originalUsage
 		partitionsWithContext = originalPartitions
 		getWorkingDirectory = originalWorkingDirectory
+		resolveDiskDevices = originalResolveDiskDevices
 	}()
 
 	got := readDiskUsages(t.Context(), []string{
@@ -139,11 +151,11 @@ func TestReadDiskUsagesContainerBindMounts(t *testing.T) {
 		t.Fatalf("readDiskUsages() = %#v, want 2 usages", got)
 	}
 	root, data := got[0], got[1]
-	if root.Device != "/dev/mapper/onpes--server--vg-root" || root.Path != "/" || root.UsedPercent != 60 {
-		t.Fatalf("root usage = %#v, want real device with path \"/\"", root)
+	if root.Device != "nvme0n1" || root.Path != "/" || root.UsedPercent != 60 {
+		t.Fatalf("root usage = %#v, want physical device nvme0n1 with path \"/\"", root)
 	}
-	if data.Device != "/dev/sda1" || data.Path != "/data/video/video1" || data.UsedPercent != 50 {
-		t.Fatalf("data usage = %#v", data)
+	if data.Device != "sda" || data.Path != "/data/video/video1" || data.UsedPercent != 50 {
+		t.Fatalf("data usage = %#v, want physical device sda", data)
 	}
 }
 
@@ -153,6 +165,7 @@ func TestReadDiskUsagesEmptyPartitionEnumerationFallback(t *testing.T) {
 	originalUsage := usageWithContext
 	originalPartitions := partitionsWithContext
 	originalWorkingDirectory := getWorkingDirectory
+	originalResolveDiskDevices := resolveDiskDevices
 	usageWithContext = fakeUsage(map[string]*disk.UsageStat{
 		"/": {Path: "/", Total: 5_000, Used: 1_000, UsedPercent: 20},
 	})
@@ -160,10 +173,12 @@ func TestReadDiskUsagesEmptyPartitionEnumerationFallback(t *testing.T) {
 		return nil, nil
 	}
 	getWorkingDirectory = func() (string, error) { return "/srv/media", nil }
+	resolveDiskDevices = func(string, string) []string { return nil }
 	defer func() {
 		usageWithContext = originalUsage
 		partitionsWithContext = originalPartitions
 		getWorkingDirectory = originalWorkingDirectory
+		resolveDiskDevices = originalResolveDiskDevices
 	}()
 
 	got := readDiskUsages(t.Context(), []string{"/srv/media"})

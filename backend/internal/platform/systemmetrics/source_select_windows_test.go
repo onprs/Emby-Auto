@@ -36,6 +36,7 @@ func TestReadDiskUsagesWindowsVolumes(t *testing.T) {
 	}
 	originalUsage := usageWithContext
 	originalPartitions := partitionsWithContext
+	originalResolveDiskDevices := resolveDiskDevices
 	usageWithContext = fakeUsage(map[string]*disk.UsageStat{
 		`C:\`: {Path: `C:\`, Total: 1_000_000, Used: 600_000, UsedPercent: 60},
 		`D:\`: {Path: `D:\`, Total: 2_000_000, Used: 1_000_000, UsedPercent: 50},
@@ -43,9 +44,11 @@ func TestReadDiskUsagesWindowsVolumes(t *testing.T) {
 	partitionsWithContext = func(context.Context, bool) ([]disk.PartitionStat, error) {
 		return partitions, nil
 	}
+	resolveDiskDevices = func(_ string, device string) []string { return []string{displayMount(device)} }
 	defer func() {
 		usageWithContext = originalUsage
 		partitionsWithContext = originalPartitions
+		resolveDiskDevices = originalResolveDiskDevices
 	}()
 
 	got := readDiskUsages(t.Context(), []string{`D:\media\work`, `C:\project`})
