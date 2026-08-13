@@ -73,20 +73,37 @@ func loopbackInterfaceNames() map[string]struct{} {
 	return loopbacks
 }
 
+// usageWithContext、partitionsWithContext 与 getWorkingDirectory 可在测试中替换为 fake，
+// 以覆盖 readDiskUsages 的完整采集链路。
+var (
+	usageWithContext      = disk.UsageWithContext
+	partitionsWithContext = disk.PartitionsWithContext
+	getWorkingDirectory   = os.Getwd
+)
+
 func readDiskUsages(ctx context.Context, configuredPaths []string) []domain.SystemDiskUsage {
 	// all=true 保留 bind mount：容器里业务目录（/data/video/*）都是宿主目录的
 	// bind 子目录，all=false 会全部跳过，导致磁盘容量只显示根设备。
-	partitions, _ := disk.PartitionsWithContext(ctx, true)
-	workingDirectory, _ := os.Getwd()
+	partitions, _ := partitionsWithContext(ctx, true)
+	workingDirectory, _ := getWorkingDirectory()
 
 	usages := make([]domain.SystemDiskUsage, 0, 4)
 	for _, mount := range selectDiskMounts(configuredPaths, workingDirectory, partitions) {
-		usage, err := disk.UsageWithContext(ctx, mount)
+		usage, err := usageWithContext(ctx, mount.Sample)
 		if err != nil || usage == nil || usage.Total == 0 {
 			continue
 		}
+		device := mount.Device
+		if device != "" {
+			// Windows 上 gopsutil 设备名带盘符反斜杠（C:\），统一规范化为盘符（C:）。
+			device = displayMount(device)
+		} else {
+			// 分区枚举不完整时用展示路径兜底，保证 device 非空（契约 minLength:1）。
+			device = mount.Display
+		}
 		usages = append(usages, domain.SystemDiskUsage{
-			Path:        displayMount(mount),
+			Device:      device,
+			Path:        displayMount(mount.Display),
 			UsedBytes:   saturatingInt64(usage.Used),
 			TotalBytes:  saturatingInt64(usage.Total),
 			UsedPercent: clampPercent(usage.UsedPercent),
@@ -104,13 +121,22 @@ type mountCandidate struct {
 	root bool
 }
 
+// selectedMount 是最终选中的磁盘挂载：Device 保留选择阶段命中的原始设备名（避免从
+// 规范化后的展示路径反查丢失真实身份），Sample 是容量采样路径，Display 是展示路径
+// （根设备代表可能统一展示为 "/"）。
+type selectedMount struct {
+	Device  string
+	Sample  string
+	Display string
+}
+
 // selectDiskMounts 从分区列表中选出需要展示容量的挂载点：
 //   - 每个业务路径的最深匹配挂载，工作目录的最深匹配挂载，加上 Linux 根挂载 "/"；
 //   - 容器杂物（/etc/hosts、/go/pkg/mod 等非业务 bind）不会被业务路径匹配到，自然排除；
 //   - 同一设备只保留一个代表挂载点（优先根挂载，其次挂载点最短、再按字母序）；
 //   - 根文件系统兜底：根挂载存在时，工作目录或根挂载命中的块设备代表统一展示为 "/"，
 //     并排除与其容量重复的 overlay 伪设备（仅当存在真实块设备根候选时排除）。
-func selectDiskMounts(paths []string, workingDirectory string, partitions []disk.PartitionStat) []string {
+func selectDiskMounts(paths []string, workingDirectory string, partitions []disk.PartitionStat) []selectedMount {
 	seen := make(map[string]struct{})
 	var business []mountCandidate
 	var others []mountCandidate
@@ -124,7 +150,7 @@ func selectDiskMounts(paths []string, workingDirectory string, partitions []disk
 			return
 		}
 		seen[key] = struct{}{}
-		 *list = append(*list, mountCandidate{stat: partitionAt(partitions, mount), root: root})
+		*list = append(*list, mountCandidate{stat: partitionAt(partitions, mount), root: root})
 	}
 
 	for _, path := range paths {
@@ -171,21 +197,22 @@ func selectDiskMounts(paths []string, workingDirectory string, partitions []disk
 		byDevice[candidate.stat.Device] = append(byDevice[candidate.stat.Device], candidate)
 	}
 
-	selected := make([]string, 0, len(byDevice))
+	selected := make([]selectedMount, 0, len(byDevice))
 	for device, group := range byDevice {
 		if isOverlay(device) && hasRootDevice {
 			continue
 		}
 		representative := representativeMount(group)
-		mount := representative.stat.Mountpoint
+		sample := representative.stat.Mountpoint
+		display := sample
 		// 根文件系统代表统一展示为 "/"（容器里根挂载为 overlay 时，真实根设备由工作目录命中）。
 		if representative.root && rootMount != "" && isBlockDevice(device) {
-			mount = rootMount
+			display = rootMount
 		}
-		selected = append(selected, mount)
+		selected = append(selected, selectedMount{Device: device, Sample: sample, Display: display})
 	}
 	sort.Slice(selected, func(left, right int) bool {
-		return preferMount(selected[left], selected[right])
+		return preferMount(selected[left].Display, selected[right].Display)
 	})
 	return selected
 }

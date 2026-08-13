@@ -3,6 +3,7 @@
 package systemmetrics
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -12,6 +13,8 @@ import (
 // TestSelectDiskMountsContainerBindMounts 模拟生产 API 容器：
 // 业务目录全部是宿主目录的 bind 子目录，工作目录 /app 命中根设备 bind，
 // 根设备代表统一展示为 "/"，数据盘与根设备各保留一条，容器杂物不出现。
+// 根设备必须保留选择阶段命中的真实设备名（/dev/mapper/...），而不是从展示
+// 路径 "/" 反查到的 overlay。
 func TestSelectDiskMountsContainerBindMounts(t *testing.T) {
 	partitions := []disk.PartitionStat{
 		{Device: "overlay", Mountpoint: "/", Fstype: "overlay"},
@@ -32,7 +35,10 @@ func TestSelectDiskMountsContainerBindMounts(t *testing.T) {
 		"/data/video/video1",
 		"/data/video/video2",
 	}
-	want := []string{"/", "/data/video/video1"}
+	want := []selectedMount{
+		{Device: "/dev/mapper/onpes--server--vg-root", Sample: "/app", Display: "/"},
+		{Device: "/dev/sda1", Sample: "/data/video/video1", Display: "/data/video/video1"},
+	}
 	got := selectDiskMounts(paths, "/app", partitions)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("selectDiskMounts() = %#v, want %#v", got, want)
@@ -45,7 +51,7 @@ func TestSelectDiskMountsOverlayOnly(t *testing.T) {
 		{Device: "overlay", Mountpoint: "/", Fstype: "overlay"},
 	}
 	paths := []string{"/srv/media"}
-	want := []string{"/"}
+	want := []selectedMount{{Device: "overlay", Sample: "/", Display: "/"}}
 	got := selectDiskMounts(paths, "/srv/media", partitions)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("selectDiskMounts() = %#v, want %#v", got, want)
@@ -59,7 +65,7 @@ func TestSelectDiskMountsRootPreferred(t *testing.T) {
 		{Device: "/dev/sda1", Mountpoint: "/data", Fstype: "ext4"},
 	}
 	paths := []string{"/data/media"}
-	want := []string{"/"}
+	want := []selectedMount{{Device: "/dev/sda1", Sample: "/", Display: "/"}}
 	got := selectDiskMounts(paths, "/data/media", partitions)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("selectDiskMounts() = %#v, want %#v", got, want)
@@ -73,7 +79,7 @@ func TestSelectDiskMountsEmptyPaths(t *testing.T) {
 		{Device: "/dev/mapper/onpes--server--vg-root", Mountpoint: "/etc/hosts", Fstype: "ext4"},
 		{Device: "/dev/mapper/onpes--server--vg-root", Mountpoint: "/run.sh", Fstype: "ext4"},
 	}
-	want := []string{"/"}
+	want := []selectedMount{{Device: "overlay", Sample: "/", Display: "/"}}
 	got := selectDiskMounts(nil, "/srv", partitions)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("selectDiskMounts() = %#v, want %#v", got, want)
@@ -88,9 +94,89 @@ func TestSelectDiskMountsWorkingDirectoryOnBusinessDisk(t *testing.T) {
 		{Device: "/dev/sda1", Mountpoint: "/data/video/video1", Fstype: "ext4"},
 	}
 	paths := []string{"/data/video/video1"}
-	want := []string{"/", "/data/video/video1"}
+	want := []selectedMount{
+		{Device: "overlay", Sample: "/", Display: "/"},
+		{Device: "/dev/sda1", Sample: "/data/video/video1", Display: "/data/video/video1"},
+	}
 	got := selectDiskMounts(paths, "/data/video/video1", partitions)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("selectDiskMounts() = %#v, want %#v", got, want)
+	}
+}
+
+// TestReadDiskUsagesContainerBindMounts 覆盖完整采集链路（selectDiskMounts + 容量采样 +
+// device 兜底）：生产容器中根设备展示为 "/" 时必须保留真实设备名，而不是 overlay。
+func TestReadDiskUsagesContainerBindMounts(t *testing.T) {
+	partitions := []disk.PartitionStat{
+		{Device: "overlay", Mountpoint: "/", Fstype: "overlay"},
+		{Device: "/dev/mapper/onpes--server--vg-root", Mountpoint: "/app", Fstype: "ext4"},
+		{Device: "/dev/mapper/onpes--server--vg-root", Mountpoint: "/etc/hosts", Fstype: "ext4"},
+		{Device: "/dev/sda1", Mountpoint: "/data/video/video1", Fstype: "ext4"},
+		{Device: "/dev/sda1", Mountpoint: "/data/video/video2", Fstype: "ext4"},
+	}
+	originalUsage := usageWithContext
+	originalPartitions := partitionsWithContext
+	originalWorkingDirectory := getWorkingDirectory
+	usageWithContext = fakeUsage(map[string]*disk.UsageStat{
+		"/app":               {Path: "/app", Total: 1_000_000, Used: 600_000, UsedPercent: 60},
+		"/data/video/video1": {Path: "/data/video/video1", Total: 2_000_000, Used: 1_000_000, UsedPercent: 50},
+	})
+	partitionsWithContext = func(context.Context, bool) ([]disk.PartitionStat, error) {
+		return partitions, nil
+	}
+	getWorkingDirectory = func() (string, error) { return "/app", nil }
+	defer func() {
+		usageWithContext = originalUsage
+		partitionsWithContext = originalPartitions
+		getWorkingDirectory = originalWorkingDirectory
+	}()
+
+	got := readDiskUsages(t.Context(), []string{
+		"/data/video/video1",
+		"/data/video/video2",
+	})
+	if len(got) != 2 {
+		t.Fatalf("readDiskUsages() = %#v, want 2 usages", got)
+	}
+	root, data := got[0], got[1]
+	if root.Device != "/dev/mapper/onpes--server--vg-root" || root.Path != "/" || root.UsedPercent != 60 {
+		t.Fatalf("root usage = %#v, want real device with path \"/\"", root)
+	}
+	if data.Device != "/dev/sda1" || data.Path != "/data/video/video1" || data.UsedPercent != 50 {
+		t.Fatalf("data usage = %#v", data)
+	}
+}
+
+// TestReadDiskUsagesEmptyPartitionEnumerationFallback 分区枚举不完整（partitions 为空）时
+// device 必须兜底为非空展示路径，不能违反契约 minLength:1。
+func TestReadDiskUsagesEmptyPartitionEnumerationFallback(t *testing.T) {
+	originalUsage := usageWithContext
+	originalPartitions := partitionsWithContext
+	originalWorkingDirectory := getWorkingDirectory
+	usageWithContext = fakeUsage(map[string]*disk.UsageStat{
+		"/": {Path: "/", Total: 5_000, Used: 1_000, UsedPercent: 20},
+	})
+	partitionsWithContext = func(context.Context, bool) ([]disk.PartitionStat, error) {
+		return nil, nil
+	}
+	getWorkingDirectory = func() (string, error) { return "/srv/media", nil }
+	defer func() {
+		usageWithContext = originalUsage
+		partitionsWithContext = originalPartitions
+		getWorkingDirectory = originalWorkingDirectory
+	}()
+
+	got := readDiskUsages(t.Context(), []string{"/srv/media"})
+	if len(got) != 1 {
+		t.Fatalf("readDiskUsages() = %#v, want 1 usage", got)
+	}
+	if got[0].Device == "" || got[0].Device != "/" || got[0].Path != "/" {
+		t.Fatalf("usage device = %q path = %q, want non-empty fallback \"/\"", got[0].Device, got[0].Path)
+	}
+}
+
+func fakeUsage(byPath map[string]*disk.UsageStat) func(context.Context, string) (*disk.UsageStat, error) {
+	return func(_ context.Context, path string) (*disk.UsageStat, error) {
+		return byPath[path], nil
 	}
 }

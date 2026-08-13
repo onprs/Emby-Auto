@@ -10,7 +10,7 @@ import {
   YAxis,
 } from 'recharts';
 
-import type { SystemMetricSample, SystemMetricsSnapshot } from '@/api/generated/types.gen';
+import type { SystemDiskUsage, SystemMetricSample, SystemMetricsSnapshot } from '@/api/generated/types.gen';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { formatBytes, formatDateTime } from '@/lib/format';
@@ -35,18 +35,25 @@ type ChartPoint = {
 
 const percentDomain: [number, number] = [0, 100];
 
+// 磁盘容量条与图标按顺序从色板取色，同一磁盘固定同一颜色，图例见磁盘容量区说明。
+const DISK_COLORS = ['#7c3aed', '#0ea5e9', '#f59e0b', '#10b981', '#f43f5e', '#0284c7'];
+
 export function SystemResourceCharts({ metrics, pending, error, onRetry }: SystemResourceChartsProps) {
   if (pending && !metrics) {
     return (
       <section className="mt-6" aria-label="系统资源">
         <SectionHeading />
         <div className="grid gap-4 sm:grid-cols-2">
-          {['CPU 使用率', '内存使用率', '网络速度', '磁盘资源'].map((title) => (
+          {['CPU 使用率', '内存使用率', '网络速度'].map((title) => (
             <Card key={title} className="min-w-0">
               <CardHeader><CardTitle>{title}</CardTitle></CardHeader>
               <CardContent><div className="skeleton h-44" /></CardContent>
             </Card>
           ))}
+          <Card className="min-w-0 sm:col-span-2">
+            <CardHeader><CardTitle>磁盘</CardTitle></CardHeader>
+            <CardContent><div className="skeleton h-44" /></CardContent>
+          </Card>
         </div>
       </section>
     );
@@ -112,48 +119,88 @@ export function SystemResourceCharts({ metrics, pending, error, onRetry }: Syste
           />
         </MetricCard>
 
-        <MetricCard
-          title="磁盘资源"
-          ariaLabel="磁盘资源图表"
-          icon={HardDrive}
-          value={metrics.availability.diskIO ? `读取 ${formatRate(latest?.read)}` : 'I/O 不可用'}
-          detail={metrics.availability.diskIO ? `写入 ${formatRate(latest?.write)}` : '主机磁盘计数器不可用'}
+        <Card
+          className="min-w-0 sm:col-span-2"
+          aria-label="磁盘"
         >
-          <RateChart
-            points={points}
-            lines={[
-              { key: 'read', name: '读取', color: '#7c3aed' },
-              { key: 'write', name: '写入', color: '#dc2626' },
-            ]}
-          />
-        </MetricCard>
+          <CardHeader>
+            <div className="flex min-w-0 items-start justify-between gap-4">
+              <div className="min-w-0">
+                <CardTitle>磁盘</CardTitle>
+                <p className="mt-1 text-xs text-zinc-500">容量与 I/O 实时负载</p>
+              </div>
+              <HardDrive aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-zinc-400" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-4 gap-y-1" aria-label="磁盘资源图表">
+              <p className="text-2xl font-semibold tabular-nums text-zinc-950">
+                {metrics.availability.diskIO ? `读取 ${formatRate(latest?.read)}` : 'I/O 不可用'}
+              </p>
+              <p className="text-xs text-zinc-500">
+                {metrics.availability.diskIO ? `写入 ${formatRate(latest?.write)}` : '主机磁盘计数器不可用'}
+              </p>
+            </div>
+            <div className="mt-3">
+              <RateChart
+                points={points}
+                lines={[
+                  { key: 'read', name: '读取', color: '#7c3aed' },
+                  { key: 'write', name: '写入', color: '#dc2626' },
+                ]}
+              />
+            </div>
+            <div className="mt-4 border-t border-zinc-100 pt-4" aria-label="磁盘容量">
+              <div className="flex items-baseline justify-between gap-3">
+                <p className="text-sm font-medium text-zinc-700">磁盘容量</p>
+                <p className="shrink-0 text-xs text-zinc-500">不同颜色代表不同磁盘设备</p>
+              </div>
+              {metrics.disks.length === 0 ? (
+                <p className="mt-2 text-xs text-zinc-500">磁盘容量不可用</p>
+              ) : (
+                <ul className="mt-3 grid max-h-56 gap-x-6 gap-y-3 overflow-y-auto overscroll-contain pr-1 sm:grid-cols-2">
+                  {metrics.disks.map((disk, index) => (
+                    <DiskUsageRow key={disk.device} disk={disk} color={diskColor(index)} />
+                  ))}
+                </ul>
+              )}
+            </div>
+          </CardContent>
+        </Card>
       </div>
-
-      <Card className="mt-4 min-w-0" aria-label="磁盘容量">
-        <CardHeader>
-          <CardTitle>磁盘容量</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {metrics.disks.length === 0 ? (
-            <p className="text-xs text-zinc-500">磁盘容量不可用</p>
-          ) : (
-            <ul className="grid max-h-72 gap-x-6 gap-y-3 overflow-y-auto overscroll-contain pr-1 sm:grid-cols-2">
-              {metrics.disks.map((disk) => (
-                <li key={disk.path} aria-label={`${disk.path} 磁盘容量`}>
-                  <div className="flex items-center justify-between gap-3 text-xs">
-                    <span className="truncate font-medium text-zinc-700" title={disk.path}>{disk.path}</span>
-                    <span className="shrink-0 text-zinc-500">{formatBytes(disk.usedBytes)} / {formatBytes(disk.totalBytes)} · {formatPercent(disk.usedPercent)}</span>
-                  </div>
-                  <div className="mt-1.5 h-2 overflow-hidden rounded-sm bg-zinc-100">
-                    <div className="h-full bg-violet-600" style={{ width: `${Math.min(100, Math.max(0, disk.usedPercent))}%` }} />
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
     </section>
+  );
+}
+
+function diskColor(index: number): string {
+  return DISK_COLORS[index % DISK_COLORS.length];
+}
+
+// deviceName 展示设备短名：Linux 块设备去掉 /dev/ 前缀（/dev/sda1 → sda1），
+// Windows 盘符与 overlay 等伪设备保持原样。
+function deviceName(device: string): string {
+  return device.replace(/^\/dev\//, '');
+}
+
+function DiskUsageRow({ disk, color }: { disk: SystemDiskUsage; color: string }) {
+  const name = deviceName(disk.device);
+  const showPath = disk.path !== '' && disk.path !== disk.device;
+  const fullTitle = showPath ? `${disk.device} · ${disk.path}` : disk.device;
+  return (
+    <li aria-label={`${name} 磁盘容量`}>
+      {/* 窄屏（<640px）分行展示避免横向溢出：设备名一行，容量文本换到下一行。 */}
+      <div className="flex flex-col gap-1 text-xs sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: color }} aria-hidden="true" />
+          <span className="truncate font-medium text-zinc-700" title={fullTitle}>{name}</span>
+          {showPath ? <span className="truncate text-zinc-400" title={fullTitle}>{disk.path}</span> : null}
+        </span>
+        <span className="shrink-0 pl-4 text-zinc-500 sm:pl-0">{formatBytes(disk.usedBytes)} / {formatBytes(disk.totalBytes)} · {formatPercent(disk.usedPercent)}</span>
+      </div>
+      <div className="mt-1.5 h-2 overflow-hidden rounded-sm bg-zinc-100">
+        <div className="h-full" style={{ width: `${Math.min(100, Math.max(0, disk.usedPercent))}%`, backgroundColor: color }} />
+      </div>
+    </li>
   );
 }
 

@@ -135,7 +135,7 @@ func completeReading(cpu float64, received, sent, read, written uint64) HostRead
 		DiskWrittenBytes:  written,
 		DisksAvailable:    true,
 		Disks: []domain.SystemDiskUsage{{
-			Path: "D:", TotalBytes: 100_000, UsedBytes: 60_000, UsedPercent: 60,
+			Device: "D:", Path: "D:", TotalBytes: 100_000, UsedBytes: 60_000, UsedPercent: 60,
 		}},
 	}
 }

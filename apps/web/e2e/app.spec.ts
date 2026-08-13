@@ -25,7 +25,9 @@ test.describe('application shell', () => {
     await expect(resources.getByLabel('CPU 使用率图表')).toContainText('42%');
     await expect(resources.getByLabel('内存使用率图表')).toContainText('8.0 GiB / 16.0 GiB');
     await expect(resources.getByLabel('网络速度图表')).toContainText('4.0 MiB/s');
-    await expect(resources.getByLabel('磁盘资源图表')).toContainText('D:');
+    await expect(resources.getByLabel('磁盘', { exact: true })).toContainText('sda1');
+    await expect(resources.getByLabel('磁盘', { exact: true })).toContainText('/data/video/video1');
+    await expect(resources.getByLabel('磁盘资源图表')).toContainText('读取 8.0 MiB/s');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
     if (mobile) {
       await page.getByRole('button', { name: '打开主导航' }).click();
@@ -175,6 +177,8 @@ test.describe('application shell', () => {
       seriesTitle: '细粒度进度作品',
       name: '细粒度 RSS 订阅',
       feedUrl: 'https://example.test/fine-progress.xml',
+      includeKeywords: [],
+      excludeKeywords: [],
       enabled: true,
       autoEpisodeMapping: false,
       autoReview: false,
@@ -194,26 +198,28 @@ test.describe('application shell', () => {
       const url = new URL(route.request().url());
       if (url.pathname.endsWith(`/${subscriptionId}/entries`)) {
         rssEntriesURL = url.toString();
+        // 详情页分别请求 confirmed 与 skipped 两个分组，mock 需按 group 区分，
+        // 否则同一条目会在两个分组各渲染一次。
+        const group = url.searchParams.get('group');
+        const items = group === 'skipped' ? [] : [{
+          id: '23000000-0000-0000-0000-000000000004',
+          subscriptionId,
+          acquisitionId,
+          acquisitionProgress: { aggregateStatus: 'pending', currentStage: 'download', overallProgress: 0.02 },
+          title: entryTitle,
+          status: 'enqueued',
+          classification: 'enqueued',
+          duplicateCount: 0,
+          downloadUriAvailable: true,
+          sourceSeason: 1,
+          sourceEpisode: 1,
+          createdAt: now,
+          updatedAt: now,
+        }];
         return route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify({
-            items: [{
-              id: '23000000-0000-0000-0000-000000000004',
-              subscriptionId,
-              acquisitionId,
-              acquisitionProgress: { aggregateStatus: 'pending', currentStage: 'download', overallProgress: 0.02 },
-              title: entryTitle,
-              status: 'enqueued',
-              classification: 'enqueued',
-              duplicateCount: 0,
-              downloadUriAvailable: true,
-              sourceSeason: 1,
-              sourceEpisode: 1,
-              createdAt: now,
-              updatedAt: now,
-            }],
-          }),
+          body: JSON.stringify({ items }),
         });
       }
       if (url.pathname.endsWith(`/${subscriptionId}`)) {
@@ -434,10 +440,25 @@ test.describe('application shell', () => {
         contentType: 'application/json',
         body: JSON.stringify({
           version: 1,
-          qBittorrent: { url: '', username: '', password: { configured: false, masked: '' } },
+          qBittorrent: { url: '', username: '', password: { configured: false, masked: '' }, downloadRateLimitKibPerSecond: 0, uploadRateLimitKibPerSecond: 0 },
           emby: { url: '', apiKey: { configured: false, masked: '' } },
           tmdb: { apiToken: { configured: false, masked: '' } },
           networkProxy: { enabled: false, url: '' },
+          agent: {
+            enabled: false,
+            protocol: 'openai_chat_completions',
+            baseUrl: '',
+            model: '',
+            apiKey: { configured: false, masked: '' },
+            useNetworkProxy: false,
+            requestTimeoutSeconds: 120,
+            rssCoordinateMode: 'off',
+            downloadFileSelectionMode: 'off',
+            catalogMatchEnabled: false,
+            episodeMappingEnabled: false,
+            allowAutomaticEpisodeMapping: false,
+            subtitleVideoMatchMode: 'off',
+          },
           paths: { downloadRoot: '', workRoot: '', stagingRoot: '', animeLibraryRoot: '', movieLibraryRoot: '', ffmpegPath: '', ffprobePath: '' },
           transcode: {
             name: 'default', videoCodec: 'h264', encoder: 'libx264', container: 'matroska', fileExtension: 'mkv',

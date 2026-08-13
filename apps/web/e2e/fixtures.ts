@@ -25,6 +25,7 @@ function json(route: Route, body: unknown, status = 200) {
 export async function stubAuthenticatedApp(page: Page) {
   await page.route('**/api/v1/setup/status', (route) => json(route, completedSetup));
   await page.route('**/api/v1/auth/session', (route) => json(route, session));
+  await page.route('**/api/v1/dashboard/background-runtime', (route) => json(route, { state: 'running' }));
   await page.route('**/api/v1/dashboard/summary', (route) =>
     json(route, {
       counts: { downloading: 1, processing: 2, awaitingReview: 1, importing: 0, attention: 1, failed: 0, cleanupFailed: 0, mappingPending: 1 },
@@ -70,11 +71,24 @@ export async function stubAuthenticatedApp(page: Page) {
       recentImports: [],
       recentScans: [],
       dependencies: {
-        qBittorrent: { configured: true },
-        tmdb: { configured: true },
-        emby: { configured: true },
-        mediaTools: { configured: true },
+        qBittorrent: { configured: true, lastTestSuccess: true },
+        tmdb: { configured: true, lastTestSuccess: true },
+        emby: { configured: true, lastTestSuccess: true },
+        mediaTools: { configured: true, lastTestSuccess: true },
         networkProxy: { configured: false },
+        agent: { configured: false },
+      },
+      agentResolutions: {
+        total: 0,
+        reviewPending: 0,
+        applied: 0,
+        autoApplied: 0,
+        accepted: 0,
+        rejected: 0,
+        failed: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        averageLatencyMilliseconds: 0,
       },
       links: {
         downloading: '/acquisitions?phase=downloading',
@@ -94,7 +108,10 @@ export async function stubAuthenticatedApp(page: Page) {
       historyWindowSeconds: 120,
       availability: { cpu: true, memory: true, network: true, diskIO: true, diskCapacity: true },
       memory: { usedBytes: 8589934592, totalBytes: 17179869184 },
-      disks: [{ path: 'D:', usedBytes: 644245094400, totalBytes: 1073741824000, usedPercent: 60 }],
+      disks: [
+        { device: '/dev/sda1', path: '/data/video/video1', usedBytes: 644245094400, totalBytes: 1073741824000, usedPercent: 60 },
+        { device: '/dev/sdb1', path: '/data/video/video2', usedBytes: 300647710720, totalBytes: 644245094400, usedPercent: 50 },
+      ],
       samples: [
         { sampledAt: '2026-07-26T08:00:00Z', cpuUsedPercent: 30, memoryUsedPercent: 48, networkReceiveBytesPerSecond: 1048576, networkSendBytesPerSecond: 524288, diskReadBytesPerSecond: 2097152, diskWriteBytesPerSecond: 1048576 },
         { sampledAt: '2026-07-26T08:00:02Z', cpuUsedPercent: 36, memoryUsedPercent: 49, networkReceiveBytesPerSecond: 2097152, networkSendBytesPerSecond: 1048576, diskReadBytesPerSecond: 4194304, diskWriteBytesPerSecond: 2097152 },

@@ -41,7 +41,7 @@ func TestGetDashboardSystemMetricsMapsAvailableAndMissingSamples(t *testing.T) {
 			{SampledAt: secondAt, CPUUsedPercent: &cpu, MemoryUsedPercent: &memory, NetworkReceiveBytesPerSecond: &receive},
 		},
 		Memory: &domain.SystemMemoryUsage{UsedBytes: 8_000, TotalBytes: 16_000},
-		Disks:  []domain.SystemDiskUsage{{Path: "D:", UsedBytes: 60_000, TotalBytes: 100_000, UsedPercent: 60}},
+		Disks:  []domain.SystemDiskUsage{{Device: "D:", Path: "D:", UsedBytes: 60_000, TotalBytes: 100_000, UsedPercent: 60}},
 	}}
 	authentication := &authenticationStub{authenticated: domain.Session{User: domain.AdminUser{Username: "admin"}}}
 	handler := NewHandler(NewServer(readinessStub{}, WithAuthentication(authentication, false), WithSystemMetrics(stub)))
@@ -67,7 +67,7 @@ func TestGetDashboardSystemMetricsMapsAvailableAndMissingSamples(t *testing.T) {
 	if body.Samples[1].CpuUsedPercent == nil || *body.Samples[1].CpuUsedPercent != 42.5 || body.Samples[1].NetworkReceiveBytesPerSecond == nil || *body.Samples[1].NetworkReceiveBytesPerSecond != 4096 {
 		t.Fatalf("second sample = %#v", body.Samples[1])
 	}
-	if body.Availability.DiskIO || !body.Availability.DiskCapacity || len(body.Disks) != 1 || body.Disks[0].Path != "D:" {
+	if body.Availability.DiskIO || !body.Availability.DiskCapacity || len(body.Disks) != 1 || body.Disks[0].Device != "D:" || body.Disks[0].Path != "D:" {
 		t.Fatalf("availability/disks = %#v/%#v", body.Availability, body.Disks)
 	}
 }
