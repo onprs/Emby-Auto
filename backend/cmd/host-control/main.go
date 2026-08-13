@@ -305,7 +305,9 @@ func readHostNetworkCounters(path, sysfsRoot string) (received, sent uint64, err
 		if separator == -1 {
 			continue
 		}
-		name := strings.ToLower(strings.TrimSpace(line[:separator]))
+		// 接口名大小写敏感（Linux 允许 WAN0 等混合/大写名称），
+		// 必须保留原始名称用于 sysfs 路径查询，不得小写化。
+		name := strings.TrimSpace(line[:separator])
 		if name == "" || !deviceBackedInterface(sysfsRoot, name) {
 			continue
 		}

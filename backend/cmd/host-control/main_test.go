@@ -191,6 +191,30 @@ func TestReadHostNetworkCountersExcludesLogicalInterfacesSharingPhysicalTraffic(
 	}
 }
 
+func TestReadHostNetworkCountersPreservesInterfaceNameCase(t *testing.T) {
+	// Linux 接口名大小写敏感，WAN0 的真实 sysfs 路径是 /sys/class/net/WAN0/device；
+	// 查询前不得小写化，否则会漏掉该物理网卡（只有它时返回 0 0 且仍标记可用）。
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "class", "net", "WAN0", "device"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "net-dev")
+	content := "Inter-|   Receive                                                |  Transmit\n" +
+		" face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n" +
+		"    lo:    100      10    0    0    0     0          0         0     200      10    0    0    0     0       0          0\n" +
+		"  WAN0:  150000   15000    0    0    0     0          0         0  250000   15000    0    0    0     0       0          0\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	received, sent, err := readHostNetworkCounters(path, root)
+	if err != nil {
+		t.Fatalf("readHostNetworkCounters() error = %v", err)
+	}
+	if received != 150_000 || sent != 250_000 {
+		t.Fatalf("counters = %d/%d, want 150000/250000", received, sent)
+	}
+}
+
 func TestExecuteRequestReadsHostNetworkCounters(t *testing.T) {
 	response := executeRequest(context.Background(), t.TempDir()+"/unused-helper", controlRequest{Command: "host-network-counters"})
 	if response.Error != "" {
