@@ -28,6 +28,8 @@ import (
 const (
 	defaultSocketPath        = "/run/emby-auto-host/control.sock"
 	defaultRuntimeHelperPath = "/usr/local/libexec/emby-auto-worker-runtime"
+	hostNetworkDevPath       = "/proc/net/dev"
+	sysfsNetRoot             = "/sys"
 	maxMessageBytes          = 16 << 10
 	requestTimeout           = 2 * time.Minute
 )
@@ -37,9 +39,11 @@ type controlRequest struct {
 }
 
 type controlResponse struct {
-	Status string  `json:"status,omitempty"`
-	UID    *uint32 `json:"uid,omitempty"`
-	Error  string  `json:"error,omitempty"`
+	Status              string  `json:"status,omitempty"`
+	UID                 *uint32 `json:"uid,omitempty"`
+	NetworkReceiveBytes *uint64 `json:"networkReceiveBytes,omitempty"`
+	NetworkSendBytes    *uint64 `json:"networkSendBytes,omitempty"`
+	Error               string  `json:"error,omitempty"`
 }
 
 func main() {
@@ -54,7 +58,7 @@ func run(args []string) error {
 		return runServerCommand(args[1:])
 	}
 	if len(args) != 1 {
-		return errors.New("usage: emby-auto-host-control worker-status|worker-start|worker-stop|media-owner|serve")
+		return errors.New("usage: emby-auto-host-control worker-status|worker-start|worker-stop|media-owner|host-network-counters|serve")
 	}
 
 	request := controlRequest{Command: args[0]}
@@ -80,6 +84,14 @@ func run(args []string) error {
 		}
 		if _, err := fmt.Fprintln(os.Stdout, *response.UID); err != nil {
 			return fmt.Errorf("write Emby media owner UID: %w", err)
+		}
+	}
+	if request.Command == "host-network-counters" {
+		if response.NetworkReceiveBytes == nil || response.NetworkSendBytes == nil {
+			return errors.New("host-control response did not include host network counters")
+		}
+		if _, err := fmt.Fprintf(os.Stdout, "%d %d\n", *response.NetworkReceiveBytes, *response.NetworkSendBytes); err != nil {
+			return fmt.Errorf("write host network counters: %w", err)
 		}
 	}
 	return nil
@@ -192,6 +204,13 @@ func executeRequest(ctx context.Context, runtimeHelperPath string, request contr
 		}
 		return controlResponse{UID: &uid}
 	}
+	if request.Command == "host-network-counters" {
+		received, sent, err := readHostNetworkCounters(hostNetworkDevPath, sysfsNetRoot)
+		if err != nil {
+			return controlResponse{Error: err.Error()}
+		}
+		return controlResponse{NetworkReceiveBytes: &received, NetworkSendBytes: &sent}
+	}
 
 	action := strings.TrimPrefix(request.Command, "worker-")
 	output, err := executeHelper(ctx, runtimeHelperPath, []string{action})
@@ -250,10 +269,64 @@ func sendRequest(ctx context.Context, socketPath string, request controlRequest)
 }
 
 func validateRequest(request controlRequest) error {
-	if request.Command == "media-owner" || isWorkerCommand(request.Command) {
+	if request.Command == "media-owner" || request.Command == "host-network-counters" || isWorkerCommand(request.Command) {
 		return nil
 	}
-	return errors.New("command must be worker-status, worker-start, worker-stop, or media-owner")
+	return errors.New("command must be worker-status, worker-start, worker-stop, media-owner, or host-network-counters")
+}
+
+// deviceBackedInterface 判断接口是否为真实设备背板的物理网卡：
+// 内核 sysfs 只给 PCI/USB/virtio 等真实设备背板的网卡提供
+// /sys/class/net/<name>/device 条目；bridge、bond、VLAN 子接口、WireGuard、
+// veth、tun/tap、dummy 与 loopback 等逻辑接口都没有。这些逻辑接口与底层物理
+// 网卡同时累计同一批流量，若一起求和会把宿主网络速度重复计为约两倍，
+// 因此只统计有 device 条目的物理接口。
+func deviceBackedInterface(sysfsRoot, name string) bool {
+	info, err := os.Stat(filepath.Join(sysfsRoot, "class", "net", name, "device"))
+	return err == nil && info.IsDir()
+}
+
+// readHostNetworkCounters 解析宿主 /proc/net/dev，返回物理网卡（由 sysfs
+// device 条目识别）的接收/发送字节计数。格式与内核 procfs 一致：接口行以
+// "name:" 开头，随后是接收与发送两组以空格分隔的计数器，rx 为第 1 列、
+// tx 为第 9 列。
+func readHostNetworkCounters(path, sysfsRoot string) (received, sent uint64, err error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, fmt.Errorf("read host network counters: %w", err)
+	}
+	lines := strings.Split(string(content), "\n")
+	if len(lines) < 3 {
+		return 0, 0, fmt.Errorf("host network counters file %s has no interface rows", path)
+	}
+
+	for _, line := range lines[2:] {
+		separator := strings.LastIndex(line, ":")
+		if separator == -1 {
+			continue
+		}
+		// 接口名大小写敏感（Linux 允许 WAN0 等混合/大写名称），
+		// 必须保留原始名称用于 sysfs 路径查询，不得小写化。
+		name := strings.TrimSpace(line[:separator])
+		if name == "" || !deviceBackedInterface(sysfsRoot, name) {
+			continue
+		}
+		fields := strings.Fields(line[separator+1:])
+		if len(fields) < 9 {
+			continue
+		}
+		rx, err := strconv.ParseUint(fields[0], 10, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("parse receive counter of interface %s: %w", name, err)
+		}
+		tx, err := strconv.ParseUint(fields[8], 10, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("parse send counter of interface %s: %w", name, err)
+		}
+		received += rx
+		sent += tx
+	}
+	return received, sent, nil
 }
 
 func resolveMediaOwnerUID(lookup func(string) (*user.User, error)) (uint32, error) {

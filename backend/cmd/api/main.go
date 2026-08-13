@@ -248,7 +248,11 @@ func buildRuntimeHandler(
 	acquisitionCommands := service.NewAcquisitionDeletionWorkflow(queries, transactor, operationScheduler)
 	downloadCommands := service.NewDownloadCommandWorkflow(transactor, operationScheduler)
 	taskCommands := service.NewTaskCommandWorkflow(queries, transactor, operationScheduler, taskWorkflow)
-	metrics := systemmetrics.NewCollector(systemmetrics.NewGopsutilSource(), systemmetrics.Options{})
+	var hostControlNetworkSource systemmetrics.HostControlNetworkReader
+	if cfg.HostControlExecutable != "" {
+		hostControlNetworkSource = systemmetrics.CommandHostControlNetworkReader{Executable: cfg.HostControlExecutable}
+	}
+	metrics := systemmetrics.NewCollector(systemmetrics.NewGopsutilSource(hostControlNetworkSource), systemmetrics.Options{})
 	if current, loadErr := configuration.Load(ctx); loadErr == nil {
 		metrics.SetDiskPaths(systemMetricPaths(current.Settings.Paths))
 	}

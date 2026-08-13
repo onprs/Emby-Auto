@@ -4,9 +4,12 @@ import (
 	"context"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/onprs/emby-auto/backend/internal/domain"
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -15,13 +18,54 @@ import (
 	gnet "github.com/shirou/gopsutil/v4/net"
 )
 
-type GopsutilSource struct{}
-
-func NewGopsutilSource() GopsutilSource {
-	return GopsutilSource{}
+type GopsutilSource struct {
+	hostControl HostControlNetworkReader
 }
 
-func (GopsutilSource) Read(ctx context.Context, diskPaths []string) HostReading {
+func NewGopsutilSource(hostControl HostControlNetworkReader) GopsutilSource {
+	return GopsutilSource{hostControl: hostControl}
+}
+
+// HostControlNetworkReader 通过宿主 host-control socket 读取宿主物理网卡计数。
+// ok=false 表示未配置、调用失败或响应无法解析，调用方必须降级而不是用零值伪装。
+type HostControlNetworkReader interface {
+	ReadHostCounters(context.Context) (received, sent uint64, ok bool)
+}
+
+// CommandHostControlNetworkReader 调用发布包内的 emby-auto-host-control 客户端二进制，
+// 由它经 Unix socket 向宿主 root 服务请求 host-network-counters。
+type CommandHostControlNetworkReader struct {
+	Executable string
+	Timeout    time.Duration
+}
+
+func (reader CommandHostControlNetworkReader) ReadHostCounters(ctx context.Context) (uint64, uint64, bool) {
+	if strings.TrimSpace(reader.Executable) == "" {
+		return 0, 0, false
+	}
+	timeout := reader.Timeout
+	if timeout <= 0 {
+		timeout = 4 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, reader.Executable, "host-network-counters").Output()
+	if err != nil {
+		return 0, 0, false
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) != 2 {
+		return 0, 0, false
+	}
+	received, errRx := strconv.ParseUint(fields[0], 10, 64)
+	sent, errTx := strconv.ParseUint(fields[1], 10, 64)
+	if errRx != nil || errTx != nil {
+		return 0, 0, false
+	}
+	return received, sent, true
+}
+
+func (source GopsutilSource) Read(ctx context.Context, diskPaths []string) HostReading {
 	reading := HostReading{}
 
 	if percentages, err := cpu.PercentWithContext(ctx, 0, false); err == nil && len(percentages) > 0 {
@@ -34,7 +78,13 @@ func (GopsutilSource) Read(ctx context.Context, diskPaths []string) HostReading 
 		reading.MemoryUsedBytes = memory.Used
 		reading.MemoryUsedPercent = memory.UsedPercent
 	}
-	if counters, err := gnet.IOCountersWithContext(ctx, true); err == nil {
+	if source.hostControl != nil {
+		if received, sent, ok := source.hostControl.ReadHostCounters(ctx); ok {
+			reading.NetworkBytesRecv = received
+			reading.NetworkBytesSent = sent
+			reading.NetworkAvailable = true
+		}
+	} else if counters, err := gnet.IOCountersWithContext(ctx, true); err == nil {
 		loopbacks := loopbackInterfaceNames()
 		for _, counter := range counters {
 			if _, excluded := loopbacks[strings.ToLower(counter.Name)]; excluded {
