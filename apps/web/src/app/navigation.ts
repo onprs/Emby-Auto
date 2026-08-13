@@ -32,13 +32,7 @@ export const appNavigation: AppNavigationItem[] = [
   { id: 'rss', label: 'RSS 订阅', shortLabel: 'RSS', to: '/rss', icon: Rss, visible: authenticated },
   { id: 'tasks', label: '任务', shortLabel: '任务', to: '/acquisitions', icon: ListChecks, visible: authenticated },
   { id: 'emby', label: '媒体库', shortLabel: '媒体库', to: '/emby', icon: Film, visible: authenticated },
-  {
-    id: 'operations', label: '运行记录', shortLabel: '运行', to: '/operations', icon: ScrollText,
-    children: [
-      { label: '任务执行', to: '/operations' },
-    ],
-    visible: authenticated,
-  },
+  { id: 'operations', label: '运行记录', shortLabel: '运行', to: '/operations', icon: ScrollText, visible: authenticated },
   {
     id: 'settings',
     label: '系统设置',
