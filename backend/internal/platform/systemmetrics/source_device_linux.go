@@ -22,43 +22,73 @@ func platformDiskDevices(samplePath, _ string) []string {
 }
 
 func linuxPhysicalBlockDevices(sysfsRoot string, major, minor uint32) []string {
+	return linuxPhysicalBlockDevicesWithReadDir(sysfsRoot, major, minor, os.ReadDir)
+}
+
+func linuxPhysicalBlockDevicesWithReadDir(
+	sysfsRoot string,
+	major, minor uint32,
+	readDir func(string) ([]os.DirEntry, error),
+) []string {
 	devicePath, err := filepath.EvalSymlinks(filepath.Join(sysfsRoot, "dev", "block", fmt.Sprintf("%d:%d", major, minor)))
 	if err != nil {
 		return nil
 	}
-	devices := resolveLinuxBlockDevices(devicePath, make(map[string]struct{}))
+	devices, complete := resolveLinuxBlockDevices(devicePath, make(map[string]struct{}), readDir)
+	if !complete {
+		return nil
+	}
 	sort.Strings(devices)
 	return devices
 }
 
-func resolveLinuxBlockDevices(devicePath string, visited map[string]struct{}) []string {
+func resolveLinuxBlockDevices(
+	devicePath string,
+	visiting map[string]struct{},
+	readDir func(string) ([]os.DirEntry, error),
+) ([]string, bool) {
 	resolved, err := filepath.EvalSymlinks(devicePath)
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	if _, exists := visited[resolved]; exists {
-		return nil
+	if _, exists := visiting[resolved]; exists {
+		return nil, false
 	}
-	visited[resolved] = struct{}{}
-
-	if slaves, err := os.ReadDir(filepath.Join(resolved, "slaves")); err == nil && len(slaves) > 0 {
-		devices := make([]string, 0, len(slaves))
-		for _, slave := range slaves {
-			devices = append(devices, resolveLinuxBlockDevices(filepath.Join(resolved, "slaves", slave.Name()), visited)...)
-		}
-		if len(devices) > 0 {
-			return uniqueSortedStrings(devices)
-		}
-	}
+	visiting[resolved] = struct{}{}
+	defer delete(visiting, resolved)
 
 	if _, err := os.Stat(filepath.Join(resolved, "partition")); err == nil {
-		return resolveLinuxBlockDevices(filepath.Dir(resolved), visited)
+		parent := filepath.Dir(resolved)
+		if parent == resolved {
+			return nil, false
+		}
+		return resolveLinuxBlockDevices(parent, visiting, readDir)
+	} else if !os.IsNotExist(err) {
+		return nil, false
 	}
+
+	slaves, err := readDir(filepath.Join(resolved, "slaves"))
+	if err != nil {
+		return nil, false
+	}
+	if len(slaves) > 0 {
+		devices := make([]string, 0, len(slaves))
+		for _, slave := range slaves {
+			resolvedDevices, complete := resolveLinuxBlockDevices(filepath.Join(resolved, "slaves", slave.Name()), visiting, readDir)
+			if !complete || len(resolvedDevices) == 0 {
+				return nil, false
+			}
+			devices = append(devices, resolvedDevices...)
+		}
+		devices = uniqueSortedStrings(devices)
+		return devices, len(devices) > 0
+	}
+
 	name := filepath.Base(resolved)
 	if name == "." || name == string(filepath.Separator) || name == "" {
-		return nil
+		return nil, false
 	}
-	return []string{name}
+	return []string{name}, true
 }
 
 func uniqueSortedStrings(values []string) []string {

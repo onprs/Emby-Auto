@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/onprs/emby-auto/backend/internal/domain"
 	"github.com/shirou/gopsutil/v4/disk"
 )
 
@@ -109,12 +108,50 @@ func TestGopsutilSourceKeepsLogicalDeviceForMultiDiskVolume(t *testing.T) {
 }
 
 func TestGopsutilSourceMakesDiskIOUnavailableWhenAnyDisplayedDeviceIsUnresolved(t *testing.T) {
-	details := []diskUsageDetail{
-		{usage: domain.SystemDiskUsage{Device: "/dev/sda1", PhysicalDevices: []string{"sda"}}, ioDevices: []string{"sda"}},
-		{usage: domain.SystemDiskUsage{Device: "overlay"}},
+	originalUsage := usageWithContext
+	originalPartitions := partitionsWithContext
+	originalWorkingDirectory := getWorkingDirectory
+	originalResolveDiskDevices := resolveDiskDevices
+	originalIOCounters := ioCountersWithContext
+	usageWithContext = fakeDiskIOUsage(map[string]*disk.UsageStat{
+		"/app":  {Path: "/app", Total: 1_000, Used: 600, UsedPercent: 60},
+		"/data": {Path: "/data", Total: 2_000, Used: 1_000, UsedPercent: 50},
+	})
+	partitionsWithContext = func(context.Context, bool) ([]disk.PartitionStat, error) {
+		return []disk.PartitionStat{
+			{Device: "/dev/sda1", Mountpoint: "/app", Fstype: "ext4"},
+			{Device: "/dev/mapper/media", Mountpoint: "/data", Fstype: "ext4"},
+		}, nil
 	}
-	if allDiskDevicesResolved(details) {
-		t.Fatal("allDiskDevicesResolved() = true with an unresolved displayed disk")
+	getWorkingDirectory = func() (string, error) { return "/app", nil }
+	resolveDiskDevices = func(samplePath, _ string) []string {
+		if samplePath == "/app" {
+			return []string{"sda"}
+		}
+		return nil
+	}
+	countersRequested := false
+	ioCountersWithContext = func(context.Context, ...string) (map[string]disk.IOCountersStat, error) {
+		countersRequested = true
+		return nil, nil
+	}
+	defer func() {
+		usageWithContext = originalUsage
+		partitionsWithContext = originalPartitions
+		getWorkingDirectory = originalWorkingDirectory
+		resolveDiskDevices = originalResolveDiskDevices
+		ioCountersWithContext = originalIOCounters
+	}()
+
+	reading := NewGopsutilSource(nil).Read(t.Context(), []string{"/data/media"})
+	if countersRequested {
+		t.Fatal("I/O counters were requested for an incomplete physical device set")
+	}
+	if !reading.DisksAvailable || len(reading.Disks) != 2 {
+		t.Fatalf("disk capacities = %#v, want both logical devices", reading.Disks)
+	}
+	if reading.DiskIOAvailable || len(reading.DiskDevices) != 0 {
+		t.Fatalf("disk I/O = %#v, want unavailable for incomplete topology", reading)
 	}
 }
 
