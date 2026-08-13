@@ -188,13 +188,14 @@ function DiskUsageRow({ disk, color }: { disk: SystemDiskUsage; color: string })
   const fullTitle = showPath ? `${disk.device} · ${disk.path}` : disk.device;
   return (
     <li aria-label={`${name} 磁盘容量`}>
-      <div className="flex items-center justify-between gap-3 text-xs">
+      {/* 窄屏（<640px）分行展示避免横向溢出：设备名一行，容量文本换到下一行。 */}
+      <div className="flex flex-col gap-1 text-xs sm:flex-row sm:items-center sm:justify-between sm:gap-3">
         <span className="flex min-w-0 items-center gap-2">
           <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: color }} aria-hidden="true" />
           <span className="truncate font-medium text-zinc-700" title={fullTitle}>{name}</span>
-          {showPath ? <span className="shrink-0 text-zinc-400">{disk.path}</span> : null}
+          {showPath ? <span className="truncate text-zinc-400" title={fullTitle}>{disk.path}</span> : null}
         </span>
-        <span className="shrink-0 text-zinc-500">{formatBytes(disk.usedBytes)} / {formatBytes(disk.totalBytes)} · {formatPercent(disk.usedPercent)}</span>
+        <span className="shrink-0 pl-4 text-zinc-500 sm:pl-0">{formatBytes(disk.usedBytes)} / {formatBytes(disk.totalBytes)} · {formatPercent(disk.usedPercent)}</span>
       </div>
       <div className="mt-1.5 h-2 overflow-hidden rounded-sm bg-zinc-100">
         <div className="h-full" style={{ width: `${Math.min(100, Math.max(0, disk.usedPercent))}%`, backgroundColor: color }} />

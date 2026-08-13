@@ -43,6 +43,12 @@ jobs:
       - name: Run static checks, unit tests, and builds
         run: npm run check
 
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser E2E tests (desktop and mobile)
+        run: npm run test:e2e --workspace @emby-auto/web
+
       - name: Validate public Compose configuration
         run: npm run deploy:check
 
