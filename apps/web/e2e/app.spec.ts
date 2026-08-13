@@ -25,8 +25,8 @@ test.describe('application shell', () => {
     await expect(resources.getByLabel('CPU 使用率图表')).toContainText('42%');
     await expect(resources.getByLabel('内存使用率图表')).toContainText('8.0 GiB / 16.0 GiB');
     await expect(resources.getByLabel('网络速度图表')).toContainText('4.0 MiB/s');
-    await expect(resources.getByLabel('磁盘')).toContainText('sda1');
-    await expect(resources.getByLabel('磁盘')).toContainText('/data/video/video1');
+    await expect(resources.getByLabel('磁盘', { exact: true })).toContainText('sda1');
+    await expect(resources.getByLabel('磁盘', { exact: true })).toContainText('/data/video/video1');
     await expect(resources.getByLabel('磁盘资源图表')).toContainText('读取 8.0 MiB/s');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
     if (mobile) {
@@ -198,26 +198,28 @@ test.describe('application shell', () => {
       const url = new URL(route.request().url());
       if (url.pathname.endsWith(`/${subscriptionId}/entries`)) {
         rssEntriesURL = url.toString();
+        // 详情页分别请求 confirmed 与 skipped 两个分组，mock 需按 group 区分，
+        // 否则同一条目会在两个分组各渲染一次。
+        const group = url.searchParams.get('group');
+        const items = group === 'skipped' ? [] : [{
+          id: '23000000-0000-0000-0000-000000000004',
+          subscriptionId,
+          acquisitionId,
+          acquisitionProgress: { aggregateStatus: 'pending', currentStage: 'download', overallProgress: 0.02 },
+          title: entryTitle,
+          status: 'enqueued',
+          classification: 'enqueued',
+          duplicateCount: 0,
+          downloadUriAvailable: true,
+          sourceSeason: 1,
+          sourceEpisode: 1,
+          createdAt: now,
+          updatedAt: now,
+        }];
         return route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify({
-            items: [{
-              id: '23000000-0000-0000-0000-000000000004',
-              subscriptionId,
-              acquisitionId,
-              acquisitionProgress: { aggregateStatus: 'pending', currentStage: 'download', overallProgress: 0.02 },
-              title: entryTitle,
-              status: 'enqueued',
-              classification: 'enqueued',
-              duplicateCount: 0,
-              downloadUriAvailable: true,
-              sourceSeason: 1,
-              sourceEpisode: 1,
-              createdAt: now,
-              updatedAt: now,
-            }],
-          }),
+          body: JSON.stringify({ items }),
         });
       }
       if (url.pathname.endsWith(`/${subscriptionId}`)) {
