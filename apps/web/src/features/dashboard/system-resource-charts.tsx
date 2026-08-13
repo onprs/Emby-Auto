@@ -151,14 +151,14 @@ export function SystemResourceCharts({ metrics, pending, error, onRetry }: Syste
               />
             </div>
             <div className="mt-4 border-t border-zinc-100 pt-4" aria-label="磁盘容量">
-              <div className="flex items-baseline justify-between gap-3">
+              <div className="flex flex-col gap-1 xl:flex-row xl:items-baseline xl:justify-between xl:gap-3">
                 <p className="text-sm font-medium text-zinc-700">磁盘容量</p>
-                <p className="shrink-0 text-xs text-zinc-500">不同颜色代表不同磁盘设备</p>
+                <p className="text-xs text-zinc-500">不同颜色代表不同磁盘设备</p>
               </div>
               {metrics.disks.length === 0 ? (
                 <p className="mt-2 text-xs text-zinc-500">磁盘容量不可用</p>
               ) : (
-                <ul className="mt-3 grid max-h-56 gap-x-6 gap-y-3 overflow-y-auto overscroll-contain pr-1 sm:grid-cols-2">
+                <ul className="mt-3 grid max-h-56 gap-y-3 overflow-y-auto overscroll-contain pr-1">
                   {metrics.disks.map((disk, index) => (
                     <DiskUsageRow key={disk.device} disk={disk} color={diskColor(index)} />
                   ))}
@@ -187,15 +187,15 @@ function DiskUsageRow({ disk, color }: { disk: SystemDiskUsage; color: string })
   const showPath = disk.path !== '' && disk.path !== disk.device;
   const fullTitle = showPath ? `${disk.device} · ${disk.path}` : disk.device;
   return (
-    <li aria-label={`${name} 磁盘容量`}>
-      {/* 窄屏（<640px）分行展示避免横向溢出：设备名一行，容量文本换到下一行。 */}
-      <div className="flex flex-col gap-1 text-xs sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+    <li className="min-w-0" aria-label={`${name} 磁盘容量`}>
+      {/* 半宽卡片在中等视口保持纵向排列，避免设备信息与容量文本互相挤压。 */}
+      <div className="flex min-w-0 flex-col gap-1 text-xs xl:flex-row xl:items-center xl:justify-between xl:gap-3">
         <span className="flex min-w-0 items-center gap-2">
           <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: color }} aria-hidden="true" />
           <span className="truncate font-medium text-zinc-700" title={fullTitle}>{name}</span>
           {showPath ? <span className="truncate text-zinc-400" title={fullTitle}>{disk.path}</span> : null}
         </span>
-        <span className="shrink-0 pl-4 text-zinc-500 sm:pl-0">{formatBytes(disk.usedBytes)} / {formatBytes(disk.totalBytes)} · {formatPercent(disk.usedPercent)}</span>
+        <span className="min-w-0 break-words pl-4 text-zinc-500 xl:shrink-0 xl:pl-0">{formatBytes(disk.usedBytes)} / {formatBytes(disk.totalBytes)} · {formatPercent(disk.usedPercent)}</span>
       </div>
       <div className="mt-1.5 h-2 overflow-hidden rounded-sm bg-zinc-100">
         <div className="h-full" style={{ width: `${Math.min(100, Math.max(0, disk.usedPercent))}%`, backgroundColor: color }} />

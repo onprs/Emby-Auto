@@ -51,6 +51,27 @@ test.describe('application shell', () => {
     await expect(navigation.getByRole('link', { name: '系统设置', exact: true })).toBeVisible();
   });
 
+  test('keeps the half-width disk card free of internal overflow at the sm breakpoint', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop', '桌面项目覆盖中间宽度布局');
+    await page.setViewportSize({ width: 640, height: 900 });
+    await stubAuthenticatedApp(page);
+    await page.goto('/');
+
+    const resources = page.getByLabel('系统资源');
+    const networkCard = resources.getByLabel('网络速度图表');
+    const diskCard = resources.getByLabel('磁盘', { exact: true });
+    const diskList = diskCard.getByLabel('磁盘容量').locator('ul');
+    await expect(diskList).toBeVisible();
+
+    const [networkBox, diskBox] = await Promise.all([networkCard.boundingBox(), diskCard.boundingBox()]);
+    expect(networkBox).not.toBeNull();
+    expect(diskBox).not.toBeNull();
+    expect(Math.abs(diskBox!.y - networkBox!.y)).toBeLessThan(1);
+    expect(diskBox!.x).toBeGreaterThan(networkBox!.x);
+    expect(await diskCard.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(await diskList.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  });
+
   test('runs Emby file scanning and catalog updates in place', async ({ page }) => {
     const pageErrors: string[] = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
