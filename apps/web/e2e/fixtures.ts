@@ -109,8 +109,8 @@ export async function stubAuthenticatedApp(page: Page) {
       availability: { cpu: true, memory: true, network: true, diskIO: true, diskCapacity: true },
       memory: { usedBytes: 8589934592, totalBytes: 17179869184 },
       disks: [
-        { device: '/dev/sda1', path: '/data/video/video1', usedBytes: 644245094400, totalBytes: 1073741824000, usedPercent: 60 },
-        { device: '/dev/sdb1', path: '/data/video/video2', usedBytes: 300647710720, totalBytes: 644245094400, usedPercent: 50 },
+        { device: '/dev/mapper/root', physicalDevices: ['nvme0n1'], path: '/', usedBytes: 644245094400, totalBytes: 1073741824000, usedPercent: 60 },
+        { device: '/dev/mapper/media', physicalDevices: ['sda', 'sdb'], path: '/data/video/video1', usedBytes: 300647710720, totalBytes: 644245094400, usedPercent: 50 },
       ],
       samples: [
         { sampledAt: '2026-07-26T08:00:00Z', cpuUsedPercent: 30, memoryUsedPercent: 48, networkReceiveBytesPerSecond: 1048576, networkSendBytesPerSecond: 524288, diskReadBytesPerSecond: 2097152, diskWriteBytesPerSecond: 1048576 },

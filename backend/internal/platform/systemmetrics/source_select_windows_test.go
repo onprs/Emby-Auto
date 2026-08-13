@@ -36,6 +36,7 @@ func TestReadDiskUsagesWindowsVolumes(t *testing.T) {
 	}
 	originalUsage := usageWithContext
 	originalPartitions := partitionsWithContext
+	originalResolveDiskDevices := resolveDiskDevices
 	usageWithContext = fakeUsage(map[string]*disk.UsageStat{
 		`C:\`: {Path: `C:\`, Total: 1_000_000, Used: 600_000, UsedPercent: 60},
 		`D:\`: {Path: `D:\`, Total: 2_000_000, Used: 1_000_000, UsedPercent: 50},
@@ -43,19 +44,21 @@ func TestReadDiskUsagesWindowsVolumes(t *testing.T) {
 	partitionsWithContext = func(context.Context, bool) ([]disk.PartitionStat, error) {
 		return partitions, nil
 	}
+	resolveDiskDevices = func(_ string, device string) []string { return []string{displayMount(device)} }
 	defer func() {
 		usageWithContext = originalUsage
 		partitionsWithContext = originalPartitions
+		resolveDiskDevices = originalResolveDiskDevices
 	}()
 
 	got := readDiskUsages(t.Context(), []string{`D:\media\work`, `C:\project`})
 	if len(got) != 2 {
 		t.Fatalf("readDiskUsages() = %#v, want 2 usages", got)
 	}
-	if got[0].Device != `C:` || got[0].Path != `C:` || got[0].UsedPercent != 60 {
+	if got[0].Device != `C:` || !reflect.DeepEqual(got[0].PhysicalDevices, []string{`C:`}) || got[0].Path != `C:` || got[0].UsedPercent != 60 {
 		t.Fatalf("usage[0] = %#v", got[0])
 	}
-	if got[1].Device != `D:` || got[1].Path != `D:` || got[1].UsedPercent != 50 {
+	if got[1].Device != `D:` || !reflect.DeepEqual(got[1].PhysicalDevices, []string{`D:`}) || got[1].Path != `D:` || got[1].UsedPercent != 50 {
 		t.Fatalf("usage[1] = %#v", got[1])
 	}
 }

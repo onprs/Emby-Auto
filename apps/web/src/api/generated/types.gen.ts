@@ -1324,7 +1324,14 @@ export type SystemMemoryUsage = {
 };
 
 export type SystemDiskUsage = {
+    /**
+     * Logical filesystem device or volume identifier reported for the selected mount
+     */
     device: string;
+    /**
+     * Sorted unique physical block device names backing the logical device on Linux, or platform device identifiers elsewhere; empty when the host cannot resolve them
+     */
+    physicalDevices: Array<string>;
     path: string;
     usedBytes: number;
     totalBytes: number;

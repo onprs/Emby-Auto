@@ -5139,11 +5139,19 @@ components:
     SystemDiskUsage:
       type: object
       additionalProperties: false
-      required: [device, path, usedBytes, totalBytes, usedPercent]
+      required: [device, physicalDevices, path, usedBytes, totalBytes, usedPercent]
       properties:
         device:
           type: string
           minLength: 1
+          description: Logical filesystem device or volume identifier reported for the selected mount
+        physicalDevices:
+          type: array
+          description: Sorted unique physical block device names backing the logical device on Linux, or platform device identifiers elsewhere; empty when the host cannot resolve them
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
         path:
           type: string
           minLength: 1

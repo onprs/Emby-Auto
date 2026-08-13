@@ -102,8 +102,8 @@ function systemMetrics() {
     availability: { cpu: true, memory: true, network: true, diskIO: true, diskCapacity: true },
     memory: { usedBytes: 8 * gibibyte, totalBytes: 16 * gibibyte },
     disks: [
-      { device: 'D:', path: 'D:', usedBytes: 600 * gibibyte, totalBytes: 1000 * gibibyte, usedPercent: 60 },
-      { device: 'E:', path: 'E:', usedBytes: 200 * gibibyte, totalBytes: 400 * gibibyte, usedPercent: 50 },
+      { device: '/dev/mapper/root', physicalDevices: ['nvme0n1'], path: '/', usedBytes: 600 * gibibyte, totalBytes: 1000 * gibibyte, usedPercent: 60 },
+      { device: '/dev/mapper/media', physicalDevices: ['sda', 'sdb'], path: '/data/video/video1', usedBytes: 200 * gibibyte, totalBytes: 400 * gibibyte, usedPercent: 50 },
     ],
     samples: [
       { sampledAt: '2026-07-26T08:00:00Z', cpuUsedPercent: 30, memoryUsedPercent: 48, networkReceiveBytesPerSecond: 1024, networkSendBytesPerSecond: 512, diskReadBytesPerSecond: 2048, diskWriteBytesPerSecond: 1024 },
@@ -138,12 +138,18 @@ describe('DashboardPage attention', () => {
     const resources = screen.getByLabelText('系统资源');
     expect(within(resources).getByLabelText('内存使用率图表')).toHaveTextContent('8.0 GiB / 16.0 GiB');
     expect(within(resources).getByLabelText('网络速度图表')).toHaveTextContent('4.0 KiB/s');
-    expect(within(resources).getByLabelText('磁盘资源图表')).toHaveTextContent('4.0 KiB/s');
+    expect(within(resources).getByLabelText('磁盘资源图表')).toHaveTextContent('读取 8.0 KiB/s');
+    expect(within(resources).getByLabelText('磁盘资源图表')).toHaveTextContent('写入 4.0 KiB/s');
+    const diskPanel = within(resources).getByLabelText('磁盘', { exact: true });
     const disks = within(resources).getByLabelText('磁盘容量');
-    expect(disks).toHaveTextContent('D:');
+    expect(disks).toHaveTextContent('nvme0n1');
     expect(disks).toHaveTextContent('60%');
-    expect(disks).toHaveTextContent('E:');
+    expect(disks).toHaveTextContent('sda, sdb');
     expect(disks).toHaveTextContent('50%');
+    expect(within(disks).queryByText('/', { exact: true })).not.toBeInTheDocument();
+    expect(disks).not.toHaveTextContent('/data/video/video1');
+    expect(diskPanel).not.toHaveTextContent('不同颜色代表不同磁盘设备');
+    expect(diskPanel).not.toHaveTextContent('容量与 I/O 实时负载');
 
     const recent = screen.getByLabelText('最近运行记录');
     expect(within(recent).getByText('添加下载')).toBeInTheDocument();
