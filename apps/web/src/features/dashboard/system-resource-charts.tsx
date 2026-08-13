@@ -175,8 +175,14 @@ function deviceName(device: string): string {
   return device.replace(/^\/dev\//, '');
 }
 
+// diskNames 优先展示结构化物理设备；旧数据或无法解析时回退逻辑设备。
+function diskNames(disk: SystemDiskUsage): string {
+  const devices = disk.physicalDevices.length > 0 ? disk.physicalDevices : [deviceName(disk.device)];
+  return devices.map(deviceName).join(', ');
+}
+
 function DiskUsageRow({ disk, color }: { disk: SystemDiskUsage; color: string }) {
-  const name = deviceName(disk.device);
+  const name = diskNames(disk);
   return (
     <li className="min-w-0" aria-label={`${name} 磁盘容量`}>
       {/* 半宽卡片在中等视口保持纵向排列，避免设备信息与容量文本互相挤压。 */}

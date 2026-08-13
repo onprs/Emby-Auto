@@ -28,7 +28,7 @@ test.describe('application shell', () => {
     const diskCard = resources.getByLabel('磁盘', { exact: true });
     await expect(networkCard).toContainText('4.0 MiB/s');
     await expect(diskCard).toContainText('nvme0n1');
-    await expect(diskCard).toContainText('sda');
+    await expect(diskCard).toContainText('sda, sdb');
     await expect(diskCard).not.toContainText('/data/video/video1');
     await expect(diskCard).not.toContainText('不同颜色代表不同磁盘设备');
     await expect(diskCard).not.toContainText('容量与 I/O 实时负载');

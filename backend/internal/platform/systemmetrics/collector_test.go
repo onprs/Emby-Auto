@@ -2,6 +2,7 @@ package systemmetrics
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,6 +64,57 @@ func TestCollectorCalculatesRatesFromAdjacentCounters(t *testing.T) {
 	}
 }
 
+func TestCollectorSkipsDiskRateWhenDeviceSetChanges(t *testing.T) {
+	changes := []struct {
+		name    string
+		before  string
+		after   string
+		settled string
+	}{
+		{name: "added", before: "nvme0n1", after: "nvme0n1,sda", settled: "nvme0n1,sda"},
+		{name: "removed", before: "nvme0n1,sda", after: "nvme0n1", settled: "nvme0n1"},
+		{name: "replaced", before: "nvme0n1", after: "sda", settled: "sda"},
+	}
+	for _, change := range changes {
+		t.Run(change.name, func(t *testing.T) {
+			base := time.Date(2026, time.July, 26, 4, 2, 0, 0, time.UTC)
+			source := &sequenceSource{readings: []HostReading{
+				completeReadingWithDiskSet(10, 100, 100, 1_000, 2_000, change.before),
+				completeReadingWithDiskSet(20, 200, 200, 51_000, 62_000, change.after),
+				completeReadingWithDiskSet(30, 300, 300, 51_400, 62_600, change.settled),
+			}}
+			collector := NewCollector(source, Options{Interval: 2 * time.Second, MaxSamples: 60})
+
+			collector.collectAt(context.Background(), base)
+			collector.collectAt(context.Background(), base.Add(2*time.Second))
+			collector.collectAt(context.Background(), base.Add(4*time.Second))
+
+			samples := collector.Snapshot().Samples
+			if samples[1].DiskReadBytesPerSecond != nil || samples[1].DiskWriteBytesPerSecond != nil {
+				t.Fatalf("changed device set exposed rate: %#v", samples[1])
+			}
+			assertMetric(t, "settled disk read", samples[2].DiskReadBytesPerSecond, 200)
+			assertMetric(t, "settled disk write", samples[2].DiskWriteBytesPerSecond, 300)
+		})
+	}
+}
+
+func TestCollectorTreatsReorderedDiskDeviceSetAsStable(t *testing.T) {
+	base := time.Date(2026, time.July, 26, 4, 4, 0, 0, time.UTC)
+	source := &sequenceSource{readings: []HostReading{
+		completeReadingWithDiskSet(10, 100, 100, 1_000, 2_000, "sda,nvme0n1"),
+		completeReadingWithDiskSet(20, 200, 200, 1_400, 2_600, "NVME0N1,SDA"),
+	}}
+	collector := NewCollector(source, Options{Interval: 2 * time.Second, MaxSamples: 60})
+
+	collector.collectAt(context.Background(), base)
+	collector.collectAt(context.Background(), base.Add(2*time.Second))
+
+	latest := collector.Snapshot().Samples[1]
+	assertMetric(t, "reordered disk read", latest.DiskReadBytesPerSecond, 200)
+	assertMetric(t, "reordered disk write", latest.DiskWriteBytesPerSecond, 300)
+}
+
 func TestCollectorClampsCounterResetsAndTrimsOldSamples(t *testing.T) {
 	base := time.Date(2026, time.July, 26, 4, 5, 0, 0, time.UTC)
 	source := &sequenceSource{readings: []HostReading{
@@ -90,8 +142,31 @@ func TestCollectorClampsCounterResetsAndTrimsOldSamples(t *testing.T) {
 	}
 
 	snapshot.Samples[0].CPUUsedPercent = metric(99)
+	snapshot.Disks[0].PhysicalDevices[0] = "mutated"
 	fresh := collector.Snapshot()
 	assertMetric(t, "snapshot copy", fresh.Samples[0].CPUUsedPercent, 20)
+	if fresh.Disks[0].PhysicalDevices[0] != "D:" {
+		t.Fatalf("snapshot physical devices were mutated: %#v", fresh.Disks[0].PhysicalDevices)
+	}
+}
+
+func TestCollectorCopiesDiskPhysicalDevicesFromSource(t *testing.T) {
+	at := time.Date(2026, time.July, 26, 4, 8, 0, 0, time.UTC)
+	reading := completeReading(10, 100, 100, 1_000, 2_000)
+	source := &sequenceSource{readings: []HostReading{reading}}
+	collector := NewCollector(source, Options{Interval: time.Second, MaxSamples: 2})
+
+	collector.collectAt(context.Background(), at)
+	reading.Disks[0].PhysicalDevices[0] = "source-mutated"
+
+	snapshot := collector.Snapshot()
+	if snapshot.Disks[0].PhysicalDevices[0] != "D:" {
+		t.Fatalf("source mutated collector snapshot: %#v", snapshot.Disks[0].PhysicalDevices)
+	}
+	snapshot.Disks[0].PhysicalDevices[0] = "caller-mutated"
+	if collector.Snapshot().Disks[0].PhysicalDevices[0] != "D:" {
+		t.Fatal("caller mutated collector snapshot")
+	}
 }
 
 func TestCollectorKeepsPartialMetricsExplicitlyUnavailable(t *testing.T) {
@@ -120,6 +195,10 @@ func TestCollectorKeepsPartialMetricsExplicitlyUnavailable(t *testing.T) {
 }
 
 func completeReading(cpu float64, received, sent, read, written uint64) HostReading {
+	return completeReadingWithDiskSet(cpu, received, sent, read, written, "d:")
+}
+
+func completeReadingWithDiskSet(cpu float64, received, sent, read, written uint64, devices string) HostReading {
 	return HostReading{
 		CPUAvailable:      true,
 		CPUUsedPercent:    cpu,
@@ -133,9 +212,10 @@ func completeReading(cpu float64, received, sent, read, written uint64) HostRead
 		DiskIOAvailable:   true,
 		DiskReadBytes:     read,
 		DiskWrittenBytes:  written,
+		DiskDevices:       strings.Split(devices, ","),
 		DisksAvailable:    true,
 		Disks: []domain.SystemDiskUsage{{
-			Device: "D:", Path: "D:", TotalBytes: 100_000, UsedBytes: 60_000, UsedPercent: 60,
+			Device: "D:", PhysicalDevices: []string{"D:"}, Path: "D:", TotalBytes: 100_000, UsedBytes: 60_000, UsedPercent: 60,
 		}},
 	}
 }

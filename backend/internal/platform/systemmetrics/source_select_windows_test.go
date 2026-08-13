@@ -55,10 +55,10 @@ func TestReadDiskUsagesWindowsVolumes(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("readDiskUsages() = %#v, want 2 usages", got)
 	}
-	if got[0].Device != `C:` || got[0].Path != `C:` || got[0].UsedPercent != 60 {
+	if got[0].Device != `C:` || !reflect.DeepEqual(got[0].PhysicalDevices, []string{`C:`}) || got[0].Path != `C:` || got[0].UsedPercent != 60 {
 		t.Fatalf("usage[0] = %#v", got[0])
 	}
-	if got[1].Device != `D:` || got[1].Path != `D:` || got[1].UsedPercent != 50 {
+	if got[1].Device != `D:` || !reflect.DeepEqual(got[1].PhysicalDevices, []string{`D:`}) || got[1].Path != `D:` || got[1].UsedPercent != 50 {
 		t.Fatalf("usage[1] = %#v", got[1])
 	}
 }

@@ -28,6 +28,27 @@ func TestLinuxPhysicalBlockDevicesResolvesDeviceMapperToPhysicalDisk(t *testing.
 	}
 }
 
+func TestLinuxPhysicalBlockDevicesResolvesDeviceMapperToMultiplePhysicalDisks(t *testing.T) {
+	sysfsRoot := t.TempDir()
+	dmDevice := filepath.Join(sysfsRoot, "devices", "virtual", "block", "dm-1")
+	mustMkdirAll(t, filepath.Join(dmDevice, "slaves"))
+	for _, device := range []string{"sdb", "sda"} {
+		diskPath := filepath.Join(sysfsRoot, "devices", "pci0000:00", "block", device)
+		partitionPath := filepath.Join(diskPath, device+"1")
+		mustMkdirAll(t, partitionPath)
+		mustWriteFile(t, filepath.Join(partitionPath, "partition"), "1\n")
+		mustSymlink(t, partitionPath, filepath.Join(dmDevice, "slaves", device+"1"))
+	}
+	mustMkdirAll(t, filepath.Join(sysfsRoot, "dev", "block"))
+	mustSymlink(t, dmDevice, filepath.Join(sysfsRoot, "dev", "block", "254:1"))
+
+	got := linuxPhysicalBlockDevices(sysfsRoot, 254, 1)
+	want := []string{"sda", "sdb"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("linuxPhysicalBlockDevices() = %#v, want %#v", got, want)
+	}
+}
+
 func TestLinuxPhysicalBlockDevicesResolvesPartitionToPhysicalDisk(t *testing.T) {
 	sysfsRoot := t.TempDir()
 	sataDisk := filepath.Join(sysfsRoot, "devices", "pci0000:00", "ata4", "block", "sda")

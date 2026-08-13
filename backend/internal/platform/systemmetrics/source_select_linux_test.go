@@ -151,11 +151,11 @@ func TestReadDiskUsagesContainerBindMounts(t *testing.T) {
 		t.Fatalf("readDiskUsages() = %#v, want 2 usages", got)
 	}
 	root, data := got[0], got[1]
-	if root.Device != "nvme0n1" || root.Path != "/" || root.UsedPercent != 60 {
-		t.Fatalf("root usage = %#v, want physical device nvme0n1 with path \"/\"", root)
+	if root.Device != "/dev/mapper/onpes--server--vg-root" || !reflect.DeepEqual(root.PhysicalDevices, []string{"nvme0n1"}) || root.Path != "/" || root.UsedPercent != 60 {
+		t.Fatalf("root usage = %#v, want logical root device backed by nvme0n1", root)
 	}
-	if data.Device != "sda" || data.Path != "/data/video/video1" || data.UsedPercent != 50 {
-		t.Fatalf("data usage = %#v, want physical device sda", data)
+	if data.Device != "/dev/sda1" || !reflect.DeepEqual(data.PhysicalDevices, []string{"sda"}) || data.Path != "/data/video/video1" || data.UsedPercent != 50 {
+		t.Fatalf("data usage = %#v, want logical partition backed by sda", data)
 	}
 }
 
@@ -185,8 +185,8 @@ func TestReadDiskUsagesEmptyPartitionEnumerationFallback(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("readDiskUsages() = %#v, want 1 usage", got)
 	}
-	if got[0].Device == "" || got[0].Device != "/" || got[0].Path != "/" {
-		t.Fatalf("usage device = %q path = %q, want non-empty fallback \"/\"", got[0].Device, got[0].Path)
+	if got[0].Device == "" || got[0].Device != "/" || len(got[0].PhysicalDevices) != 0 || got[0].Path != "/" {
+		t.Fatalf("usage = %#v, want logical fallback with unresolved physical devices", got[0])
 	}
 }
 

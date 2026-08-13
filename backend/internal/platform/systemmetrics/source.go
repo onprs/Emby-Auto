@@ -104,11 +104,12 @@ func (source GopsutilSource) Read(ctx context.Context, diskPaths []string) HostR
 		}
 	}
 	diskDevices := displayedDiskDevices(diskDetails)
-	if len(diskDevices) > 0 {
+	if len(diskDevices) > 0 && allDiskDevicesResolved(diskDetails) {
 		if counters, err := ioCountersWithContext(ctx, diskDevices...); err == nil {
 			if read, written, ok := sumDiskIOCounters(counters, diskDevices); ok {
 				reading.DiskReadBytes = read
 				reading.DiskWrittenBytes = written
+				reading.DiskDevices = append([]string(nil), diskDevices...)
 				reading.DiskIOAvailable = true
 			}
 		}
@@ -166,24 +167,22 @@ func readDiskUsageDetails(ctx context.Context, configuredPaths []string) []diskU
 		if err != nil || usage == nil || usage.Total == 0 {
 			continue
 		}
-		devices := normalizeDiskDevices(resolveDiskDevices(mount.Sample, mount.Device))
-		if len(devices) == 0 {
-			device := displayMount(mount.Device)
-			if device == "" {
-				// 分区枚举不完整时用展示路径兜底，保证 device 非空（契约 minLength:1）。
-				device = displayMount(mount.Display)
-			}
-			devices = []string{device}
+		physicalDevices := normalizeDiskDevices(resolveDiskDevices(mount.Sample, mount.Device))
+		logicalDevice := displayMount(mount.Device)
+		if logicalDevice == "" {
+			// 分区枚举不完整时用展示路径兜底，保证 device 非空（契约 minLength:1）。
+			logicalDevice = displayMount(mount.Display)
 		}
 		details = append(details, diskUsageDetail{
 			usage: domain.SystemDiskUsage{
-				Device:      strings.Join(devices, ", "),
-				Path:        displayMount(mount.Display),
-				UsedBytes:   saturatingInt64(usage.Used),
-				TotalBytes:  saturatingInt64(usage.Total),
-				UsedPercent: clampPercent(usage.UsedPercent),
+				Device:          logicalDevice,
+				PhysicalDevices: physicalDevices,
+				Path:            displayMount(mount.Display),
+				UsedBytes:       saturatingInt64(usage.Used),
+				TotalBytes:      saturatingInt64(usage.Total),
+				UsedPercent:     clampPercent(usage.UsedPercent),
 			},
-			ioDevices: devices,
+			ioDevices: physicalDevices,
 		})
 	}
 	sort.Slice(details, func(left, right int) bool {
@@ -219,6 +218,18 @@ func displayedDiskDevices(details []diskUsageDetail) []string {
 		devices = append(devices, detail.ioDevices...)
 	}
 	return normalizeDiskDevices(devices)
+}
+
+func allDiskDevicesResolved(details []diskUsageDetail) bool {
+	if len(details) == 0 {
+		return false
+	}
+	for _, detail := range details {
+		if len(detail.ioDevices) == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func sumDiskIOCounters(counters map[string]disk.IOCountersStat, devices []string) (uint64, uint64, bool) {

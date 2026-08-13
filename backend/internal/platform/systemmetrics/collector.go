@@ -34,6 +34,7 @@ type HostReading struct {
 	DiskIOAvailable  bool
 	DiskReadBytes    uint64
 	DiskWrittenBytes uint64
+	DiskDevices      []string
 
 	DisksAvailable bool
 	Disks          []domain.SystemDiskUsage
@@ -53,6 +54,7 @@ type counterState struct {
 	diskReady       bool
 	diskRead        uint64
 	diskWritten     uint64
+	diskDeviceSet   string
 }
 
 // Collector keeps a bounded process-local history and derives rates from host counters.
@@ -163,7 +165,8 @@ func (collector *Collector) collectAt(ctx context.Context, sampledAt time.Time) 
 		sample.NetworkReceiveBytesPerSecond = floatMetric(counterRate(reading.NetworkBytesRecv, collector.previous.networkReceived, elapsed))
 		sample.NetworkSendBytesPerSecond = floatMetric(counterRate(reading.NetworkBytesSent, collector.previous.networkSent, elapsed))
 	}
-	if elapsed > 0 && reading.DiskIOAvailable && collector.previous.diskReady {
+	diskDeviceSet := diskDeviceSetFingerprint(reading.DiskDevices)
+	if elapsed > 0 && reading.DiskIOAvailable && collector.previous.diskReady && diskDeviceSet != "" && diskDeviceSet == collector.previous.diskDeviceSet {
 		sample.DiskReadBytesPerSecond = floatMetric(counterRate(reading.DiskReadBytes, collector.previous.diskRead, elapsed))
 		sample.DiskWriteBytesPerSecond = floatMetric(counterRate(reading.DiskWrittenBytes, collector.previous.diskWritten, elapsed))
 	}
@@ -173,9 +176,10 @@ func (collector *Collector) collectAt(ctx context.Context, sampledAt time.Time) 
 		networkReady:    reading.NetworkAvailable,
 		networkReceived: reading.NetworkBytesRecv,
 		networkSent:     reading.NetworkBytesSent,
-		diskReady:       reading.DiskIOAvailable,
+		diskReady:       reading.DiskIOAvailable && diskDeviceSet != "",
 		diskRead:        reading.DiskReadBytes,
 		diskWritten:     reading.DiskWrittenBytes,
+		diskDeviceSet:   diskDeviceSet,
 	}
 
 	collector.snapshot.SampledAt = sampledAt
@@ -195,7 +199,7 @@ func (collector *Collector) collectAt(ctx context.Context, sampledAt time.Time) 
 		collector.snapshot.Memory = nil
 	}
 	if reading.DisksAvailable {
-		collector.snapshot.Disks = append([]domain.SystemDiskUsage(nil), reading.Disks...)
+		collector.snapshot.Disks = cloneDiskUsages(reading.Disks)
 	} else {
 		collector.snapshot.Disks = []domain.SystemDiskUsage{}
 	}
@@ -203,6 +207,17 @@ func (collector *Collector) collectAt(ctx context.Context, sampledAt time.Time) 
 	if overflow := len(collector.snapshot.Samples) - collector.max; overflow > 0 {
 		collector.snapshot.Samples = append([]domain.SystemMetricSample(nil), collector.snapshot.Samples[overflow:]...)
 	}
+}
+
+func diskDeviceSetFingerprint(devices []string) string {
+	normalized := normalizeDiskDevices(devices)
+	if len(normalized) == 0 {
+		return ""
+	}
+	for index, device := range normalized {
+		normalized[index] = diskCounterKey(device)
+	}
+	return strings.Join(normalized, "\x00")
 }
 
 func counterRate(current, previous uint64, elapsedSeconds float64) float64 {
@@ -242,10 +257,19 @@ func cloneSnapshot(snapshot domain.SystemMetricsSnapshot) domain.SystemMetricsSn
 		cloned.Samples[index].DiskReadBytesPerSecond = cloneMetric(sample.DiskReadBytesPerSecond)
 		cloned.Samples[index].DiskWriteBytesPerSecond = cloneMetric(sample.DiskWriteBytesPerSecond)
 	}
-	cloned.Disks = append([]domain.SystemDiskUsage(nil), snapshot.Disks...)
+	cloned.Disks = cloneDiskUsages(snapshot.Disks)
 	if snapshot.Memory != nil {
 		memory := *snapshot.Memory
 		cloned.Memory = &memory
+	}
+	return cloned
+}
+
+func cloneDiskUsages(usages []domain.SystemDiskUsage) []domain.SystemDiskUsage {
+	cloned := make([]domain.SystemDiskUsage, len(usages))
+	for index, usage := range usages {
+		cloned[index] = usage
+		cloned[index].PhysicalDevices = append([]string(nil), usage.PhysicalDevices...)
 	}
 	return cloned
 }

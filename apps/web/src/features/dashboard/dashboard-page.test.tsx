@@ -102,8 +102,8 @@ function systemMetrics() {
     availability: { cpu: true, memory: true, network: true, diskIO: true, diskCapacity: true },
     memory: { usedBytes: 8 * gibibyte, totalBytes: 16 * gibibyte },
     disks: [
-      { device: 'nvme0n1', path: '/', usedBytes: 600 * gibibyte, totalBytes: 1000 * gibibyte, usedPercent: 60 },
-      { device: 'sda', path: '/data/video/video1', usedBytes: 200 * gibibyte, totalBytes: 400 * gibibyte, usedPercent: 50 },
+      { device: '/dev/mapper/root', physicalDevices: ['nvme0n1'], path: '/', usedBytes: 600 * gibibyte, totalBytes: 1000 * gibibyte, usedPercent: 60 },
+      { device: '/dev/mapper/media', physicalDevices: ['sda', 'sdb'], path: '/data/video/video1', usedBytes: 200 * gibibyte, totalBytes: 400 * gibibyte, usedPercent: 50 },
     ],
     samples: [
       { sampledAt: '2026-07-26T08:00:00Z', cpuUsedPercent: 30, memoryUsedPercent: 48, networkReceiveBytesPerSecond: 1024, networkSendBytesPerSecond: 512, diskReadBytesPerSecond: 2048, diskWriteBytesPerSecond: 1024 },
@@ -144,7 +144,7 @@ describe('DashboardPage attention', () => {
     const disks = within(resources).getByLabelText('磁盘容量');
     expect(disks).toHaveTextContent('nvme0n1');
     expect(disks).toHaveTextContent('60%');
-    expect(disks).toHaveTextContent('sda');
+    expect(disks).toHaveTextContent('sda, sdb');
     expect(disks).toHaveTextContent('50%');
     expect(within(disks).queryByText('/', { exact: true })).not.toBeInTheDocument();
     expect(disks).not.toHaveTextContent('/data/video/video1');

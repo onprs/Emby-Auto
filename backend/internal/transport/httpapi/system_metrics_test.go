@@ -41,7 +41,9 @@ func TestGetDashboardSystemMetricsMapsAvailableAndMissingSamples(t *testing.T) {
 			{SampledAt: secondAt, CPUUsedPercent: &cpu, MemoryUsedPercent: &memory, NetworkReceiveBytesPerSecond: &receive},
 		},
 		Memory: &domain.SystemMemoryUsage{UsedBytes: 8_000, TotalBytes: 16_000},
-		Disks:  []domain.SystemDiskUsage{{Device: "D:", Path: "D:", UsedBytes: 60_000, TotalBytes: 100_000, UsedPercent: 60}},
+		Disks: []domain.SystemDiskUsage{{
+			Device: "/dev/mapper/media", PhysicalDevices: []string{"nvme0n1", "sda"}, Path: "/data", UsedBytes: 60_000, TotalBytes: 100_000, UsedPercent: 60,
+		}},
 	}}
 	authentication := &authenticationStub{authenticated: domain.Session{User: domain.AdminUser{Username: "admin"}}}
 	handler := NewHandler(NewServer(readinessStub{}, WithAuthentication(authentication, false), WithSystemMetrics(stub)))
@@ -67,8 +69,32 @@ func TestGetDashboardSystemMetricsMapsAvailableAndMissingSamples(t *testing.T) {
 	if body.Samples[1].CpuUsedPercent == nil || *body.Samples[1].CpuUsedPercent != 42.5 || body.Samples[1].NetworkReceiveBytesPerSecond == nil || *body.Samples[1].NetworkReceiveBytesPerSecond != 4096 {
 		t.Fatalf("second sample = %#v", body.Samples[1])
 	}
-	if body.Availability.DiskIO || !body.Availability.DiskCapacity || len(body.Disks) != 1 || body.Disks[0].Device != "D:" || body.Disks[0].Path != "D:" {
+	if body.Availability.DiskIO || !body.Availability.DiskCapacity || len(body.Disks) != 1 || body.Disks[0].Device != "/dev/mapper/media" || body.Disks[0].Path != "/data" {
 		t.Fatalf("availability/disks = %#v/%#v", body.Availability, body.Disks)
+	}
+	if len(body.Disks[0].PhysicalDevices) != 2 || body.Disks[0].PhysicalDevices[0] != "nvme0n1" || body.Disks[0].PhysicalDevices[1] != "sda" {
+		t.Fatalf("physical devices = %#v", body.Disks[0].PhysicalDevices)
+	}
+}
+
+func TestSystemMetricsResponseEmitsEmptyPhysicalDeviceArray(t *testing.T) {
+	response := systemMetricsResponse(domain.SystemMetricsSnapshot{
+		Disks: []domain.SystemDiskUsage{{Device: "overlay", Path: "/", TotalBytes: 1}},
+	})
+	if len(response.Disks) != 1 || response.Disks[0].PhysicalDevices == nil || len(response.Disks[0].PhysicalDevices) != 0 {
+		t.Fatalf("physical devices = %#v, want non-nil empty array", response.Disks)
+	}
+}
+
+func TestSystemMetricsResponseCopiesPhysicalDevices(t *testing.T) {
+	snapshot := domain.SystemMetricsSnapshot{
+		Disks: []domain.SystemDiskUsage{{Device: "/dev/mapper/media", PhysicalDevices: []string{"sda"}, Path: "/data", TotalBytes: 1}},
+	}
+	response := systemMetricsResponse(snapshot)
+
+	snapshot.Disks[0].PhysicalDevices[0] = "source-mutated"
+	if response.Disks[0].PhysicalDevices[0] != "sda" {
+		t.Fatalf("source mutated response: %#v", response.Disks[0].PhysicalDevices)
 	}
 }
 
