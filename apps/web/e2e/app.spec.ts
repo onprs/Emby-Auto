@@ -24,10 +24,19 @@ test.describe('application shell', () => {
     const resources = page.getByLabel('系统资源');
     await expect(resources.getByLabel('CPU 使用率图表')).toContainText('42%');
     await expect(resources.getByLabel('内存使用率图表')).toContainText('8.0 GiB / 16.0 GiB');
-    await expect(resources.getByLabel('网络速度图表')).toContainText('4.0 MiB/s');
-    await expect(resources.getByLabel('磁盘', { exact: true })).toContainText('sda1');
-    await expect(resources.getByLabel('磁盘', { exact: true })).toContainText('/data/video/video1');
+    const networkCard = resources.getByLabel('网络速度图表');
+    const diskCard = resources.getByLabel('磁盘', { exact: true });
+    await expect(networkCard).toContainText('4.0 MiB/s');
+    await expect(diskCard).toContainText('sda1');
+    await expect(diskCard).toContainText('/data/video/video1');
     await expect(resources.getByLabel('磁盘资源图表')).toContainText('读取 8.0 MiB/s');
+    if (!mobile) {
+      const [networkBox, diskBox] = await Promise.all([networkCard.boundingBox(), diskCard.boundingBox()]);
+      expect(networkBox).not.toBeNull();
+      expect(diskBox).not.toBeNull();
+      expect(Math.abs(diskBox!.y - networkBox!.y)).toBeLessThan(1);
+      expect(diskBox!.x).toBeGreaterThan(networkBox!.x);
+    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
     if (mobile) {
       await page.getByRole('button', { name: '打开主导航' }).click();

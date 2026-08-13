@@ -50,7 +50,7 @@ export function SystemResourceCharts({ metrics, pending, error, onRetry }: Syste
               <CardContent><div className="skeleton h-44" /></CardContent>
             </Card>
           ))}
-          <Card className="min-w-0 sm:col-span-2">
+          <Card className="min-w-0">
             <CardHeader><CardTitle>磁盘</CardTitle></CardHeader>
             <CardContent><div className="skeleton h-44" /></CardContent>
           </Card>
@@ -120,7 +120,7 @@ export function SystemResourceCharts({ metrics, pending, error, onRetry }: Syste
         </MetricCard>
 
         <Card
-          className="min-w-0 sm:col-span-2"
+          className="min-w-0"
           aria-label="磁盘"
         >
           <CardHeader>

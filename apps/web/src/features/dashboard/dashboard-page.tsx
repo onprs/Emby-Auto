@@ -374,7 +374,7 @@ function SystemResourceChartsFallback() {
             <CardContent><div className="skeleton h-44" /></CardContent>
           </Card>
         ))}
-        <Card className="min-w-0 sm:col-span-2">
+        <Card className="min-w-0">
           <CardHeader><CardTitle>磁盘</CardTitle></CardHeader>
           <CardContent><div className="skeleton h-44" /></CardContent>
         </Card>
