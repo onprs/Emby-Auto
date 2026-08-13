@@ -215,6 +215,12 @@ func TestReadHostNetworkCountersPreservesInterfaceNameCase(t *testing.T) {
 	}
 }
 
+func TestHostNetworkCountersUseProcSelfPath(t *testing.T) {
+	if hostNetworkDevPath != "/proc/self/net/dev" {
+		t.Fatalf("hostNetworkDevPath = %q, want /proc/self/net/dev", hostNetworkDevPath)
+	}
+}
+
 func TestExecuteRequestReadsHostNetworkCounters(t *testing.T) {
 	response := executeRequest(context.Background(), t.TempDir()+"/unused-helper", controlRequest{Command: "host-network-counters"})
 	if response.Error != "" {
