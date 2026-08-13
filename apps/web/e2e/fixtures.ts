@@ -25,6 +25,7 @@ function json(route: Route, body: unknown, status = 200) {
 export async function stubAuthenticatedApp(page: Page) {
   await page.route('**/api/v1/setup/status', (route) => json(route, completedSetup));
   await page.route('**/api/v1/auth/session', (route) => json(route, session));
+  await page.route('**/api/v1/dashboard/background-runtime', (route) => json(route, { state: 'running' }));
   await page.route('**/api/v1/dashboard/summary', (route) =>
     json(route, {
       counts: { downloading: 1, processing: 2, awaitingReview: 1, importing: 0, attention: 1, failed: 0, cleanupFailed: 0, mappingPending: 1 },
