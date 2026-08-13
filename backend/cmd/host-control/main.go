@@ -28,7 +28,7 @@ import (
 const (
 	defaultSocketPath        = "/run/emby-auto-host/control.sock"
 	defaultRuntimeHelperPath = "/usr/local/libexec/emby-auto-worker-runtime"
-	hostNetworkDevPath       = "/proc/net/dev"
+	hostNetworkDevPath       = "/proc/self/net/dev"
 	sysfsNetRoot             = "/sys"
 	maxMessageBytes          = 16 << 10
 	requestTimeout           = 2 * time.Minute
@@ -286,10 +286,11 @@ func deviceBackedInterface(sysfsRoot, name string) bool {
 	return err == nil && info.IsDir()
 }
 
-// readHostNetworkCounters 解析宿主 /proc/net/dev，返回物理网卡（由 sysfs
-// device 条目识别）的接收/发送字节计数。格式与内核 procfs 一致：接口行以
-// "name:" 开头，随后是接收与发送两组以空格分隔的计数器，rx 为第 1 列、
-// tx 为第 9 列。
+// readHostNetworkCounters 解析宿主网络命名空间的 /proc/self/net/dev，返回
+// 物理网卡（由 sysfs device 条目识别）的接收/发送字节计数。使用 self 路径可在
+// systemd ProcSubset=pid 隔离下保留网络计数可见性；格式与内核 procfs 一致：
+// 接口行以 "name:" 开头，随后是接收与发送两组以空格分隔的计数器，rx 为
+// 第 1 列、tx 为第 9 列。
 func readHostNetworkCounters(path, sysfsRoot string) (received, sent uint64, err error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
