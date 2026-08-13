@@ -119,6 +119,5 @@ export async function stubAuthenticatedApp(page: Page) {
       ],
     }),
   );
-  await page.route('**/api/v1/dashboard/background-runtime', (route) => json(route, { state: 'stopped' }));
   await page.route('**/api/v1/events**', (route) => route.abort());
 }

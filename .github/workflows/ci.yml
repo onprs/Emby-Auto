@@ -59,6 +59,7 @@ jobs:
             apps/web/playwright-report/
           if-no-files-found: ignore
           retention-days: 7
+
       - name: Validate public Compose configuration
         run: npm run deploy:check
 

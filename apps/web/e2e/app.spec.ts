@@ -177,9 +177,9 @@ test.describe('application shell', () => {
       seriesTitle: '细粒度进度作品',
       name: '细粒度 RSS 订阅',
       feedUrl: 'https://example.test/fine-progress.xml',
-      enabled: true,
       includeKeywords: [],
       excludeKeywords: [],
+      enabled: true,
       autoEpisodeMapping: false,
       autoReview: false,
       cleanupSourceOnCompletion: false,
@@ -198,8 +198,8 @@ test.describe('application shell', () => {
       const url = new URL(route.request().url());
       if (url.pathname.endsWith(`/${subscriptionId}/entries`)) {
         rssEntriesURL = url.toString();
-        // 详情页分别请求 confirmed 与 skipped 两个互斥分组，mock 必须按 group 区分，
-        // 否则同一条 enqueued 记录会在两个分组各渲染一次，使“已跳过”列表错误显示已确认任务。
+        // 详情页分别请求 confirmed 与 skipped 两个分组，mock 需按 group 区分，
+        // 否则同一条目会在两个分组各渲染一次。
         const group = url.searchParams.get('group');
         const items = group === 'skipped' ? [] : [{
           id: '23000000-0000-0000-0000-000000000004',
