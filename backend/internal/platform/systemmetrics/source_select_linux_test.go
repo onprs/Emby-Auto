@@ -116,6 +116,7 @@ func TestReadDiskUsagesContainerBindMounts(t *testing.T) {
 	}
 	originalUsage := usageWithContext
 	originalPartitions := partitionsWithContext
+	originalWorkingDirectory := getWorkingDirectory
 	usageWithContext = fakeUsage(map[string]*disk.UsageStat{
 		"/app":               {Path: "/app", Total: 1_000_000, Used: 600_000, UsedPercent: 60},
 		"/data/video/video1": {Path: "/data/video/video1", Total: 2_000_000, Used: 1_000_000, UsedPercent: 50},
@@ -123,9 +124,11 @@ func TestReadDiskUsagesContainerBindMounts(t *testing.T) {
 	partitionsWithContext = func(context.Context, bool) ([]disk.PartitionStat, error) {
 		return partitions, nil
 	}
+	getWorkingDirectory = func() (string, error) { return "/app", nil }
 	defer func() {
 		usageWithContext = originalUsage
 		partitionsWithContext = originalPartitions
+		getWorkingDirectory = originalWorkingDirectory
 	}()
 
 	got := readDiskUsages(t.Context(), []string{
@@ -149,23 +152,26 @@ func TestReadDiskUsagesContainerBindMounts(t *testing.T) {
 func TestReadDiskUsagesEmptyPartitionEnumerationFallback(t *testing.T) {
 	originalUsage := usageWithContext
 	originalPartitions := partitionsWithContext
+	originalWorkingDirectory := getWorkingDirectory
 	usageWithContext = fakeUsage(map[string]*disk.UsageStat{
-		"/srv/media": {Path: "/srv/media", Total: 5_000, Used: 1_000, UsedPercent: 20},
+		"/": {Path: "/", Total: 5_000, Used: 1_000, UsedPercent: 20},
 	})
 	partitionsWithContext = func(context.Context, bool) ([]disk.PartitionStat, error) {
 		return nil, nil
 	}
+	getWorkingDirectory = func() (string, error) { return "/srv/media", nil }
 	defer func() {
 		usageWithContext = originalUsage
 		partitionsWithContext = originalPartitions
+		getWorkingDirectory = originalWorkingDirectory
 	}()
 
 	got := readDiskUsages(t.Context(), []string{"/srv/media"})
 	if len(got) != 1 {
 		t.Fatalf("readDiskUsages() = %#v, want 1 usage", got)
 	}
-	if got[0].Device == "" || got[0].Device != got[0].Path {
-		t.Fatalf("usage device = %q path = %q, want non-empty fallback equal to path", got[0].Device, got[0].Path)
+	if got[0].Device == "" || got[0].Device != "/" || got[0].Path != "/" {
+		t.Fatalf("usage device = %q path = %q, want non-empty fallback \"/\"", got[0].Device, got[0].Path)
 	}
 }
 

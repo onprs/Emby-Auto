@@ -73,18 +73,19 @@ func loopbackInterfaceNames() map[string]struct{} {
 	return loopbacks
 }
 
-// usageWithContext 与 partitionsWithContext 可在测试中替换为 fake，
+// usageWithContext、partitionsWithContext 与 getWorkingDirectory 可在测试中替换为 fake，
 // 以覆盖 readDiskUsages 的完整采集链路。
 var (
 	usageWithContext      = disk.UsageWithContext
 	partitionsWithContext = disk.PartitionsWithContext
+	getWorkingDirectory   = os.Getwd
 )
 
 func readDiskUsages(ctx context.Context, configuredPaths []string) []domain.SystemDiskUsage {
 	// all=true 保留 bind mount：容器里业务目录（/data/video/*）都是宿主目录的
 	// bind 子目录，all=false 会全部跳过，导致磁盘容量只显示根设备。
 	partitions, _ := partitionsWithContext(ctx, true)
-	workingDirectory, _ := os.Getwd()
+	workingDirectory, _ := getWorkingDirectory()
 
 	usages := make([]domain.SystemDiskUsage, 0, 4)
 	for _, mount := range selectDiskMounts(configuredPaths, workingDirectory, partitions) {
