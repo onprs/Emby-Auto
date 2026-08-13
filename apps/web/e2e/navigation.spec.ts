@@ -98,6 +98,18 @@ test('uses one route-aware shell and accessible mobile or desktop navigation', a
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
+test('no longer renders the removed single-child submenu while the operations module is active', async ({ page }, testInfo) => {
+  await stubNavigationApi(page);
+  const mobile = testInfo.project.name === 'mobile';
+  await page.goto('/operations');
+  await expect(page.getByRole('heading', { name: '运行记录' })).toBeVisible();
+
+  const navigation = await openMainNavigation(page, mobile);
+  await expect(navigation.getByRole('link', { name: '运行记录', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(navigation.getByRole('link', { name: '任务执行', exact: true })).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
 test('keeps module highlighting and direct-detail recovery correct for every detail route', async ({ page }, testInfo) => {
   await stubNavigationApi(page);
   const mobile = testInfo.project.name === 'mobile';
