@@ -21,9 +21,7 @@ describe('application navigation manifest', () => {
       ['settings', '系统设置', '/settings'],
     ]);
     expect(appNavigation.find((item) => item.id === 'tasks')?.children).toBeUndefined();
-    expect(appNavigation.find((item) => item.id === 'operations')?.children).toEqual([
-      { label: '任务执行', to: '/operations' },
-    ]);
+    expect(appNavigation.find((item) => item.id === 'operations')?.children).toBeUndefined();
   });
 
   it.each([
