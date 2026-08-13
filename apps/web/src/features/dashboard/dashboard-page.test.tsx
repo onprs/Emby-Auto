@@ -102,8 +102,8 @@ function systemMetrics() {
     availability: { cpu: true, memory: true, network: true, diskIO: true, diskCapacity: true },
     memory: { usedBytes: 8 * gibibyte, totalBytes: 16 * gibibyte },
     disks: [
-      { path: 'D:', usedBytes: 600 * gibibyte, totalBytes: 1000 * gibibyte, usedPercent: 60 },
-      { path: 'E:', usedBytes: 200 * gibibyte, totalBytes: 400 * gibibyte, usedPercent: 50 },
+      { device: 'D:', path: 'D:', usedBytes: 600 * gibibyte, totalBytes: 1000 * gibibyte, usedPercent: 60 },
+      { device: 'E:', path: 'E:', usedBytes: 200 * gibibyte, totalBytes: 400 * gibibyte, usedPercent: 50 },
     ],
     samples: [
       { sampledAt: '2026-07-26T08:00:00Z', cpuUsedPercent: 30, memoryUsedPercent: 48, networkReceiveBytesPerSecond: 1024, networkSendBytesPerSecond: 512, diskReadBytesPerSecond: 2048, diskWriteBytesPerSecond: 1024 },

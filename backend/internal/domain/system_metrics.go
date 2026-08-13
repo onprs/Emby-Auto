@@ -37,6 +37,7 @@ type SystemMemoryUsage struct {
 }
 
 type SystemDiskUsage struct {
+	Device      string
 	Path        string
 	UsedBytes   int64
 	TotalBytes  int64

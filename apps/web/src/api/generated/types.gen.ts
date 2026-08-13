@@ -1324,6 +1324,7 @@ export type SystemMemoryUsage = {
 };
 
 export type SystemDiskUsage = {
+    device: string;
     path: string;
     usedBytes: number;
     totalBytes: number;

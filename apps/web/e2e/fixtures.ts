@@ -94,7 +94,7 @@ export async function stubAuthenticatedApp(page: Page) {
       historyWindowSeconds: 120,
       availability: { cpu: true, memory: true, network: true, diskIO: true, diskCapacity: true },
       memory: { usedBytes: 8589934592, totalBytes: 17179869184 },
-      disks: [{ path: 'D:', usedBytes: 644245094400, totalBytes: 1073741824000, usedPercent: 60 }],
+      disks: [{ device: 'D:', path: 'D:', usedBytes: 644245094400, totalBytes: 1073741824000, usedPercent: 60 }],
       samples: [
         { sampledAt: '2026-07-26T08:00:00Z', cpuUsedPercent: 30, memoryUsedPercent: 48, networkReceiveBytesPerSecond: 1048576, networkSendBytesPerSecond: 524288, diskReadBytesPerSecond: 2097152, diskWriteBytesPerSecond: 1048576 },
         { sampledAt: '2026-07-26T08:00:02Z', cpuUsedPercent: 36, memoryUsedPercent: 49, networkReceiveBytesPerSecond: 2097152, networkSendBytesPerSecond: 1048576, diskReadBytesPerSecond: 4194304, diskWriteBytesPerSecond: 2097152 },

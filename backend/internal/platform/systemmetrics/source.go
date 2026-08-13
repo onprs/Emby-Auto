@@ -86,6 +86,7 @@ func readDiskUsages(ctx context.Context, configuredPaths []string) []domain.Syst
 			continue
 		}
 		usages = append(usages, domain.SystemDiskUsage{
+			Device:      partitionAt(partitions, mount).Device,
 			Path:        displayMount(mount),
 			UsedBytes:   saturatingInt64(usage.Used),
 			TotalBytes:  saturatingInt64(usage.Total),
@@ -124,7 +125,7 @@ func selectDiskMounts(paths []string, workingDirectory string, partitions []disk
 			return
 		}
 		seen[key] = struct{}{}
-		 *list = append(*list, mountCandidate{stat: partitionAt(partitions, mount), root: root})
+		*list = append(*list, mountCandidate{stat: partitionAt(partitions, mount), root: root})
 	}
 
 	for _, path := range paths {

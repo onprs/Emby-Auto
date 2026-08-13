@@ -52,6 +52,7 @@ func systemMetricsResponse(snapshot domain.SystemMetricsSnapshot) SystemMetricsS
 	}
 	for _, usage := range snapshot.Disks {
 		response.Disks = append(response.Disks, SystemDiskUsage{
+			Device:      usage.Device,
 			Path:        usage.Path,
 			UsedBytes:   usage.UsedBytes,
 			TotalBytes:  usage.TotalBytes,

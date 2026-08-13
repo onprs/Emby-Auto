@@ -368,12 +368,16 @@ function SystemResourceChartsFallback() {
         <p className="mt-1 text-xs text-zinc-500">正在加载资源图表</p>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
-        {['CPU 使用率', '内存使用率', '网络速度', '磁盘资源'].map((title) => (
+        {['CPU 使用率', '内存使用率', '网络速度'].map((title) => (
           <Card key={title} className="min-w-0">
             <CardHeader><CardTitle>{title}</CardTitle></CardHeader>
             <CardContent><div className="skeleton h-44" /></CardContent>
           </Card>
         ))}
+        <Card className="min-w-0 sm:col-span-2">
+          <CardHeader><CardTitle>磁盘</CardTitle></CardHeader>
+          <CardContent><div className="skeleton h-44" /></CardContent>
+        </Card>
       </div>
     </section>
   );
