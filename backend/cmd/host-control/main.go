@@ -28,6 +28,7 @@ import (
 const (
 	defaultSocketPath        = "/run/emby-auto-host/control.sock"
 	defaultRuntimeHelperPath = "/usr/local/libexec/emby-auto-worker-runtime"
+	hostNetworkDevPath       = "/proc/net/dev"
 	maxMessageBytes          = 16 << 10
 	requestTimeout           = 2 * time.Minute
 )
@@ -37,9 +38,11 @@ type controlRequest struct {
 }
 
 type controlResponse struct {
-	Status string  `json:"status,omitempty"`
-	UID    *uint32 `json:"uid,omitempty"`
-	Error  string  `json:"error,omitempty"`
+	Status              string  `json:"status,omitempty"`
+	UID                 *uint32 `json:"uid,omitempty"`
+	NetworkReceiveBytes *uint64 `json:"networkReceiveBytes,omitempty"`
+	NetworkSendBytes    *uint64 `json:"networkSendBytes,omitempty"`
+	Error               string  `json:"error,omitempty"`
 }
 
 func main() {
@@ -54,7 +57,7 @@ func run(args []string) error {
 		return runServerCommand(args[1:])
 	}
 	if len(args) != 1 {
-		return errors.New("usage: emby-auto-host-control worker-status|worker-start|worker-stop|media-owner|serve")
+		return errors.New("usage: emby-auto-host-control worker-status|worker-start|worker-stop|media-owner|host-network-counters|serve")
 	}
 
 	request := controlRequest{Command: args[0]}
@@ -80,6 +83,14 @@ func run(args []string) error {
 		}
 		if _, err := fmt.Fprintln(os.Stdout, *response.UID); err != nil {
 			return fmt.Errorf("write Emby media owner UID: %w", err)
+		}
+	}
+	if request.Command == "host-network-counters" {
+		if response.NetworkReceiveBytes == nil || response.NetworkSendBytes == nil {
+			return errors.New("host-control response did not include host network counters")
+		}
+		if _, err := fmt.Fprintf(os.Stdout, "%d %d\n", *response.NetworkReceiveBytes, *response.NetworkSendBytes); err != nil {
+			return fmt.Errorf("write host network counters: %w", err)
 		}
 	}
 	return nil
@@ -192,6 +203,13 @@ func executeRequest(ctx context.Context, runtimeHelperPath string, request contr
 		}
 		return controlResponse{UID: &uid}
 	}
+	if request.Command == "host-network-counters" {
+		received, sent, err := readHostNetworkCounters(hostNetworkDevPath)
+		if err != nil {
+			return controlResponse{Error: err.Error()}
+		}
+		return controlResponse{NetworkReceiveBytes: &received, NetworkSendBytes: &sent}
+	}
 
 	action := strings.TrimPrefix(request.Command, "worker-")
 	output, err := executeHelper(ctx, runtimeHelperPath, []string{action})
@@ -250,10 +268,87 @@ func sendRequest(ctx context.Context, socketPath string, request controlRequest)
 }
 
 func validateRequest(request controlRequest) error {
-	if request.Command == "media-owner" || isWorkerCommand(request.Command) {
+	if request.Command == "media-owner" || request.Command == "host-network-counters" || isWorkerCommand(request.Command) {
 		return nil
 	}
-	return errors.New("command must be worker-status, worker-start, worker-stop, or media-owner")
+	return errors.New("command must be worker-status, worker-start, worker-stop, media-owner, or host-network-counters")
+}
+
+// virtualInterfacePrefixes 是 Linux 上不承载物理流量的常见虚拟接口前缀：
+// Docker/libvirt 网桥与 veth、VPN 隧道、overlay 与 dummy 设备。宿主网络速度
+// 只统计物理网卡，避免容器内部流量被重复计入或干扰判断。
+var virtualInterfacePrefixes = []string{
+	"docker", "veth", "br-", "virbr", "vnet",
+	"tun", "tap", "sit", "ip6tnl", "gretap", "erspan", "vxlan", "dummy",
+}
+
+// readHostNetworkCounters 解析宿主 /proc/net/dev，返回排除 loopback 与虚拟接口后
+// 的接收/发送字节计数。格式与内核 procfs 一致：接口行以 "name:" 开头，随后是
+// 接收与发送两组以空格分隔的计数器，rx 为第 1 列、tx 为第 9 列。
+func readHostNetworkCounters(path string) (received, sent uint64, err error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, fmt.Errorf("read host network counters: %w", err)
+	}
+	lines := strings.Split(string(content), "\n")
+	if len(lines) < 3 {
+		return 0, 0, fmt.Errorf("host network counters file %s has no interface rows", path)
+	}
+
+	loopbacks := hostLoopbackInterfaceNames()
+	for _, line := range lines[2:] {
+		separator := strings.LastIndex(line, ":")
+		if separator == -1 {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(line[:separator]))
+		if name == "" || isExcludedHostInterface(name, loopbacks) {
+			continue
+		}
+		fields := strings.Fields(line[separator+1:])
+		if len(fields) < 9 {
+			continue
+		}
+		rx, err := strconv.ParseUint(fields[0], 10, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("parse receive counter of interface %s: %w", name, err)
+		}
+		tx, err := strconv.ParseUint(fields[8], 10, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("parse send counter of interface %s: %w", name, err)
+		}
+		received += rx
+		sent += tx
+	}
+	return received, sent, nil
+}
+
+func isExcludedHostInterface(name string, loopbacks map[string]struct{}) bool {
+	if _, ok := loopbacks[name]; ok {
+		return true
+	}
+	for _, prefix := range virtualInterfacePrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// hostLoopbackInterfaceNames 收集宿主 loopback 接口名：
+// 以 "lo" 兜底，再按 net.Interfaces 的 loopback 标志补充（如 "lo:0" 别名）。
+func hostLoopbackInterfaceNames() map[string]struct{} {
+	loopbacks := map[string]struct{}{"lo": {}}
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return loopbacks
+	}
+	for _, networkInterface := range interfaces {
+		if networkInterface.Flags&net.FlagLoopback != 0 {
+			loopbacks[strings.ToLower(networkInterface.Name)] = struct{}{}
+		}
+	}
+	return loopbacks
 }
 
 func resolveMediaOwnerUID(lookup func(string) (*user.User, error)) (uint32, error) {
