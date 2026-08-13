@@ -14,7 +14,7 @@ func TestGopsutilSourceSumsOnlyDisplayedPhysicalDisks(t *testing.T) {
 	originalWorkingDirectory := getWorkingDirectory
 	originalResolveDiskDevices := resolveDiskDevices
 	originalIOCounters := ioCountersWithContext
-	usageWithContext = fakeUsage(map[string]*disk.UsageStat{
+	usageWithContext = fakeDiskIOUsage(map[string]*disk.UsageStat{
 		"/app":  {Path: "/app", Total: 1_000, Used: 600, UsedPercent: 60},
 		"/data": {Path: "/data", Total: 2_000, Used: 1_000, UsedPercent: 50},
 	})
@@ -58,6 +58,12 @@ func TestGopsutilSourceSumsOnlyDisplayedPhysicalDisks(t *testing.T) {
 	}
 	if len(reading.Disks) != 2 || reading.Disks[0].Device != "nvme0n1" || reading.Disks[1].Device != "sda" {
 		t.Fatalf("displayed disks = %#v", reading.Disks)
+	}
+}
+
+func fakeDiskIOUsage(byPath map[string]*disk.UsageStat) func(context.Context, string) (*disk.UsageStat, error) {
+	return func(_ context.Context, path string) (*disk.UsageStat, error) {
+		return byPath[path], nil
 	}
 }
 
