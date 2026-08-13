@@ -177,8 +177,6 @@ test.describe('application shell', () => {
       seriesTitle: '细粒度进度作品',
       name: '细粒度 RSS 订阅',
       feedUrl: 'https://example.test/fine-progress.xml',
-      includeKeywords: [],
-      excludeKeywords: [],
       enabled: true,
       includeKeywords: [],
       excludeKeywords: [],
@@ -287,7 +285,7 @@ test.describe('application shell', () => {
     await page.getByRole('button', { name: '处理进度，点击按正序排列' }).click();
     await expect(page).toHaveURL(/sortBy=progress/);
     await expect.poll(() => new URL(rssEntriesURL).searchParams.get('sortBy')).toBe('progress');
-    await page.getByRole('link', { name: entryTitle }).click();
+    await page.getByRole('link', { name: entryTitle }).first().click();
     await expect(page).toHaveURL(new RegExp(`/acquisitions/${acquisitionId}`));
     await expect(page.getByRole('heading', { name: '细粒度进度作品' })).toBeVisible();
     expect(pageErrors).toEqual([]);
