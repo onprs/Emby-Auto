@@ -90,14 +90,14 @@ func loadRSSMappedTargetOccupancyWithRealtimeCheck(
 		TargetEpisode:   int(row.TargetEpisode),
 	}
 	switch {
-	case catalogPresent:
-		occupancy.Reason = rssTargetInLibraryReason
-		occupancy.Fulfilled = true
-		occupancy.FulfillmentSource = rssFulfillmentEmbyCatalog
 	case row.ManagedImportPresent:
 		occupancy.Reason = rssTargetImportedReason
 		occupancy.Fulfilled = true
 		occupancy.FulfillmentSource = rssFulfillmentManagedImport
+	case catalogPresent:
+		occupancy.Reason = rssTargetInLibraryReason
+		occupancy.Fulfilled = true
+		occupancy.FulfillmentSource = rssFulfillmentEmbyCatalog
 	case row.ProcessingPresent:
 		occupancy.Reason = rssTargetProcessingReason
 	}

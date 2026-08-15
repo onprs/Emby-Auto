@@ -630,6 +630,11 @@ SET downloadable = false,
     last_error_retryable = false,
     updated_at = now()
 WHERE id = sqlc.arg(id)
+  AND NOT (
+      imported_at IS NOT NULL
+      AND fulfillment_source IS NOT NULL
+      AND fulfillment_source = 'managed_import'
+  )
   AND (
       downloadable
       OR rejection_reasons IS DISTINCT FROM ARRAY[sqlc.arg(rejection_reason)::text]

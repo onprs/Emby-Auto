@@ -415,7 +415,24 @@ SELECT
     COALESCE(adjudication.state, 'not_required')::text AS adjudication_state,
     adjudication.source AS adjudication_source,
     adjudication.resolution_id AS adjudication_resolution_id,
-    adjudication.related_entry_id
+    adjudication.related_entry_id,
+    EXISTS (
+        SELECT 1
+        FROM events AS enqueue
+        JOIN events AS created
+          ON created.resource_type = 'episode_task'
+         AND created.topic = 'task.created'
+         AND created.data->>'downloadId' = enqueue.data->>'downloadId'
+        JOIN events AS imported
+          ON imported.resource_type = 'episode_task'
+         AND imported.resource_id = created.resource_id
+         AND imported.topic = 'task.imported'
+        WHERE enqueue.resource_type = 'rss_entry'
+          AND enqueue.topic = 'rss.entry.enqueueing'
+          AND enqueue.resource_id = entry.id
+          AND enqueue.data ? 'acquisitionId'
+          AND enqueue.data ? 'downloadId'
+    ) AS successful_import_present
 FROM rss_entries AS entry
 LEFT JOIN rss_entry_adjudications AS adjudication ON adjudication.entry_id = entry.id
 WHERE entry.subscription_id = sqlc.arg(subscription_id)

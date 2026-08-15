@@ -2911,6 +2911,11 @@ SET downloadable = false,
     last_error_retryable = false,
     updated_at = now()
 WHERE id = $4
+  AND NOT (
+      imported_at IS NOT NULL
+      AND fulfillment_source IS NOT NULL
+      AND fulfillment_source = 'managed_import'
+  )
   AND (
       downloadable
       OR rejection_reasons IS DISTINCT FROM ARRAY[$1::text]
