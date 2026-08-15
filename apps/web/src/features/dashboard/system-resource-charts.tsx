@@ -76,6 +76,8 @@ export function SystemResourceCharts({ metrics, pending, error, onRetry }: Syste
 
   const points = metrics.samples.map(chartPoint);
   const latest = points.at(-1);
+  // 多块磁盘时用双列网格横向分配空间，避免单列堆叠拉长卡片；单块磁盘保持单列，不引入额外空白。
+  const diskGridColumns = metrics.disks.length > 1 ? 'sm:grid-cols-2' : '';
   const memoryDetail = metrics.memory ? `${formatBytes(metrics.memory.usedBytes)} / ${formatBytes(metrics.memory.totalBytes)}` : '当前不可用';
 
   return (
@@ -152,7 +154,7 @@ export function SystemResourceCharts({ metrics, pending, error, onRetry }: Syste
               {metrics.disks.length === 0 ? (
                 <p className="mt-2 text-xs text-zinc-500">磁盘容量不可用</p>
               ) : (
-                <ul className="mt-3 grid max-h-56 gap-y-3 overflow-y-auto overscroll-contain pr-1">
+                <ul className={`mt-3 grid max-h-56 gap-3 overflow-y-auto overscroll-contain pr-1 ${diskGridColumns}`}>
                   {metrics.disks.map((disk, index) => (
                     <DiskUsageRow key={`${disk.device}:${disk.path}`} disk={disk} color={diskColor(index)} />
                   ))}
