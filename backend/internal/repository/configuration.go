@@ -34,6 +34,7 @@ func (repository *Configuration) Load(ctx context.Context) (domain.Configuration
 		Settings: domain.RuntimeSettings{
 			Agent:     domain.DefaultAgentSettings(),
 			Transcode: domain.DefaultTranscodeProfile(),
+			Events:    domain.DefaultEventsSettings(),
 		},
 		Secrets: map[string]domain.SecretMetadata{
 			domain.SecretQBittorrentPassword: {Name: domain.SecretQBittorrentPassword},

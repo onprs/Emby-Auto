@@ -83,6 +83,14 @@ export type Configuration = {
     agent: AgentConfiguration;
     paths: PathConfiguration;
     transcode: TranscodeProfileConfiguration;
+    events: EventsConfiguration;
+};
+
+export type EventsConfiguration = {
+    /**
+     * 事件历史保留天数。后台定期任务删除超过保留期的事件；0 表示禁用定期清理。
+     */
+    retentionDays: number;
 };
 
 export type QBittorrentConfiguration = {

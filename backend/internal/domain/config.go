@@ -8,7 +8,8 @@ import (
 )
 
 const (
-	RuntimeSettingsName       = "runtime"
+	RuntimeSettingsName        = "runtime"
+	DefaultEventsRetentionDays int32 = 30
 	SecretQBittorrentPassword = "qbittorrent.password"
 	SecretEmbyAPIKey          = "emby.api_key"
 	SecretTMDbAPIToken        = "tmdb.api_token"
@@ -29,6 +30,16 @@ type RuntimeSettings struct {
 	Agent        AgentSettings        `json:"agent"`
 	Paths        PathSettings         `json:"paths"`
 	Transcode    TranscodeProfile     `json:"transcode"`
+	Events       EventsSettings       `json:"events"`
+}
+
+// EventsSettings 控制事件历史保留策略。RetentionDays 为 0 时表示禁用定期清理。
+type EventsSettings struct {
+	RetentionDays int32 `json:"retentionDays"`
+}
+
+func DefaultEventsSettings() EventsSettings {
+	return EventsSettings{RetentionDays: DefaultEventsRetentionDays}
 }
 
 type QBittorrentSettings struct {

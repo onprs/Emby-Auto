@@ -86,6 +86,7 @@ type Querier interface {
 	DeleteArtifactSetsForAcquisition(ctx context.Context, acquisitionID pgtype.UUID) (int64, error)
 	DeleteEmptyRSSAdjudicationBatch(ctx context.Context, batchID pgtype.UUID) (int64, error)
 	DeleteEpisodeTasksForAcquisition(ctx context.Context, acquisitionID pgtype.UUID) (int64, error)
+	DeleteEventsBefore(ctx context.Context, arg DeleteEventsBeforeParams) (int64, error)
 	DeleteExpiredRSSRealtimeTargetChecks(ctx context.Context) error
 	DeleteMediaArtifactsForAcquisition(ctx context.Context, acquisitionID pgtype.UUID) (int64, error)
 	DeleteSnoozedOperationAttempt(ctx context.Context, arg DeleteSnoozedOperationAttemptParams) (int64, error)

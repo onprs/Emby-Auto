@@ -36,3 +36,14 @@ JOIN events AS cursor_event ON cursor_event.id = sqlc.arg(cursor_id)
 WHERE event.event_sequence > cursor_event.event_sequence
 ORDER BY event.event_sequence
 LIMIT sqlc.arg(page_size);
+
+-- name: DeleteEventsBefore :execrows
+WITH expired AS (
+    SELECT events.id
+    FROM events
+    WHERE events.occurred_at < sqlc.arg(before)
+    ORDER BY events.event_sequence
+    LIMIT sqlc.arg(max_rows)
+)
+DELETE FROM events
+WHERE events.id IN (SELECT expired.id FROM expired);

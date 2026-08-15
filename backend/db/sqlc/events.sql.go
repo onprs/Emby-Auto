@@ -67,6 +67,31 @@ func (q *Queries) AppendEvent(ctx context.Context, arg AppendEventParams) (Event
 	return i, err
 }
 
+const deleteEventsBefore = `-- name: DeleteEventsBefore :execrows
+WITH expired AS (
+    SELECT events.id
+    FROM events
+    WHERE events.occurred_at < $1
+    ORDER BY events.event_sequence
+    LIMIT $2
+)
+DELETE FROM events
+WHERE events.id IN (SELECT expired.id FROM expired)
+`
+
+type DeleteEventsBeforeParams struct {
+	Before  pgtype.Timestamptz `db:"before" json:"before"`
+	MaxRows int32              `db:"max_rows" json:"max_rows"`
+}
+
+func (q *Queries) DeleteEventsBefore(ctx context.Context, arg DeleteEventsBeforeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteEventsBefore, arg.Before, arg.MaxRows)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getEvent = `-- name: GetEvent :one
 SELECT id, event_sequence, topic, resource_type, resource_id, operation_id, actor_user_id, data, occurred_at
 FROM events

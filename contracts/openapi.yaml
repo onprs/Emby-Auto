@@ -2255,7 +2255,7 @@ components:
     Configuration:
       type: object
       additionalProperties: false
-      required: [version, qBittorrent, emby, tmdb, networkProxy, agent, paths, transcode]
+      required: [version, qBittorrent, emby, tmdb, networkProxy, agent, paths, transcode, events]
       properties:
         version:
           type: integer
@@ -2275,6 +2275,19 @@ components:
           $ref: "#/components/schemas/PathConfiguration"
         transcode:
           $ref: "#/components/schemas/TranscodeProfileConfiguration"
+        events:
+          $ref: "#/components/schemas/EventsConfiguration"
+    EventsConfiguration:
+      type: object
+      additionalProperties: false
+      required: [retentionDays]
+      properties:
+        retentionDays:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 36500
+          description: 事件历史保留天数。后台定期任务删除超过保留期的事件；0 表示禁用定期清理。
     QBittorrentConfiguration:
       type: object
       additionalProperties: false

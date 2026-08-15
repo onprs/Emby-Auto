@@ -283,6 +283,11 @@ func validateRuntimeSettings(settings domain.RuntimeSettings) error {
 		return err
 	}
 
+	if settings.Events.RetentionDays < 0 || settings.Events.RetentionDays > 36500 {
+		return invalidConfiguration("events.retentionDays", "must be between 0 and 36500 days")
+	}
+
+
 	for field, value := range map[string]string{
 		"paths.downloadRoot":     settings.Paths.DownloadRoot,
 		"paths.workRoot":         settings.Paths.WorkRoot,
