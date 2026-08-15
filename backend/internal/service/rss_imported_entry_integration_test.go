@@ -264,4 +264,3 @@ ORDER BY discovered_at DESC LIMIT 1`, fixture.subscriptionID, owner.Candidates[0
 		t.Fatalf("skipped entry reject reason = %q, want %q", skipped.Items[0].RejectReason, rssTargetImportedReason)
 	}
 }
-

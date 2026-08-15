@@ -76,8 +76,8 @@ func TestClassifyRSSEntryTargetOccupancyOverridesHistoricalEnqueueStatus(t *test
 			name: "managed import owner keeps completion despite stale occupancy rejection",
 			row: db.ListRSSEntriesRow{
 				Status: "enqueued", Downloadable: false, FulfillmentSource: &managedSource,
-				ImportedAt:             pgtype.Timestamptz{Time: time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC), Valid: true},
-				RejectionReasons:       []string{rssTargetInLibraryReason},
+				ImportedAt:              pgtype.Timestamptz{Time: time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC), Valid: true},
+				RejectionReasons:        []string{rssTargetInLibraryReason},
 				SuccessfulImportPresent: true,
 			},
 			want: "enqueued",
