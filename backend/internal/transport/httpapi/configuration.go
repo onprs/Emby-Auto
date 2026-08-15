@@ -149,6 +149,9 @@ func configurationUpdate(request UpdateConfigurationRequest) domain.Configuratio
 				FFprobePath:      request.Paths.FfprobePath,
 			},
 			Transcode: transcodeProfileFromRequest(request.Transcode),
+			Events: domain.EventsSettings{
+				RetentionDays: request.Events.RetentionDays,
+			},
 		},
 		Secrets: map[string]domain.SecretUpdate{
 			domain.SecretQBittorrentPassword: secretUpdate(request.QBittorrent.Password),
@@ -235,6 +238,9 @@ func configurationResponse(configuration domain.Configuration) Configuration {
 			FfprobePath:      configuration.Settings.Paths.FFprobePath,
 		},
 		Transcode: transcodeProfileResponse(configuration.Settings.Transcode),
+		Events: EventsConfiguration{
+			RetentionDays: configuration.Settings.Events.RetentionDays,
+		},
 	}
 }
 

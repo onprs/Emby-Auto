@@ -225,6 +225,7 @@ func TestConfigurationResponseContainsOnlyMaskedSecretMetadata(t *testing.T) {
 				QualityMode: "crf", QualityValue: 20, AudioPolicy: "transcode", AudioCodec: "aac",
 				Preset: "medium", PixelFormat: "yuv420p", ThreadCount: 2, MaxConcurrency: 1,
 			},
+			Events: domain.EventsSettings{RetentionDays: 30},
 		},
 		Secrets: map[string]domain.SecretMetadata{
 			domain.SecretQBittorrentPassword: {Configured: true, MaskedHint: "********5678"},
@@ -276,6 +277,9 @@ func TestConfigurationResponseContainsOnlyMaskedSecretMetadata(t *testing.T) {
 	if decoded.Paths.AnimeLibraryRoot != `C:\legacy\anime` || decoded.Paths.MovieLibraryRoot != "" {
 		t.Fatalf("library roots = %#v, want legacy anime fallback and empty movie root", decoded.Paths)
 	}
+	if decoded.Events.RetentionDays != 30 {
+		t.Fatalf("event retention days = %d, want 30", decoded.Events.RetentionDays)
+	}
 }
 
 func TestConfigurationUpdateMapsExplicitSecretActionsAndActor(t *testing.T) {
@@ -295,7 +299,8 @@ func TestConfigurationUpdateMapsExplicitSecretActionsAndActor(t *testing.T) {
 		"networkProxy":{"enabled":true,"url":"http://127.0.0.1:7890"},
 		"agent":{"enabled":true,"protocol":"openai_chat_completions","baseUrl":"https://agent.example/v1","model":"fixture-model","apiKey":{"action":"set","value":"agent-secret"},"useNetworkProxy":true,"requestTimeoutSeconds":60,"rssCoordinateMode":"suggest","downloadFileSelectionMode":"off","catalogMatchEnabled":false,"episodeMappingEnabled":true,"allowAutomaticEpisodeMapping":false},
 		"paths":{"downloadRoot":"C:\\media\\downloads","workRoot":"C:\\media\\work","stagingRoot":"C:\\media\\staging","animeLibraryRoot":"C:\\media\\library\\anime","movieLibraryRoot":"C:\\media\\library\\movies","ffmpegPath":"ffmpeg","ffprobePath":"ffprobe"},
-		"transcode":{"name":"h264","videoCodec":"h264","encoder":"libx264","container":"mp4","fileExtension":"mp4","qualityMode":"crf","qualityValue":20,"audioPolicy":"transcode","audioCodec":"aac","preset":"medium","pixelFormat":"yuv420p","threadCount":2,"maxConcurrency":1}
+		"transcode":{"name":"h264","videoCodec":"h264","encoder":"libx264","container":"mp4","fileExtension":"mp4","qualityMode":"crf","qualityValue":20,"audioPolicy":"transcode","audioCodec":"aac","preset":"medium","pixelFormat":"yuv420p","threadCount":2,"maxConcurrency":1},
+		"events":{"retentionDays":90}
 	}`
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/config", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
@@ -327,6 +332,9 @@ func TestConfigurationUpdateMapsExplicitSecretActionsAndActor(t *testing.T) {
 	}
 	if settings := configuration.update.Settings.QBittorrent; settings.DownloadRateLimitKibPerSecond != 4096 || settings.UploadRateLimitKibPerSecond != 1024 {
 		t.Fatalf("qBittorrent rate limits = %#v, want 4096/1024 KiB/s", settings)
+	}
+	if retentionDays := configuration.update.Settings.Events.RetentionDays; retentionDays != 90 {
+		t.Fatalf("event retention days = %d, want 90", retentionDays)
 	}
 	if proxy := configuration.update.Settings.NetworkProxy; !proxy.Enabled || proxy.URL != "http://127.0.0.1:7890" {
 		t.Fatalf("network proxy = %#v", proxy)

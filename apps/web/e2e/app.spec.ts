@@ -499,6 +499,7 @@ test.describe('application shell', () => {
             qualityMode: 'crf', qualityValue: 20, audioPolicy: 'copy', preset: 'medium', pixelFormat: 'yuv420p',
             threadCount: 0, maxConcurrency: 2,
           },
+          events: { retentionDays: 30 },
         }),
       }),
     );
