@@ -48,6 +48,9 @@ func (configurationService *ConfigurationService) PrepareInitial(
 	updatedBy uuid.UUID,
 ) (domain.SaveConfiguration, error) {
 	settings.Agent = settings.Agent.WithDefaults()
+	if settings.Events.RetentionDays == 0 {
+		settings.Events.RetentionDays = domain.DefaultEventsRetentionDays
+	}
 	if err := validateInitialRuntimeSettings(settings); err != nil {
 		return domain.SaveConfiguration{}, err
 	}

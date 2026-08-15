@@ -85,6 +85,9 @@ function ServicesForm({
   const [embyKey, setEmbyKey] = useState("");
   const [tmdbToken, setTmdbToken] = useState("");
   const [networkProxy, setNetworkProxy] = useState(configuration.networkProxy);
+  const [eventsRetentionDays, setEventsRetentionDays] = useState(
+    configuration.events.retentionDays,
+  );
   const [savedSecrets, setSavedSecrets] = useState<{
     qbPassword: string | null;
     embyApiKey: string | null;
@@ -100,6 +103,7 @@ function ServicesForm({
     setQbUploadRateLimit(configuration.qBittorrent.uploadRateLimitKibPerSecond);
     setEmbyUrl(configuration.emby.url);
     setNetworkProxy(configuration.networkProxy);
+    setEventsRetentionDays(configuration.events.retentionDays);
 
     if (
       configuration.qBittorrent.password.configured ||
@@ -389,6 +393,35 @@ function ServicesForm({
             />
           </CardContent>
         </Card>
+
+        <Card className="flex flex-col">
+          <CardHeader fill>
+            <CardTitle>事件历史</CardTitle>
+            <CardDescription>
+              系统事件记录保留策略，由后台定期任务清理过期事件
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-1 flex-col space-y-4">
+            <Field label="保留天数" htmlFor="events-retention-days">
+              <Input
+                id="events-retention-days"
+                type="number"
+                min={0}
+                max={36500}
+                step={1}
+                value={eventsRetentionDays}
+                onChange={(event) =>
+                  setEventsRetentionDays(
+                    nonnegativeInteger(event.currentTarget.valueAsNumber),
+                  )
+                }
+              />
+            </Field>
+            <p className="text-xs text-zinc-500">
+              超过保留天数的事件会被定期删除；设置为 0 时保留全部事件历史。
+            </p>
+          </CardContent>
+        </Card>
       </div>
 
       <div className="sticky bottom-0 z-20 mt-8 flex items-center justify-between gap-3 border-t border-zinc-200 bg-surface/95 py-4 backdrop-blur-sm">
@@ -411,6 +444,7 @@ function ServicesForm({
               emby: { url: embyUrl, apiKey: embyKeyPayload() },
               tmdb: { apiToken: tmdbTokenPayload() },
               networkProxy,
+              events: { retentionDays: eventsRetentionDays },
             })
           }
         >

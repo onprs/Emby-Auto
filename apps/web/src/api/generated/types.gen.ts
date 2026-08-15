@@ -203,6 +203,7 @@ export type UpdateConfigurationRequest = {
     agent: AgentConfigurationUpdate;
     paths: PathConfiguration;
     transcode: TranscodeProfileConfiguration;
+    events: EventsConfiguration;
 };
 
 export type QBittorrentConfigurationUpdate = {

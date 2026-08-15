@@ -75,6 +75,7 @@ export function useConfigurationSave(configuration: Configuration) {
         },
         paths: patch.paths ?? configuration.paths,
         transcode: patch.transcode ?? configuration.transcode,
+        events: patch.events ?? configuration.events,
       };
       return saveConfiguration(body);
     },

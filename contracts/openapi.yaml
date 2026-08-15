@@ -2552,7 +2552,7 @@ components:
     UpdateConfigurationRequest:
       type: object
       additionalProperties: false
-      required: [expectedVersion, qBittorrent, emby, tmdb, networkProxy, agent, paths, transcode]
+      required: [expectedVersion, qBittorrent, emby, tmdb, networkProxy, agent, paths, transcode, events]
       properties:
         expectedVersion:
           type: integer
@@ -2572,6 +2572,8 @@ components:
           $ref: "#/components/schemas/PathConfiguration"
         transcode:
           $ref: "#/components/schemas/TranscodeProfileConfiguration"
+        events:
+          $ref: "#/components/schemas/EventsConfiguration"
     QBittorrentConfigurationUpdate:
       type: object
       additionalProperties: false
