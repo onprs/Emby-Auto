@@ -84,8 +84,8 @@ VALUES ($1, $2, 'rss', $3, `+deletedColumn+`, now(), now())
 	insertFailedDownload := func(acquisitionID uuid.UUID) {
 		t.Helper()
 		if _, err := fixture.pool.Exec(ctx, `
-INSERT INTO downloads (id, acquisition_id, attempt, status, progress, error_code, error_message, updated_at)
-VALUES ($1, $2, 1, 'failed', 0, 'qbittorrent_unavailable', 'connection refused', now())
+INSERT INTO downloads (id, acquisition_id, attempt, status, progress, failure_stage, error_code, error_message, updated_at)
+VALUES ($1, $2, 1, 'failed', 0, 'materialize', 'qbittorrent_unavailable', 'connection refused', now())
 `, uuid.New(), acquisitionID); err != nil {
 			t.Fatal(err)
 		}
