@@ -1220,9 +1220,14 @@ func stringPointer(value string) *string {
 	return &value
 }
 
+// truncate 按 rune 数截断文本，保证输出始终为合法 UTF-8：
+// 按字节截断可能把多字节字符拦腰切断，非法序列会被 PostgreSQL 拒绝写入；
+// []rune 转换还会把输入中的非法 UTF-8 字节替换为 U+FFFD，因此即使不需要截断也要返回转换结果，
+// 覆盖上游消息本身含非法字节的路径。
 func truncate(value string, limit int) string {
-	if len(value) <= limit {
-		return value
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return string(runes)
 	}
-	return value[:limit]
+	return string(runes[:limit])
 }
