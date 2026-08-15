@@ -316,7 +316,7 @@ test.describe('application shell', () => {
     const entryProgress = page.getByRole('progressbar', { name: `${entryTitle}处理进度` });
     await expect(entryProgress).toHaveAttribute('aria-valuenow', '2');
     await expect(page.getByText('查看处理进度')).toHaveCount(0);
-    await page.getByRole('button', { name: '处理进度，点击按正序排列' }).click();
+    await page.getByRole('button', { name: '处理进度，点击按正序排列' }).first().click();
     await expect(page).toHaveURL(/sortBy=progress/);
     await expect.poll(() => new URL(rssEntriesURL).searchParams.get('sortBy')).toBe('progress');
     await page.getByRole('link', { name: entryTitle }).click();

@@ -1177,7 +1177,7 @@ func timeValue(value time.Time) *time.Time {
 
 // --- RSS entries ---
 
-func (service *ReadService) ListRSSEntries(ctx context.Context, subscriptionID uuid.UUID, cursor *uuid.UUID, limit int, status, group, sortBy, sortOrder *string) (domain.RSSEntryPage, error) {
+func (service *ReadService) ListRSSEntries(ctx context.Context, subscriptionID uuid.UUID, cursor *uuid.UUID, limit int, status, group, query, rejectReason, sortBy, sortOrder *string) (domain.RSSEntryPage, error) {
 	if _, err := service.queries.GetRSSSubscription(ctx, repository.UUIDToPG(subscriptionID)); errors.Is(err, pgx.ErrNoRows) {
 		return domain.RSSEntryPage{}, domain.ErrNotFound
 	} else if err != nil {
@@ -1227,6 +1227,7 @@ func (service *ReadService) ListRSSEntries(ctx context.Context, subscriptionID u
 	}
 
 	views := make([]domain.RSSEntryView, 0, len(rows))
+	reasonsByEntry := make(map[uuid.UUID][]string, len(rows))
 	for _, row := range rows {
 		view := domain.RSSEntryView{
 			ID:             repository.UUIDFromPG(row.ID),
@@ -1289,7 +1290,8 @@ func (service *ReadService) ListRSSEntries(ctx context.Context, subscriptionID u
 		}
 		view.Classification = classifyRSSEntry(row)
 		if len(row.RejectionReasons) > 0 {
-			view.RejectReason = row.RejectionReasons[0]
+			view.RejectReason = strings.Join(row.RejectionReasons, ",")
+			reasonsByEntry[view.ID] = row.RejectionReasons
 		}
 		if acquisition, ok := acquisitionsByEntry[view.ID]; ok {
 			acquisitionID := acquisition.ID
@@ -1315,6 +1317,26 @@ func (service *ReadService) ListRSSEntries(ctx context.Context, subscriptionID u
 		filtered := views[:0]
 		for _, view := range views {
 			if rssEntryMatchesGroup(view, *group) {
+				filtered = append(filtered, view)
+			}
+		}
+		views = filtered
+	}
+	if query != nil && strings.TrimSpace(*query) != "" {
+		needle := strings.ToLower(strings.TrimSpace(*query))
+		filtered := views[:0]
+		for _, view := range views {
+			if strings.Contains(strings.ToLower(view.Title), needle) {
+				filtered = append(filtered, view)
+			}
+		}
+		views = filtered
+	}
+	if rejectReason != nil && strings.TrimSpace(*rejectReason) != "" {
+		needle := strings.TrimSpace(*rejectReason)
+		filtered := views[:0]
+		for _, view := range views {
+			if rssEntryHasRejectReason(reasonsByEntry[view.ID], needle) {
 				filtered = append(filtered, view)
 			}
 		}
@@ -1371,6 +1393,16 @@ func rssEntryMatchesGroup(view domain.RSSEntryView, group string) bool {
 	default:
 		return true
 	}
+}
+
+// rssEntryHasRejectReason 检查条目的完整拒绝原因列表是否包含指定原因。
+func rssEntryHasRejectReason(reasons []string, reason string) bool {
+	for _, part := range reasons {
+		if strings.TrimSpace(part) == reason {
+			return true
+		}
+	}
+	return false
 }
 
 func compareOptionalEpisode(leftSeason, leftEpisode, rightSeason, rightEpisode *int) int {

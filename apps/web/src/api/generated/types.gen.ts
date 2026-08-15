@@ -1078,6 +1078,9 @@ export type RssEntry = {
     adjudicationSource?: 'agent_auto' | 'agent_accepted';
     adjudicationResolutionId?: string;
     relatedEntryId?: string;
+    /**
+     * Comma-separated rejection reason codes; the entry matches a reason filter when any code matches.
+     */
     rejectReason?: string;
     errorCode?: string;
     errorMessage?: string;
@@ -2297,6 +2300,10 @@ export type ListRssSubscriptionsData = {
     query?: {
         cursor?: string;
         limit?: number;
+        /**
+         * Case-insensitive substring match on the subscription name or series title.
+         */
+        query?: string;
         sortBy?: 'name' | 'series_title' | 'source_season' | 'enabled' | 'progress' | 'next_poll_at';
         sortOrder?: 'asc' | 'desc';
     };
@@ -3242,6 +3249,14 @@ export type ListRssEntriesData = {
         limit?: number;
         status?: 'discovered' | 'enqueueing' | 'enqueued' | 'enqueue_failed';
         group?: 'confirmed' | 'skipped';
+        /**
+         * Case-insensitive substring match on the entry title.
+         */
+        query?: string;
+        /**
+         * Match entries whose rejection reasons include this reason code.
+         */
+        rejectReason?: string;
         sortBy?: 'title' | 'episode' | 'progress' | 'discovered_at';
         sortOrder?: 'asc' | 'desc';
     };

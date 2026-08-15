@@ -26,8 +26,8 @@ export type SortOrder = 'asc' | 'desc';
 
 const contractMismatchMessage = '后端服务版本与当前页面不匹配，请重启 API 和 Worker 后重试。';
 
-export async function fetchSubscriptions(cursor: string | undefined, sortBy?: RssSubscriptionSortBy, sortOrder?: SortOrder): Promise<RssSubscriptionPage> {
-  const page = await unwrap<unknown>(listRssSubscriptions({ query: { limit: 50, cursor, sortBy, sortOrder } }), '无法读取 RSS 订阅');
+export async function fetchSubscriptions(cursor: string | undefined, query?: string, sortBy?: RssSubscriptionSortBy, sortOrder?: SortOrder): Promise<RssSubscriptionPage> {
+  const page = await unwrap<unknown>(listRssSubscriptions({ query: { limit: 50, cursor, query, sortBy, sortOrder } }), '无法读取 RSS 订阅');
   if (!isRecord(page) || !Array.isArray(page.items)) {
     throwContractMismatch();
   }
@@ -46,10 +46,12 @@ export async function fetchEntries(
   cursor: string | undefined,
   status?: 'discovered' | 'enqueueing' | 'enqueued' | 'enqueue_failed',
   group?: RssEntryGroup,
+  query?: string,
+  rejectReason?: string,
   sortBy?: RssEntrySortBy,
   sortOrder?: SortOrder,
 ): Promise<RssEntryPage> {
-  const page = await unwrap<unknown>(listRssEntries({ path: { subscriptionId }, query: { limit: 50, cursor, status, group, sortBy, sortOrder } }), '无法读取 RSS 条目');
+  const page = await unwrap<unknown>(listRssEntries({ path: { subscriptionId }, query: { limit: 50, cursor, status, group, query, rejectReason, sortBy, sortOrder } }), '无法读取 RSS 条目');
   if (!isRecord(page) || !Array.isArray(page.items)) {
     throwContractMismatch();
   }

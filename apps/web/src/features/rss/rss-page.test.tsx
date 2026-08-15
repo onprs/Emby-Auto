@@ -65,6 +65,27 @@ describe('RssPage list controls', () => {
     await waitFor(() => expect(new URL(requests.at(-1)!).searchParams.get('sortOrder')).toBe('desc'));
   });
 
+  it('searches subscriptions by keyword through the query box', async () => {
+    const item = subscription('20000000-0000-0000-0000-000000000005', '葬送的芙莉莲');
+    const requests: string[] = [];
+    server.use(
+      http.get('*/api/v1/rss/subscriptions', ({ request }) => {
+        requests.push(request.url);
+        return HttpResponse.json({ items: [item] });
+      }),
+    );
+    const { router } = renderWithProviders(<RssPage />, { routePath: '/rss', initialEntry: '/rss' });
+
+    await screen.findAllByText(item.name);
+    await userEvent.type(screen.getByLabelText('搜索订阅'), '芙莉莲');
+    await userEvent.click(screen.getByRole('button', { name: '搜索' }));
+    await waitFor(() => {
+      const url = new URL(requests.at(-1)!);
+      expect(url.searchParams.get('query')).toBe('芙莉莲');
+    });
+    expect(router.state.location.search).toMatchObject({ query: '芙莉莲' });
+  });
+
   it('shows retained completed subscriptions as complete instead of waiting for content', async () => {
     const item: RssSubscription = {
       ...subscription('20000000-0000-0000-0000-000000000003', '已完成订阅'),

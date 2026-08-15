@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate, useSearch } from '@tanstack/react-router';
-import { Link2, RefreshCw, ShieldCheck } from 'lucide-react';
-import { useState } from 'react';
+import { Link2, RefreshCw, SearchIcon, ShieldCheck } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
 import { ApiFailure } from '@/api/app-client';
 import type { RssEntry, RssSubscription } from '@/api/generated/types.gen';
@@ -22,8 +22,9 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/feedback';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Select } from '@/components/ui/select';
 import { formatDateTime } from '@/lib/format';
-import { decisionSourceLabel, episodeLabel, friendlyError, reasonLabel } from '@/lib/presentation';
+import { decisionSourceLabel, episodeLabel, friendlyError, reasonLabel, rssRejectionReasonOptions } from '@/lib/presentation';
 import { useCursorPagination } from '@/lib/pagination';
 
 export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
@@ -35,9 +36,12 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
     status?: 'discovered' | 'enqueueing' | 'enqueued' | 'enqueue_failed';
     sortBy?: RssEntrySortBy;
     sortOrder?: SortOrder;
+    query?: string;
   };
   const sortBy = search.sortBy ?? 'discovered_at';
   const sortOrder = search.sortOrder ?? 'desc';
+  const [queryInput, setQueryInput] = useState(search.query ?? '');
+  useEffect(() => setQueryInput(search.query ?? ''), [search.query]);
   const subscription = useQuery({
     queryKey: ['rss', subscriptionId],
     queryFn: () => fetchSubscription(subscriptionId),
@@ -45,12 +49,17 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
   const entriesPagination = useCursorPagination();
   const skippedPagination = useLocalCursorPagination();
   const entries = useQuery({
-    queryKey: ['rss', subscriptionId, 'entries', 'confirmed', entriesPagination.cursor, search.status, sortBy, sortOrder],
-    queryFn: () => fetchEntries(subscriptionId, entriesPagination.cursor, search.status, 'confirmed', sortBy, sortOrder),
+    queryKey: ['rss', subscriptionId, 'entries', 'confirmed', entriesPagination.cursor, search.status, search.query, sortBy, sortOrder],
+    queryFn: () => fetchEntries(subscriptionId, entriesPagination.cursor, search.status, 'confirmed', search.query, undefined, sortBy, sortOrder),
   });
+  const [skippedQueryInput, setSkippedQueryInput] = useState('');
+  const [skippedQuery, setSkippedQuery] = useState<string | undefined>();
+  const [skippedReason, setSkippedReason] = useState<string | undefined>();
+  const [skippedSortBy, setSkippedSortBy] = useState<RssEntrySortBy>('discovered_at');
+  const [skippedSortOrder, setSkippedSortOrder] = useState<SortOrder>('desc');
   const skippedEntries = useQuery({
-    queryKey: ['rss', subscriptionId, 'entries', 'skipped', skippedPagination.cursor],
-    queryFn: () => fetchEntries(subscriptionId, skippedPagination.cursor, undefined, 'skipped', 'discovered_at', 'desc'),
+    queryKey: ['rss', subscriptionId, 'entries', 'skipped', skippedPagination.cursor, skippedQuery, skippedReason, skippedSortBy, skippedSortOrder],
+    queryFn: () => fetchEntries(subscriptionId, skippedPagination.cursor, undefined, 'skipped', skippedQuery, skippedReason, skippedSortBy, skippedSortOrder),
   });
 
   useListScrollRestoration(listSource, Boolean(entries.data));
@@ -69,6 +78,26 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
   const sortHeader = (label: string, field: RssEntrySortBy) => (
     <SortableColumnHeader key={field} label={label} field={field} activeField={sortBy} order={sortOrder} onSort={changeSort} />
   );
+  const submitQuery = () => {
+    void navigate({
+      to: '/rss/$subscriptionId',
+      params: { subscriptionId },
+      search: { ...search, query: queryInput.trim() || undefined, cursor: undefined, cursorStack: undefined },
+    });
+  };
+  const changeSkippedSort = (field: RssEntrySortBy) => {
+    const nextOrder: SortOrder = skippedSortBy === field && skippedSortOrder === 'asc' ? 'desc' : 'asc';
+    skippedPagination.reset();
+    setSkippedSortBy(field);
+    setSkippedSortOrder(nextOrder);
+  };
+  const skippedSortHeader = (label: string, field: RssEntrySortBy) => (
+    <SortableColumnHeader key={field} label={label} field={field} activeField={skippedSortBy} order={skippedSortOrder} onSort={changeSkippedSort} />
+  );
+  const submitSkippedQuery = () => {
+    skippedPagination.reset();
+    setSkippedQuery(skippedQueryInput.trim() || undefined);
+  };
 
   if (subscription.isPending) {
     return <DetailLoadingState title="订阅详情" label="正在读取订阅" />;
@@ -120,6 +149,27 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
           <CardDescription>已通过订阅规则并进入任务确认或处理流程</CardDescription>
         </CardHeader>
         <CardContent>
+          <form
+            className="mb-3 flex w-full gap-2 sm:max-w-xs"
+            role="search"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitQuery();
+            }}
+          >
+            <label className="sr-only" htmlFor="rss-confirmed-query">搜索已确认任务</label>
+            <Input
+              id="rss-confirmed-query"
+              value={queryInput}
+              maxLength={256}
+              placeholder="搜索任务标题"
+              onChange={(event) => setQueryInput(event.target.value)}
+            />
+            <Button type="submit" variant="outline">
+              <SearchIcon aria-hidden="true" />
+              搜索
+            </Button>
+          </form>
           {entries.isPending ? (
             <LoadingState label="正在读取条目" />
           ) : entries.error ? (
@@ -188,6 +238,51 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
           <CardDescription>未通过过滤词或其他订阅规则，不会创建下载任务</CardDescription>
         </CardHeader>
         <CardContent>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <form
+              className="flex w-full gap-2 sm:max-w-xs"
+              role="search"
+              onSubmit={(event) => {
+                event.preventDefault();
+                submitSkippedQuery();
+              }}
+            >
+              <label className="sr-only" htmlFor="rss-skipped-query">搜索已跳过更新</label>
+              <Input
+                id="rss-skipped-query"
+                value={skippedQueryInput}
+                maxLength={256}
+                placeholder="搜索已跳过更新标题"
+                onChange={(event) => setSkippedQueryInput(event.target.value)}
+              />
+              <Button type="submit" variant="outline">
+                <SearchIcon aria-hidden="true" />
+                搜索
+              </Button>
+            </form>
+            <div className="w-full sm:w-64">
+              <Select
+                id="rss-skipped-reason"
+                ariaLabel="按跳过原因过滤"
+                placeholder="全部跳过原因"
+                value={skippedReason ?? ''}
+                onChange={(value) => {
+                  skippedPagination.reset();
+                  setSkippedReason(value || undefined);
+                }}
+                options={[
+                  { value: '', label: '全部跳过原因' },
+                  ...rssRejectionReasonOptions.map((option) => ({ value: option.value, label: option.label })),
+                ]}
+              />
+            </div>
+          </div>
+          <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 border-y border-zinc-200 px-1 py-1 sm:hidden" role="group" aria-label="RSS 已跳过条目排序">
+            {skippedSortHeader('内容', 'title')}
+            {skippedSortHeader('集数', 'episode')}
+            {skippedSortHeader('处理进度', 'progress')}
+            {skippedSortHeader('发现时间', 'discovered_at')}
+          </div>
           {skippedEntries.isPending ? (
             <LoadingState label="正在读取已跳过更新" />
           ) : skippedEntries.error ? (
@@ -207,11 +302,18 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
                 ))}
               </div>
               <div className="hidden sm:block">
-                <DataTable head={['内容', '集数', '跳过原因', '发现时间']}>
+                <DataTable head={[
+                  skippedSortHeader('内容', 'title'),
+                  skippedSortHeader('集数', 'episode'),
+                  skippedSortHeader('处理进度', 'progress'),
+                  '跳过原因',
+                  skippedSortHeader('发现时间', 'discovered_at'),
+                ]}>
                   {skippedEntries.data.items.map((entry) => (
                     <tr key={entry.id}>
                       <td className="max-w-0 px-4 py-3"><EntryTitle entry={entry} className="block truncate font-medium text-zinc-900" /></td>
                       <td className="whitespace-nowrap px-4 py-3 text-zinc-600">{episodeLabel(entry.sourceSeason, entry.sourceEpisode)}</td>
+                      <td className="w-64 px-4 py-3 text-zinc-600">已跳过</td>
                       <td className="px-4 py-3 text-zinc-600">
                         {reasonLabel(entry.rejectReason) || '不符合自动获取规则'}
                       </td>
@@ -242,6 +344,10 @@ function useLocalCursorPagination() {
   return {
     cursor,
     canGoBack: stack.length > 0,
+    reset() {
+      setCursor(undefined);
+      setStack([]);
+    },
     goNext(nextCursor: string | null | undefined) {
       if (!nextCursor) return;
       setStack((current) => [...current, cursor]);

@@ -7,6 +7,7 @@ import {
   operationLabel,
   reasonLabel,
   resourceTypeLabel,
+  rssRejectionReasonOptions,
 } from '@/lib/presentation';
 
 describe('acquisitionStages', () => {
@@ -52,6 +53,28 @@ describe('reasonLabel', () => {
     expect(reasonLabel('target_episode_in_library')).toBe('媒体库已有该集');
     expect(reasonLabel('target_episode_imported')).toBe('该集已由系统入库');
     expect(reasonLabel('target_episode_processing')).toBe('该集正在处理中');
+  });
+
+  it('explains every comma-separated reason returned by the API', () => {
+    expect(reasonLabel('title_excluded,target_episode_processing')).toBe('命中不包含词、该集正在处理中');
+  });
+});
+
+describe('rssRejectionReasonOptions', () => {
+  it('只提供 RSS 条目实际可持久化的跳过原因', () => {
+    expect(rssRejectionReasonOptions.map((option) => option.value)).toEqual([
+      'episode_range_batch',
+      'non_episode_extra',
+      'episode_not_detected',
+      'agent_ignored',
+      'episode_ambiguous',
+      'download_uri_missing',
+      'title_include_mismatch',
+      'title_excluded',
+      'target_episode_in_library',
+      'target_episode_imported',
+      'target_episode_processing',
+    ]);
   });
 });
 

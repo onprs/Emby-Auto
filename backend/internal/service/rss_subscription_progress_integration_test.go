@@ -93,7 +93,7 @@ VALUES ($1, $2, 1, 'failed', 0, 'materialize', 'qbittorrent_unavailable', 'conne
 	insertFailedDownload(acquisitionA2)
 	insertFailedDownload(acquisitionB1)
 
-	page, err := workflow.ListSubscriptions(ctx, nil, 20, nil, nil)
+	page, err := workflow.ListSubscriptions(ctx, nil, 20, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("ListSubscriptions() error = %v", err)
 	}

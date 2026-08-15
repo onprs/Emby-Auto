@@ -37,7 +37,7 @@ type SearchService interface {
 
 type RSSSubscriptionService interface {
 	CreateSubscription(context.Context, domain.CreateRSSSubscription) (domain.RSSSubscription, error)
-	ListSubscriptions(context.Context, *uuid.UUID, int, *string, *string) (domain.RSSSubscriptionPage, error)
+	ListSubscriptions(context.Context, *uuid.UUID, int, *string, *string, *string) (domain.RSSSubscriptionPage, error)
 	GetSubscription(context.Context, uuid.UUID) (domain.RSSSubscription, error)
 	UpdateSubscription(context.Context, domain.UpdateRSSSubscription) (domain.RSSSubscription, error)
 	ArchiveSubscription(context.Context, uuid.UUID, int32, uuid.UUID) error
@@ -78,7 +78,7 @@ type ReadModelService interface {
 	GetDownload(context.Context, uuid.UUID) (domain.DownloadView, error)
 	ListAcquisitions(context.Context, *uuid.UUID, int, *string, *int64, *string, *string, *string) (domain.AcquisitionPage, error)
 	GetAcquisition(context.Context, uuid.UUID) (domain.AcquisitionView, error)
-	ListRSSEntries(context.Context, uuid.UUID, *uuid.UUID, int, *string, *string, *string, *string) (domain.RSSEntryPage, error)
+	ListRSSEntries(context.Context, uuid.UUID, *uuid.UUID, int, *string, *string, *string, *string, *string, *string) (domain.RSSEntryPage, error)
 	ListOperations(context.Context, *uuid.UUID, int, *string, *uuid.UUID, *string) (domain.OperationPage, error)
 	GetOperation(context.Context, uuid.UUID) (domain.OperationView, error)
 	ListResourceEvents(context.Context, string, uuid.UUID, *uuid.UUID, int) (domain.EventRecordPage, error)

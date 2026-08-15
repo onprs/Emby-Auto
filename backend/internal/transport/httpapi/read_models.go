@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
@@ -173,6 +174,21 @@ func (server *Server) ListRSSEntries(ctx context.Context, request ListRSSEntries
 		value := string(*request.Params.Group)
 		group = &value
 	}
+	var query, rejectReason *string
+	if request.Params.Query != nil {
+		value := string(*request.Params.Query)
+		if value == "" || utf8.RuneCountInString(value) > 256 {
+			return ListRSSEntries400JSONResponse{BadRequestJSONResponse: badRequestError(ctx, "query must contain between 1 and 256 characters")}, nil
+		}
+		query = &value
+	}
+	if request.Params.RejectReason != nil {
+		value := string(*request.Params.RejectReason)
+		if value == "" || utf8.RuneCountInString(value) > 128 {
+			return ListRSSEntries400JSONResponse{BadRequestJSONResponse: badRequestError(ctx, "rejectReason must contain between 1 and 128 characters")}, nil
+		}
+		rejectReason = &value
+	}
 	var sortBy, sortOrder *string
 	if request.Params.SortBy != nil {
 		value := string(*request.Params.SortBy)
@@ -182,7 +198,7 @@ func (server *Server) ListRSSEntries(ctx context.Context, request ListRSSEntries
 		value := string(*request.Params.SortOrder)
 		sortOrder = &value
 	}
-	page, err := server.read.ListRSSEntries(ctx, uuid.UUID(request.SubscriptionId), cursor, limit, status, group, sortBy, sortOrder)
+	page, err := server.read.ListRSSEntries(ctx, uuid.UUID(request.SubscriptionId), cursor, limit, status, group, query, rejectReason, sortBy, sortOrder)
 	var serviceErr *service.Error
 	switch {
 	case errors.As(err, &serviceErr) && errors.Is(err, service.ErrInvalidInput):

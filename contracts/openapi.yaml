@@ -796,6 +796,14 @@ paths:
             minimum: 1
             maximum: 100
             default: 50
+        - name: query
+          in: query
+          required: false
+          description: Case-insensitive substring match on the subscription name or series title.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
         - name: sortBy
           in: query
           required: false
@@ -1610,6 +1618,22 @@ paths:
           schema:
             type: string
             enum: [confirmed, skipped]
+        - name: query
+          in: query
+          required: false
+          description: Case-insensitive substring match on the entry title.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+        - name: rejectReason
+          in: query
+          required: false
+          description: Match entries whose rejection reasons include this reason code.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
         - name: sortBy
           in: query
           required: false
@@ -4559,6 +4583,7 @@ components:
           format: uuid
         rejectReason:
           type: string
+          description: Comma-separated rejection reason codes; the entry matches a reason filter when any code matches.
         errorCode:
           type: string
         errorMessage:

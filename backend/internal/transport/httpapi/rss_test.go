@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ type rssSubscriptionServiceStub struct {
 	updateErr       error
 	page            domain.RSSSubscriptionPage
 	listErr         error
+	listQuery       *string
 	listSortBy      *string
 	listSortOrder   *string
 	manualID        uuid.UUID
@@ -42,7 +44,8 @@ func (stub *rssSubscriptionServiceStub) CreateSubscription(_ context.Context, in
 	stub.createdInput = input
 	return stub.created, stub.createErr
 }
-func (stub *rssSubscriptionServiceStub) ListSubscriptions(_ context.Context, _ *uuid.UUID, _ int, sortBy, sortOrder *string) (domain.RSSSubscriptionPage, error) {
+func (stub *rssSubscriptionServiceStub) ListSubscriptions(_ context.Context, _ *uuid.UUID, _ int, query, sortBy, sortOrder *string) (domain.RSSSubscriptionPage, error) {
+	stub.listQuery = query
 	stub.listSortBy, stub.listSortOrder = sortBy, sortOrder
 	return stub.page, stub.listErr
 }
@@ -74,7 +77,7 @@ func (stub *rssSubscriptionServiceStub) ScheduleManualPoll(_ context.Context, id
 func TestListRSSSubscriptionsForwardsColumnSort(t *testing.T) {
 	stub := &rssSubscriptionServiceStub{page: domain.RSSSubscriptionPage{Items: []domain.RSSSubscription{}}}
 	handler := NewHandler(NewServer(readinessStub{}, WithRSSSubscriptions(stub)))
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/rss/subscriptions?sortBy=progress&sortOrder=desc", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/rss/subscriptions?sortBy=progress&sortOrder=desc&query=Frieren", nil)
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, request)
@@ -82,8 +85,43 @@ func TestListRSSSubscriptionsForwardsColumnSort(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
-	if stub.listSortBy == nil || *stub.listSortBy != "progress" || stub.listSortOrder == nil || *stub.listSortOrder != "desc" {
-		t.Fatalf("sort = %#v/%#v", stub.listSortBy, stub.listSortOrder)
+	if stub.listQuery == nil || *stub.listQuery != "Frieren" || stub.listSortBy == nil || *stub.listSortBy != "progress" || stub.listSortOrder == nil || *stub.listSortOrder != "desc" {
+		t.Fatalf("query/sort = %#v/%#v/%#v", stub.listQuery, stub.listSortBy, stub.listSortOrder)
+	}
+}
+
+func TestListRSSSubscriptionsValidatesQueryUnicodeLength(t *testing.T) {
+	cases := []struct {
+		name        string
+		query       string
+		wantStatus  int
+		wantForward bool
+	}{
+		{name: "empty", query: "", wantStatus: http.StatusBadRequest},
+		{name: "one unicode character", query: "字", wantStatus: http.StatusOK, wantForward: true},
+		{name: "maximum unicode characters", query: strings.Repeat("字", 256), wantStatus: http.StatusOK, wantForward: true},
+		{name: "too many unicode characters", query: strings.Repeat("字", 257), wantStatus: http.StatusBadRequest},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			stub := &rssSubscriptionServiceStub{page: domain.RSSSubscriptionPage{Items: []domain.RSSSubscription{}}}
+			handler := NewHandler(NewServer(readinessStub{}, WithRSSSubscriptions(stub)))
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/rss/subscriptions?query="+url.QueryEscape(test.query), nil)
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != test.wantStatus {
+				t.Fatalf("query=%d characters status = %d, want %d", len([]rune(test.query)), response.Code, test.wantStatus)
+			}
+			if test.wantForward {
+				if stub.listQuery == nil || *stub.listQuery != test.query {
+					t.Fatalf("forwarded query = %#v, want %d Unicode characters", stub.listQuery, len([]rune(test.query)))
+				}
+			} else if stub.listQuery != nil {
+				t.Fatalf("invalid query reached the service: %#v", stub.listQuery)
+			}
+		})
 	}
 }
 

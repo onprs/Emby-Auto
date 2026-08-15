@@ -2104,33 +2104,39 @@ FROM rss_subscriptions AS subscription
 JOIN media_series AS series ON series.id = subscription.series_id
 WHERE subscription.deleted_at IS NULL
   AND (
-      $1::uuid IS NULL
+      $1::text IS NULL
+      OR strpos(LOWER(subscription.name), LOWER($1::text)) > 0
+      OR strpos(LOWER(series.title), LOWER($1::text)) > 0
+  )
+  AND (
+      $2::uuid IS NULL
       OR (
-          COALESCE($2::text, 'newest') = 'oldest'
+          COALESCE($3::text, 'newest') = 'oldest'
           AND (subscription.created_at, subscription.id) > (
               SELECT cursor.created_at, cursor.id
               FROM rss_subscriptions AS cursor
-              WHERE cursor.id = $1
+              WHERE cursor.id = $2
           )
       )
       OR (
-          COALESCE($2::text, 'newest') = 'newest'
+          COALESCE($3::text, 'newest') = 'newest'
           AND (subscription.created_at, subscription.id) < (
               SELECT cursor.created_at, cursor.id
               FROM rss_subscriptions AS cursor
-              WHERE cursor.id = $1
+              WHERE cursor.id = $2
           )
       )
   )
 ORDER BY
-    CASE WHEN COALESCE($2::text, 'newest') = 'oldest' THEN subscription.created_at END ASC,
-    CASE WHEN COALESCE($2::text, 'newest') = 'newest' THEN subscription.created_at END DESC,
-    CASE WHEN COALESCE($2::text, 'newest') = 'oldest' THEN subscription.id END ASC,
-    CASE WHEN COALESCE($2::text, 'newest') = 'newest' THEN subscription.id END DESC
-LIMIT $3
+    CASE WHEN COALESCE($3::text, 'newest') = 'oldest' THEN subscription.created_at END ASC,
+    CASE WHEN COALESCE($3::text, 'newest') = 'newest' THEN subscription.created_at END DESC,
+    CASE WHEN COALESCE($3::text, 'newest') = 'oldest' THEN subscription.id END ASC,
+    CASE WHEN COALESCE($3::text, 'newest') = 'newest' THEN subscription.id END DESC
+LIMIT $4
 `
 
 type ListRSSSubscriptionsParams struct {
+	Query    *string     `db:"query" json:"query"`
 	CursorID pgtype.UUID `db:"cursor_id" json:"cursor_id"`
 	Sort     *string     `db:"sort" json:"sort"`
 	PageSize int32       `db:"page_size" json:"page_size"`
@@ -2163,7 +2169,12 @@ type ListRSSSubscriptionsRow struct {
 }
 
 func (q *Queries) ListRSSSubscriptions(ctx context.Context, arg ListRSSSubscriptionsParams) ([]ListRSSSubscriptionsRow, error) {
-	rows, err := q.db.Query(ctx, listRSSSubscriptions, arg.CursorID, arg.Sort, arg.PageSize)
+	rows, err := q.db.Query(ctx, listRSSSubscriptions,
+		arg.Query,
+		arg.CursorID,
+		arg.Sort,
+		arg.PageSize,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -2242,12 +2253,17 @@ FROM rss_subscriptions AS subscription
 JOIN media_series AS series ON series.id = subscription.series_id
 WHERE subscription.deleted_at IS NULL
   AND (
-      $1::uuid IS NULL
+      $1::text IS NULL
+      OR strpos(LOWER(subscription.name), LOWER($1::text)) > 0
+      OR strpos(LOWER(series.title), LOWER($1::text)) > 0
+  )
+  AND (
+      $2::uuid IS NULL
       OR (
-          $2::text = 'asc'
+          $3::text = 'asc'
           AND (
               (
-                  CASE $3::text
+                  CASE $4::text
                       WHEN 'name' THEN LOWER(subscription.name)::text
                       WHEN 'series_title' THEN LOWER(series.title)::text
                       WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
@@ -2257,7 +2273,7 @@ WHERE subscription.deleted_at IS NULL
                   END IS NULL
               ),
               COALESCE(
-                  CASE $3::text
+                  CASE $4::text
                       WHEN 'name' THEN LOWER(subscription.name)::text
                       WHEN 'series_title' THEN LOWER(series.title)::text
                       WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
@@ -2270,34 +2286,34 @@ WHERE subscription.deleted_at IS NULL
               subscription.id
           ) > (
               (
-                  CASE $3::text
-                      WHEN 'name' THEN LOWER($4::text)
-                      WHEN 'series_title' THEN LOWER($5::text)
-                      WHEN 'source_season' THEN lpad($6::int::text, 12, '0')
-                      WHEN 'enabled' THEN CASE WHEN $7::bool THEN '1' ELSE '0' END
-                      WHEN 'next_poll_at' THEN to_char($8::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
-                      WHEN 'created_at' THEN to_char($9::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                  CASE $4::text
+                      WHEN 'name' THEN LOWER($5::text)
+                      WHEN 'series_title' THEN LOWER($6::text)
+                      WHEN 'source_season' THEN lpad($7::int::text, 12, '0')
+                      WHEN 'enabled' THEN CASE WHEN $8::bool THEN '1' ELSE '0' END
+                      WHEN 'next_poll_at' THEN to_char($9::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      WHEN 'created_at' THEN to_char($10::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
                   END IS NULL
               ),
               COALESCE(
-                  CASE $3::text
-                      WHEN 'name' THEN LOWER($4::text)
-                      WHEN 'series_title' THEN LOWER($5::text)
-                      WHEN 'source_season' THEN lpad($6::int::text, 12, '0')
-                      WHEN 'enabled' THEN CASE WHEN $7::bool THEN '1' ELSE '0' END
-                      WHEN 'next_poll_at' THEN to_char($8::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
-                      WHEN 'created_at' THEN to_char($9::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                  CASE $4::text
+                      WHEN 'name' THEN LOWER($5::text)
+                      WHEN 'series_title' THEN LOWER($6::text)
+                      WHEN 'source_season' THEN lpad($7::int::text, 12, '0')
+                      WHEN 'enabled' THEN CASE WHEN $8::bool THEN '1' ELSE '0' END
+                      WHEN 'next_poll_at' THEN to_char($9::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      WHEN 'created_at' THEN to_char($10::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
                   END,
                   ''
               ),
-              $1::uuid
+              $2::uuid
           )
       )
       OR (
-          $2::text = 'desc'
+          $3::text = 'desc'
           AND (
               (
-                  CASE $3::text
+                  CASE $4::text
                       WHEN 'name' THEN LOWER(subscription.name)::text
                       WHEN 'series_title' THEN LOWER(series.title)::text
                       WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
@@ -2306,33 +2322,33 @@ WHERE subscription.deleted_at IS NULL
                       WHEN 'created_at' THEN to_char(subscription.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
                   END IS NOT NULL
               ) > (
-                  CASE $3::text
-                      WHEN 'name' THEN LOWER($4::text)
-                      WHEN 'series_title' THEN LOWER($5::text)
-                      WHEN 'source_season' THEN lpad($6::int::text, 12, '0')
-                      WHEN 'enabled' THEN CASE WHEN $7::bool THEN '1' ELSE '0' END
-                      WHEN 'next_poll_at' THEN to_char($8::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
-                      WHEN 'created_at' THEN to_char($9::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                  CASE $4::text
+                      WHEN 'name' THEN LOWER($5::text)
+                      WHEN 'series_title' THEN LOWER($6::text)
+                      WHEN 'source_season' THEN lpad($7::int::text, 12, '0')
+                      WHEN 'enabled' THEN CASE WHEN $8::bool THEN '1' ELSE '0' END
+                      WHEN 'next_poll_at' THEN to_char($9::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      WHEN 'created_at' THEN to_char($10::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
                   END IS NOT NULL
               )
               OR (
-                  (CASE $3::text
+                  (CASE $4::text
                       WHEN 'name' THEN LOWER(subscription.name)::text
                       WHEN 'series_title' THEN LOWER(series.title)::text
                       WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
                       WHEN 'enabled' THEN CASE WHEN subscription.enabled THEN '1' ELSE '0' END
                       WHEN 'next_poll_at' THEN to_char(subscription.next_poll_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
                       WHEN 'created_at' THEN to_char(subscription.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
-                  END IS NOT NULL) = (CASE $3::text
-                      WHEN 'name' THEN LOWER($4::text)
-                      WHEN 'series_title' THEN LOWER($5::text)
-                      WHEN 'source_season' THEN lpad($6::int::text, 12, '0')
-                      WHEN 'enabled' THEN CASE WHEN $7::bool THEN '1' ELSE '0' END
-                      WHEN 'next_poll_at' THEN to_char($8::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
-                      WHEN 'created_at' THEN to_char($9::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                  END IS NOT NULL) = (CASE $4::text
+                      WHEN 'name' THEN LOWER($5::text)
+                      WHEN 'series_title' THEN LOWER($6::text)
+                      WHEN 'source_season' THEN lpad($7::int::text, 12, '0')
+                      WHEN 'enabled' THEN CASE WHEN $8::bool THEN '1' ELSE '0' END
+                      WHEN 'next_poll_at' THEN to_char($9::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      WHEN 'created_at' THEN to_char($10::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
                   END IS NOT NULL)
                   AND COALESCE(
-                      CASE $3::text
+                      CASE $4::text
                           WHEN 'name' THEN LOWER(subscription.name)::text
                           WHEN 'series_title' THEN LOWER(series.title)::text
                           WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
@@ -2342,35 +2358,35 @@ WHERE subscription.deleted_at IS NULL
                       END,
                       ''
                   ) < COALESCE(
-                      CASE $3::text
-                          WHEN 'name' THEN LOWER($4::text)
-                          WHEN 'series_title' THEN LOWER($5::text)
-                          WHEN 'source_season' THEN lpad($6::int::text, 12, '0')
-                          WHEN 'enabled' THEN CASE WHEN $7::bool THEN '1' ELSE '0' END
-                          WHEN 'next_poll_at' THEN to_char($8::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
-                          WHEN 'created_at' THEN to_char($9::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      CASE $4::text
+                          WHEN 'name' THEN LOWER($5::text)
+                          WHEN 'series_title' THEN LOWER($6::text)
+                          WHEN 'source_season' THEN lpad($7::int::text, 12, '0')
+                          WHEN 'enabled' THEN CASE WHEN $8::bool THEN '1' ELSE '0' END
+                          WHEN 'next_poll_at' THEN to_char($9::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                          WHEN 'created_at' THEN to_char($10::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
                       END,
                       ''
                   )
               )
               OR (
-                  (CASE $3::text
+                  (CASE $4::text
                       WHEN 'name' THEN LOWER(subscription.name)::text
                       WHEN 'series_title' THEN LOWER(series.title)::text
                       WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
                       WHEN 'enabled' THEN CASE WHEN subscription.enabled THEN '1' ELSE '0' END
                       WHEN 'next_poll_at' THEN to_char(subscription.next_poll_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
                       WHEN 'created_at' THEN to_char(subscription.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
-                  END IS NOT NULL) = (CASE $3::text
-                      WHEN 'name' THEN LOWER($4::text)
-                      WHEN 'series_title' THEN LOWER($5::text)
-                      WHEN 'source_season' THEN lpad($6::int::text, 12, '0')
-                      WHEN 'enabled' THEN CASE WHEN $7::bool THEN '1' ELSE '0' END
-                      WHEN 'next_poll_at' THEN to_char($8::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
-                      WHEN 'created_at' THEN to_char($9::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                  END IS NOT NULL) = (CASE $4::text
+                      WHEN 'name' THEN LOWER($5::text)
+                      WHEN 'series_title' THEN LOWER($6::text)
+                      WHEN 'source_season' THEN lpad($7::int::text, 12, '0')
+                      WHEN 'enabled' THEN CASE WHEN $8::bool THEN '1' ELSE '0' END
+                      WHEN 'next_poll_at' THEN to_char($9::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      WHEN 'created_at' THEN to_char($10::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
                   END IS NOT NULL)
                   AND COALESCE(
-                      CASE $3::text
+                      CASE $4::text
                           WHEN 'name' THEN LOWER(subscription.name)::text
                           WHEN 'series_title' THEN LOWER(series.title)::text
                           WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
@@ -2380,24 +2396,24 @@ WHERE subscription.deleted_at IS NULL
                       END,
                       ''
                   ) = COALESCE(
-                      CASE $3::text
-                          WHEN 'name' THEN LOWER($4::text)
-                          WHEN 'series_title' THEN LOWER($5::text)
-                          WHEN 'source_season' THEN lpad($6::int::text, 12, '0')
-                          WHEN 'enabled' THEN CASE WHEN $7::bool THEN '1' ELSE '0' END
-                          WHEN 'next_poll_at' THEN to_char($8::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
-                          WHEN 'created_at' THEN to_char($9::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      CASE $4::text
+                          WHEN 'name' THEN LOWER($5::text)
+                          WHEN 'series_title' THEN LOWER($6::text)
+                          WHEN 'source_season' THEN lpad($7::int::text, 12, '0')
+                          WHEN 'enabled' THEN CASE WHEN $8::bool THEN '1' ELSE '0' END
+                          WHEN 'next_poll_at' THEN to_char($9::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                          WHEN 'created_at' THEN to_char($10::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
                       END,
                       ''
                   )
-                  AND subscription.id < $1::uuid
+                  AND subscription.id < $2::uuid
               )
           )
       )
   )
 ORDER BY
-    CASE WHEN $2::text = 'asc' THEN
-        CASE $3::text
+    CASE WHEN $3::text = 'asc' THEN
+        CASE $4::text
             WHEN 'name' THEN LOWER(subscription.name)::text
             WHEN 'series_title' THEN LOWER(series.title)::text
             WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
@@ -2406,8 +2422,8 @@ ORDER BY
             WHEN 'created_at' THEN to_char(subscription.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
         END
     END ASC NULLS LAST,
-    CASE WHEN $2::text = 'desc' THEN
-        CASE $3::text
+    CASE WHEN $3::text = 'desc' THEN
+        CASE $4::text
             WHEN 'name' THEN LOWER(subscription.name)::text
             WHEN 'series_title' THEN LOWER(series.title)::text
             WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
@@ -2416,12 +2432,13 @@ ORDER BY
             WHEN 'created_at' THEN to_char(subscription.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
         END
     END DESC NULLS FIRST,
-    CASE WHEN $2::text = 'asc' THEN subscription.id END ASC,
-    CASE WHEN $2::text = 'desc' THEN subscription.id END DESC
-LIMIT $10
+    CASE WHEN $3::text = 'asc' THEN subscription.id END ASC,
+    CASE WHEN $3::text = 'desc' THEN subscription.id END DESC
+LIMIT $11
 `
 
 type ListRSSSubscriptionsSortedParams struct {
+	Query              *string            `db:"query" json:"query"`
 	CursorID           pgtype.UUID        `db:"cursor_id" json:"cursor_id"`
 	SortOrder          *string            `db:"sort_order" json:"sort_order"`
 	SortKey            *string            `db:"sort_key" json:"sort_key"`
@@ -2462,6 +2479,7 @@ type ListRSSSubscriptionsSortedRow struct {
 
 func (q *Queries) ListRSSSubscriptionsSorted(ctx context.Context, arg ListRSSSubscriptionsSortedParams) ([]ListRSSSubscriptionsSortedRow, error) {
 	rows, err := q.db.Query(ctx, listRSSSubscriptionsSorted,
+		arg.Query,
 		arg.CursorID,
 		arg.SortOrder,
 		arg.SortKey,

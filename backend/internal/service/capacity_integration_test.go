@@ -64,7 +64,7 @@ FROM generate_series(1, 1500) AS item`, []any{resourceID}},
 		return err
 	})
 	measureCapacityQuery(t, "RSS first page from 2000 entries", func() error {
-		page, err := reads.ListRSSEntries(ctx, subscriptionID, nil, 100, nil, nil, nil, nil)
+		page, err := reads.ListRSSEntries(ctx, subscriptionID, nil, 100, nil, nil, nil, nil, nil, nil)
 		if err == nil && (len(page.Items) != 100 || page.NextCursor == nil) {
 			t.Fatalf("RSS page = %d items, cursor %v", len(page.Items), page.NextCursor)
 		}
