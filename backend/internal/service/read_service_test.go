@@ -76,8 +76,9 @@ func TestClassifyRSSEntryTargetOccupancyOverridesHistoricalEnqueueStatus(t *test
 			name: "managed import owner keeps completion despite stale occupancy rejection",
 			row: db.ListRSSEntriesRow{
 				Status: "enqueued", Downloadable: false, FulfillmentSource: &managedSource,
-				ImportedAt:       pgtype.Timestamptz{Time: time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC), Valid: true},
-				RejectionReasons: []string{rssTargetInLibraryReason},
+				ImportedAt:             pgtype.Timestamptz{Time: time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC), Valid: true},
+				RejectionReasons:       []string{rssTargetInLibraryReason},
+				SuccessfulImportPresent: true,
 			},
 			want: "enqueued",
 		},
@@ -85,6 +86,15 @@ func TestClassifyRSSEntryTargetOccupancyOverridesHistoricalEnqueueStatus(t *test
 			name: "occupied alternate with fulfillment marker stays skipped",
 			row: db.ListRSSEntriesRow{
 				Status: "discovered", Downloadable: false, FulfillmentSource: &managedSource,
+				ImportedAt:       pgtype.Timestamptz{Time: time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC), Valid: true},
+				RejectionReasons: []string{rssTargetImportedReason},
+			},
+			want: "rejected",
+		},
+		{
+			name: "reconciled enqueued conflict entry stays skipped",
+			row: db.ListRSSEntriesRow{
+				Status: "enqueued", Downloadable: false, FulfillmentSource: &managedSource,
 				ImportedAt:       pgtype.Timestamptz{Time: time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC), Valid: true},
 				RejectionReasons: []string{rssTargetImportedReason},
 			},

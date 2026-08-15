@@ -1428,10 +1428,11 @@ func classifyRSSEntry(row db.ListRSSEntriesRow) string {
 }
 
 func rssEntryHasTargetOccupancy(row db.ListRSSEntriesRow) bool {
-	// 已由本系统入库完成的条目（managed_import + imported_at）保留完成历史，
-	// 不再因后续占用核验残留的拒绝原因被归入"已跳过"；占用原因仅作用于
-	// 从未被本系统处理或未完成的条目。
-	if row.ImportedAt.Valid && valueOrEmpty(row.FulfillmentSource) == rssFulfillmentManagedImport {
+	// 只有真实成功导入过的条目（events 链存在 task.imported 的 provenance）
+	// 才保留完成历史：即使被占用核验残留了拒绝原因，也不再归入"已跳过"。
+	// 被回收的冲突条目虽然会被写入 imported_at + managed_import 满足标记，
+	// 但没有成功导入事件链，仍按占用硬拒绝归入"已跳过"。
+	if row.SuccessfulImportPresent && row.ImportedAt.Valid && valueOrEmpty(row.FulfillmentSource) == rssFulfillmentManagedImport {
 		return false
 	}
 	if valueOrEmpty(row.FulfillmentSource) == rssFulfillmentEmbyCatalog {
