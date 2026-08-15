@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, it } from 'vitest';
 
-import type { Acquisition, DashboardSummary } from '@/api/generated/types.gen';
+import type { Acquisition, DashboardSummary, SystemDiskUsage } from '@/api/generated/types.gen';
 import { DashboardPage } from '@/features/dashboard/dashboard-page';
 import { server } from '@/test/msw-server';
 import { renderWithProviders } from '@/test/render';
@@ -94,17 +94,19 @@ function dashboardSummary(): DashboardSummary {
 
 const gibibyte = 1024 ** 3;
 
-function systemMetrics() {
+const systemDisks = [
+  { device: '/dev/mapper/root', physicalDevices: ['nvme0n1'], path: '/', usedBytes: 600 * gibibyte, totalBytes: 1000 * gibibyte, usedPercent: 60 },
+  { device: '/dev/mapper/media', physicalDevices: ['sda', 'sdb'], path: '/data/video/video1', usedBytes: 200 * gibibyte, totalBytes: 400 * gibibyte, usedPercent: 50 },
+];
+
+function systemMetrics(disks: SystemDiskUsage[] = systemDisks) {
   return {
     sampledAt: '2026-07-26T08:00:04Z',
     sampleIntervalSeconds: 2,
     historyWindowSeconds: 120,
     availability: { cpu: true, memory: true, network: true, diskIO: true, diskCapacity: true },
     memory: { usedBytes: 8 * gibibyte, totalBytes: 16 * gibibyte },
-    disks: [
-      { device: '/dev/mapper/root', physicalDevices: ['nvme0n1'], path: '/', usedBytes: 600 * gibibyte, totalBytes: 1000 * gibibyte, usedPercent: 60 },
-      { device: '/dev/mapper/media', physicalDevices: ['sda', 'sdb'], path: '/data/video/video1', usedBytes: 200 * gibibyte, totalBytes: 400 * gibibyte, usedPercent: 50 },
-    ],
+    disks,
     samples: [
       { sampledAt: '2026-07-26T08:00:00Z', cpuUsedPercent: 30, memoryUsedPercent: 48, networkReceiveBytesPerSecond: 1024, networkSendBytesPerSecond: 512, diskReadBytesPerSecond: 2048, diskWriteBytesPerSecond: 1024 },
       { sampledAt: '2026-07-26T08:00:02Z', cpuUsedPercent: 36, memoryUsedPercent: 49, networkReceiveBytesPerSecond: 2048, networkSendBytesPerSecond: 1024, diskReadBytesPerSecond: 4096, diskWriteBytesPerSecond: 2048 },
@@ -142,6 +144,8 @@ describe('DashboardPage attention', () => {
     expect(within(resources).getByLabelText('磁盘资源图表')).toHaveTextContent('写入 4.0 KiB/s');
     const diskPanel = within(resources).getByLabelText('磁盘', { exact: true });
     const disks = within(resources).getByLabelText('磁盘容量');
+    // 多块磁盘时列表使用双列网格横向分配空间，避免单列堆叠拉长卡片。
+    expect(within(disks).getByRole('list').className).toContain('sm:grid-cols-2');
     expect(disks).toHaveTextContent('nvme0n1');
     expect(disks).toHaveTextContent('60%');
     expect(disks).toHaveTextContent('sda, sdb');
@@ -154,6 +158,20 @@ describe('DashboardPage attention', () => {
     const recent = screen.getByLabelText('最近运行记录');
     expect(within(recent).getByText('添加下载')).toBeInTheDocument();
     expect(within(recent).getByText('这个资源已经在下载列表中。')).toBeInTheDocument();
+  });
+
+  it('keeps the disk capacity list in one column when only one disk exists', async () => {
+    server.use(
+      http.get('*/api/v1/dashboard/summary', () => HttpResponse.json(dashboardSummary())),
+      http.get('*/api/v1/dashboard/background-runtime', () => HttpResponse.json({ state: 'stopped' })),
+      http.get('*/api/v1/dashboard/system-metrics', () => HttpResponse.json(systemMetrics([systemDisks[0]]))),
+    );
+    renderWithProviders(<DashboardPage />);
+
+    const resources = await screen.findByLabelText('系统资源');
+    const diskList = within(within(resources).getByLabelText('磁盘容量')).getByRole('list');
+    expect(diskList.className).toContain('grid');
+    expect(diskList.className).not.toContain('grid-cols');
   });
 
   it('starts and stops the Worker from one runtime control', async () => {
