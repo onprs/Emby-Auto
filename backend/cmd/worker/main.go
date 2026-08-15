@@ -201,6 +201,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, checkOnly 
 		cfg.OperationHeartbeatInterval,
 		workerID,
 	)
+	river.AddWorker(workers, appworker.NewEventsRetentionWorker(configuration, repository.NewEvents(queries)))
 	transcodeWorkers := cfg.RiverTranscodeWorkers
 	if profile, profileErr := queries.GetDefaultTranscodeProfile(ctx); profileErr == nil && profile.MaxConcurrency > 0 {
 		transcodeWorkers = int(profile.MaxConcurrency)
@@ -217,6 +218,23 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, checkOnly 
 		},
 		MaxAttempts:          3,
 		RescueStuckJobsAfter: 25 * time.Hour,
+		PeriodicJobs: []*river.PeriodicJob{
+			river.NewPeriodicJob(
+				river.PeriodicInterval(1*time.Hour),
+				func() (river.JobArgs, *river.InsertOpts) {
+					return appqueue.EventsRetentionCleanupArgs{}, &river.InsertOpts{
+						MaxAttempts: 3,
+						Queue:       appqueue.QueueGeneral,
+						UniqueOpts: river.UniqueOpts{
+							ByArgs:   true,
+							ByQueue:  true,
+							ByPeriod: 23 * time.Hour,
+						},
+					}
+				},
+				&river.PeriodicJobOpts{ID: "events_retention_cleanup", RunOnStart: true},
+			),
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("create River client: %w", err)

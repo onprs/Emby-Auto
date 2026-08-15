@@ -211,6 +211,12 @@ func TestConfigurationUpdateRejectsUnsafePathsURLsAndSecretActions(t *testing.T)
 			update.Settings.Paths.DownloadRoot = filepath.Dir(update.Settings.Paths.AnimeLibraryRoot)
 		}, field: "paths.downloadRoot"},
 		{name: "unsafe transcode preset", mutate: func(update *domain.ConfigurationUpdate) { update.Settings.Transcode.Preset = "-filter_complex" }, field: "transcode.preset"},
+		{name: "negative event retention days", mutate: func(update *domain.ConfigurationUpdate) {
+			update.Settings.Events.RetentionDays = -1
+		}, field: "events.retentionDays"},
+		{name: "oversized event retention days", mutate: func(update *domain.ConfigurationUpdate) {
+			update.Settings.Events.RetentionDays = 36501
+		}, field: "events.retentionDays"},
 		{name: "set without value", mutate: func(update *domain.ConfigurationUpdate) {
 			update.Secrets[domain.SecretEmbyAPIKey] = domain.SecretUpdate{Action: domain.SecretSet}
 		}, field: domain.SecretEmbyAPIKey},
