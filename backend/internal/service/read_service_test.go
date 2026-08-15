@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/domain"
 )
@@ -70,6 +71,24 @@ func TestClassifyRSSEntryTargetOccupancyOverridesHistoricalEnqueueStatus(t *test
 				Status: "enqueued", Downloadable: true, FulfillmentSource: &managedSource,
 			},
 			want: "enqueued",
+		},
+		{
+			name: "managed import owner keeps completion despite stale occupancy rejection",
+			row: db.ListRSSEntriesRow{
+				Status: "enqueued", Downloadable: false, FulfillmentSource: &managedSource,
+				ImportedAt:       pgtype.Timestamptz{Time: time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC), Valid: true},
+				RejectionReasons: []string{rssTargetInLibraryReason},
+			},
+			want: "enqueued",
+		},
+		{
+			name: "occupied alternate with fulfillment marker stays skipped",
+			row: db.ListRSSEntriesRow{
+				Status: "discovered", Downloadable: false, FulfillmentSource: &managedSource,
+				ImportedAt:       pgtype.Timestamptz{Time: time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC), Valid: true},
+				RejectionReasons: []string{rssTargetImportedReason},
+			},
+			want: "rejected",
 		},
 	}
 	for _, testCase := range tests {

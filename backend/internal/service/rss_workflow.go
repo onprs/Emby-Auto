@@ -706,32 +706,42 @@ func (workflow *RSSWorkflow) persistFeedEntry(
 		return false, false, false, fmt.Errorf("load duplicate RSS entry: %w", err)
 	}
 	existingID := repository.UUIDFromPG(existing.ID)
-	if existing.SourceSeason != nil && existing.SourceEpisode != nil && existing.CoordinateSource != nil &&
-		(*existing.CoordinateSource == string(domain.DecisionSourceAgentAuto) ||
-			*existing.CoordinateSource == string(domain.DecisionSourceAgentAccepted) ||
-			*existing.CoordinateSource == string(domain.DecisionSourceUser)) &&
-		rssOnlySoftCoordinateReasons(analysis.RejectionReasons) {
-		analysis.SourceSeason = int(*existing.SourceSeason)
-		analysis.SourceEpisode = int(*existing.SourceEpisode)
-		analysis.RejectionReasons = []string{}
-		analysis.Downloadable = true
+	importedBySelf := existing.ImportedAt.Valid && valueOrEmpty(existing.FulfillmentSource) == rssFulfillmentManagedImport
+	if importedBySelf {
+		// 已由本系统入库完成的条目保持完成状态：仅刷新发布元数据，
+		// 不重新核验占用，也不覆盖可下载性、拒绝原因与源坐标。
+		params.Downloadable = existing.Downloadable
+		params.RejectionReasons = existing.RejectionReasons
 		params.SourceSeason = existing.SourceSeason
 		params.SourceEpisode = existing.SourceEpisode
-		params.RejectionReasons = []string{}
-		params.Downloadable = true
-	}
-	if !preacquisitionMapping && analysis.SourceSeason > 0 && analysis.SourceEpisode > 0 {
-		occupancy, err = loadRSSMappedTargetOccupancyWithRealtimeCheck(
-			ctx, queries, subscriptionID, analysis.SourceSeason, analysis.SourceEpisode, existingID, realtimeCheckID,
-		)
-		if err != nil {
-			return false, false, false, err
+	} else {
+		if existing.SourceSeason != nil && existing.SourceEpisode != nil && existing.CoordinateSource != nil &&
+			(*existing.CoordinateSource == string(domain.DecisionSourceAgentAuto) ||
+				*existing.CoordinateSource == string(domain.DecisionSourceAgentAccepted) ||
+				*existing.CoordinateSource == string(domain.DecisionSourceUser)) &&
+			rssOnlySoftCoordinateReasons(analysis.RejectionReasons) {
+			analysis.SourceSeason = int(*existing.SourceSeason)
+			analysis.SourceEpisode = int(*existing.SourceEpisode)
+			analysis.RejectionReasons = []string{}
+			analysis.Downloadable = true
+			params.SourceSeason = existing.SourceSeason
+			params.SourceEpisode = existing.SourceEpisode
+			params.RejectionReasons = []string{}
+			params.Downloadable = true
 		}
-		analysis = rssReleaseAnalysisWithOccupancy(
-			domain.AnalyzeRSSRelease(item.Title, downloadURI, defaultSeason, includeKeywords, excludeKeywords), occupancy,
-		)
-		params.Downloadable = analysis.Downloadable
-		params.RejectionReasons = analysis.RejectionReasons
+		if !preacquisitionMapping && analysis.SourceSeason > 0 && analysis.SourceEpisode > 0 {
+			occupancy, err = loadRSSMappedTargetOccupancyWithRealtimeCheck(
+				ctx, queries, subscriptionID, analysis.SourceSeason, analysis.SourceEpisode, existingID, realtimeCheckID,
+			)
+			if err != nil {
+				return false, false, false, err
+			}
+			analysis = rssReleaseAnalysisWithOccupancy(
+				domain.AnalyzeRSSRelease(item.Title, downloadURI, defaultSeason, includeKeywords, excludeKeywords), occupancy,
+			)
+			params.Downloadable = analysis.Downloadable
+			params.RejectionReasons = analysis.RejectionReasons
+		}
 	}
 	if _, err := queries.UpdateRSSEntryMetadata(ctx, db.UpdateRSSEntryMetadataParams{
 		Guid:             params.Guid,
@@ -749,7 +759,7 @@ func (workflow *RSSWorkflow) persistFeedEntry(
 	}); err != nil {
 		return false, false, false, fmt.Errorf("update duplicate RSS entry: %w", err)
 	}
-	if occupancy.Reason != "" {
+	if !importedBySelf && occupancy.Reason != "" {
 		if _, err := markRSSEntryTargetOccupiedInTx(ctx, scope, existingID, operationID, occupancy); err != nil {
 			return false, false, false, err
 		}
