@@ -141,19 +141,20 @@ func (workflow *RSSWorkflow) ListSubscriptions(
 			return domain.RSSSubscriptionPage{}, fmt.Errorf("list RSS subscriptions: %w", err)
 		}
 		for _, row := range rows {
-			item := subscriptionFromListRow(row)
-			progress, err := workflow.subscriptionProgress(ctx, item.ID)
-			if err != nil {
-				return domain.RSSSubscriptionPage{}, fmt.Errorf("load RSS subscription progress: %w", err)
-			}
-			applyRSSSubscriptionProgress(&item, progress)
-			items = append(items, item)
+			items = append(items, subscriptionFromListRow(row))
 		}
 		if len(rows) < batchSize {
 			break
 		}
 		last := repository.UUIDFromPG(rows[len(rows)-1].ID)
 		batchCursor = &last
+	}
+	progressBySubscription, err := workflow.subscriptionProgressBySubscriptions(ctx, subscriptionIDsOf(items))
+	if err != nil {
+		return domain.RSSSubscriptionPage{}, err
+	}
+	for index := range items {
+		applyRSSSubscriptionProgress(&items[index], progressBySubscription[items[index].ID])
 	}
 	field := "name"
 	if sortBy != nil {
@@ -196,6 +197,14 @@ func (workflow *RSSWorkflow) ListSubscriptions(
 		Items:      window,
 		NextCursor: pageCursor(hasMore, len(window), func(i int) uuid.UUID { return window[i].ID }),
 	}, nil
+}
+
+func subscriptionIDsOf(items []domain.RSSSubscription) []uuid.UUID {
+	ids := make([]uuid.UUID, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	return ids
 }
 
 func compareOptionalTime(left, right *time.Time) int {

@@ -221,6 +221,36 @@ WHERE entry.subscription_id = sqlc.arg(subscription_id)
   )
 ORDER BY acquisition.created_at, acquisition.id;
 
+-- name: ListRSSSubscriptionAcquisitionsBySubscriptionIDs :many
+SELECT acquisition.*, entry.subscription_id
+FROM acquisitions AS acquisition
+JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
+WHERE entry.subscription_id = ANY(sqlc.arg(subscription_ids)::uuid[])
+  AND acquisition.deletion_requested_at IS NULL
+  AND (
+      NOT EXISTS (
+          SELECT 1
+          FROM downloads AS download
+          WHERE download.acquisition_id = acquisition.id
+      )
+      OR EXISTS (
+          SELECT 1
+          FROM downloads AS download
+          WHERE download.acquisition_id = acquisition.id
+            AND download.deleted_at IS NULL
+            AND download.status <> 'cancelled'
+      )
+      OR EXISTS (
+          SELECT 1
+          FROM episode_tasks AS task
+          JOIN download_files AS source_file ON source_file.id = task.source_video_file_id
+          JOIN downloads AS source_download ON source_download.id = source_file.download_id
+          WHERE task.acquisition_id = acquisition.id
+            AND source_download.deleted_at IS NULL
+      )
+  )
+ORDER BY acquisition.created_at, acquisition.id;
+
 -- name: UpdateRSSSubscription :one
 UPDATE rss_subscriptions
 SET name = sqlc.arg(name),
@@ -857,6 +887,17 @@ LEFT JOIN rss_entries AS entry
   ON entry.subscription_id = subscription.id
  AND entry.source_season = subscription.source_season
 WHERE subscription.id = sqlc.arg(id)
+GROUP BY subscription.id;
+
+-- name: ListRSSSubscriptionImportedCountsBySubscriptionIDs :many
+SELECT
+    subscription.id,
+    count(DISTINCT entry.source_episode) FILTER (WHERE entry.imported_at IS NOT NULL)::bigint AS imported_count
+FROM rss_subscriptions AS subscription
+LEFT JOIN rss_entries AS entry
+  ON entry.subscription_id = subscription.id
+ AND entry.source_season = subscription.source_season
+WHERE subscription.id = ANY(sqlc.arg(subscription_ids)::uuid[])
 GROUP BY subscription.id;
 
 -- name: LockRSSIncompleteRecoveryEntries :many

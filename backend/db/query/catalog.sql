@@ -47,6 +47,11 @@ SELECT *
 FROM media_series
 WHERE id = sqlc.arg(id);
 
+-- name: ListMediaSeriesByIDs :many
+SELECT *
+FROM media_series
+WHERE id = ANY(sqlc.arg(ids)::uuid[]);
+
 -- name: GetMediaSeriesByTMDbID :one
 SELECT *
 FROM media_series

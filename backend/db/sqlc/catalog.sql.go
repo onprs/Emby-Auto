@@ -1402,6 +1402,44 @@ func (q *Queries) ListMappingScopeSelectedVideos(ctx context.Context, acquisitio
 	return items, nil
 }
 
+const listMediaSeriesByIDs = `-- name: ListMediaSeriesByIDs :many
+SELECT id, tmdb_series_id, title, original_title, media_type, metadata, legacy_id, created_at, updated_at, tmdb_movie_id, release_year
+FROM media_series
+WHERE id = ANY($1::uuid[])
+`
+
+func (q *Queries) ListMediaSeriesByIDs(ctx context.Context, ids []pgtype.UUID) ([]MediaSeries, error) {
+	rows, err := q.db.Query(ctx, listMediaSeriesByIDs, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MediaSeries{}
+	for rows.Next() {
+		var i MediaSeries
+		if err := rows.Scan(
+			&i.ID,
+			&i.TmdbSeriesID,
+			&i.Title,
+			&i.OriginalTitle,
+			&i.MediaType,
+			&i.Metadata,
+			&i.LegacyID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.TmdbMovieID,
+			&i.ReleaseYear,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSeasonEpisodes = `-- name: ListSeasonEpisodes :many
 SELECT id, season_id, tmdb_episode_id, episode_number, title, air_date, upstream_payload, created_at, updated_at
 FROM media_episodes

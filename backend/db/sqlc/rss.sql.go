@@ -1967,6 +1967,126 @@ func (q *Queries) ListRSSSubscriptionAcquisitions(ctx context.Context, subscript
 	return items, nil
 }
 
+const listRSSSubscriptionAcquisitionsBySubscriptionIDs = `-- name: ListRSSSubscriptionAcquisitionsBySubscriptionIDs :many
+SELECT acquisition.id, acquisition.series_id, acquisition.mapping_profile_id, acquisition.source_kind, acquisition.release_candidate_id, acquisition.rss_entry_id, acquisition.source_uri, acquisition.source_payload, acquisition.legacy_id, acquisition.created_by, acquisition.created_at, acquisition.updated_at, acquisition.deletion_requested_at, entry.subscription_id
+FROM acquisitions AS acquisition
+JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
+WHERE entry.subscription_id = ANY($1::uuid[])
+  AND acquisition.deletion_requested_at IS NULL
+  AND (
+      NOT EXISTS (
+          SELECT 1
+          FROM downloads AS download
+          WHERE download.acquisition_id = acquisition.id
+      )
+      OR EXISTS (
+          SELECT 1
+          FROM downloads AS download
+          WHERE download.acquisition_id = acquisition.id
+            AND download.deleted_at IS NULL
+            AND download.status <> 'cancelled'
+      )
+      OR EXISTS (
+          SELECT 1
+          FROM episode_tasks AS task
+          JOIN download_files AS source_file ON source_file.id = task.source_video_file_id
+          JOIN downloads AS source_download ON source_download.id = source_file.download_id
+          WHERE task.acquisition_id = acquisition.id
+            AND source_download.deleted_at IS NULL
+      )
+  )
+ORDER BY acquisition.created_at, acquisition.id
+`
+
+type ListRSSSubscriptionAcquisitionsBySubscriptionIDsRow struct {
+	ID                  pgtype.UUID        `db:"id" json:"id"`
+	SeriesID            pgtype.UUID        `db:"series_id" json:"series_id"`
+	MappingProfileID    pgtype.UUID        `db:"mapping_profile_id" json:"mapping_profile_id"`
+	SourceKind          string             `db:"source_kind" json:"source_kind"`
+	ReleaseCandidateID  pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
+	RssEntryID          pgtype.UUID        `db:"rss_entry_id" json:"rss_entry_id"`
+	SourceUri           *string            `db:"source_uri" json:"source_uri"`
+	SourcePayload       []byte             `db:"source_payload" json:"source_payload"`
+	LegacyID            *string            `db:"legacy_id" json:"legacy_id"`
+	CreatedBy           pgtype.UUID        `db:"created_by" json:"created_by"`
+	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletionRequestedAt pgtype.Timestamptz `db:"deletion_requested_at" json:"deletion_requested_at"`
+	SubscriptionID      pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
+}
+
+func (q *Queries) ListRSSSubscriptionAcquisitionsBySubscriptionIDs(ctx context.Context, subscriptionIds []pgtype.UUID) ([]ListRSSSubscriptionAcquisitionsBySubscriptionIDsRow, error) {
+	rows, err := q.db.Query(ctx, listRSSSubscriptionAcquisitionsBySubscriptionIDs, subscriptionIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRSSSubscriptionAcquisitionsBySubscriptionIDsRow{}
+	for rows.Next() {
+		var i ListRSSSubscriptionAcquisitionsBySubscriptionIDsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SeriesID,
+			&i.MappingProfileID,
+			&i.SourceKind,
+			&i.ReleaseCandidateID,
+			&i.RssEntryID,
+			&i.SourceUri,
+			&i.SourcePayload,
+			&i.LegacyID,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletionRequestedAt,
+			&i.SubscriptionID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRSSSubscriptionImportedCountsBySubscriptionIDs = `-- name: ListRSSSubscriptionImportedCountsBySubscriptionIDs :many
+SELECT
+    subscription.id,
+    count(DISTINCT entry.source_episode) FILTER (WHERE entry.imported_at IS NOT NULL)::bigint AS imported_count
+FROM rss_subscriptions AS subscription
+LEFT JOIN rss_entries AS entry
+  ON entry.subscription_id = subscription.id
+ AND entry.source_season = subscription.source_season
+WHERE subscription.id = ANY($1::uuid[])
+GROUP BY subscription.id
+`
+
+type ListRSSSubscriptionImportedCountsBySubscriptionIDsRow struct {
+	ID            pgtype.UUID `db:"id" json:"id"`
+	ImportedCount int64       `db:"imported_count" json:"imported_count"`
+}
+
+func (q *Queries) ListRSSSubscriptionImportedCountsBySubscriptionIDs(ctx context.Context, subscriptionIds []pgtype.UUID) ([]ListRSSSubscriptionImportedCountsBySubscriptionIDsRow, error) {
+	rows, err := q.db.Query(ctx, listRSSSubscriptionImportedCountsBySubscriptionIDs, subscriptionIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRSSSubscriptionImportedCountsBySubscriptionIDsRow{}
+	for rows.Next() {
+		var i ListRSSSubscriptionImportedCountsBySubscriptionIDsRow
+		if err := rows.Scan(&i.ID, &i.ImportedCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRSSSubscriptions = `-- name: ListRSSSubscriptions :many
 SELECT
     subscription.id, subscription.series_id, subscription.mapping_profile_id, subscription.name, subscription.feed_url, subscription.enabled, subscription.poll_interval_seconds, subscription.last_polled_at, subscription.next_poll_at, subscription.version, subscription.created_at, subscription.updated_at, subscription.source_season, subscription.deleted_at, subscription.auto_review, subscription.cleanup_source_on_completion, subscription.completed_at, subscription.include_keywords, subscription.exclude_keywords, subscription.auto_episode_mapping,
