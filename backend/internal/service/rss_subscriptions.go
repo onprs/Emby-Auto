@@ -127,6 +127,87 @@ func (workflow *RSSWorkflow) ListSubscriptions(
 	if limit <= 0 || limit > 100 {
 		return domain.RSSSubscriptionPage{}, invalidRSSSubscription("limit", "must be between 1 and 100")
 	}
+	field := "name"
+	if sortBy != nil {
+		field = *sortBy
+	}
+	direction := listSortDirection(sortOrder, "asc")
+	// progress 依赖实时聚合的进度值，无法在 SQL 层精确复刻排序键，
+	// 保留全量加载 + 内存排序路径以维持既有排序语义；其余稳定字段
+	// 走 SQL 层 cursor 分页，只加载并计算当前页订阅的进度。
+	if field == "progress" {
+		return workflow.listSubscriptionsByComputedProgress(ctx, cursor, limit, direction)
+	}
+	return workflow.listSubscriptionsBySQLSort(ctx, cursor, limit, field, direction)
+}
+
+// listSubscriptionsBySQLSort 在 SQL 层按稳定排序键分页，仅对当前页订阅
+// 计算进度，避免与 limit 无关地扫描全表。
+func (workflow *RSSWorkflow) listSubscriptionsBySQLSort(
+	ctx context.Context,
+	cursor *uuid.UUID,
+	limit int,
+	field string,
+	direction int,
+) (domain.RSSSubscriptionPage, error) {
+	order := "asc"
+	if direction < 0 {
+		order = "desc"
+	}
+	params := db.ListRSSSubscriptionsSortedParams{
+		SortKey:   &field,
+		SortOrder: &order,
+		PageSize:  int32(limit) + 1,
+	}
+	if cursor != nil {
+		row, err := workflow.queries.GetRSSSubscription(ctx, repository.UUIDToPG(*cursor))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.RSSSubscriptionPage{}, NewError("invalid_cursor", "the list cursor was not found", ErrInvalidInput, map[string]any{"cursor": cursor.String()})
+		}
+		if err != nil {
+			return domain.RSSSubscriptionPage{}, fmt.Errorf("load RSS subscription cursor: %w", err)
+		}
+		params.CursorID = repository.UUIDToPG(*cursor)
+		params.CursorName = &row.Name
+		params.CursorSeriesTitle = &row.SeriesTitle
+		params.CursorSourceSeason = &row.SourceSeason
+		params.CursorEnabled = &row.Enabled
+		params.CursorNextPollAt = row.NextPollAt
+		params.CursorCreatedAt = row.CreatedAt
+	}
+	rows, err := workflow.queries.ListRSSSubscriptionsSorted(ctx, params)
+	if err != nil {
+		return domain.RSSSubscriptionPage{}, fmt.Errorf("list RSS subscriptions: %w", err)
+	}
+	hasMore := len(rows) > limit
+	if hasMore {
+		rows = rows[:limit]
+	}
+	items := make([]domain.RSSSubscription, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, subscriptionFromListRow(sortedSubscriptionToListRow(row)))
+	}
+	progressBySubscription, err := workflow.subscriptionProgressBySubscriptions(ctx, subscriptionIDsOf(items))
+	if err != nil {
+		return domain.RSSSubscriptionPage{}, err
+	}
+	for index := range items {
+		applyRSSSubscriptionProgress(&items[index], progressBySubscription[items[index].ID])
+	}
+	return domain.RSSSubscriptionPage{
+		Items:      items,
+		NextCursor: pageCursor(hasMore, len(items), func(i int) uuid.UUID { return items[i].ID }),
+	}, nil
+}
+
+// listSubscriptionsByComputedProgress 为 progress 排序保留既有语义：
+// 全量加载订阅后计算所有进度，在内存中排序并按 cursor 窗口分页。
+func (workflow *RSSWorkflow) listSubscriptionsByComputedProgress(
+	ctx context.Context,
+	cursor *uuid.UUID,
+	limit int,
+	direction int,
+) (domain.RSSSubscriptionPage, error) {
 	const batchSize = 200
 	baseSort := "newest"
 	var batchCursor *uuid.UUID
@@ -156,34 +237,9 @@ func (workflow *RSSWorkflow) ListSubscriptions(
 	for index := range items {
 		applyRSSSubscriptionProgress(&items[index], progressBySubscription[items[index].ID])
 	}
-	field := "name"
-	if sortBy != nil {
-		field = *sortBy
-	}
-	direction := listSortDirection(sortOrder, "asc")
 	sort.SliceStable(items, func(i, j int) bool {
 		left, right := items[i], items[j]
-		comparison := 0
-		switch field {
-		case "series_title":
-			comparison = strings.Compare(strings.ToLower(left.SeriesTitle), strings.ToLower(right.SeriesTitle))
-		case "source_season":
-			comparison = cmp.Compare(left.SourceSeason, right.SourceSeason)
-		case "enabled":
-			if left.Enabled != right.Enabled {
-				if !left.Enabled {
-					comparison = -1
-				} else {
-					comparison = 1
-				}
-			}
-		case "progress":
-			comparison = cmp.Compare(left.OverallProgress, right.OverallProgress)
-		case "next_poll_at":
-			comparison = compareOptionalTime(left.NextPollAt, right.NextPollAt)
-		default:
-			comparison = strings.Compare(strings.ToLower(left.Name), strings.ToLower(right.Name))
-		}
+		comparison := cmp.Compare(left.OverallProgress, right.OverallProgress)
 		if comparison == 0 {
 			comparison = strings.Compare(left.ID.String(), right.ID.String())
 		}
@@ -205,19 +261,6 @@ func subscriptionIDsOf(items []domain.RSSSubscription) []uuid.UUID {
 		ids = append(ids, item.ID)
 	}
 	return ids
-}
-
-func compareOptionalTime(left, right *time.Time) int {
-	switch {
-	case left == nil && right == nil:
-		return 0
-	case left == nil:
-		return 1
-	case right == nil:
-		return -1
-	default:
-		return compareTime(*left, *right)
-	}
 }
 
 func (workflow *RSSWorkflow) GetSubscription(ctx context.Context, id uuid.UUID) (domain.RSSSubscription, error) {
@@ -953,6 +996,12 @@ func subscriptionFromGetRow(row db.GetRSSSubscriptionRow) domain.RSSSubscription
 		CreatedAt:                 row.CreatedAt.Time,
 		UpdatedAt:                 row.UpdatedAt.Time,
 	}
+}
+
+// sortedSubscriptionToListRow converts the SQL-sorted row to the shared
+// list row shape; both queries project the same columns.
+func sortedSubscriptionToListRow(row db.ListRSSSubscriptionsSortedRow) db.ListRSSSubscriptionsRow {
+	return db.ListRSSSubscriptionsRow(row)
 }
 
 func subscriptionFromListRow(row db.ListRSSSubscriptionsRow) domain.RSSSubscription {

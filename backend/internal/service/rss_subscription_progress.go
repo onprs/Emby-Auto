@@ -67,7 +67,7 @@ func subscriptionProgressViews(
 	if len(rows) == 0 {
 		return map[uuid.UUID][]domain.AcquisitionView{}, nil
 	}
-	pgAcquisitionIDs := make([]pgtype.UUID, len(rows))
+	pgAcquisitionIDs := make([]pgtype.UUID, 0, len(rows))
 	pgSeriesIDs := make([]pgtype.UUID, 0, len(rows))
 	for _, row := range rows {
 		pgAcquisitionIDs = append(pgAcquisitionIDs, row.ID)

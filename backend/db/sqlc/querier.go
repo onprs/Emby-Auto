@@ -241,6 +241,7 @@ type Querier interface {
 	ListRSSSubscriptionAcquisitionsBySubscriptionIDs(ctx context.Context, subscriptionIds []pgtype.UUID) ([]ListRSSSubscriptionAcquisitionsBySubscriptionIDsRow, error)
 	ListRSSSubscriptionImportedCountsBySubscriptionIDs(ctx context.Context, subscriptionIds []pgtype.UUID) ([]ListRSSSubscriptionImportedCountsBySubscriptionIDsRow, error)
 	ListRSSSubscriptions(ctx context.Context, arg ListRSSSubscriptionsParams) ([]ListRSSSubscriptionsRow, error)
+	ListRSSSubscriptionsSorted(ctx context.Context, arg ListRSSSubscriptionsSortedParams) ([]ListRSSSubscriptionsSortedRow, error)
 	ListReleaseCandidates(ctx context.Context, searchRunID pgtype.UUID) ([]ReleaseCandidate, error)
 	ListResourceEvents(ctx context.Context, arg ListResourceEventsParams) ([]Event, error)
 	ListSearchRuns(ctx context.Context, arg ListSearchRunsParams) ([]SearchRun, error)

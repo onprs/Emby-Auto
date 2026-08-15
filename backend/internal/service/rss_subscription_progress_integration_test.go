@@ -46,7 +46,7 @@ VALUES ($1, $2, $3, $4, true, 900, 1)
 INSERT INTO rss_entries (
     id, subscription_id, identity_key, title, download_uri, downloadable,
     rejection_reasons, source_season, source_episode, status, imported_at
-) VALUES ($1, $2, $3, $4, $5, true, ARRAY[]::text[], 1, $6, 'completed', $7)
+) VALUES ($1, $2, $3, $4, $5, true, ARRAY[]::text[], 1, $6, 'discovered', $7)
 `, entryID, subscriptionID, "guid:"+subscriptionID.String()+":"+string(rune('0'+episode)), "Show S01E0"+string(rune('0'+episode)), "https://example.test/"+entryID.String()+".torrent", episode, importedAt); err != nil {
 			t.Fatal(err)
 		}
