@@ -300,9 +300,11 @@ func TestClientEnsureCategoryAcceptsConcurrentCreation(t *testing.T) {
 
 func TestClientSetsPerTorrentRateLimits(t *testing.T) {
 	forms := map[string]url.Values{}
+	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/api/v2/torrents/setDownloadLimit", "/api/v2/torrents/setUploadLimit":
+			requestCount++
 			if err := request.ParseForm(); err != nil {
 				t.Errorf("parse rate limit form: %v", err)
 			}
@@ -328,8 +330,32 @@ func TestClientSetsPerTorrentRateLimits(t *testing.T) {
 	if upload.Get("hashes") != torrentHashA || upload.Get("limit") != "0" {
 		t.Fatalf("upload limit form = %v", upload)
 	}
-	if err := client.SetTorrentRateLimits(context.Background(), torrentHashA, -1, 0); err == nil {
-		t.Fatal("SetTorrentRateLimits() accepted a negative limit")
+
+	if err := client.SetTorrentRateLimits(context.Background(), torrentHashA, 2147483646, 0); err != nil {
+		t.Fatalf("SetTorrentRateLimits() rejected the largest effective limit: %v", err)
+	}
+	if got := forms["/api/v2/torrents/setDownloadLimit"].Get("limit"); got != "2147483646" {
+		t.Fatalf("largest download limit form = %q, want 2147483646", got)
+	}
+
+	for _, test := range []struct {
+		name     string
+		download int64
+		upload   int64
+	}{
+		{name: "negative", download: -1},
+		{name: "qBittorrent unlimited sentinel", download: 2147483647},
+		{name: "above signed int range", download: 2147483648},
+		{name: "invalid upload", upload: 2147483647},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := client.SetTorrentRateLimits(context.Background(), torrentHashA, test.download, test.upload); err == nil {
+				t.Fatalf("SetTorrentRateLimits() accepted download/upload limits %d/%d", test.download, test.upload)
+			}
+		})
+	}
+	if requestCount != 4 {
+		t.Fatalf("rate limit request count = %d, want only four requests for valid calls", requestCount)
 	}
 }
 

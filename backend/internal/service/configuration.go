@@ -12,8 +12,6 @@ import (
 	"github.com/onprs/emby-auto/backend/internal/domain"
 )
 
-const maxQBRateLimitKibPerSecond int64 = 2147483647
-
 type ConfigurationStore interface {
 	Load(context.Context) (domain.Configuration, error)
 	Save(context.Context, domain.SaveConfiguration) (domain.Configuration, error)
@@ -254,8 +252,8 @@ func validateRuntimeSettings(settings domain.RuntimeSettings) error {
 		"qBittorrent.downloadRateLimitKibPerSecond": settings.QBittorrent.DownloadRateLimitKibPerSecond,
 		"qBittorrent.uploadRateLimitKibPerSecond":   settings.QBittorrent.UploadRateLimitKibPerSecond,
 	} {
-		if value < 0 || value > maxQBRateLimitKibPerSecond {
-			return invalidConfiguration(field, "must be between 0 and 2147483647 KiB/s")
+		if value < 0 || value > domain.MaxQBittorrentRateLimitKibPerSecond {
+			return invalidConfiguration(field, fmt.Sprintf("must be between 0 and %d KiB/s", domain.MaxQBittorrentRateLimitKibPerSecond))
 		}
 	}
 	requiredLibraryRoots := []struct {

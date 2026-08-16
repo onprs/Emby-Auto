@@ -349,8 +349,13 @@ describe("SettingsServicesPage", () => {
     const downloadLimit = await screen.findByLabelText("下载速率限制（KiB/s）");
     const uploadLimit = screen.getByLabelText("上传速率限制（KiB/s）");
     expect(downloadLimit).toHaveValue(2048);
+    expect(downloadLimit).toHaveAttribute("max", "2097151");
     expect(uploadLimit).toHaveValue(512);
+    expect(uploadLimit).toHaveAttribute("max", "2097151");
 
+    await userEvent.clear(downloadLimit);
+    await userEvent.type(downloadLimit, "2097152");
+    expect(downloadLimit).toHaveValue(2097151);
     await userEvent.clear(downloadLimit);
     await userEvent.type(downloadLimit, "3072");
     await userEvent.clear(uploadLimit);

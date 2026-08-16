@@ -30,9 +30,14 @@ import {
   useSettingsData,
 } from "@/features/configuration/use-settings";
 
-function nonnegativeInteger(value: number): number {
+const maxQBittorrentRateLimitKibPerSecond = 2097151;
+
+function nonnegativeInteger(
+  value: number,
+  maximum = 2147483647,
+): number {
   if (!Number.isFinite(value)) return 0;
-  return Math.min(2147483647, Math.max(0, Math.trunc(value)));
+  return Math.min(maximum, Math.max(0, Math.trunc(value)));
 }
 
 export function SettingsServicesPage() {
@@ -215,12 +220,15 @@ function ServicesForm({
                   id="qb-download-rate-limit"
                   type="number"
                   min={0}
-                  max={2147483647}
+                  max={maxQBittorrentRateLimitKibPerSecond}
                   step={1}
                   value={qbDownloadRateLimit}
                   onChange={(event) =>
                     setQbDownloadRateLimit(
-                      nonnegativeInteger(event.currentTarget.valueAsNumber),
+                      nonnegativeInteger(
+                        event.currentTarget.valueAsNumber,
+                        maxQBittorrentRateLimitKibPerSecond,
+                      ),
                     )
                   }
                 />
@@ -233,12 +241,15 @@ function ServicesForm({
                   id="qb-upload-rate-limit"
                   type="number"
                   min={0}
-                  max={2147483647}
+                  max={maxQBittorrentRateLimitKibPerSecond}
                   step={1}
                   value={qbUploadRateLimit}
                   onChange={(event) =>
                     setQbUploadRateLimit(
-                      nonnegativeInteger(event.currentTarget.valueAsNumber),
+                      nonnegativeInteger(
+                        event.currentTarget.valueAsNumber,
+                        maxQBittorrentRateLimitKibPerSecond,
+                      ),
                     )
                   }
                 />
