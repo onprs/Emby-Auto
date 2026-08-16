@@ -2,12 +2,43 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/onprs/emby-auto/backend/internal/domain"
 	"github.com/onprs/emby-auto/backend/internal/service"
 )
+
+func (request *UpdateConfigurationRequest) UnmarshalJSON(data []byte) error {
+	type generatedRequest UpdateConfigurationRequest
+	var decoded generatedRequest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+
+	// oapi-codegen 将 required 数值字段生成为值类型，需要单独保留缺失与显式 0 的区别。
+	var presence struct {
+		Events json.RawMessage `json:"events"`
+	}
+	if err := json.Unmarshal(data, &presence); err != nil {
+		return err
+	}
+	if presence.Events != nil {
+		var events struct {
+			RetentionDays *int32 `json:"retentionDays"`
+		}
+		if err := json.Unmarshal(presence.Events, &events); err != nil {
+			return err
+		}
+		if events.RetentionDays == nil {
+			return errors.New("events.retentionDays is required")
+		}
+	}
+
+	*request = UpdateConfigurationRequest(decoded)
+	return nil
+}
 
 func (server *Server) GetConfiguration(
 	ctx context.Context,

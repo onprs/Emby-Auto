@@ -307,7 +307,7 @@ func TestConfigurationResponseContainsOnlyMaskedSecretMetadata(t *testing.T) {
 	}
 }
 
-func rawConfigurationUpdateBody(t *testing.T, retentionDays *int32) []byte {
+func rawConfigurationUpdateBody(t *testing.T, events map[string]any) []byte {
 	t.Helper()
 	root := t.TempDir()
 	body := map[string]any{
@@ -336,8 +336,8 @@ func rawConfigurationUpdateBody(t *testing.T, retentionDays *int32) []byte {
 			"preset": "medium", "pixelFormat": "yuv420p", "threadCount": 2, "maxConcurrency": 1,
 		},
 	}
-	if retentionDays != nil {
-		body["events"] = map[string]any{"retentionDays": *retentionDays}
+	if events != nil {
+		body["events"] = events
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -346,18 +346,23 @@ func rawConfigurationUpdateBody(t *testing.T, retentionDays *int32) []byte {
 	return encoded
 }
 
-func TestConfigurationUpdateRawHTTPDistinguishesOmittedEventsFromExplicitZero(t *testing.T) {
+func TestConfigurationUpdateRawHTTPEnforcesEventRetentionPresenceAndBounds(t *testing.T) {
 	userID := uuid.MustParse("10000000-0000-0000-0000-000000000006")
 	authentication := &authenticationStub{authenticated: domain.Session{User: domain.AdminUser{ID: userID, Username: "admin"}}}
 
-	explicitZero := int32(0)
 	for _, test := range []struct {
-		name          string
-		retentionDays *int32
-		wantDays      int32
+		name       string
+		events     map[string]any
+		wantStatus int
+		wantDays   int32
 	}{
-		{name: "legacy body omits events", retentionDays: nil, wantDays: 73},
-		{name: "explicit zero disables cleanup", retentionDays: &explicitZero, wantDays: 0},
+		{name: "legacy body omits events", wantStatus: http.StatusOK, wantDays: 73},
+		{name: "events object omits required retention days", events: map[string]any{}, wantStatus: http.StatusBadRequest, wantDays: 73},
+		{name: "explicit zero disables cleanup", events: map[string]any{"retentionDays": 0}, wantStatus: http.StatusOK, wantDays: 0},
+		{name: "negative retention is rejected", events: map[string]any{"retentionDays": -1}, wantStatus: http.StatusBadRequest, wantDays: 73},
+		{name: "retention above maximum is rejected", events: map[string]any{"retentionDays": 36501}, wantStatus: http.StatusBadRequest, wantDays: 73},
+		{name: "non-integer retention is rejected", events: map[string]any{"retentionDays": "thirty"}, wantStatus: http.StatusBadRequest, wantDays: 73},
+		{name: "null retention is rejected", events: map[string]any{"retentionDays": nil}, wantStatus: http.StatusBadRequest, wantDays: 73},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := &persistedRuntimeConfigurationStore{configuration: domain.Configuration{
@@ -374,15 +379,24 @@ func TestConfigurationUpdateRawHTTPDistinguishesOmittedEventsFromExplicitZero(t 
 				WithAuthentication(authentication, false),
 				WithRuntimeConfiguration(appservice.NewConfigurationService(store, cipher)),
 			))
-			request := httptest.NewRequest(http.MethodPut, "/api/v1/config", strings.NewReader(string(rawConfigurationUpdateBody(t, test.retentionDays))))
+			request := httptest.NewRequest(http.MethodPut, "/api/v1/config", strings.NewReader(string(rawConfigurationUpdateBody(t, test.events))))
 			request.Header.Set("Content-Type", "application/json")
 			request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "valid-token"})
 			response := httptest.NewRecorder()
 
 			handler.ServeHTTP(response, request)
 
-			if response.Code != http.StatusOK {
-				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d, body = %s", response.Code, test.wantStatus, response.Body.String())
+			}
+			if got := store.configuration.Settings.Events.RetentionDays; got != test.wantDays {
+				t.Fatalf("persisted retention days = %d, want %d", got, test.wantDays)
+			}
+			if test.wantStatus != http.StatusOK {
+				if store.configuration.Version != 8 {
+					t.Fatalf("configuration version = %d, want unchanged version 8", store.configuration.Version)
+				}
+				return
 			}
 			if got := store.saved.Settings.Events.RetentionDays; got != test.wantDays {
 				t.Fatalf("saved retention days = %d, want %d", got, test.wantDays)
