@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -306,30 +307,57 @@ func TestConfigurationResponseContainsOnlyMaskedSecretMetadata(t *testing.T) {
 	}
 }
 
-func rawConfigurationUpdateBody(events string) string {
-	return `{
-		"expectedVersion":8,
-		"qBittorrent":{"url":"http://qb.test","username":"downloader","password":{"action":"keep"},"downloadRateLimitKibPerSecond":4096,"uploadRateLimitKibPerSecond":1024},
-		"emby":{"url":"https://emby.test","apiKey":{"action":"keep"}},
-		"tmdb":{"apiToken":{"action":"keep"}},
-		"networkProxy":{"enabled":false,"url":""},
-		"agent":{"enabled":false,"protocol":"openai_chat_completions","baseUrl":"","model":"","apiKey":{"action":"keep"},"useNetworkProxy":true,"requestTimeoutSeconds":60,"rssCoordinateMode":"off","downloadFileSelectionMode":"off","catalogMatchEnabled":false,"episodeMappingEnabled":false,"allowAutomaticEpisodeMapping":false,"subtitleVideoMatchMode":"off"},
-		"paths":{"downloadRoot":"C:\\media\\downloads","workRoot":"C:\\media\\work","stagingRoot":"C:\\media\\staging","animeLibraryRoot":"C:\\media\\library\\anime","movieLibraryRoot":"C:\\media\\library\\movies","ffmpegPath":"ffmpeg","ffprobePath":"ffprobe"},
-		"transcode":{"name":"h264","videoCodec":"h264","encoder":"libx264","container":"mp4","fileExtension":"mp4","qualityMode":"crf","qualityValue":20,"audioPolicy":"transcode","audioCodec":"aac","preset":"medium","pixelFormat":"yuv420p","threadCount":2,"maxConcurrency":1}` + events + `
-	}`
+func rawConfigurationUpdateBody(t *testing.T, retentionDays *int32) []byte {
+	t.Helper()
+	root := t.TempDir()
+	body := map[string]any{
+		"expectedVersion": int32(8),
+		"qBittorrent": map[string]any{
+			"url": "http://qb.test", "username": "downloader", "password": map[string]any{"action": "keep"},
+			"downloadRateLimitKibPerSecond": 4096, "uploadRateLimitKibPerSecond": 1024,
+		},
+		"emby":         map[string]any{"url": "https://emby.test", "apiKey": map[string]any{"action": "keep"}},
+		"tmdb":         map[string]any{"apiToken": map[string]any{"action": "keep"}},
+		"networkProxy": map[string]any{"enabled": false, "url": ""},
+		"agent": map[string]any{
+			"enabled": false, "protocol": "openai_chat_completions", "baseUrl": "", "model": "",
+			"apiKey": map[string]any{"action": "keep"}, "useNetworkProxy": true, "requestTimeoutSeconds": 60,
+			"rssCoordinateMode": "off", "downloadFileSelectionMode": "off", "catalogMatchEnabled": false,
+			"episodeMappingEnabled": false, "allowAutomaticEpisodeMapping": false, "subtitleVideoMatchMode": "off",
+		},
+		"paths": map[string]any{
+			"downloadRoot": filepath.Join(root, "downloads"), "workRoot": filepath.Join(root, "work"),
+			"stagingRoot": filepath.Join(root, "staging"), "animeLibraryRoot": filepath.Join(root, "anime"),
+			"movieLibraryRoot": filepath.Join(root, "movies"), "ffmpegPath": "ffmpeg", "ffprobePath": "ffprobe",
+		},
+		"transcode": map[string]any{
+			"name": "h264", "videoCodec": "h264", "encoder": "libx264", "container": "mp4", "fileExtension": "mp4",
+			"qualityMode": "crf", "qualityValue": 20, "audioPolicy": "transcode", "audioCodec": "aac",
+			"preset": "medium", "pixelFormat": "yuv420p", "threadCount": 2, "maxConcurrency": 1,
+		},
+	}
+	if retentionDays != nil {
+		body["events"] = map[string]any{"retentionDays": *retentionDays}
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("encode configuration update body: %v", err)
+	}
+	return encoded
 }
 
 func TestConfigurationUpdateRawHTTPDistinguishesOmittedEventsFromExplicitZero(t *testing.T) {
 	userID := uuid.MustParse("10000000-0000-0000-0000-000000000006")
 	authentication := &authenticationStub{authenticated: domain.Session{User: domain.AdminUser{ID: userID, Username: "admin"}}}
 
+	explicitZero := int32(0)
 	for _, test := range []struct {
-		name       string
-		eventsJSON string
-		wantDays   int32
+		name          string
+		retentionDays *int32
+		wantDays      int32
 	}{
-		{name: "legacy body omits events", eventsJSON: "", wantDays: 73},
-		{name: "explicit zero disables cleanup", eventsJSON: `,"events":{"retentionDays":0}`, wantDays: 0},
+		{name: "legacy body omits events", retentionDays: nil, wantDays: 73},
+		{name: "explicit zero disables cleanup", retentionDays: &explicitZero, wantDays: 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := &persistedRuntimeConfigurationStore{configuration: domain.Configuration{
@@ -346,7 +374,7 @@ func TestConfigurationUpdateRawHTTPDistinguishesOmittedEventsFromExplicitZero(t 
 				WithAuthentication(authentication, false),
 				WithRuntimeConfiguration(appservice.NewConfigurationService(store, cipher)),
 			))
-			request := httptest.NewRequest(http.MethodPut, "/api/v1/config", strings.NewReader(rawConfigurationUpdateBody(test.eventsJSON)))
+			request := httptest.NewRequest(http.MethodPut, "/api/v1/config", strings.NewReader(string(rawConfigurationUpdateBody(t, test.retentionDays))))
 			request.Header.Set("Content-Type", "application/json")
 			request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "valid-token"})
 			response := httptest.NewRecorder()
