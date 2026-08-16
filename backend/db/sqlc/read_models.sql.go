@@ -379,6 +379,64 @@ func (q *Queries) GetAcquisitionMappingCompleteness(ctx context.Context, acquisi
 	return i, err
 }
 
+const getAcquisitionMappingCompletenessByAcquisitionIDs = `-- name: GetAcquisitionMappingCompletenessByAcquisitionIDs :many
+SELECT
+    acquisition.id,
+    count(file.id)::bigint AS selected_video_count,
+    CASE WHEN media.media_type = 'movie' THEN count(file.id)::bigint ELSE
+        count(mapping.id) FILTER (
+            WHERE mapping.mapping_status = 'mapped' AND mapping.target_episode_id IS NOT NULL
+        )::bigint
+    END AS mapped_video_count
+FROM acquisitions AS acquisition
+JOIN media_series AS media ON media.id = acquisition.series_id
+LEFT JOIN downloads AS download
+    ON download.id = (
+        SELECT candidate.id
+        FROM downloads AS candidate
+        WHERE candidate.acquisition_id = acquisition.id
+          AND candidate.deleted_at IS NULL
+        ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
+        LIMIT 1
+    )
+LEFT JOIN download_files AS file
+    ON file.download_id = download.id
+   AND file.selected
+   AND file.media_kind = 'video'
+LEFT JOIN episode_mappings AS mapping
+    ON mapping.profile_id = acquisition.mapping_profile_id
+   AND mapping.source_season = file.source_season
+   AND mapping.source_episode = file.source_episode
+WHERE acquisition.id = ANY($1::uuid[])
+GROUP BY acquisition.id, media.media_type
+`
+
+type GetAcquisitionMappingCompletenessByAcquisitionIDsRow struct {
+	ID                 pgtype.UUID `db:"id" json:"id"`
+	SelectedVideoCount int64       `db:"selected_video_count" json:"selected_video_count"`
+	MappedVideoCount   int64       `db:"mapped_video_count" json:"mapped_video_count"`
+}
+
+func (q *Queries) GetAcquisitionMappingCompletenessByAcquisitionIDs(ctx context.Context, acquisitionIds []pgtype.UUID) ([]GetAcquisitionMappingCompletenessByAcquisitionIDsRow, error) {
+	rows, err := q.db.Query(ctx, getAcquisitionMappingCompletenessByAcquisitionIDs, acquisitionIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetAcquisitionMappingCompletenessByAcquisitionIDsRow{}
+	for rows.Next() {
+		var i GetAcquisitionMappingCompletenessByAcquisitionIDsRow
+		if err := rows.Scan(&i.ID, &i.SelectedVideoCount, &i.MappedVideoCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getArchivedRSSAcquisitionByID = `-- name: GetArchivedRSSAcquisitionByID :one
 WITH successful_history AS (
     SELECT DISTINCT ON (enqueue.resource_id)
@@ -831,6 +889,145 @@ func (q *Queries) ListAcquisitionTaskSummaries(ctx context.Context, acquisitionI
 	return items, nil
 }
 
+const listAcquisitionTaskSummariesByAcquisitionIDs = `-- name: ListAcquisitionTaskSummariesByAcquisitionIDs :many
+SELECT
+    task.acquisition_id,
+    task.id,
+    task.media_type,
+    source_file.download_id,
+    source_file.source_season,
+    source_file.source_episode,
+    season.season_number AS target_season,
+    episode.episode_number AS target_episode,
+    episode.title AS target_episode_title,
+    task.state,
+    task.video_state,
+    task.subtitle_state,
+    artifact_set.basename AS artifact_basename,
+    review.decision AS review_decision,
+    review.reviewed_at,
+    COALESCE(latest_import.status, '')::text AS import_status,
+    latest_import.destination_video_path,
+    latest_import.destination_subtitle_path,
+    COALESCE(latest_refresh.status, '')::text AS emby_refresh_status,
+    COALESCE(latest_cleanup.status, '')::text AS cleanup_status,
+    task.failure_stage,
+    task.error_code,
+    task.error_message,
+    GREATEST(
+        task.updated_at,
+        review.reviewed_at,
+        latest_import.updated_at,
+        latest_refresh.updated_at,
+        latest_cleanup.updated_at
+    )::timestamptz AS updated_at
+FROM episode_tasks AS task
+JOIN download_files AS source_file ON source_file.id = task.source_video_file_id
+JOIN downloads AS source_download ON source_download.id = source_file.download_id AND source_download.deleted_at IS NULL
+LEFT JOIN episode_mappings AS mapping ON mapping.id = task.mapping_id
+LEFT JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
+LEFT JOIN tmdb_seasons AS season ON season.id = episode.season_id
+LEFT JOIN artifact_sets AS artifact_set ON artifact_set.task_id = task.id
+LEFT JOIN reviews AS review ON review.task_id = task.id
+LEFT JOIN LATERAL (
+    SELECT import.id, import.task_id, import.attempt, import.status, import.destination_video_path, import.destination_subtitle_path, import.error_code, import.error_message, import.started_at, import.completed_at, import.created_at, import.updated_at
+    FROM imports AS import
+    WHERE import.task_id = task.id
+    ORDER BY import.attempt DESC
+    LIMIT 1
+) AS latest_import ON true
+LEFT JOIN LATERAL (
+    SELECT operation.id, operation.kind, operation.resource_type, operation.resource_id, operation.idempotency_key, operation.status, operation.river_job_id, operation.max_attempts, operation.attempt_count, operation.timeout_seconds, operation.cancel_requested_at, operation.heartbeat_at, operation.error_code, operation.error_message, operation.payload, operation.created_at, operation.started_at, operation.finished_at, operation.updated_at
+    FROM operations AS operation
+    WHERE operation.resource_type = 'episode_task'
+      AND operation.resource_id = task.id
+      AND operation.kind = 'emby.refresh'
+    ORDER BY operation.created_at DESC, operation.id DESC
+    LIMIT 1
+) AS latest_refresh ON true
+LEFT JOIN LATERAL (
+    SELECT cleanup.id, cleanup.task_id, cleanup.download_id, cleanup.attempt, cleanup.status, cleanup.torrent_removed, cleanup.staged_files_removed, cleanup.error_code, cleanup.error_message, cleanup.started_at, cleanup.completed_at, cleanup.created_at, cleanup.updated_at
+    FROM cleanup_runs AS cleanup
+    WHERE cleanup.task_id = task.id
+    ORDER BY cleanup.attempt DESC
+    LIMIT 1
+) AS latest_cleanup ON true
+WHERE task.acquisition_id = ANY($1::uuid[])
+ORDER BY task.acquisition_id, source_file.source_season, source_file.source_episode, task.id
+`
+
+type ListAcquisitionTaskSummariesByAcquisitionIDsRow struct {
+	AcquisitionID           pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
+	ID                      pgtype.UUID        `db:"id" json:"id"`
+	MediaType               string             `db:"media_type" json:"media_type"`
+	DownloadID              pgtype.UUID        `db:"download_id" json:"download_id"`
+	SourceSeason            *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode           *int32             `db:"source_episode" json:"source_episode"`
+	TargetSeason            *int32             `db:"target_season" json:"target_season"`
+	TargetEpisode           *int32             `db:"target_episode" json:"target_episode"`
+	TargetEpisodeTitle      *string            `db:"target_episode_title" json:"target_episode_title"`
+	State                   string             `db:"state" json:"state"`
+	VideoState              string             `db:"video_state" json:"video_state"`
+	SubtitleState           string             `db:"subtitle_state" json:"subtitle_state"`
+	ArtifactBasename        *string            `db:"artifact_basename" json:"artifact_basename"`
+	ReviewDecision          *string            `db:"review_decision" json:"review_decision"`
+	ReviewedAt              pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
+	ImportStatus            string             `db:"import_status" json:"import_status"`
+	DestinationVideoPath    *string            `db:"destination_video_path" json:"destination_video_path"`
+	DestinationSubtitlePath *string            `db:"destination_subtitle_path" json:"destination_subtitle_path"`
+	EmbyRefreshStatus       string             `db:"emby_refresh_status" json:"emby_refresh_status"`
+	CleanupStatus           string             `db:"cleanup_status" json:"cleanup_status"`
+	FailureStage            *string            `db:"failure_stage" json:"failure_stage"`
+	ErrorCode               *string            `db:"error_code" json:"error_code"`
+	ErrorMessage            *string            `db:"error_message" json:"error_message"`
+	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
+func (q *Queries) ListAcquisitionTaskSummariesByAcquisitionIDs(ctx context.Context, acquisitionIds []pgtype.UUID) ([]ListAcquisitionTaskSummariesByAcquisitionIDsRow, error) {
+	rows, err := q.db.Query(ctx, listAcquisitionTaskSummariesByAcquisitionIDs, acquisitionIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAcquisitionTaskSummariesByAcquisitionIDsRow{}
+	for rows.Next() {
+		var i ListAcquisitionTaskSummariesByAcquisitionIDsRow
+		if err := rows.Scan(
+			&i.AcquisitionID,
+			&i.ID,
+			&i.MediaType,
+			&i.DownloadID,
+			&i.SourceSeason,
+			&i.SourceEpisode,
+			&i.TargetSeason,
+			&i.TargetEpisode,
+			&i.TargetEpisodeTitle,
+			&i.State,
+			&i.VideoState,
+			&i.SubtitleState,
+			&i.ArtifactBasename,
+			&i.ReviewDecision,
+			&i.ReviewedAt,
+			&i.ImportStatus,
+			&i.DestinationVideoPath,
+			&i.DestinationSubtitlePath,
+			&i.EmbyRefreshStatus,
+			&i.CleanupStatus,
+			&i.FailureStage,
+			&i.ErrorCode,
+			&i.ErrorMessage,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAcquisitions = `-- name: ListAcquisitions :many
 SELECT id, series_id, mapping_profile_id, source_kind, release_candidate_id, rss_entry_id, source_uri, source_payload, legacy_id, created_by, created_at, updated_at, deletion_requested_at
 FROM acquisitions
@@ -1130,6 +1327,57 @@ func (q *Queries) ListDownloads(ctx context.Context, arg ListDownloadsParams) ([
 		arg.Sort,
 		arg.RowLimit,
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Download{}
+	for rows.Next() {
+		var i Download
+		if err := rows.Scan(
+			&i.ID,
+			&i.AcquisitionID,
+			&i.Attempt,
+			&i.ClientName,
+			&i.TorrentHash,
+			&i.Status,
+			&i.Progress,
+			&i.SavePath,
+			&i.ErrorCode,
+			&i.ErrorMessage,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Version,
+			&i.FailureStage,
+			&i.ClientState,
+			&i.LastSyncedAt,
+			&i.DeletionRequestedAt,
+			&i.DeletedAt,
+			&i.FileResolutionSource,
+			&i.AgentResolutionID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLatestDownloadsByAcquisitionIDs = `-- name: ListLatestDownloadsByAcquisitionIDs :many
+SELECT DISTINCT ON (acquisition_id) id, acquisition_id, attempt, client_name, torrent_hash, status, progress, save_path, error_code, error_message, started_at, completed_at, created_at, updated_at, version, failure_stage, client_state, last_synced_at, deletion_requested_at, deleted_at, file_resolution_source, agent_resolution_id
+FROM downloads
+WHERE acquisition_id = ANY($1::uuid[])
+  AND deleted_at IS NULL
+ORDER BY acquisition_id, (status = 'cancelled'), attempt DESC
+`
+
+func (q *Queries) ListLatestDownloadsByAcquisitionIDs(ctx context.Context, acquisitionIds []pgtype.UUID) ([]Download, error) {
+	rows, err := q.db.Query(ctx, listLatestDownloadsByAcquisitionIDs, acquisitionIds)
 	if err != nil {
 		return nil, err
 	}

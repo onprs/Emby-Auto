@@ -191,11 +191,255 @@ ORDER BY
     CASE WHEN COALESCE(sqlc.narg(sort)::text, 'newest') = 'newest' THEN subscription.id END DESC
 LIMIT sqlc.arg(page_size);
 
+-- name: ListRSSSubscriptionsSorted :many
+SELECT
+    subscription.id,
+    subscription.series_id,
+    subscription.mapping_profile_id,
+    subscription.name,
+    subscription.feed_url,
+    subscription.enabled,
+    subscription.poll_interval_seconds,
+    subscription.last_polled_at,
+    subscription.next_poll_at,
+    subscription.version,
+    subscription.created_at,
+    subscription.updated_at,
+    subscription.source_season,
+    subscription.deleted_at,
+    subscription.auto_review,
+    subscription.cleanup_source_on_completion,
+    subscription.completed_at,
+    subscription.include_keywords,
+    subscription.exclude_keywords,
+    subscription.auto_episode_mapping,
+    series.title AS series_title,
+    series.tmdb_series_id,
+    (
+        SELECT count(*)
+        FROM episode_tasks AS task
+        JOIN acquisitions AS acquisition ON acquisition.id = task.acquisition_id
+        JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
+        WHERE entry.subscription_id = subscription.id
+          AND task.state = 'failed'
+    ) AS retryable_task_count
+FROM rss_subscriptions AS subscription
+JOIN media_series AS series ON series.id = subscription.series_id
+WHERE subscription.deleted_at IS NULL
+  AND (
+      sqlc.narg(cursor_id)::uuid IS NULL
+      OR (
+          sqlc.narg(sort_order)::text = 'asc'
+          AND (
+              (
+                  CASE sqlc.narg(sort_key)::text
+                      WHEN 'name' THEN LOWER(subscription.name)::text
+                      WHEN 'series_title' THEN LOWER(series.title)::text
+                      WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
+                      WHEN 'enabled' THEN CASE WHEN subscription.enabled THEN '1' ELSE '0' END
+                      WHEN 'next_poll_at' THEN to_char(subscription.next_poll_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      WHEN 'created_at' THEN to_char(subscription.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                  END IS NULL
+              ),
+              COALESCE(
+                  CASE sqlc.narg(sort_key)::text
+                      WHEN 'name' THEN LOWER(subscription.name)::text
+                      WHEN 'series_title' THEN LOWER(series.title)::text
+                      WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
+                      WHEN 'enabled' THEN CASE WHEN subscription.enabled THEN '1' ELSE '0' END
+                      WHEN 'next_poll_at' THEN to_char(subscription.next_poll_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      WHEN 'created_at' THEN to_char(subscription.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                  END,
+                  ''
+              ),
+              subscription.id
+          ) > (
+              (
+                  CASE sqlc.narg(sort_key)::text
+                      WHEN 'name' THEN LOWER(sqlc.narg(cursor_name)::text)
+                      WHEN 'series_title' THEN LOWER(sqlc.narg(cursor_series_title)::text)
+                      WHEN 'source_season' THEN lpad(sqlc.narg(cursor_source_season)::int::text, 12, '0')
+                      WHEN 'enabled' THEN CASE WHEN sqlc.narg(cursor_enabled)::bool THEN '1' ELSE '0' END
+                      WHEN 'next_poll_at' THEN to_char(sqlc.narg(cursor_next_poll_at)::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      WHEN 'created_at' THEN to_char(sqlc.narg(cursor_created_at)::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                  END IS NULL
+              ),
+              COALESCE(
+                  CASE sqlc.narg(sort_key)::text
+                      WHEN 'name' THEN LOWER(sqlc.narg(cursor_name)::text)
+                      WHEN 'series_title' THEN LOWER(sqlc.narg(cursor_series_title)::text)
+                      WHEN 'source_season' THEN lpad(sqlc.narg(cursor_source_season)::int::text, 12, '0')
+                      WHEN 'enabled' THEN CASE WHEN sqlc.narg(cursor_enabled)::bool THEN '1' ELSE '0' END
+                      WHEN 'next_poll_at' THEN to_char(sqlc.narg(cursor_next_poll_at)::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      WHEN 'created_at' THEN to_char(sqlc.narg(cursor_created_at)::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                  END,
+                  ''
+              ),
+              sqlc.narg(cursor_id)::uuid
+          )
+      )
+      OR (
+          sqlc.narg(sort_order)::text = 'desc'
+          AND (
+              (
+                  CASE sqlc.narg(sort_key)::text
+                      WHEN 'name' THEN LOWER(subscription.name)::text
+                      WHEN 'series_title' THEN LOWER(series.title)::text
+                      WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
+                      WHEN 'enabled' THEN CASE WHEN subscription.enabled THEN '1' ELSE '0' END
+                      WHEN 'next_poll_at' THEN to_char(subscription.next_poll_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      WHEN 'created_at' THEN to_char(subscription.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                  END IS NOT NULL
+              ) > (
+                  CASE sqlc.narg(sort_key)::text
+                      WHEN 'name' THEN LOWER(sqlc.narg(cursor_name)::text)
+                      WHEN 'series_title' THEN LOWER(sqlc.narg(cursor_series_title)::text)
+                      WHEN 'source_season' THEN lpad(sqlc.narg(cursor_source_season)::int::text, 12, '0')
+                      WHEN 'enabled' THEN CASE WHEN sqlc.narg(cursor_enabled)::bool THEN '1' ELSE '0' END
+                      WHEN 'next_poll_at' THEN to_char(sqlc.narg(cursor_next_poll_at)::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      WHEN 'created_at' THEN to_char(sqlc.narg(cursor_created_at)::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                  END IS NOT NULL
+              )
+              OR (
+                  (CASE sqlc.narg(sort_key)::text
+                      WHEN 'name' THEN LOWER(subscription.name)::text
+                      WHEN 'series_title' THEN LOWER(series.title)::text
+                      WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
+                      WHEN 'enabled' THEN CASE WHEN subscription.enabled THEN '1' ELSE '0' END
+                      WHEN 'next_poll_at' THEN to_char(subscription.next_poll_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      WHEN 'created_at' THEN to_char(subscription.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                  END IS NOT NULL) = (CASE sqlc.narg(sort_key)::text
+                      WHEN 'name' THEN LOWER(sqlc.narg(cursor_name)::text)
+                      WHEN 'series_title' THEN LOWER(sqlc.narg(cursor_series_title)::text)
+                      WHEN 'source_season' THEN lpad(sqlc.narg(cursor_source_season)::int::text, 12, '0')
+                      WHEN 'enabled' THEN CASE WHEN sqlc.narg(cursor_enabled)::bool THEN '1' ELSE '0' END
+                      WHEN 'next_poll_at' THEN to_char(sqlc.narg(cursor_next_poll_at)::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      WHEN 'created_at' THEN to_char(sqlc.narg(cursor_created_at)::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                  END IS NOT NULL)
+                  AND COALESCE(
+                      CASE sqlc.narg(sort_key)::text
+                          WHEN 'name' THEN LOWER(subscription.name)::text
+                          WHEN 'series_title' THEN LOWER(series.title)::text
+                          WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
+                          WHEN 'enabled' THEN CASE WHEN subscription.enabled THEN '1' ELSE '0' END
+                          WHEN 'next_poll_at' THEN to_char(subscription.next_poll_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                          WHEN 'created_at' THEN to_char(subscription.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      END,
+                      ''
+                  ) < COALESCE(
+                      CASE sqlc.narg(sort_key)::text
+                          WHEN 'name' THEN LOWER(sqlc.narg(cursor_name)::text)
+                          WHEN 'series_title' THEN LOWER(sqlc.narg(cursor_series_title)::text)
+                          WHEN 'source_season' THEN lpad(sqlc.narg(cursor_source_season)::int::text, 12, '0')
+                          WHEN 'enabled' THEN CASE WHEN sqlc.narg(cursor_enabled)::bool THEN '1' ELSE '0' END
+                          WHEN 'next_poll_at' THEN to_char(sqlc.narg(cursor_next_poll_at)::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                          WHEN 'created_at' THEN to_char(sqlc.narg(cursor_created_at)::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      END,
+                      ''
+                  )
+              )
+              OR (
+                  (CASE sqlc.narg(sort_key)::text
+                      WHEN 'name' THEN LOWER(subscription.name)::text
+                      WHEN 'series_title' THEN LOWER(series.title)::text
+                      WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
+                      WHEN 'enabled' THEN CASE WHEN subscription.enabled THEN '1' ELSE '0' END
+                      WHEN 'next_poll_at' THEN to_char(subscription.next_poll_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      WHEN 'created_at' THEN to_char(subscription.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                  END IS NOT NULL) = (CASE sqlc.narg(sort_key)::text
+                      WHEN 'name' THEN LOWER(sqlc.narg(cursor_name)::text)
+                      WHEN 'series_title' THEN LOWER(sqlc.narg(cursor_series_title)::text)
+                      WHEN 'source_season' THEN lpad(sqlc.narg(cursor_source_season)::int::text, 12, '0')
+                      WHEN 'enabled' THEN CASE WHEN sqlc.narg(cursor_enabled)::bool THEN '1' ELSE '0' END
+                      WHEN 'next_poll_at' THEN to_char(sqlc.narg(cursor_next_poll_at)::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      WHEN 'created_at' THEN to_char(sqlc.narg(cursor_created_at)::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                  END IS NOT NULL)
+                  AND COALESCE(
+                      CASE sqlc.narg(sort_key)::text
+                          WHEN 'name' THEN LOWER(subscription.name)::text
+                          WHEN 'series_title' THEN LOWER(series.title)::text
+                          WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
+                          WHEN 'enabled' THEN CASE WHEN subscription.enabled THEN '1' ELSE '0' END
+                          WHEN 'next_poll_at' THEN to_char(subscription.next_poll_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                          WHEN 'created_at' THEN to_char(subscription.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      END,
+                      ''
+                  ) = COALESCE(
+                      CASE sqlc.narg(sort_key)::text
+                          WHEN 'name' THEN LOWER(sqlc.narg(cursor_name)::text)
+                          WHEN 'series_title' THEN LOWER(sqlc.narg(cursor_series_title)::text)
+                          WHEN 'source_season' THEN lpad(sqlc.narg(cursor_source_season)::int::text, 12, '0')
+                          WHEN 'enabled' THEN CASE WHEN sqlc.narg(cursor_enabled)::bool THEN '1' ELSE '0' END
+                          WHEN 'next_poll_at' THEN to_char(sqlc.narg(cursor_next_poll_at)::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                          WHEN 'created_at' THEN to_char(sqlc.narg(cursor_created_at)::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+                      END,
+                      ''
+                  )
+                  AND subscription.id < sqlc.narg(cursor_id)::uuid
+              )
+          )
+      )
+  )
+ORDER BY
+    CASE WHEN sqlc.narg(sort_order)::text = 'asc' THEN
+        CASE sqlc.narg(sort_key)::text
+            WHEN 'name' THEN LOWER(subscription.name)::text
+            WHEN 'series_title' THEN LOWER(series.title)::text
+            WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
+            WHEN 'enabled' THEN CASE WHEN subscription.enabled THEN '1' ELSE '0' END
+            WHEN 'next_poll_at' THEN to_char(subscription.next_poll_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+            WHEN 'created_at' THEN to_char(subscription.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+        END
+    END ASC NULLS LAST,
+    CASE WHEN sqlc.narg(sort_order)::text = 'desc' THEN
+        CASE sqlc.narg(sort_key)::text
+            WHEN 'name' THEN LOWER(subscription.name)::text
+            WHEN 'series_title' THEN LOWER(series.title)::text
+            WHEN 'source_season' THEN lpad(subscription.source_season::text, 12, '0')
+            WHEN 'enabled' THEN CASE WHEN subscription.enabled THEN '1' ELSE '0' END
+            WHEN 'next_poll_at' THEN to_char(subscription.next_poll_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+            WHEN 'created_at' THEN to_char(subscription.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')
+        END
+    END DESC NULLS FIRST,
+    CASE WHEN sqlc.narg(sort_order)::text = 'asc' THEN subscription.id END ASC,
+    CASE WHEN sqlc.narg(sort_order)::text = 'desc' THEN subscription.id END DESC
+LIMIT sqlc.arg(page_size);
+
 -- name: ListRSSSubscriptionAcquisitions :many
 SELECT acquisition.*
 FROM acquisitions AS acquisition
 JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
 WHERE entry.subscription_id = sqlc.arg(subscription_id)
+  AND acquisition.deletion_requested_at IS NULL
+  AND (
+      NOT EXISTS (
+          SELECT 1
+          FROM downloads AS download
+          WHERE download.acquisition_id = acquisition.id
+      )
+      OR EXISTS (
+          SELECT 1
+          FROM downloads AS download
+          WHERE download.acquisition_id = acquisition.id
+            AND download.deleted_at IS NULL
+            AND download.status <> 'cancelled'
+      )
+      OR EXISTS (
+          SELECT 1
+          FROM episode_tasks AS task
+          JOIN download_files AS source_file ON source_file.id = task.source_video_file_id
+          JOIN downloads AS source_download ON source_download.id = source_file.download_id
+          WHERE task.acquisition_id = acquisition.id
+            AND source_download.deleted_at IS NULL
+      )
+  )
+ORDER BY acquisition.created_at, acquisition.id;
+
+-- name: ListRSSSubscriptionAcquisitionsBySubscriptionIDs :many
+SELECT acquisition.*, entry.subscription_id
+FROM acquisitions AS acquisition
+JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
+WHERE entry.subscription_id = ANY(sqlc.arg(subscription_ids)::uuid[])
   AND acquisition.deletion_requested_at IS NULL
   AND (
       NOT EXISTS (
@@ -857,6 +1101,17 @@ LEFT JOIN rss_entries AS entry
   ON entry.subscription_id = subscription.id
  AND entry.source_season = subscription.source_season
 WHERE subscription.id = sqlc.arg(id)
+GROUP BY subscription.id;
+
+-- name: ListRSSSubscriptionImportedCountsBySubscriptionIDs :many
+SELECT
+    subscription.id,
+    count(DISTINCT entry.source_episode) FILTER (WHERE entry.imported_at IS NOT NULL)::bigint AS imported_count
+FROM rss_subscriptions AS subscription
+LEFT JOIN rss_entries AS entry
+  ON entry.subscription_id = subscription.id
+ AND entry.source_season = subscription.source_season
+WHERE subscription.id = ANY(sqlc.arg(subscription_ids)::uuid[])
 GROUP BY subscription.id;
 
 -- name: LockRSSIncompleteRecoveryEntries :many

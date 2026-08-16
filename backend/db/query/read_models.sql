@@ -109,6 +109,13 @@ WHERE acquisition_id = sqlc.arg(acquisition_id)
 ORDER BY (status = 'cancelled'), attempt DESC
 LIMIT 1;
 
+-- name: ListLatestDownloadsByAcquisitionIDs :many
+SELECT DISTINCT ON (acquisition_id) *
+FROM downloads
+WHERE acquisition_id = ANY(sqlc.arg(acquisition_ids)::uuid[])
+  AND deleted_at IS NULL
+ORDER BY acquisition_id, (status = 'cancelled'), attempt DESC;
+
 -- name: ListAcquisitions :many
 SELECT *
 FROM acquisitions
@@ -378,6 +385,72 @@ LEFT JOIN LATERAL (
 WHERE task.acquisition_id = sqlc.arg(acquisition_id)
 ORDER BY source_file.source_season, source_file.source_episode, task.id;
 
+-- name: ListAcquisitionTaskSummariesByAcquisitionIDs :many
+SELECT
+    task.acquisition_id,
+    task.id,
+    task.media_type,
+    source_file.download_id,
+    source_file.source_season,
+    source_file.source_episode,
+    season.season_number AS target_season,
+    episode.episode_number AS target_episode,
+    episode.title AS target_episode_title,
+    task.state,
+    task.video_state,
+    task.subtitle_state,
+    artifact_set.basename AS artifact_basename,
+    review.decision AS review_decision,
+    review.reviewed_at,
+    COALESCE(latest_import.status, '')::text AS import_status,
+    latest_import.destination_video_path,
+    latest_import.destination_subtitle_path,
+    COALESCE(latest_refresh.status, '')::text AS emby_refresh_status,
+    COALESCE(latest_cleanup.status, '')::text AS cleanup_status,
+    task.failure_stage,
+    task.error_code,
+    task.error_message,
+    GREATEST(
+        task.updated_at,
+        review.reviewed_at,
+        latest_import.updated_at,
+        latest_refresh.updated_at,
+        latest_cleanup.updated_at
+    )::timestamptz AS updated_at
+FROM episode_tasks AS task
+JOIN download_files AS source_file ON source_file.id = task.source_video_file_id
+JOIN downloads AS source_download ON source_download.id = source_file.download_id AND source_download.deleted_at IS NULL
+LEFT JOIN episode_mappings AS mapping ON mapping.id = task.mapping_id
+LEFT JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
+LEFT JOIN tmdb_seasons AS season ON season.id = episode.season_id
+LEFT JOIN artifact_sets AS artifact_set ON artifact_set.task_id = task.id
+LEFT JOIN reviews AS review ON review.task_id = task.id
+LEFT JOIN LATERAL (
+    SELECT import.*
+    FROM imports AS import
+    WHERE import.task_id = task.id
+    ORDER BY import.attempt DESC
+    LIMIT 1
+) AS latest_import ON true
+LEFT JOIN LATERAL (
+    SELECT operation.*
+    FROM operations AS operation
+    WHERE operation.resource_type = 'episode_task'
+      AND operation.resource_id = task.id
+      AND operation.kind = 'emby.refresh'
+    ORDER BY operation.created_at DESC, operation.id DESC
+    LIMIT 1
+) AS latest_refresh ON true
+LEFT JOIN LATERAL (
+    SELECT cleanup.*
+    FROM cleanup_runs AS cleanup
+    WHERE cleanup.task_id = task.id
+    ORDER BY cleanup.attempt DESC
+    LIMIT 1
+) AS latest_cleanup ON true
+WHERE task.acquisition_id = ANY(sqlc.arg(acquisition_ids)::uuid[])
+ORDER BY task.acquisition_id, source_file.source_season, source_file.source_episode, task.id;
+
 -- name: GetAcquisitionMappingCompleteness :one
 SELECT
     count(file.id)::bigint AS selected_video_count,
@@ -407,6 +480,37 @@ LEFT JOIN episode_mappings AS mapping
    AND mapping.source_episode = file.source_episode
 WHERE acquisition.id = sqlc.arg(acquisition_id)
 GROUP BY media.media_type;
+
+-- name: GetAcquisitionMappingCompletenessByAcquisitionIDs :many
+SELECT
+    acquisition.id,
+    count(file.id)::bigint AS selected_video_count,
+    CASE WHEN media.media_type = 'movie' THEN count(file.id)::bigint ELSE
+        count(mapping.id) FILTER (
+            WHERE mapping.mapping_status = 'mapped' AND mapping.target_episode_id IS NOT NULL
+        )::bigint
+    END AS mapped_video_count
+FROM acquisitions AS acquisition
+JOIN media_series AS media ON media.id = acquisition.series_id
+LEFT JOIN downloads AS download
+    ON download.id = (
+        SELECT candidate.id
+        FROM downloads AS candidate
+        WHERE candidate.acquisition_id = acquisition.id
+          AND candidate.deleted_at IS NULL
+        ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
+        LIMIT 1
+    )
+LEFT JOIN download_files AS file
+    ON file.download_id = download.id
+   AND file.selected
+   AND file.media_kind = 'video'
+LEFT JOIN episode_mappings AS mapping
+    ON mapping.profile_id = acquisition.mapping_profile_id
+   AND mapping.source_season = file.source_season
+   AND mapping.source_episode = file.source_episode
+WHERE acquisition.id = ANY(sqlc.arg(acquisition_ids)::uuid[])
+GROUP BY acquisition.id, media.media_type;
 
 -- name: ListRSSEntries :many
 SELECT
