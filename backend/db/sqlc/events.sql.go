@@ -67,11 +67,21 @@ func (q *Queries) AppendEvent(ctx context.Context, arg AppendEventParams) (Event
 	return i, err
 }
 
-const deleteEventsBefore = `-- name: DeleteEventsBefore :execrows
+const deleteExpiredEvents = `-- name: DeleteExpiredEvents :execrows
 WITH expired AS (
     SELECT events.id
     FROM events
     WHERE events.occurred_at < $1
+      AND events.topic NOT IN (
+          'rss.entry.enqueueing',
+          'task.created',
+          'task.imported',
+          'task.video_ready',
+          'task.subtitle_ready',
+          'task.awaiting_review',
+          'task.reviewed',
+          'acquisition.delete_completed'
+      )
     ORDER BY events.event_sequence
     LIMIT $2
 )
@@ -79,13 +89,19 @@ DELETE FROM events
 WHERE events.id IN (SELECT expired.id FROM expired)
 `
 
-type DeleteEventsBeforeParams struct {
+type DeleteExpiredEventsParams struct {
 	Before  pgtype.Timestamptz `db:"before" json:"before"`
 	MaxRows int32              `db:"max_rows" json:"max_rows"`
 }
 
-func (q *Queries) DeleteEventsBefore(ctx context.Context, arg DeleteEventsBeforeParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteEventsBefore, arg.Before, arg.MaxRows)
+// 分批删除可安全丢弃的事件：仅清理流式/操作审计类事件，
+// 必须保护被 read model 作为事实来源的 provenance 事件。
+// 保护集合必须与 read_models.sql / rss.sql 中对 events 的引用保持一致：
+//
+//	rss.entry.enqueueing, task.created/imported/video_ready/subtitle_ready/
+//	awaiting_review/reviewed, acquisition.delete_completed
+func (q *Queries) DeleteExpiredEvents(ctx context.Context, arg DeleteExpiredEventsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredEvents, arg.Before, arg.MaxRows)
 	if err != nil {
 		return 0, err
 	}

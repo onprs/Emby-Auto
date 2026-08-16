@@ -86,7 +86,12 @@ type Querier interface {
 	DeleteArtifactSetsForAcquisition(ctx context.Context, acquisitionID pgtype.UUID) (int64, error)
 	DeleteEmptyRSSAdjudicationBatch(ctx context.Context, batchID pgtype.UUID) (int64, error)
 	DeleteEpisodeTasksForAcquisition(ctx context.Context, acquisitionID pgtype.UUID) (int64, error)
-	DeleteEventsBefore(ctx context.Context, arg DeleteEventsBeforeParams) (int64, error)
+	// 分批删除可安全丢弃的事件：仅清理流式/操作审计类事件，
+	// 必须保护被 read model 作为事实来源的 provenance 事件。
+	// 保护集合必须与 read_models.sql / rss.sql 中对 events 的引用保持一致：
+	//   rss.entry.enqueueing, task.created/imported/video_ready/subtitle_ready/
+	//   awaiting_review/reviewed, acquisition.delete_completed
+	DeleteExpiredEvents(ctx context.Context, arg DeleteExpiredEventsParams) (int64, error)
 	DeleteExpiredRSSRealtimeTargetChecks(ctx context.Context) error
 	DeleteMediaArtifactsForAcquisition(ctx context.Context, acquisitionID pgtype.UUID) (int64, error)
 	DeleteSnoozedOperationAttempt(ctx context.Context, arg DeleteSnoozedOperationAttemptParams) (int64, error)

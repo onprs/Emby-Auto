@@ -25,7 +25,7 @@ type eventsRetentionStoreStub struct {
 	err     error
 }
 
-func (stub *eventsRetentionStoreStub) DeleteBefore(_ context.Context, before time.Time, maxRows int32) (int64, error) {
+func (stub *eventsRetentionStoreStub) DeleteExpired(_ context.Context, before time.Time, maxRows int32) (int64, error) {
 	if stub.err != nil {
 		return 0, stub.err
 	}
@@ -150,7 +150,7 @@ type cutoffRecordingStore struct {
 	onDelete func(time.Time)
 }
 
-func (store *cutoffRecordingStore) DeleteBefore(_ context.Context, before time.Time, _ int32) (int64, error) {
+func (store *cutoffRecordingStore) DeleteExpired(_ context.Context, before time.Time, _ int32) (int64, error) {
 	store.onDelete(before)
 	return 0, nil
 }

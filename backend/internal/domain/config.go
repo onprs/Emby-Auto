@@ -33,7 +33,8 @@ type RuntimeSettings struct {
 	Events       EventsSettings       `json:"events"`
 }
 
-// EventsSettings 控制事件历史保留策略。RetentionDays 为 0 时表示禁用定期清理。
+// EventsSettings 控制可安全丢弃事件（流式/操作审计类）的保留策略。
+// RetentionDays 为 0 时表示禁用定期清理；read model 依赖的 provenance 事件始终保留。
 type EventsSettings struct {
 	RetentionDays int32 `json:"retentionDays"`
 }

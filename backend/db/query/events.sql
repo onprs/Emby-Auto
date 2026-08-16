@@ -37,11 +37,26 @@ WHERE event.event_sequence > cursor_event.event_sequence
 ORDER BY event.event_sequence
 LIMIT sqlc.arg(page_size);
 
--- name: DeleteEventsBefore :execrows
+-- name: DeleteExpiredEvents :execrows
+-- 分批删除可安全丢弃的事件：仅清理流式/操作审计类事件，
+-- 必须保护被 read model 作为事实来源的 provenance 事件。
+-- 保护集合必须与 read_models.sql / rss.sql 中对 events 的引用保持一致：
+--   rss.entry.enqueueing, task.created/imported/video_ready/subtitle_ready/
+--   awaiting_review/reviewed, acquisition.delete_completed
 WITH expired AS (
     SELECT events.id
     FROM events
     WHERE events.occurred_at < sqlc.arg(before)
+      AND events.topic NOT IN (
+          'rss.entry.enqueueing',
+          'task.created',
+          'task.imported',
+          'task.video_ready',
+          'task.subtitle_ready',
+          'task.awaiting_review',
+          'task.reviewed',
+          'acquisition.delete_completed'
+      )
     ORDER BY events.event_sequence
     LIMIT sqlc.arg(max_rows)
 )

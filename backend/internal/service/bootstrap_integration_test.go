@@ -114,6 +114,7 @@ func TestBootstrapInitializeMigratesCreatesAdminAndLocksSetupIntegration(t *test
 	configuration, err := configurationStore.Load(ctx)
 	expectedSettings := input.Settings
 	expectedSettings.Agent = expectedSettings.Agent.WithDefaults()
+	expectedSettings.Events = domain.DefaultEventsSettings()
 	if err != nil || configuration.Version != 1 || configuration.Settings != expectedSettings {
 		t.Fatalf("configuration = %#v, %v", configuration, err)
 	}

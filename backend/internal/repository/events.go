@@ -17,7 +17,7 @@ type eventQueries interface {
 	GetEvent(context.Context, pgtype.UUID) (db.Event, error)
 	ListEvents(context.Context, int32) ([]db.Event, error)
 	ListEventsAfter(context.Context, db.ListEventsAfterParams) ([]db.Event, error)
-	DeleteEventsBefore(context.Context, db.DeleteEventsBeforeParams) (int64, error)
+	DeleteExpiredEvents(context.Context, db.DeleteExpiredEventsParams) (int64, error)
 }
 
 type Events struct {
@@ -69,12 +69,13 @@ func (repository *Events) List(
 	return events, nil
 }
 
-// DeleteBefore 分批删除 occurred_at 早于 before 的事件，最多删除 maxRows 行，返回实际删除行数。
-func (repository *Events) DeleteBefore(ctx context.Context, before time.Time, maxRows int32) (int64, error) {
+// DeleteExpired 分批删除早于 before 的可安全丢弃事件（流式/操作审计类），
+// read model 依赖的 provenance 事件由 SQL 保护，最多删除 maxRows 行，返回实际删除行数。
+func (repository *Events) DeleteExpired(ctx context.Context, before time.Time, maxRows int32) (int64, error) {
 	if maxRows <= 0 {
 		return 0, fmt.Errorf("event deletion batch size must be positive")
 	}
-	deleted, err := repository.queries.DeleteEventsBefore(ctx, db.DeleteEventsBeforeParams{
+	deleted, err := repository.queries.DeleteExpiredEvents(ctx, db.DeleteExpiredEventsParams{
 		Before:  pgtype.Timestamptz{Time: before, Valid: true},
 		MaxRows: maxRows,
 	})
