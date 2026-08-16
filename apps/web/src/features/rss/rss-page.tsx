@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate, useSearch } from '@tanstack/react-router';
-import { Plus } from 'lucide-react';
-import { useState } from 'react';
+import { Plus, SearchIcon } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
 import type { RssSubscription } from '@/api/generated/types.gen';
 import { appNavigationState, currentAppLocation, rememberListPosition, useListScrollRestoration } from '@/app/navigation-context';
@@ -17,6 +17,7 @@ import { SortableColumnHeader } from '@/components/sortable-column-header';
 import { RecordActions, type RecordAction } from '@/components/record-actions';
 import { Button } from '@/components/ui/button';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/feedback';
+import { Input } from '@/components/ui/input';
 import { formatDateTime } from '@/lib/format';
 import { useCursorPagination } from '@/lib/pagination';
 
@@ -25,10 +26,12 @@ export function RssPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const listSource = currentAppLocation(location.href);
-  const search = useSearch({ strict: false }) as { sortBy?: RssSubscriptionSortBy; sortOrder?: SortOrder };
+  const search = useSearch({ strict: false }) as { query?: string; sortBy?: RssSubscriptionSortBy; sortOrder?: SortOrder };
   const sortBy = search.sortBy ?? 'name';
   const sortOrder = search.sortOrder ?? 'asc';
+  const [queryInput, setQueryInput] = useState(search.query ?? '');
   const [creating, setCreating] = useState(false);
+  useEffect(() => setQueryInput(search.query ?? ''), [search.query]);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deletions, setDeletions] = useState<DeletionSubmission[]>([]);
@@ -37,8 +40,8 @@ export function RssPage() {
   const holder = useState(() => new IdempotencyKeyHolder())[0];
 
   const subscriptions = useQuery({
-    queryKey: ['rss', 'list', sortBy, sortOrder, pagination.cursor],
-    queryFn: () => fetchSubscriptions(pagination.cursor, sortBy, sortOrder),
+    queryKey: ['rss', 'list', search.query, sortBy, sortOrder, pagination.cursor],
+    queryFn: () => fetchSubscriptions(pagination.cursor, search.query, sortBy, sortOrder),
   });
 
   useListScrollRestoration(listSource, Boolean(subscriptions.data));
@@ -74,6 +77,12 @@ export function RssPage() {
     void navigate({
       to: '/rss',
       search: { ...search, sortBy: field, sortOrder: nextOrder, cursor: undefined, cursorStack: undefined },
+    });
+  };
+  const submitQuery = () => {
+    void navigate({
+      to: '/rss',
+      search: { ...search, query: queryInput.trim() || undefined, cursor: undefined, cursorStack: undefined },
     });
   };
   const sortHeader = (label: string, field: RssSubscriptionSortBy) => (
@@ -186,6 +195,28 @@ export function RssPage() {
       />
 
       {creating ? <CreateSubscriptionForm onDone={() => setCreating(false)} /> : null}
+
+      <form
+        className="mb-3 flex w-full gap-2 sm:max-w-md"
+        role="search"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submitQuery();
+        }}
+      >
+        <label className="sr-only" htmlFor="rss-query">搜索订阅</label>
+        <Input
+          id="rss-query"
+          value={queryInput}
+          maxLength={256}
+          placeholder="搜索订阅名称或作品"
+          onChange={(event) => setQueryInput(event.target.value)}
+        />
+        <Button type="submit" variant="outline">
+          <SearchIcon aria-hidden="true" />
+          搜索
+        </Button>
+      </form>
 
       <DeletionFeedback items={deletions} onDismiss={() => setDeletions([])} onSettled={refresh} />
       {selectedItems.length > 0 ? (

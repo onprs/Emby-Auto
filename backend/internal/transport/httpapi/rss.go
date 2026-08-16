@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
@@ -81,7 +82,14 @@ func (server *Server) ListRSSSubscriptions(
 		value := uuid.UUID(*request.Params.Cursor)
 		cursor = &value
 	}
-	var sortBy, sortOrder *string
+	var query, sortBy, sortOrder *string
+	if request.Params.Query != nil {
+		value := string(*request.Params.Query)
+		if value == "" || utf8.RuneCountInString(value) > 256 {
+			return ListRSSSubscriptions400JSONResponse{BadRequestJSONResponse: badRequestError(ctx, "query must contain between 1 and 256 characters")}, nil
+		}
+		query = &value
+	}
 	if request.Params.SortBy != nil {
 		value := string(*request.Params.SortBy)
 		sortBy = &value
@@ -90,7 +98,7 @@ func (server *Server) ListRSSSubscriptions(
 		value := string(*request.Params.SortOrder)
 		sortOrder = &value
 	}
-	page, err := server.rssSubscriptions.ListSubscriptions(ctx, cursor, limit, sortBy, sortOrder)
+	page, err := server.rssSubscriptions.ListSubscriptions(ctx, cursor, limit, query, sortBy, sortOrder)
 	var serviceErr *service.Error
 	switch {
 	case errors.As(err, &serviceErr) && errors.Is(err, service.ErrInvalidInput):

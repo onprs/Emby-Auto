@@ -40,7 +40,7 @@ INSERT INTO rss_entries (
 		t.Fatal(err)
 	}
 
-	page, err := NewReadService(db.New(pool)).ListRSSEntries(ctx, subscriptionID, nil, 10, nil, nil, nil, nil)
+	page, err := NewReadService(db.New(pool)).ListRSSEntries(ctx, subscriptionID, nil, 10, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("ListRSSEntries() error = %v", err)
 	}
@@ -70,11 +70,11 @@ INSERT INTO rss_entries (
 
 	readService := NewReadService(db.New(pool))
 	confirmedGroup, skippedGroup := "confirmed", "skipped"
-	confirmed, err := readService.ListRSSEntries(ctx, subscriptionID, nil, 10, nil, &confirmedGroup, nil, nil)
+	confirmed, err := readService.ListRSSEntries(ctx, subscriptionID, nil, 10, nil, &confirmedGroup, nil, nil, nil, nil)
 	if err != nil || len(confirmed.Items) != 1 || confirmed.Items[0].ID != failedID {
 		t.Fatalf("confirmed RSS group = %#v, error = %v", confirmed.Items, err)
 	}
-	skipped, err := readService.ListRSSEntries(ctx, subscriptionID, nil, 10, nil, &skippedGroup, nil, nil)
+	skipped, err := readService.ListRSSEntries(ctx, subscriptionID, nil, 10, nil, &skippedGroup, nil, nil, nil, nil)
 	if err != nil || len(skipped.Items) != 1 || skipped.Items[0].ID != rejectedID {
 		t.Fatalf("skipped RSS group = %#v, error = %v", skipped.Items, err)
 	}
@@ -102,11 +102,11 @@ INSERT INTO rss_entries (
 
 	readService := NewReadService(db.New(pool))
 	confirmedGroup, skippedGroup := "confirmed", "skipped"
-	confirmed, err := readService.ListRSSEntries(ctx, subscriptionID, nil, 10, nil, &confirmedGroup, nil, nil)
+	confirmed, err := readService.ListRSSEntries(ctx, subscriptionID, nil, 10, nil, &confirmedGroup, nil, nil, nil, nil)
 	if err != nil || len(confirmed.Items) != 0 {
 		t.Fatalf("confirmed RSS catalog fulfillment group = %#v, error = %v", confirmed.Items, err)
 	}
-	skipped, err := readService.ListRSSEntries(ctx, subscriptionID, nil, 10, nil, &skippedGroup, nil, nil)
+	skipped, err := readService.ListRSSEntries(ctx, subscriptionID, nil, 10, nil, &skippedGroup, nil, nil, nil, nil)
 	if err != nil || len(skipped.Items) != 1 {
 		t.Fatalf("skipped RSS catalog fulfillment group = %#v, error = %v", skipped.Items, err)
 	}
@@ -162,7 +162,7 @@ INSERT INTO events (id, topic, resource_type, resource_id, data, occurred_at) VA
 	}
 
 	readService := NewReadService(db.New(pool))
-	page, err := readService.ListRSSEntries(ctx, subscriptionID, nil, 10, nil, nil, nil, nil)
+	page, err := readService.ListRSSEntries(ctx, subscriptionID, nil, 10, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("ListRSSEntries() error = %v", err)
 	}

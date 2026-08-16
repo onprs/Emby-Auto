@@ -121,11 +121,20 @@ func (workflow *RSSWorkflow) ListSubscriptions(
 	ctx context.Context,
 	cursor *uuid.UUID,
 	limit int,
+	query *string,
 	sortBy *string,
 	sortOrder *string,
 ) (domain.RSSSubscriptionPage, error) {
 	if limit <= 0 || limit > 100 {
 		return domain.RSSSubscriptionPage{}, invalidRSSSubscription("limit", "must be between 1 and 100")
+	}
+	if query != nil {
+		normalized := strings.TrimSpace(*query)
+		if normalized == "" {
+			query = nil
+		} else {
+			query = &normalized
+		}
 	}
 	field := "name"
 	if sortBy != nil {
@@ -136,9 +145,9 @@ func (workflow *RSSWorkflow) ListSubscriptions(
 	// 保留全量加载 + 内存排序路径以维持既有排序语义；其余稳定字段
 	// 走 SQL 层 cursor 分页，只加载并计算当前页订阅的进度。
 	if field == "progress" {
-		return workflow.listSubscriptionsByComputedProgress(ctx, cursor, limit, direction)
+		return workflow.listSubscriptionsByComputedProgress(ctx, cursor, limit, query, direction)
 	}
-	return workflow.listSubscriptionsBySQLSort(ctx, cursor, limit, field, direction)
+	return workflow.listSubscriptionsBySQLSort(ctx, cursor, limit, query, field, direction)
 }
 
 // listSubscriptionsBySQLSort 在 SQL 层按稳定排序键分页，仅对当前页订阅
@@ -147,6 +156,7 @@ func (workflow *RSSWorkflow) listSubscriptionsBySQLSort(
 	ctx context.Context,
 	cursor *uuid.UUID,
 	limit int,
+	query *string,
 	field string,
 	direction int,
 ) (domain.RSSSubscriptionPage, error) {
@@ -155,6 +165,7 @@ func (workflow *RSSWorkflow) listSubscriptionsBySQLSort(
 		order = "desc"
 	}
 	params := db.ListRSSSubscriptionsSortedParams{
+		Query:     query,
 		SortKey:   &field,
 		SortOrder: &order,
 		PageSize:  int32(limit) + 1,
@@ -206,6 +217,7 @@ func (workflow *RSSWorkflow) listSubscriptionsByComputedProgress(
 	ctx context.Context,
 	cursor *uuid.UUID,
 	limit int,
+	query *string,
 	direction int,
 ) (domain.RSSSubscriptionPage, error) {
 	const batchSize = 200
@@ -213,7 +225,7 @@ func (workflow *RSSWorkflow) listSubscriptionsByComputedProgress(
 	var batchCursor *uuid.UUID
 	items := make([]domain.RSSSubscription, 0, batchSize)
 	for {
-		params := db.ListRSSSubscriptionsParams{Sort: &baseSort, PageSize: batchSize}
+		params := db.ListRSSSubscriptionsParams{Query: query, Sort: &baseSort, PageSize: batchSize}
 		if batchCursor != nil {
 			params.CursorID = repository.UUIDToPG(*batchCursor)
 		}

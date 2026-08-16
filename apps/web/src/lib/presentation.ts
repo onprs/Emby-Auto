@@ -276,6 +276,27 @@ export function mediaKindLabel(kind?: string | null): string {
   }
 }
 
+// 仅包含 RSS 条目可能持久化的原因：确定性发布分析、Agent 裁决与
+// 目标占用硬拒绝。下载文件选择专用原因不应出现在此列表中。
+const rssRejectionReasonCodes = [
+  'episode_range_batch',
+  'non_episode_extra',
+  'episode_not_detected',
+  'agent_ignored',
+  'episode_ambiguous',
+  'download_uri_missing',
+  'title_include_mismatch',
+  'title_excluded',
+  'target_episode_in_library',
+  'target_episode_imported',
+  'target_episode_processing',
+] as const;
+
+export type RssRejectionReasonCode = (typeof rssRejectionReasonCodes)[number];
+
+export const rssRejectionReasonOptions: { value: RssRejectionReasonCode; label: string }[] =
+  rssRejectionReasonCodes.map((value) => ({ value, label: rejectionLabels[value] ?? value }));
+
 export function reasonLabel(reason?: string | null): string {
   if (!reason) return '';
   return reason

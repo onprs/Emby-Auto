@@ -51,11 +51,11 @@ SELECT downloadable, rejection_reasons, fulfillment_source FROM rss_entries WHER
 
 	readService := NewReadService(db.New(fixture.pool))
 	confirmedGroup, skippedGroup := "confirmed", "skipped"
-	confirmed, err := readService.ListRSSEntries(fixture.ctx, fixture.subscriptionID, nil, 10, nil, &confirmedGroup, nil, nil)
+	confirmed, err := readService.ListRSSEntries(fixture.ctx, fixture.subscriptionID, nil, 10, nil, &confirmedGroup, nil, nil, nil, nil)
 	if err != nil || len(confirmed.Items) != 1 || confirmed.Items[0].ID != entryID {
 		t.Fatalf("confirmed RSS group = %#v, error = %v", confirmed.Items, err)
 	}
-	skipped, err := readService.ListRSSEntries(fixture.ctx, fixture.subscriptionID, nil, 10, nil, &skippedGroup, nil, nil)
+	skipped, err := readService.ListRSSEntries(fixture.ctx, fixture.subscriptionID, nil, 10, nil, &skippedGroup, nil, nil, nil, nil)
 	if err != nil || len(skipped.Items) != 0 {
 		t.Fatalf("skipped RSS group = %#v, error = %v", skipped.Items, err)
 	}
@@ -173,11 +173,11 @@ FROM rss_entries WHERE id = $1`, conflictEntryID).Scan(&conflictStatus, &conflic
 
 	readService := NewReadService(db.New(fixture.pool))
 	confirmedGroup, skippedGroup := "confirmed", "skipped"
-	confirmed, err := readService.ListRSSEntries(fixture.ctx, fixture.subscriptionID, nil, 10, nil, &confirmedGroup, nil, nil)
+	confirmed, err := readService.ListRSSEntries(fixture.ctx, fixture.subscriptionID, nil, 10, nil, &confirmedGroup, nil, nil, nil, nil)
 	if err != nil || len(confirmed.Items) != 1 || confirmed.Items[0].ID != ownerEntryID {
 		t.Fatalf("confirmed RSS group = %#v, error = %v", confirmed.Items, err)
 	}
-	skipped, err := readService.ListRSSEntries(fixture.ctx, fixture.subscriptionID, nil, 10, nil, &skippedGroup, nil, nil)
+	skipped, err := readService.ListRSSEntries(fixture.ctx, fixture.subscriptionID, nil, 10, nil, &skippedGroup, nil, nil, nil, nil)
 	if err != nil || len(skipped.Items) != 1 || skipped.Items[0].ID != conflictEntryID {
 		t.Fatalf("skipped RSS group = %#v, error = %v", skipped.Items, err)
 	}
@@ -256,7 +256,7 @@ ORDER BY discovered_at DESC LIMIT 1`, fixture.subscriptionID, owner.Candidates[0
 
 	readService := NewReadService(db.New(fixture.pool))
 	skippedGroup := "skipped"
-	skipped, err := readService.ListRSSEntries(fixture.ctx, fixture.subscriptionID, nil, 10, nil, &skippedGroup, nil, nil)
+	skipped, err := readService.ListRSSEntries(fixture.ctx, fixture.subscriptionID, nil, 10, nil, &skippedGroup, nil, nil, nil, nil)
 	if err != nil || len(skipped.Items) != 1 {
 		t.Fatalf("skipped RSS group = %#v, error = %v", skipped.Items, err)
 	}

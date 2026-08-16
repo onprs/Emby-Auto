@@ -166,6 +166,11 @@ FROM rss_subscriptions AS subscription
 JOIN media_series AS series ON series.id = subscription.series_id
 WHERE subscription.deleted_at IS NULL
   AND (
+      sqlc.narg(query)::text IS NULL
+      OR strpos(LOWER(subscription.name), LOWER(sqlc.narg(query)::text)) > 0
+      OR strpos(LOWER(series.title), LOWER(sqlc.narg(query)::text)) > 0
+  )
+  AND (
       sqlc.narg(cursor_id)::uuid IS NULL
       OR (
           COALESCE(sqlc.narg(sort)::text, 'newest') = 'oldest'
@@ -226,6 +231,11 @@ SELECT
 FROM rss_subscriptions AS subscription
 JOIN media_series AS series ON series.id = subscription.series_id
 WHERE subscription.deleted_at IS NULL
+  AND (
+      sqlc.narg(query)::text IS NULL
+      OR strpos(LOWER(subscription.name), LOWER(sqlc.narg(query)::text)) > 0
+      OR strpos(LOWER(series.title), LOWER(sqlc.narg(query)::text)) > 0
+  )
   AND (
       sqlc.narg(cursor_id)::uuid IS NULL
       OR (

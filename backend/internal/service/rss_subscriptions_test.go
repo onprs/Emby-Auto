@@ -145,7 +145,7 @@ func TestApplyRSSSubscriptionProgressKeepsCompletedSubscriptionAtOne(t *testing.
 func TestRSSSubscriptionListRejectsInvalidLimitBeforeLookup(t *testing.T) {
 	workflow := NewRSSWorkflow(nil, nil, nil)
 	for _, limit := range []int{0, 101} {
-		_, err := workflow.ListSubscriptions(context.Background(), nil, limit, nil, nil)
+		_, err := workflow.ListSubscriptions(context.Background(), nil, limit, nil, nil, nil)
 		var serviceErr *Error
 		if !errors.As(err, &serviceErr) || serviceErr.Code != "invalid_rss_subscription" || serviceErr.Details["field"] != "limit" {
 			t.Fatalf("ListSubscriptions(limit=%d) error = %#v", limit, err)

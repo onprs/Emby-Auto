@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,24 +16,26 @@ import (
 )
 
 type readModelStub struct {
-	downloads     domain.DownloadPage
-	download      domain.DownloadView
-	acquisitions  domain.AcquisitionPage
-	acquisition   domain.AcquisitionView
-	searches      domain.SearchRunSummaryPage
-	operations    domain.OperationPage
-	operation     domain.OperationView
-	entries       domain.RSSEntryPage
-	events        domain.EventRecordPage
-	summary       domain.DashboardSummary
-	err           error
-	listState     *string
-	listPhase     *string
-	listQuery     *string
-	listSortBy    *string
-	listSortOrder *string
-	rssGroup      *string
-	operationKind *string
+	downloads       domain.DownloadPage
+	download        domain.DownloadView
+	acquisitions    domain.AcquisitionPage
+	acquisition     domain.AcquisitionView
+	searches        domain.SearchRunSummaryPage
+	operations      domain.OperationPage
+	operation       domain.OperationView
+	entries         domain.RSSEntryPage
+	events          domain.EventRecordPage
+	summary         domain.DashboardSummary
+	err             error
+	listState       *string
+	listPhase       *string
+	listQuery       *string
+	listSortBy      *string
+	listSortOrder   *string
+	rssGroup        *string
+	rssQuery        *string
+	rssRejectReason *string
+	operationKind   *string
 }
 
 func (stub *readModelStub) ListSearches(context.Context, *uuid.UUID, int, *string, *string) (domain.SearchRunSummaryPage, error) {
@@ -55,8 +59,10 @@ func (stub *readModelStub) ListAcquisitions(_ context.Context, _ *uuid.UUID, _ i
 func (stub *readModelStub) GetAcquisition(context.Context, uuid.UUID) (domain.AcquisitionView, error) {
 	return stub.acquisition, stub.err
 }
-func (stub *readModelStub) ListRSSEntries(_ context.Context, _ uuid.UUID, _ *uuid.UUID, _ int, _ *string, group *string, sortBy, sortOrder *string) (domain.RSSEntryPage, error) {
+func (stub *readModelStub) ListRSSEntries(_ context.Context, _ uuid.UUID, _ *uuid.UUID, _ int, _ *string, group, query, rejectReason, sortBy, sortOrder *string) (domain.RSSEntryPage, error) {
 	stub.rssGroup = group
+	stub.rssQuery = query
+	stub.rssRejectReason = rejectReason
 	stub.listSortBy, stub.listSortOrder = sortBy, sortOrder
 	return stub.entries, stub.err
 }
@@ -132,7 +138,7 @@ func TestListAcquisitionsForwardsColumnSort(t *testing.T) {
 func TestListRSSEntriesForwardsColumnSort(t *testing.T) {
 	stub := &readModelStub{entries: domain.RSSEntryPage{Items: []domain.RSSEntryView{}}}
 	handler := NewHandler(NewServer(readinessStub{}, WithReadModels(stub)))
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/rss/subscriptions/"+uuid.NewString()+"/entries?group=confirmed&sortBy=episode&sortOrder=asc", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/rss/subscriptions/"+uuid.NewString()+"/entries?group=confirmed&sortBy=episode&sortOrder=asc&query=ep&rejectReason=target_episode_in_library", nil)
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, request)
@@ -140,8 +146,58 @@ func TestListRSSEntriesForwardsColumnSort(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
-	if stub.rssGroup == nil || *stub.rssGroup != "confirmed" || stub.listSortBy == nil || *stub.listSortBy != "episode" || stub.listSortOrder == nil || *stub.listSortOrder != "asc" {
-		t.Fatalf("group/sort = %#v/%#v/%#v", stub.rssGroup, stub.listSortBy, stub.listSortOrder)
+	if stub.rssGroup == nil || *stub.rssGroup != "confirmed" || stub.rssQuery == nil || *stub.rssQuery != "ep" || stub.rssRejectReason == nil || *stub.rssRejectReason != "target_episode_in_library" || stub.listSortBy == nil || *stub.listSortBy != "episode" || stub.listSortOrder == nil || *stub.listSortOrder != "asc" {
+		t.Fatalf("group/query/rejectReason/sort = %#v/%#v/%#v/%#v/%#v", stub.rssGroup, stub.rssQuery, stub.rssRejectReason, stub.listSortBy, stub.listSortOrder)
+	}
+}
+
+func TestListRSSEntriesValidatesFilterUnicodeLengths(t *testing.T) {
+	cases := []struct {
+		name        string
+		parameter   string
+		value       string
+		wantStatus  int
+		wantForward bool
+	}{
+		{name: "empty query", parameter: "query", value: "", wantStatus: http.StatusBadRequest},
+		{name: "one-character query", parameter: "query", value: "集", wantStatus: http.StatusOK, wantForward: true},
+		{name: "maximum query", parameter: "query", value: strings.Repeat("集", 256), wantStatus: http.StatusOK, wantForward: true},
+		{name: "query too long", parameter: "query", value: strings.Repeat("集", 257), wantStatus: http.StatusBadRequest},
+		{name: "empty reject reason", parameter: "rejectReason", value: "", wantStatus: http.StatusBadRequest},
+		{name: "one-character reject reason", parameter: "rejectReason", value: "因", wantStatus: http.StatusOK, wantForward: true},
+		{name: "maximum reject reason", parameter: "rejectReason", value: strings.Repeat("因", 128), wantStatus: http.StatusOK, wantForward: true},
+		{name: "reject reason too long", parameter: "rejectReason", value: strings.Repeat("因", 129), wantStatus: http.StatusBadRequest},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			stub := &readModelStub{entries: domain.RSSEntryPage{Items: []domain.RSSEntryView{}}}
+			handler := NewHandler(NewServer(readinessStub{}, WithReadModels(stub)))
+			request := httptest.NewRequest(
+				http.MethodGet,
+				"/api/v1/rss/subscriptions/"+uuid.NewString()+"/entries?"+test.parameter+"="+url.QueryEscape(test.value),
+				nil,
+			)
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != test.wantStatus {
+				t.Fatalf("%s=%d characters status = %d, want %d", test.parameter, len([]rune(test.value)), response.Code, test.wantStatus)
+			}
+			if !test.wantForward {
+				if stub.rssQuery != nil || stub.rssRejectReason != nil {
+					t.Fatalf("invalid filters reached the service: %#v/%#v", stub.rssQuery, stub.rssRejectReason)
+				}
+				return
+			}
+			if test.parameter == "query" {
+				if stub.rssQuery == nil || *stub.rssQuery != test.value || stub.rssRejectReason != nil {
+					t.Fatalf("forwarded query/rejectReason = %#v/%#v", stub.rssQuery, stub.rssRejectReason)
+				}
+			} else if stub.rssRejectReason == nil || *stub.rssRejectReason != test.value || stub.rssQuery != nil {
+				t.Fatalf("forwarded query/rejectReason = %#v/%#v", stub.rssQuery, stub.rssRejectReason)
+			}
+		})
 	}
 }
 
@@ -156,10 +212,14 @@ func TestRSSEntryResponseIncludesAcquisitionProgress(t *testing.T) {
 			OverallProgress: 0.473,
 		},
 		Title: "Progress E02", Status: "enqueued", Classification: "enqueued",
+		RejectReason: "title_excluded,target_episode_processing",
 	})
 
 	if response.AcquisitionId == nil || *response.AcquisitionId != acquisitionID || response.AcquisitionProgress == nil || response.ImportedAt == nil || !response.ImportedAt.Equal(importedAt) {
 		t.Fatalf("RSS acquisition progress = %#v", response)
+	}
+	if response.RejectReason == nil || *response.RejectReason != "title_excluded,target_episode_processing" {
+		t.Fatalf("RSS rejection reasons = %#v, want the complete reason list", response.RejectReason)
 	}
 	if response.AcquisitionProgress.AggregateStatus != AcquisitionAggregateStatusProcessing ||
 		response.AcquisitionProgress.CurrentStage != AcquisitionStageKeyTranscode ||

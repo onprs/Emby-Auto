@@ -61,7 +61,7 @@ const filteredEntry: RssEntry = {
   title: '被过滤的第 3 集',
   status: 'discovered',
   classification: 'rejected',
-  rejectReason: 'title_include_mismatch',
+  rejectReason: 'title_include_mismatch,target_episode_processing',
   sourceEpisode: 3,
 };
 
@@ -87,7 +87,7 @@ describe('RssDetailPage entries', () => {
 
     expect(await screen.findByText('已确认的 RSS 任务')).toBeInTheDocument();
     expect(screen.getByText('已跳过的 RSS 更新')).toBeInTheDocument();
-    expect(screen.getAllByText('未命中包含词')).toHaveLength(2);
+    expect(screen.getAllByText('未命中包含词、该集正在处理中', { ignore: 'option' })).toHaveLength(2);
     expect(requests.some((url) => new URL(url).searchParams.get('group') === 'confirmed')).toBe(true);
     expect(requests.some((url) => new URL(url).searchParams.get('group') === 'skipped')).toBe(true);
     expect(await screen.findByText('简日、1080p')).toBeInTheDocument();
@@ -116,6 +116,93 @@ describe('RssDetailPage entries', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe(`/acquisitions/${entry.acquisitionId}`));
   });
 
+  it('searches skipped entries by keyword', async () => {
+    const requests: string[] = [];
+    server.use(
+      http.get(`*/api/v1/rss/subscriptions/${subscriptionId}`, () => HttpResponse.json(subscription)),
+      http.get(`*/api/v1/rss/subscriptions/${subscriptionId}/entries`, ({ request }) => {
+        requests.push(request.url);
+        return groupedEntryPage(request, [entry], [filteredEntry]);
+      }),
+    );
+
+    renderWithProviders(<RssDetailPage subscriptionId={subscriptionId} />, {
+      routePath: '/rss/$subscriptionId',
+      initialEntry: `/rss/${subscriptionId}`,
+    });
+
+    await screen.findByText('已跳过的 RSS 更新');
+    await userEvent.type(screen.getByLabelText('搜索已跳过更新'), '第 3 集');
+    await userEvent.click(screen.getAllByRole('button', { name: '搜索' })[1]);
+    await waitFor(() => {
+      const url = new URL(requests.at(-1)!);
+      expect(url.searchParams.get('group')).toBe('skipped');
+      expect(url.searchParams.get('query')).toBe('第 3 集');
+    });
+  });
+
+  it('filters skipped entries by reject reason', async () => {
+    const requests: string[] = [];
+    server.use(
+      http.get(`*/api/v1/rss/subscriptions/${subscriptionId}`, () => HttpResponse.json(subscription)),
+      http.get(`*/api/v1/rss/subscriptions/${subscriptionId}/entries`, ({ request }) => {
+        requests.push(request.url);
+        return groupedEntryPage(request, [entry], [filteredEntry]);
+      }),
+    );
+
+    renderWithProviders(<RssDetailPage subscriptionId={subscriptionId} />, {
+      routePath: '/rss/$subscriptionId',
+      initialEntry: `/rss/${subscriptionId}`,
+    });
+
+    await screen.findByText('已跳过的 RSS 更新');
+    await userEvent.click(screen.getByLabelText('按跳过原因过滤'));
+    await userEvent.click(await screen.findByRole('option', { name: '未命中包含词' }));
+    await waitFor(() => {
+      const url = new URL(requests.at(-1)!);
+      expect(url.searchParams.get('group')).toBe('skipped');
+      expect(url.searchParams.get('rejectReason')).toBe('title_include_mismatch');
+    });
+  });
+
+  it('sorts skipped entries through column headers', async () => {
+    const requests: string[] = [];
+    server.use(
+      http.get(`*/api/v1/rss/subscriptions/${subscriptionId}`, () => HttpResponse.json(subscription)),
+      http.get(`*/api/v1/rss/subscriptions/${subscriptionId}/entries`, ({ request }) => {
+        requests.push(request.url);
+        return groupedEntryPage(request, [entry], [filteredEntry]);
+      }),
+    );
+
+    renderWithProviders(<RssDetailPage subscriptionId={subscriptionId} />, {
+      routePath: '/rss/$subscriptionId',
+      initialEntry: `/rss/${subscriptionId}`,
+    });
+
+    await screen.findByText('已跳过的 RSS 更新');
+    const skippedMobileTitleSort = screen.getAllByRole('button', { name: '内容，点击按正序排列' }).at(-2);
+    expect(skippedMobileTitleSort).toBeDefined();
+    await userEvent.click(skippedMobileTitleSort!);
+    await waitFor(() => {
+      const url = new URL(requests.at(-1)!);
+      expect(url.searchParams.get('group')).toBe('skipped');
+      expect(url.searchParams.get('sortBy')).toBe('title');
+      expect(url.searchParams.get('sortOrder')).toBe('asc');
+    });
+    // 前一个操作覆盖移动端排序条；这里单独点击桌面表头的 progress 排序。
+    const skippedDesktopProgressSort = screen.getAllByRole('button', { name: '处理进度，点击按正序排列' }).at(-1);
+    expect(skippedDesktopProgressSort).toBeDefined();
+    await userEvent.click(skippedDesktopProgressSort!);
+    await waitFor(() => {
+      const url = new URL(requests.at(-1)!);
+      expect(url.searchParams.get('group')).toBe('skipped');
+      expect(url.searchParams.get('sortBy')).toBe('progress');
+      expect(url.searchParams.get('sortOrder')).toBe('asc');
+    });
+  });
+
   it('shows historical enqueued catalog fulfillment only in the skipped list', async () => {
     const catalogFulfilledEntry: RssEntry = {
       ...entry,
@@ -142,7 +229,7 @@ describe('RssDetailPage entries', () => {
 
     expect(await screen.findByText('暂无已确认任务')).toBeInTheDocument();
     expect(screen.getByText('运行中')).toBeInTheDocument();
-    expect(screen.getAllByText('媒体库已有该集')).toHaveLength(2);
+    expect(screen.getAllByText('媒体库已有该集', { ignore: 'option' })).toHaveLength(2);
     expect(screen.queryByText('已安排下载')).not.toBeInTheDocument();
   });
 

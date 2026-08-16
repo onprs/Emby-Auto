@@ -139,9 +139,10 @@ type AcquisitionListSearch = CursorRouteSearch & {
   sortOrder?: 'asc' | 'desc';
 };
 type DetailSourceSearch = { from?: string };
-type RssListSearch = CursorRouteSearch & { sortBy?: 'name' | 'series_title' | 'source_season' | 'enabled' | 'progress' | 'next_poll_at'; sortOrder?: 'asc' | 'desc' };
+type RssListSearch = CursorRouteSearch & { query?: string; sortBy?: 'name' | 'series_title' | 'source_season' | 'enabled' | 'progress' | 'next_poll_at'; sortOrder?: 'asc' | 'desc' };
 type RssEntrySearch = CursorRouteSearch & DetailSourceSearch & {
   status?: 'discovered' | 'enqueueing' | 'enqueued' | 'enqueue_failed';
+  query?: string;
   sortBy?: 'title' | 'episode' | 'progress' | 'discovered_at';
   sortOrder?: 'asc' | 'desc';
 };
@@ -240,6 +241,7 @@ const rssRoute = createRoute({
   path: '/rss',
   validateSearch: (search: Record<string, unknown>): RssListSearch => ({
     ...cursorSearch(search),
+    query: stringSearch(search.query, 256),
     sortBy: enumSearch(search.sortBy, ['name', 'series_title', 'source_season', 'enabled', 'progress', 'next_poll_at'] as const),
     sortOrder: enumSearch(search.sortOrder, ['asc', 'desc'] as const),
   }),
@@ -252,6 +254,7 @@ const rssDetailRoute = createRoute({
     ...cursorSearch(search),
     ...detailSourceSearch(search),
     status: enumSearch(search.status, ['discovered', 'enqueueing', 'enqueued', 'enqueue_failed'] as const),
+    query: stringSearch(search.query, 256),
     sortBy: enumSearch(search.sortBy, ['title', 'episode', 'progress', 'discovered_at'] as const),
     sortOrder: enumSearch(search.sortOrder, ['asc', 'desc'] as const),
   }),
