@@ -418,7 +418,7 @@ function ServicesForm({
               />
             </Field>
             <p className="text-xs text-zinc-500">
-              超过保留天数的流式与操作审计事件会被定期删除，业务导入历史始终保留；
+              超过保留天数且可由业务状态恢复的系统事件会被定期删除，业务导入历史与未知事件类型始终保留；
               设置为 0 时保留全部事件历史。
             </p>
           </CardContent>

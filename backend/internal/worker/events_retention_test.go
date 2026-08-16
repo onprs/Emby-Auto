@@ -23,9 +23,11 @@ func (stub *eventsRetentionConfigurationStub) Load(context.Context) (domain.Conf
 type eventsRetentionStoreStub struct {
 	deleted []int64
 	err     error
+	calls   int
 }
 
 func (stub *eventsRetentionStoreStub) DeleteExpired(_ context.Context, before time.Time, maxRows int32) (int64, error) {
+	stub.calls++
 	if stub.err != nil {
 		return 0, stub.err
 	}
@@ -63,14 +65,14 @@ func TestEventsRetentionWorkerSkipsWhenRetentionIsDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Work() error = %v", err)
 	}
-	if len(store.deleted) != 0 {
-		t.Fatalf("Work() deleted %d rows with retention disabled, want 0", len(store.deleted))
+	if store.calls != 0 {
+		t.Fatalf("Work() called DeleteExpired() %d times with retention disabled, want 0", store.calls)
 	}
 }
 
-func TestEventsRetentionWorkerDeletesExpiredEventsInBatches(t *testing.T) {
+func TestEventsRetentionWorkerStopsWhenBatchIsNotFull(t *testing.T) {
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
-	store := &eventsRetentionStoreStub{deleted: []int64{1000, 1000, 350}}
+	store := &eventsRetentionStoreStub{deleted: []int64{1000, 1000, 350, 1000}}
 	worker := newEventsRetentionWorker(
 		&eventsRetentionConfigurationStub{configuration: domain.Configuration{
 			Settings: domain.RuntimeSettings{Events: domain.EventsSettings{RetentionDays: 30}},
@@ -78,12 +80,38 @@ func TestEventsRetentionWorkerDeletesExpiredEventsInBatches(t *testing.T) {
 		store,
 		now,
 	)
-	err := worker.Work(context.Background(), &river.Job[appqueue.EventsRetentionCleanupArgs]{})
-	if err != nil {
+	if err := worker.Work(context.Background(), &river.Job[appqueue.EventsRetentionCleanupArgs]{}); err != nil {
 		t.Fatalf("Work() error = %v", err)
 	}
-	if len(store.deleted) != 0 {
-		t.Fatalf("Work() stopped with %d batches remaining, want all batches drained", len(store.deleted))
+	if store.calls != 3 {
+		t.Fatalf("Work() DeleteExpired() calls = %d, want 3", store.calls)
+	}
+	if len(store.deleted) != 1 {
+		t.Fatalf("Work() remaining batches = %d, want 1 after partial batch", len(store.deleted))
+	}
+}
+
+func TestEventsRetentionWorkerStopsAtPerJobBatchBudget(t *testing.T) {
+	store := &eventsRetentionStoreStub{deleted: []int64{
+		1000, 1000, 1000, 1000, 1000,
+		1000, 1000, 1000, 1000, 1000,
+		1000,
+	}}
+	worker := newEventsRetentionWorker(
+		&eventsRetentionConfigurationStub{configuration: domain.Configuration{
+			Settings: domain.RuntimeSettings{Events: domain.EventsSettings{RetentionDays: 30}},
+		}},
+		store,
+		time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC),
+	)
+	if err := worker.Work(context.Background(), &river.Job[appqueue.EventsRetentionCleanupArgs]{}); err != nil {
+		t.Fatalf("Work() error = %v", err)
+	}
+	if store.calls != 10 {
+		t.Fatalf("Work() DeleteExpired() calls = %d, want 10", store.calls)
+	}
+	if len(store.deleted) != 1 {
+		t.Fatalf("Work() remaining batches = %d, want 1 for the next hourly job", len(store.deleted))
 	}
 }
 

@@ -69,8 +69,8 @@ func (repository *Events) List(
 	return events, nil
 }
 
-// DeleteExpired 分批删除早于 before 的可安全丢弃事件（流式/操作审计类），
-// read model 依赖的 provenance 事件由 SQL 保护，最多删除 maxRows 行，返回实际删除行数。
+// DeleteExpired 分批删除早于 before 且在 fail-closed allowlist 中的事件，
+// provenance 与未知事件由 SQL 默认保留；每批最多删除 maxRows 行。
 func (repository *Events) DeleteExpired(ctx context.Context, before time.Time, maxRows int32) (int64, error) {
 	if maxRows <= 0 {
 		return 0, fmt.Errorf("event deletion batch size must be positive")

@@ -10,8 +10,12 @@ import (
 	"github.com/riverqueue/river"
 )
 
-// eventsRetentionBatchSize 每批删除的最大事件数，分批避免长事务。
-const eventsRetentionBatchSize int32 = 1000
+const (
+	// eventsRetentionBatchSize 限制单次事务删除的事件数。
+	eventsRetentionBatchSize int32 = 1000
+	// eventsRetentionMaxBatches 限制单个小时任务的总工作量；积压由后续任务继续清理。
+	eventsRetentionMaxBatches = 10
+)
 
 // EventsRetentionConfiguration 读取运行时配置以获取事件保留期。
 type EventsRetentionConfiguration interface {
@@ -24,8 +28,8 @@ type EventsRetentionStore interface {
 }
 
 // EventsRetentionWorker 由 River 周期任务触发，按保留期分批清理过期事件。
-// 保留期为 0 时跳过清理，允许保留全部事件历史；
-// 仅清理流式/操作审计类事件，read model 依赖的 provenance 事件始终保留。
+// 保留期为 0 时跳过清理，允许保留全部事件历史；每个任务最多删除 10 批，积压由后续小时任务继续清理；
+// 仅清理 fail-closed allowlist 中可由业务表恢复的事件，provenance 与未知事件始终保留。
 type EventsRetentionWorker struct {
 	river.WorkerDefaults[appqueue.EventsRetentionCleanupArgs]
 	configuration EventsRetentionConfiguration
@@ -61,7 +65,7 @@ func (worker *EventsRetentionWorker) Work(
 		return nil
 	}
 	cutoff := worker.now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
-	for {
+	for range eventsRetentionMaxBatches {
 		deleted, err := worker.store.DeleteExpired(ctx, cutoff, eventsRetentionBatchSize)
 		if err != nil {
 			return fmt.Errorf("delete expired events: %w", err)
@@ -70,4 +74,5 @@ func (worker *EventsRetentionWorker) Work(
 			return nil
 		}
 	}
+	return nil
 }

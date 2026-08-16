@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/onprs/emby-auto/backend/internal/domain"
+	appservice "github.com/onprs/emby-auto/backend/internal/service"
 )
 
 type runtimeConfigurationStub struct {
@@ -39,6 +40,29 @@ func (stub *runtimeConfigurationStub) ResolveSecret(_ context.Context, name stri
 		return "", err
 	}
 	return stub.secrets[name], nil
+}
+
+type persistedRuntimeConfigurationStore struct {
+	configuration domain.Configuration
+	saved         domain.SaveConfiguration
+}
+
+func (store *persistedRuntimeConfigurationStore) Load(context.Context) (domain.Configuration, error) {
+	return store.configuration, nil
+}
+
+func (store *persistedRuntimeConfigurationStore) Save(_ context.Context, save domain.SaveConfiguration) (domain.Configuration, error) {
+	if save.ExpectedVersion != store.configuration.Version {
+		return domain.Configuration{}, domain.ErrVersionConflict
+	}
+	store.saved = save
+	store.configuration.Version++
+	store.configuration.Settings = save.Settings
+	return store.configuration, nil
+}
+
+func (store *persistedRuntimeConfigurationStore) GetSecret(context.Context, string) (domain.EncryptedSecret, error) {
+	return domain.EncryptedSecret{}, domain.ErrNotFound
 }
 
 func requireSecretRevealNoStore(t *testing.T, response *httptest.ResponseRecorder) {
@@ -282,6 +306,70 @@ func TestConfigurationResponseContainsOnlyMaskedSecretMetadata(t *testing.T) {
 	}
 }
 
+func rawConfigurationUpdateBody(events string) string {
+	return `{
+		"expectedVersion":8,
+		"qBittorrent":{"url":"http://qb.test","username":"downloader","password":{"action":"keep"},"downloadRateLimitKibPerSecond":4096,"uploadRateLimitKibPerSecond":1024},
+		"emby":{"url":"https://emby.test","apiKey":{"action":"keep"}},
+		"tmdb":{"apiToken":{"action":"keep"}},
+		"networkProxy":{"enabled":false,"url":""},
+		"agent":{"enabled":false,"protocol":"openai_chat_completions","baseUrl":"","model":"","apiKey":{"action":"keep"},"useNetworkProxy":true,"requestTimeoutSeconds":60,"rssCoordinateMode":"off","downloadFileSelectionMode":"off","catalogMatchEnabled":false,"episodeMappingEnabled":false,"allowAutomaticEpisodeMapping":false,"subtitleVideoMatchMode":"off"},
+		"paths":{"downloadRoot":"C:\\media\\downloads","workRoot":"C:\\media\\work","stagingRoot":"C:\\media\\staging","animeLibraryRoot":"C:\\media\\library\\anime","movieLibraryRoot":"C:\\media\\library\\movies","ffmpegPath":"ffmpeg","ffprobePath":"ffprobe"},
+		"transcode":{"name":"h264","videoCodec":"h264","encoder":"libx264","container":"mp4","fileExtension":"mp4","qualityMode":"crf","qualityValue":20,"audioPolicy":"transcode","audioCodec":"aac","preset":"medium","pixelFormat":"yuv420p","threadCount":2,"maxConcurrency":1}` + events + `
+	}`
+}
+
+func TestConfigurationUpdateRawHTTPDistinguishesOmittedEventsFromExplicitZero(t *testing.T) {
+	userID := uuid.MustParse("10000000-0000-0000-0000-000000000006")
+	authentication := &authenticationStub{authenticated: domain.Session{User: domain.AdminUser{ID: userID, Username: "admin"}}}
+
+	for _, test := range []struct {
+		name       string
+		eventsJSON string
+		wantDays   int32
+	}{
+		{name: "legacy body omits events", eventsJSON: "", wantDays: 73},
+		{name: "explicit zero disables cleanup", eventsJSON: `,"events":{"retentionDays":0}`, wantDays: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &persistedRuntimeConfigurationStore{configuration: domain.Configuration{
+				Version:  8,
+				Settings: domain.RuntimeSettings{Events: domain.EventsSettings{RetentionDays: 73}},
+				Secrets:  map[string]domain.SecretMetadata{},
+			}}
+			cipher, err := appservice.NewSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
+			if err != nil {
+				t.Fatalf("NewSecretCipher() error = %v", err)
+			}
+			handler := NewHandler(NewServer(
+				readinessStub{},
+				WithAuthentication(authentication, false),
+				WithRuntimeConfiguration(appservice.NewConfigurationService(store, cipher)),
+			))
+			request := httptest.NewRequest(http.MethodPut, "/api/v1/config", strings.NewReader(rawConfigurationUpdateBody(test.eventsJSON)))
+			request.Header.Set("Content-Type", "application/json")
+			request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "valid-token"})
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+			if got := store.saved.Settings.Events.RetentionDays; got != test.wantDays {
+				t.Fatalf("saved retention days = %d, want %d", got, test.wantDays)
+			}
+			var decoded Configuration
+			if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if decoded.Events.RetentionDays != test.wantDays {
+				t.Fatalf("response retention days = %d, want %d", decoded.Events.RetentionDays, test.wantDays)
+			}
+		})
+	}
+}
+
 func TestConfigurationUpdateMapsExplicitSecretActionsAndActor(t *testing.T) {
 	userID := uuid.MustParse("10000000-0000-0000-0000-000000000002")
 	authentication := &authenticationStub{authenticated: domain.Session{User: domain.AdminUser{ID: userID, Username: "admin"}}}
@@ -333,8 +421,8 @@ func TestConfigurationUpdateMapsExplicitSecretActionsAndActor(t *testing.T) {
 	if settings := configuration.update.Settings.QBittorrent; settings.DownloadRateLimitKibPerSecond != 4096 || settings.UploadRateLimitKibPerSecond != 1024 {
 		t.Fatalf("qBittorrent rate limits = %#v, want 4096/1024 KiB/s", settings)
 	}
-	if retentionDays := configuration.update.Settings.Events.RetentionDays; retentionDays != 90 {
-		t.Fatalf("event retention days = %d, want 90", retentionDays)
+	if configuration.update.Events == nil || configuration.update.Events.RetentionDays != 90 || configuration.update.Settings.Events.RetentionDays != 90 {
+		t.Fatalf("event retention update = %#v, settings = %#v; want explicit 90", configuration.update.Events, configuration.update.Settings.Events)
 	}
 	if proxy := configuration.update.Settings.NetworkProxy; !proxy.Enabled || proxy.URL != "http://127.0.0.1:7890" {
 		t.Fatalf("network proxy = %#v", proxy)

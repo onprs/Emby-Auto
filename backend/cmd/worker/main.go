@@ -30,6 +30,32 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 )
 
+const eventsRetentionCleanupPeriod = time.Hour
+
+func eventsRetentionCleanupSchedule() river.PeriodicSchedule {
+	return river.PeriodicInterval(eventsRetentionCleanupPeriod)
+}
+
+func eventsRetentionCleanupJob() (river.JobArgs, *river.InsertOpts) {
+	return appqueue.EventsRetentionCleanupArgs{}, &river.InsertOpts{
+		MaxAttempts: 3,
+		Queue:       appqueue.QueueGeneral,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs:   true,
+			ByQueue:  true,
+			ByPeriod: eventsRetentionCleanupPeriod,
+		},
+	}
+}
+
+func newEventsRetentionPeriodicJob() *river.PeriodicJob {
+	return river.NewPeriodicJob(
+		eventsRetentionCleanupSchedule(),
+		eventsRetentionCleanupJob,
+		&river.PeriodicJobOpts{ID: "events_retention_cleanup", RunOnStart: true},
+	)
+}
+
 func main() {
 	checkOnly := flag.Bool("check", false, "check configuration and database connectivity, then exit")
 	flag.Parse()
@@ -218,23 +244,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, checkOnly 
 		},
 		MaxAttempts:          3,
 		RescueStuckJobsAfter: 25 * time.Hour,
-		PeriodicJobs: []*river.PeriodicJob{
-			river.NewPeriodicJob(
-				river.PeriodicInterval(1*time.Hour),
-				func() (river.JobArgs, *river.InsertOpts) {
-					return appqueue.EventsRetentionCleanupArgs{}, &river.InsertOpts{
-						MaxAttempts: 3,
-						Queue:       appqueue.QueueGeneral,
-						UniqueOpts: river.UniqueOpts{
-							ByArgs:   true,
-							ByQueue:  true,
-							ByPeriod: 23 * time.Hour,
-						},
-					}
-				},
-				&river.PeriodicJobOpts{ID: "events_retention_cleanup", RunOnStart: true},
-			),
-		},
+		PeriodicJobs:         []*river.PeriodicJob{newEventsRetentionPeriodicJob()},
 	})
 	if err != nil {
 		return fmt.Errorf("create River client: %w", err)

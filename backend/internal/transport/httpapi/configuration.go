@@ -111,7 +111,7 @@ func (server *Server) UpdateConfiguration(
 }
 
 func configurationUpdate(request UpdateConfigurationRequest) domain.ConfigurationUpdate {
-	return domain.ConfigurationUpdate{
+	update := domain.ConfigurationUpdate{
 		ExpectedVersion: request.ExpectedVersion,
 		Settings: domain.RuntimeSettings{
 			QBittorrent: domain.QBittorrentSettings{
@@ -149,9 +149,6 @@ func configurationUpdate(request UpdateConfigurationRequest) domain.Configuratio
 				FFprobePath:      request.Paths.FfprobePath,
 			},
 			Transcode: transcodeProfileFromRequest(request.Transcode),
-			Events: domain.EventsSettings{
-				RetentionDays: request.Events.RetentionDays,
-			},
 		},
 		Secrets: map[string]domain.SecretUpdate{
 			domain.SecretQBittorrentPassword: secretUpdate(request.QBittorrent.Password),
@@ -160,6 +157,12 @@ func configurationUpdate(request UpdateConfigurationRequest) domain.Configuratio
 			domain.SecretAgentAPIKey:         secretUpdate(request.Agent.ApiKey),
 		},
 	}
+	if request.Events != nil {
+		events := domain.EventsSettings{RetentionDays: request.Events.RetentionDays}
+		update.Settings.Events = events
+		update.Events = &events
+	}
+	return update
 }
 
 func transcodeProfileFromRequest(profile TranscodeProfileConfiguration) domain.TranscodeProfile {
