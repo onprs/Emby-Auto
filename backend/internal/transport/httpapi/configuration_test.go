@@ -307,6 +307,134 @@ func TestConfigurationResponseContainsOnlyMaskedSecretMetadata(t *testing.T) {
 	}
 }
 
+func TestLegacyQBittorrentRateLimitsRemainReadableButCannotBeRewritten(t *testing.T) {
+	userID := uuid.MustParse("10000000-0000-0000-0000-000000000007")
+	authentication := &authenticationStub{authenticated: domain.Session{User: domain.AdminUser{ID: userID, Username: "admin"}}}
+	store := &persistedRuntimeConfigurationStore{configuration: domain.Configuration{
+		Version: 8,
+		Settings: domain.RuntimeSettings{
+			QBittorrent: domain.QBittorrentSettings{
+				URL:                           "http://qb.test",
+				Username:                      "downloader",
+				DownloadRateLimitKibPerSecond: 2097152,
+				UploadRateLimitKibPerSecond:   2147483647,
+			},
+			Emby: domain.EmbySettings{URL: "https://emby.test"},
+			Agent: domain.AgentSettings{
+				Protocol:                  domain.AgentProtocolOpenAIChatCompletions,
+				UseNetworkProxy:           true,
+				RequestTimeoutSeconds:     60,
+				RSSCoordinateMode:         domain.AgentResolutionOff,
+				DownloadFileSelectionMode: domain.AgentResolutionOff,
+				SubtitleVideoMatchMode:    domain.AgentResolutionOff,
+			},
+			Transcode: domain.TranscodeProfile{
+				Name: "h264", VideoCodec: "h264", Encoder: "libx264", Container: "mp4", FileExtension: "mp4",
+				QualityMode: "crf", QualityValue: 20, AudioPolicy: "transcode", AudioCodec: "aac",
+				Preset: "medium", PixelFormat: "yuv420p", ThreadCount: 2, MaxConcurrency: 1,
+			},
+			Events: domain.EventsSettings{RetentionDays: 73},
+		},
+		Secrets: map[string]domain.SecretMetadata{},
+	}}
+	cipher, err := appservice.NewSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("NewSecretCipher() error = %v", err)
+	}
+	handler := NewHandler(NewServer(
+		readinessStub{},
+		WithAuthentication(authentication, false),
+		WithRuntimeConfiguration(appservice.NewConfigurationService(store, cipher)),
+	))
+
+	getRequest := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
+	getRequest.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "valid-token"})
+	getResponse := httptest.NewRecorder()
+	handler.ServeHTTP(getResponse, getRequest)
+
+	if getResponse.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, body = %s", getResponse.Code, getResponse.Body.String())
+	}
+	var responsePayload any
+	if err := json.Unmarshal(getResponse.Body.Bytes(), &responsePayload); err != nil {
+		t.Fatalf("decode GET response for schema validation: %v", err)
+	}
+	document, err := GetSwagger()
+	if err != nil {
+		t.Fatalf("GetSwagger() error = %v", err)
+	}
+	operation := document.Paths.Value("/api/v1/config")
+	if operation == nil || operation.Get == nil {
+		t.Fatal("GET /api/v1/config contract is missing")
+	}
+	responseContract := operation.Get.Responses.Status(http.StatusOK)
+	if responseContract == nil || responseContract.Value == nil {
+		t.Fatal("GET /api/v1/config 200 response contract is missing")
+	}
+	mediaType := responseContract.Value.Content.Get("application/json")
+	if mediaType == nil || mediaType.Schema == nil || mediaType.Schema.Value == nil {
+		t.Fatal("GET /api/v1/config JSON response schema is missing")
+	}
+	if err := mediaType.Schema.Value.VisitJSON(responsePayload); err != nil {
+		t.Fatalf("legacy persisted rate limits violate GET response schema: %v", err)
+	}
+	var decoded Configuration
+	if err := json.Unmarshal(getResponse.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	if decoded.QBittorrent.DownloadRateLimitKibPerSecond != 2097152 || decoded.QBittorrent.UploadRateLimitKibPerSecond != 2147483647 {
+		t.Fatalf("legacy GET rate limits = %d/%d, want 2097152/2147483647 KiB/s", decoded.QBittorrent.DownloadRateLimitKibPerSecond, decoded.QBittorrent.UploadRateLimitKibPerSecond)
+	}
+
+	var updatePayload map[string]any
+	if err := json.Unmarshal(rawConfigurationUpdateBody(t, map[string]any{"retentionDays": 73}), &updatePayload); err != nil {
+		t.Fatalf("decode valid update fixture: %v", err)
+	}
+	if operation.Put == nil || operation.Put.RequestBody == nil || operation.Put.RequestBody.Value == nil {
+		t.Fatal("PUT /api/v1/config request contract is missing")
+	}
+	requestMediaType := operation.Put.RequestBody.Value.Content.Get("application/json")
+	if requestMediaType == nil || requestMediaType.Schema == nil || requestMediaType.Schema.Value == nil {
+		t.Fatal("PUT /api/v1/config JSON request schema is missing")
+	}
+	if err := requestMediaType.Schema.Value.VisitJSON(updatePayload); err != nil {
+		t.Fatalf("valid PUT fixture violates request schema: %v", err)
+	}
+	qbittorrentUpdate, ok := updatePayload["qBittorrent"].(map[string]any)
+	if !ok {
+		t.Fatal("valid update fixture has no qBittorrent object")
+	}
+	qbittorrentUpdate["downloadRateLimitKibPerSecond"] = 2097152
+	if err := requestMediaType.Schema.Value.VisitJSON(updatePayload); err == nil {
+		t.Fatal("PUT request schema accepted 2097152 KiB/s")
+	}
+	encodedUpdate, err := json.Marshal(updatePayload)
+	if err != nil {
+		t.Fatalf("encode oversized update: %v", err)
+	}
+	putRequest := httptest.NewRequest(http.MethodPut, "/api/v1/config", strings.NewReader(string(encodedUpdate)))
+	putRequest.Header.Set("Content-Type", "application/json")
+	putRequest.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "valid-token"})
+	putResponse := httptest.NewRecorder()
+	handler.ServeHTTP(putResponse, putRequest)
+
+	if putResponse.Code != http.StatusBadRequest {
+		t.Fatalf("PUT status = %d, want %d, body = %s", putResponse.Code, http.StatusBadRequest, putResponse.Body.String())
+	}
+	var apiError ApiError
+	if err := json.Unmarshal(putResponse.Body.Bytes(), &apiError); err != nil {
+		t.Fatalf("decode PUT error: %v", err)
+	}
+	if apiError.Code != "invalid_configuration" || apiError.Details["field"] != "qBittorrent.downloadRateLimitKibPerSecond" {
+		t.Fatalf("PUT error = %#v, want invalid qBittorrent download rate limit", apiError)
+	}
+	if store.configuration.Version != 8 || store.saved.ExpectedVersion != 0 ||
+		store.configuration.Settings.QBittorrent.DownloadRateLimitKibPerSecond != 2097152 ||
+		store.configuration.Settings.QBittorrent.UploadRateLimitKibPerSecond != 2147483647 {
+		t.Fatalf("rejected PUT changed persisted configuration: version=%d saved=%#v settings=%#v", store.configuration.Version, store.saved, store.configuration.Settings.QBittorrent)
+	}
+}
+
 func rawConfigurationUpdateBody(t *testing.T, events map[string]any) []byte {
 	t.Helper()
 	root := t.TempDir()

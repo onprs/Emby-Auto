@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -18,9 +19,10 @@ import (
 )
 
 const (
-	maxErrorBodyBytes = 64 << 10
-	ManagedCategory   = "emby_auto"
-	RuntimePausedTag  = "emby_auto_runtime_paused"
+	maxErrorBodyBytes                       = 64 << 10
+	maxTorrentRateLimitBytesPerSecond int64 = math.MaxInt32 - 1 // MaxInt32 在 qBittorrent 中表示不限速。
+	ManagedCategory                         = "emby_auto"
+	RuntimePausedTag                        = "emby_auto_runtime_paused"
 )
 
 var ErrTorrentHashNotConfirmed = errors.New("qBittorrent added torrent hash was not confirmed")
@@ -305,8 +307,9 @@ func (client *Client) SetTorrentRateLimits(ctx context.Context, hash string, dow
 	if normalized == "" {
 		return fmt.Errorf("invalid torrent hash")
 	}
-	if downloadBytesPerSecond < 0 || uploadBytesPerSecond < 0 {
-		return fmt.Errorf("qBittorrent rate limits must be nonnegative")
+	if downloadBytesPerSecond < 0 || downloadBytesPerSecond > maxTorrentRateLimitBytesPerSecond ||
+		uploadBytesPerSecond < 0 || uploadBytesPerSecond > maxTorrentRateLimitBytesPerSecond {
+		return fmt.Errorf("qBittorrent rate limits must be between 0 and %d bytes/s", maxTorrentRateLimitBytesPerSecond)
 	}
 	limits := []struct {
 		endpoint string

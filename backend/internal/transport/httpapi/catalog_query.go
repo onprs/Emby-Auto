@@ -10,6 +10,8 @@ import (
 	"github.com/onprs/emby-auto/backend/internal/service"
 )
 
+const maxQBittorrentConnectivityRateLimitKibPerSecond int64 = 2147483647
+
 func parseDate(value string) (openapi_types.Date, error) {
 	parsed, err := time.Parse("2006-01-02", value)
 	if err != nil {
@@ -110,6 +112,9 @@ func (server *Server) TestConnectivity(ctx context.Context, request TestConnecti
 	}
 	domainRequest := domain.ConnectivityTestRequest{Target: string(request.Body.Target)}
 	if request.Body.QBittorrent != nil {
+		if !validQBittorrentConnectivityRateLimits(*request.Body.QBittorrent) {
+			return TestConnectivity400JSONResponse{BadRequestJSONResponse: badRequestError(ctx, "the qBittorrent connectivity test request is invalid")}, nil
+		}
 		config := &domain.QBittorrentTestConfig{URL: request.Body.QBittorrent.Url, Username: request.Body.QBittorrent.Username}
 		if request.Body.QBittorrent.Password.Action == Set && request.Body.QBittorrent.Password.Value != nil {
 			config.Password = request.Body.QBittorrent.Password.Value
@@ -165,6 +170,18 @@ func (server *Server) TestConnectivity(ctx context.Context, request TestConnecti
 			Code: stringPtr(result.Code), Message: stringPtr(result.Message), CheckedAt: result.CheckedAt,
 		}), nil
 	}
+}
+
+func validQBittorrentConnectivityRateLimits(configuration QBittorrentConnectivityTestConfiguration) bool {
+	for _, value := range []*int64{
+		configuration.DownloadRateLimitKibPerSecond,
+		configuration.UploadRateLimitKibPerSecond,
+	} {
+		if value != nil && (*value < 0 || *value > maxQBittorrentConnectivityRateLimitKibPerSecond) {
+			return false
+		}
+	}
+	return true
 }
 
 func tmdbCatalogResponse(view domain.TMDbSeriesCatalogView) TMDbSeriesCatalog {

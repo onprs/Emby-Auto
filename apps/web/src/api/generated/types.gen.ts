@@ -98,11 +98,11 @@ export type QBittorrentConfiguration = {
     username: string;
     password: SecretStatus;
     /**
-     * Per-torrent download rate limit in KiB/s. Zero disables the limit.
+     * Per-torrent download rate limit in KiB/s. Zero disables the limit. Responses preserve legacy persisted values above the current update limit.
      */
     downloadRateLimitKibPerSecond: number;
     /**
-     * Per-torrent upload rate limit in KiB/s. Zero disables the limit.
+     * Per-torrent upload rate limit in KiB/s. Zero disables the limit. Responses preserve legacy persisted values above the current update limit.
      */
     uploadRateLimitKibPerSecond: number;
 };
@@ -212,6 +212,27 @@ export type QBittorrentConfigurationUpdate = {
     password: SecretUpdate;
     downloadRateLimitKibPerSecond: number;
     uploadRateLimitKibPerSecond: number;
+};
+
+/**
+ * Unsaved credentials used to test qBittorrent login. Rate-limit fields are compatibility-only inputs and are ignored by the connectivity test.
+ */
+export type QBittorrentConnectivityTestConfiguration = {
+    url: string;
+    username: string;
+    password: SecretUpdate;
+    /**
+     * Compatibility-only field accepted from older clients and ignored by the connectivity test.
+     *
+     * @deprecated
+     */
+    downloadRateLimitKibPerSecond?: number;
+    /**
+     * Compatibility-only field accepted from older clients and ignored by the connectivity test.
+     *
+     * @deprecated
+     */
+    uploadRateLimitKibPerSecond?: number;
 };
 
 export type EmbyConfigurationUpdate = {
@@ -1208,7 +1229,7 @@ export type EventPage = {
 
 export type ConnectivityTestRequest = {
     target: 'qbittorrent' | 'tmdb' | 'emby' | 'media_tools' | 'network_proxy' | 'agent';
-    qBittorrent?: QBittorrentConfigurationUpdate;
+    qBittorrent?: QBittorrentConnectivityTestConfiguration;
     emby?: EmbyConfigurationUpdate;
     tmdb?: TmDbConfigurationUpdate;
     networkProxy?: NetworkProxyConfiguration;

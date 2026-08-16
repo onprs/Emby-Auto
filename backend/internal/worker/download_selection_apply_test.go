@@ -52,6 +52,9 @@ func TestDownloadSelectionApplyHandlerAppliesQBittorrentStateBeforeDatabaseTrans
 	if len(client.priorityCalls) != 2 || !reflect.DeepEqual(client.priorityCalls[0], priorityCall{indexes: []int{0, 1, 2}, priority: 0}) || !reflect.DeepEqual(client.priorityCalls[1], priorityCall{indexes: []int{0, 1}, priority: 1}) {
 		t.Fatalf("priority calls = %#v", client.priorityCalls)
 	}
+	if len(client.rateLimitCalls) != 1 || client.rateLimitCalls[0].downloadBytesPerSecond != 1048576 || client.rateLimitCalls[0].uploadBytesPerSecond != 262144 {
+		t.Fatalf("rate limit calls = %#v, want 1048576/262144 bytes/s", client.rateLimitCalls)
+	}
 	if store.completedID != downloadID || store.operationID != operationID {
 		t.Fatalf("completion = %s/%s", store.completedID, store.operationID)
 	}

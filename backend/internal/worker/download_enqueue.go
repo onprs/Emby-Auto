@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 	"time"
 
@@ -410,8 +409,8 @@ func stopDownloadTimer(timer *time.Timer) {
 }
 
 func rateLimitBytesPerSecond(kibPerSecond int64) (int64, error) {
-	if kibPerSecond < 0 || kibPerSecond > math.MaxInt64/1024 {
-		return 0, fmt.Errorf("rate limit must be a nonnegative KiB/s value")
+	if kibPerSecond < 0 || kibPerSecond > domain.MaxQBittorrentRateLimitKibPerSecond {
+		return 0, fmt.Errorf("rate limit must be between 0 and %d KiB/s", domain.MaxQBittorrentRateLimitKibPerSecond)
 	}
 	return kibPerSecond * 1024, nil
 }

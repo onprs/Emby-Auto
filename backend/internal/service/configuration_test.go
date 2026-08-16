@@ -194,6 +194,31 @@ func TestConfigurationUpdatePreservesOmittedEventsAndAcceptsExplicitZero(t *test
 	}
 }
 
+func TestConfigurationUpdateAcceptsQBittorrentRateLimitBoundaries(t *testing.T) {
+	cipher, _ := NewSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
+	for _, test := range []struct {
+		name  string
+		limit int64
+	}{
+		{name: "unlimited", limit: 0},
+		{name: "largest representable KiB value", limit: 2097151},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &configurationStoreStub{}
+			update := validConfigurationUpdate(t)
+			update.Settings.QBittorrent.DownloadRateLimitKibPerSecond = test.limit
+			update.Settings.QBittorrent.UploadRateLimitKibPerSecond = test.limit
+
+			if _, err := NewConfigurationService(store, cipher).Update(context.Background(), update, uuid.New()); err != nil {
+				t.Fatalf("Update() error = %v", err)
+			}
+			if got := store.saved.Settings.QBittorrent; got.DownloadRateLimitKibPerSecond != test.limit || got.UploadRateLimitKibPerSecond != test.limit {
+				t.Fatalf("saved qBittorrent rate limits = %#v, want %d/%d KiB/s", got, test.limit, test.limit)
+			}
+		})
+	}
+}
+
 func TestConfigurationUpdateReportsVersionConflict(t *testing.T) {
 	cipher, _ := NewSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
 	store := &configurationStoreStub{
@@ -227,7 +252,7 @@ func TestConfigurationUpdateRejectsUnsafePathsURLsAndSecretActions(t *testing.T)
 			update.Settings.QBittorrent.DownloadRateLimitKibPerSecond = -1
 		}, field: "qBittorrent.downloadRateLimitKibPerSecond"},
 		{name: "oversized qB upload limit", mutate: func(update *domain.ConfigurationUpdate) {
-			update.Settings.QBittorrent.UploadRateLimitKibPerSecond = 2147483648
+			update.Settings.QBittorrent.UploadRateLimitKibPerSecond = 2097152
 		}, field: "qBittorrent.uploadRateLimitKibPerSecond"},
 		{name: "URL embeds credentials", mutate: func(update *domain.ConfigurationUpdate) {
 			update.Settings.Emby.URL = "https://admin:secret@example.test"

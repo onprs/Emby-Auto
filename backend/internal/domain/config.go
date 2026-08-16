@@ -2,18 +2,20 @@ package domain
 
 import (
 	"errors"
+	"math"
 	"strings"
 
 	"github.com/google/uuid"
 )
 
 const (
-	RuntimeSettingsName              = "runtime"
-	DefaultEventsRetentionDays int32 = 30
-	SecretQBittorrentPassword        = "qbittorrent.password"
-	SecretEmbyAPIKey                 = "emby.api_key"
-	SecretTMDbAPIToken               = "tmdb.api_token"
-	SecretAgentAPIKey                = "agent.api_key"
+	RuntimeSettingsName                       = "runtime"
+	DefaultEventsRetentionDays          int32 = 30
+	MaxQBittorrentRateLimitKibPerSecond int64 = math.MaxInt32 / 1024
+	SecretQBittorrentPassword                 = "qbittorrent.password"
+	SecretEmbyAPIKey                          = "emby.api_key"
+	SecretTMDbAPIToken                        = "tmdb.api_token"
+	SecretAgentAPIKey                         = "agent.api_key"
 
 	AgentProtocolOpenAIChatCompletions = "openai_chat_completions"
 	AgentResolutionOff                 = "off"

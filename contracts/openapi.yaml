@@ -2304,13 +2304,13 @@ components:
           format: int64
           minimum: 0
           maximum: 2147483647
-          description: Per-torrent download rate limit in KiB/s. Zero disables the limit.
+          description: Per-torrent download rate limit in KiB/s. Zero disables the limit. Responses preserve legacy persisted values above the current update limit.
         uploadRateLimitKibPerSecond:
           type: integer
           format: int64
           minimum: 0
           maximum: 2147483647
-          description: Per-torrent upload rate limit in KiB/s. Zero disables the limit.
+          description: Per-torrent upload rate limit in KiB/s. Zero disables the limit. Responses preserve legacy persisted values above the current update limit.
     EmbyConfiguration:
       type: object
       additionalProperties: false
@@ -2589,12 +2589,40 @@ components:
           type: integer
           format: int64
           minimum: 0
+          maximum: 2097151
+        uploadRateLimitKibPerSecond:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 2097151
+    QBittorrentConnectivityTestConfiguration:
+      type: object
+      additionalProperties: false
+      description: Unsaved credentials used to test qBittorrent login. Rate-limit fields are compatibility-only inputs and are ignored by the connectivity test.
+      required: [url, username, password]
+      properties:
+        url:
+          type: string
+        username:
+          type: string
+        password:
+          $ref: "#/components/schemas/SecretUpdate"
+        downloadRateLimitKibPerSecond:
+          type: integer
+          format: int64
+          minimum: 0
           maximum: 2147483647
+          deprecated: true
+          x-deprecated-reason: Retained only for requests from older clients; ignored by connectivity tests.
+          description: Compatibility-only field accepted from older clients and ignored by the connectivity test.
         uploadRateLimitKibPerSecond:
           type: integer
           format: int64
           minimum: 0
           maximum: 2147483647
+          deprecated: true
+          x-deprecated-reason: Retained only for requests from older clients; ignored by connectivity tests.
+          description: Compatibility-only field accepted from older clients and ignored by the connectivity test.
     EmbyConfigurationUpdate:
       type: object
       additionalProperties: false
@@ -4884,7 +4912,7 @@ components:
           type: string
           enum: [qbittorrent, tmdb, emby, media_tools, network_proxy, agent]
         qBittorrent:
-          $ref: "#/components/schemas/QBittorrentConfigurationUpdate"
+          $ref: "#/components/schemas/QBittorrentConnectivityTestConfiguration"
         emby:
           $ref: "#/components/schemas/EmbyConfigurationUpdate"
         tmdb:

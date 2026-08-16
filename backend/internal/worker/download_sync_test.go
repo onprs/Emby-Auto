@@ -80,6 +80,28 @@ func TestDownloadSyncHandlerRecordsProgressAndSnoozesWithoutRetry(t *testing.T) 
 	}
 }
 
+func TestDownloadSyncHandlerRejectsUnrepresentableRateLimits(t *testing.T) {
+	downloadID := uuid.MustParse("40000000-0000-0000-0000-000000000009")
+	store := &downloadSyncStoreStub{command: domain.DownloadSyncCommand{
+		DownloadID: downloadID, Status: domain.DownloadDownloading, TorrentHash: workerTorrentHash,
+	}}
+	client := &torrentClientStub{}
+	configuration := configuredDownloadTestStub()
+	configuration.configuration.Settings.QBittorrent.DownloadRateLimitKibPerSecond = 2097152
+	handler := NewDownloadSyncHandler(configuration, store, func(qbittorrent.ClientOptions) (TorrentClient, error) {
+		return client, nil
+	}, time.Minute)
+
+	err := handler.Handle(context.Background(), domain.Operation{ResourceType: "download", ResourceID: downloadID})
+	var failure *Failure
+	if !errors.As(err, &failure) || failure.Code != "qbittorrent_configuration_invalid" || failure.Retryable {
+		t.Fatalf("Handle() error = %#v, want permanent qbittorrent_configuration_invalid", err)
+	}
+	if len(client.calls) != 1 || client.calls[0] != "login" || len(client.rateLimitCalls) != 0 || store.progressCalls != 0 {
+		t.Fatalf("invalid configuration side effects = calls %v rates %v progress %d", client.calls, client.rateLimitCalls, store.progressCalls)
+	}
+}
+
 func TestDownloadSyncHandlerRetriesWhenUpdatedRateLimitsAreRejected(t *testing.T) {
 	downloadID := uuid.MustParse("40000000-0000-0000-0000-000000000008")
 	store := &downloadSyncStoreStub{command: domain.DownloadSyncCommand{

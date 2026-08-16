@@ -168,6 +168,35 @@ func (stub *torrentClientStub) DeleteTorrent(_ context.Context, hash string, _ b
 	return stub.deleteErr
 }
 
+func TestRateLimitBytesPerSecondEnforcesQBittorrentRange(t *testing.T) {
+	tests := []struct {
+		name    string
+		limit   int64
+		want    int64
+		wantErr bool
+	}{
+		{name: "unlimited", limit: 0, want: 0},
+		{name: "largest representable KiB value", limit: 2097151, want: 2147482624},
+		{name: "above qBittorrent range", limit: 2097152, wantErr: true},
+		{name: "negative", limit: -1, wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := rateLimitBytesPerSecond(test.limit)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("rateLimitBytesPerSecond(%d) accepted an invalid limit", test.limit)
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("rateLimitBytesPerSecond(%d) = %d, %v; want %d, nil", test.limit, got, err, test.want)
+			}
+		})
+	}
+}
+
 func TestDownloadEnqueueHandlerConfirmsHashSelectsFilesAndPersistsCompletion(t *testing.T) {
 	downloadID := uuid.MustParse("30000000-0000-0000-0000-000000000001")
 	operationID := uuid.MustParse("30000000-0000-0000-0000-000000000002")
