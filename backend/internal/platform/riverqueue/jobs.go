@@ -33,6 +33,7 @@ const (
 	KindRSSSubscriptionDelete   = "rss.subscription.delete"
 	KindAgentResolve            = "agent.resolve"
 	KindDownloadSelectionApply  = "download.selection.apply"
+	KindEventsRetentionCleanup  = "events.retention.cleanup"
 )
 
 type OperationArgs struct {
@@ -132,6 +133,10 @@ func (TaskCancelArgs) Kind() string { return KindTaskCancel }
 type DownloadCancelArgs struct{ OperationArgs }
 
 func (DownloadCancelArgs) Kind() string { return KindDownloadCancel }
+
+type EventsRetentionCleanupArgs struct{}
+
+func (EventsRetentionCleanupArgs) Kind() string { return KindEventsRetentionCleanup }
 
 func NewJobArgs(kind string, operationID uuid.UUID, timeout time.Duration) (river.JobArgs, error) {
 	if operationID == uuid.Nil {

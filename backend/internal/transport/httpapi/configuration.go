@@ -2,12 +2,43 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/onprs/emby-auto/backend/internal/domain"
 	"github.com/onprs/emby-auto/backend/internal/service"
 )
+
+func (request *UpdateConfigurationRequest) UnmarshalJSON(data []byte) error {
+	type generatedRequest UpdateConfigurationRequest
+	var decoded generatedRequest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+
+	// oapi-codegen 将 required 数值字段生成为值类型，需要单独保留缺失与显式 0 的区别。
+	var presence struct {
+		Events json.RawMessage `json:"events"`
+	}
+	if err := json.Unmarshal(data, &presence); err != nil {
+		return err
+	}
+	if presence.Events != nil {
+		var events struct {
+			RetentionDays *int32 `json:"retentionDays"`
+		}
+		if err := json.Unmarshal(presence.Events, &events); err != nil {
+			return err
+		}
+		if events.RetentionDays == nil {
+			return errors.New("events.retentionDays is required")
+		}
+	}
+
+	*request = UpdateConfigurationRequest(decoded)
+	return nil
+}
 
 func (server *Server) GetConfiguration(
 	ctx context.Context,
@@ -111,7 +142,7 @@ func (server *Server) UpdateConfiguration(
 }
 
 func configurationUpdate(request UpdateConfigurationRequest) domain.ConfigurationUpdate {
-	return domain.ConfigurationUpdate{
+	update := domain.ConfigurationUpdate{
 		ExpectedVersion: request.ExpectedVersion,
 		Settings: domain.RuntimeSettings{
 			QBittorrent: domain.QBittorrentSettings{
@@ -157,6 +188,12 @@ func configurationUpdate(request UpdateConfigurationRequest) domain.Configuratio
 			domain.SecretAgentAPIKey:         secretUpdate(request.Agent.ApiKey),
 		},
 	}
+	if request.Events != nil {
+		events := domain.EventsSettings{RetentionDays: request.Events.RetentionDays}
+		update.Settings.Events = events
+		update.Events = &events
+	}
+	return update
 }
 
 func transcodeProfileFromRequest(profile TranscodeProfileConfiguration) domain.TranscodeProfile {
@@ -235,6 +272,9 @@ func configurationResponse(configuration domain.Configuration) Configuration {
 			FfprobePath:      configuration.Settings.Paths.FFprobePath,
 		},
 		Transcode: transcodeProfileResponse(configuration.Settings.Transcode),
+		Events: EventsConfiguration{
+			RetentionDays: configuration.Settings.Events.RetentionDays,
+		},
 	}
 }
 

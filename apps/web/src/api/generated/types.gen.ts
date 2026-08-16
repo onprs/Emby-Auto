@@ -83,6 +83,14 @@ export type Configuration = {
     agent: AgentConfiguration;
     paths: PathConfiguration;
     transcode: TranscodeProfileConfiguration;
+    events: EventsConfiguration;
+};
+
+export type EventsConfiguration = {
+    /**
+     * 明确标记为可由业务表恢复事件的保留天数。后台定期任务删除超过保留期的 allowlist 事件；业务导入历史等 provenance 及未知事件类型始终保留；0 表示禁用定期清理。
+     */
+    retentionDays: number;
 };
 
 export type QBittorrentConfiguration = {
@@ -195,6 +203,7 @@ export type UpdateConfigurationRequest = {
     agent: AgentConfigurationUpdate;
     paths: PathConfiguration;
     transcode: TranscodeProfileConfiguration;
+    events?: EventsConfiguration;
 };
 
 export type QBittorrentConfigurationUpdate = {

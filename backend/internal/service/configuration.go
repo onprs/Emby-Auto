@@ -48,6 +48,9 @@ func (configurationService *ConfigurationService) PrepareInitial(
 	updatedBy uuid.UUID,
 ) (domain.SaveConfiguration, error) {
 	settings.Agent = settings.Agent.WithDefaults()
+	if settings.Events.RetentionDays == 0 {
+		settings.Events.RetentionDays = domain.DefaultEventsRetentionDays
+	}
 	if err := validateInitialRuntimeSettings(settings); err != nil {
 		return domain.SaveConfiguration{}, err
 	}
@@ -88,6 +91,33 @@ func (configurationService *ConfigurationService) Update(
 	if update.ExpectedVersion < 0 {
 		return domain.Configuration{}, invalidConfiguration("expectedVersion", "must be nonnegative")
 	}
+	var current *domain.Configuration
+	loadCurrent := func(purpose string) (domain.Configuration, error) {
+		if current != nil {
+			return *current, nil
+		}
+		loaded, loadErr := configurationService.store.Load(ctx)
+		if loadErr != nil {
+			return domain.Configuration{}, NewError(
+				"service_unavailable",
+				"configuration storage is unavailable",
+				fmt.Errorf("load configuration for %s: %w", purpose, loadErr),
+				map[string]any{"dependency": "postgresql"},
+			)
+		}
+		current = &loaded
+		return loaded, nil
+	}
+
+	if update.Events == nil {
+		loaded, loadErr := loadCurrent("event retention compatibility")
+		if loadErr != nil {
+			return domain.Configuration{}, loadErr
+		}
+		update.Settings.Events = loaded.Settings.Events
+	} else {
+		update.Settings.Events = *update.Events
+	}
 	update.Settings.Agent = update.Settings.Agent.WithDefaults()
 	if err := validateRuntimeSettings(update.Settings); err != nil {
 		return domain.Configuration{}, err
@@ -118,16 +148,11 @@ func (configurationService *ConfigurationService) Update(
 		case domain.SecretSet:
 			// prepareSecret already requires a non-empty value.
 		case domain.SecretKeep:
-			current, loadErr := configurationService.store.Load(ctx)
+			loaded, loadErr := loadCurrent("Agent secret validation")
 			if loadErr != nil {
-				return domain.Configuration{}, NewError(
-					"service_unavailable",
-					"configuration storage is unavailable",
-					fmt.Errorf("load configuration for Agent secret validation: %w", loadErr),
-					map[string]any{"dependency": "postgresql"},
-				)
+				return domain.Configuration{}, loadErr
 			}
-			if !current.Secrets[domain.SecretAgentAPIKey].Configured {
+			if !loaded.Secrets[domain.SecretAgentAPIKey].Configured {
 				return domain.Configuration{}, invalidConfiguration("agent.apiKey", "must be configured when Agent assistance is enabled")
 			}
 		case domain.SecretClear:
@@ -281,6 +306,10 @@ func validateRuntimeSettings(settings domain.RuntimeSettings) error {
 
 	if err := validateAgentSettings(settings.Agent); err != nil {
 		return err
+	}
+
+	if settings.Events.RetentionDays < 0 || settings.Events.RetentionDays > 36500 {
+		return invalidConfiguration("events.retentionDays", "must be between 0 and 36500 days")
 	}
 
 	for field, value := range map[string]string{

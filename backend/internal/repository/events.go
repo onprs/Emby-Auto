@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -16,6 +17,7 @@ type eventQueries interface {
 	GetEvent(context.Context, pgtype.UUID) (db.Event, error)
 	ListEvents(context.Context, int32) ([]db.Event, error)
 	ListEventsAfter(context.Context, db.ListEventsAfterParams) ([]db.Event, error)
+	DeleteExpiredEvents(context.Context, db.DeleteExpiredEventsParams) (int64, error)
 }
 
 type Events struct {
@@ -65,6 +67,22 @@ func (repository *Events) List(
 		})
 	}
 	return events, nil
+}
+
+// DeleteExpired 分批删除早于 before 且在 fail-closed allowlist 中的事件，
+// provenance 与未知事件由 SQL 默认保留；每批最多删除 maxRows 行。
+func (repository *Events) DeleteExpired(ctx context.Context, before time.Time, maxRows int32) (int64, error) {
+	if maxRows <= 0 {
+		return 0, fmt.Errorf("event deletion batch size must be positive")
+	}
+	deleted, err := repository.queries.DeleteExpiredEvents(ctx, db.DeleteExpiredEventsParams{
+		Before:  pgtype.Timestamptz{Time: before, Valid: true},
+		MaxRows: maxRows,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("delete expired events: %w", err)
+	}
+	return deleted, nil
 }
 
 func valueOrEmpty(value *string) string {

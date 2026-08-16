@@ -8,11 +8,12 @@ import (
 )
 
 const (
-	RuntimeSettingsName       = "runtime"
-	SecretQBittorrentPassword = "qbittorrent.password"
-	SecretEmbyAPIKey          = "emby.api_key"
-	SecretTMDbAPIToken        = "tmdb.api_token"
-	SecretAgentAPIKey         = "agent.api_key"
+	RuntimeSettingsName              = "runtime"
+	DefaultEventsRetentionDays int32 = 30
+	SecretQBittorrentPassword        = "qbittorrent.password"
+	SecretEmbyAPIKey                 = "emby.api_key"
+	SecretTMDbAPIToken               = "tmdb.api_token"
+	SecretAgentAPIKey                = "agent.api_key"
 
 	AgentProtocolOpenAIChatCompletions = "openai_chat_completions"
 	AgentResolutionOff                 = "off"
@@ -29,6 +30,17 @@ type RuntimeSettings struct {
 	Agent        AgentSettings        `json:"agent"`
 	Paths        PathSettings         `json:"paths"`
 	Transcode    TranscodeProfile     `json:"transcode"`
+	Events       EventsSettings       `json:"events"`
+}
+
+// EventsSettings 控制 allowlist 中可由业务表恢复事件的保留策略。
+// RetentionDays 为 0 时禁用定期清理；provenance 与未知事件始终保留。
+type EventsSettings struct {
+	RetentionDays int32 `json:"retentionDays"`
+}
+
+func DefaultEventsSettings() EventsSettings {
+	return EventsSettings{RetentionDays: DefaultEventsRetentionDays}
 }
 
 type QBittorrentSettings struct {
@@ -148,6 +160,7 @@ type SecretUpdate struct {
 type ConfigurationUpdate struct {
 	ExpectedVersion int32
 	Settings        RuntimeSettings
+	Events          *EventsSettings
 	Secrets         map[string]SecretUpdate
 }
 

@@ -16,6 +16,7 @@ const configuration = {
     qualityMode: 'crf', qualityValue: 20, audioPolicy: 'copy', preset: 'medium', pixelFormat: 'yuv420p',
     threadCount: 0, maxConcurrency: 1,
   },
+  events: { retentionDays: 30 },
 };
 
 function json(route: Route, body: unknown, status = 200) {

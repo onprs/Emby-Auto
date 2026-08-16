@@ -86,6 +86,9 @@ type Querier interface {
 	DeleteArtifactSetsForAcquisition(ctx context.Context, acquisitionID pgtype.UUID) (int64, error)
 	DeleteEmptyRSSAdjudicationBatch(ctx context.Context, batchID pgtype.UUID) (int64, error)
 	DeleteEpisodeTasksForAcquisition(ctx context.Context, acquisitionID pgtype.UUID) (int64, error)
+	// event_is_discardable 是 fail-closed allowlist，也是 partial index 的谓词；
+	// 未知、新增和 read-model provenance topic 默认保留。
+	DeleteExpiredEvents(ctx context.Context, arg DeleteExpiredEventsParams) (int64, error)
 	DeleteExpiredRSSRealtimeTargetChecks(ctx context.Context) error
 	DeleteMediaArtifactsForAcquisition(ctx context.Context, acquisitionID pgtype.UUID) (int64, error)
 	DeleteSnoozedOperationAttempt(ctx context.Context, arg DeleteSnoozedOperationAttemptParams) (int64, error)

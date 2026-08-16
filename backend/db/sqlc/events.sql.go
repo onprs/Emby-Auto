@@ -67,6 +67,35 @@ func (q *Queries) AppendEvent(ctx context.Context, arg AppendEventParams) (Event
 	return i, err
 }
 
+const deleteExpiredEvents = `-- name: DeleteExpiredEvents :execrows
+WITH expired AS (
+    SELECT events.id
+    FROM events
+    WHERE events.occurred_at < $1
+      AND event_is_discardable(events.topic)
+    ORDER BY events.occurred_at, events.event_sequence
+    LIMIT $2
+)
+DELETE FROM events
+USING expired
+WHERE events.id = expired.id
+`
+
+type DeleteExpiredEventsParams struct {
+	Before  pgtype.Timestamptz `db:"before" json:"before"`
+	MaxRows int32              `db:"max_rows" json:"max_rows"`
+}
+
+// event_is_discardable 是 fail-closed allowlist，也是 partial index 的谓词；
+// 未知、新增和 read-model provenance topic 默认保留。
+func (q *Queries) DeleteExpiredEvents(ctx context.Context, arg DeleteExpiredEventsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredEvents, arg.Before, arg.MaxRows)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getEvent = `-- name: GetEvent :one
 SELECT id, event_sequence, topic, resource_type, resource_id, operation_id, actor_user_id, data, occurred_at
 FROM events

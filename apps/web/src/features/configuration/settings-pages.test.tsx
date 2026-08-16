@@ -68,6 +68,7 @@ const baseConfiguration: Configuration = {
     threadCount: 0,
     maxConcurrency: 2,
   },
+  events: { retentionDays: 30 },
 };
 
 function mockConfig() {
@@ -233,6 +234,7 @@ describe("SettingsServicesPage", () => {
     expect((body as unknown as { agent: { apiKey: { action: string } } }).agent.apiKey.action).toBe("keep");
     expect(body.paths.animeLibraryRoot).toBe("/data/library/anime");
     expect(body.paths.movieLibraryRoot).toBe("/data/library/movies");
+    expect((body as unknown as { events: { retentionDays: number } }).events.retentionDays).toBe(30);
   });
 
   it("saves modified secret values as set", async () => {
@@ -729,5 +731,30 @@ describe("SettingsTranscodePage", () => {
     expect(within(fields).getByLabelText("音频编码")).not.toHaveTextContent(
       "aac",
     );
+  });
+
+  it("saves modified event retention days", async () => {
+    mockConfig();
+    let captured: Record<string, unknown> | null = null;
+    server.use(
+      http.put("*/api/v1/config", async ({ request }) => {
+        captured = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ ...baseConfiguration, version: 4 });
+      }),
+    );
+
+    renderWithProviders(<SettingsServicesPage />);
+    const retention = await screen.findByLabelText("保留天数");
+    expect(retention).toHaveValue(30);
+
+    await userEvent.clear(retention);
+    await userEvent.type(retention, "90");
+    await userEvent.click(
+      screen.getByRole("button", { name: "保存外部服务配置" }),
+    );
+
+    await waitFor(() => expect(captured).not.toBeNull());
+    const body = captured as unknown as { events: { retentionDays: number } };
+    expect(body.events.retentionDays).toBe(90);
   });
 });

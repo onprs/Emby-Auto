@@ -103,6 +103,7 @@ func TestConfigurationUpdateEncryptsSetClearsAndKeepsSecrets(t *testing.T) {
 
 	configuration, err := service.Update(context.Background(), domain.ConfigurationUpdate{
 		ExpectedVersion: 3,
+		Events:          &domain.EventsSettings{RetentionDays: 30},
 		Settings: domain.RuntimeSettings{
 			QBittorrent: domain.QBittorrentSettings{
 				URL: "http://127.0.0.1:8081", Username: "downloader",
@@ -160,12 +161,50 @@ func TestConfigurationUpdateEncryptsSetClearsAndKeepsSecrets(t *testing.T) {
 	}
 }
 
+func TestConfigurationUpdatePreservesOmittedEventsAndAcceptsExplicitZero(t *testing.T) {
+	cipher, err := NewSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("NewSecretCipher() error = %v", err)
+	}
+
+	for _, test := range []struct {
+		name       string
+		events     *domain.EventsSettings
+		wantStored int32
+	}{
+		{name: "omitted preserves current value", events: nil, wantStored: 73},
+		{name: "explicit zero disables cleanup", events: &domain.EventsSettings{RetentionDays: 0}, wantStored: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &configurationStoreStub{configuration: domain.Configuration{
+				Version:  1,
+				Settings: domain.RuntimeSettings{Events: domain.EventsSettings{RetentionDays: 73}},
+			}}
+			update := validConfigurationUpdate(t)
+			update.Events = test.events
+			update.Settings.Events = domain.EventsSettings{}
+
+			if _, err := NewConfigurationService(store, cipher).Update(context.Background(), update, uuid.New()); err != nil {
+				t.Fatalf("Update() error = %v", err)
+			}
+			if got := store.saved.Settings.Events.RetentionDays; got != test.wantStored {
+				t.Fatalf("saved retention days = %d, want %d", got, test.wantStored)
+			}
+		})
+	}
+}
+
 func TestConfigurationUpdateReportsVersionConflict(t *testing.T) {
 	cipher, _ := NewSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
-	store := &configurationStoreStub{saveErr: domain.ErrVersionConflict}
+	store := &configurationStoreStub{
+		configuration: domain.Configuration{Settings: domain.RuntimeSettings{Events: domain.EventsSettings{RetentionDays: 73}}},
+		saveErr:       domain.ErrVersionConflict,
+	}
 	service := NewConfigurationService(store, cipher)
+	update := validConfigurationUpdate(t)
+	update.Events = nil
 
-	_, err := service.Update(context.Background(), validConfigurationUpdate(t), uuid.New())
+	_, err := service.Update(context.Background(), update, uuid.New())
 	if !errors.Is(err, ErrStateConflict) {
 		t.Fatalf("Update() error = %v, want ErrStateConflict", err)
 	}
@@ -211,6 +250,12 @@ func TestConfigurationUpdateRejectsUnsafePathsURLsAndSecretActions(t *testing.T)
 			update.Settings.Paths.DownloadRoot = filepath.Dir(update.Settings.Paths.AnimeLibraryRoot)
 		}, field: "paths.downloadRoot"},
 		{name: "unsafe transcode preset", mutate: func(update *domain.ConfigurationUpdate) { update.Settings.Transcode.Preset = "-filter_complex" }, field: "transcode.preset"},
+		{name: "negative event retention days", mutate: func(update *domain.ConfigurationUpdate) {
+			update.Events = &domain.EventsSettings{RetentionDays: -1}
+		}, field: "events.retentionDays"},
+		{name: "oversized event retention days", mutate: func(update *domain.ConfigurationUpdate) {
+			update.Events = &domain.EventsSettings{RetentionDays: 36501}
+		}, field: "events.retentionDays"},
 		{name: "set without value", mutate: func(update *domain.ConfigurationUpdate) {
 			update.Secrets[domain.SecretEmbyAPIKey] = domain.SecretUpdate{Action: domain.SecretSet}
 		}, field: domain.SecretEmbyAPIKey},
@@ -316,6 +361,7 @@ func validConfigurationUpdate(t *testing.T) domain.ConfigurationUpdate {
 	root := t.TempDir()
 	return domain.ConfigurationUpdate{
 		ExpectedVersion: 1,
+		Events:          &domain.EventsSettings{RetentionDays: 30},
 		Settings: domain.RuntimeSettings{
 			Paths: domain.PathSettings{
 				DownloadRoot:     filepath.Join(root, "downloads"),

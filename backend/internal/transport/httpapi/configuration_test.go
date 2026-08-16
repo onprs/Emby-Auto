@@ -6,11 +6,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/onprs/emby-auto/backend/internal/domain"
+	appservice "github.com/onprs/emby-auto/backend/internal/service"
 )
 
 type runtimeConfigurationStub struct {
@@ -39,6 +41,29 @@ func (stub *runtimeConfigurationStub) ResolveSecret(_ context.Context, name stri
 		return "", err
 	}
 	return stub.secrets[name], nil
+}
+
+type persistedRuntimeConfigurationStore struct {
+	configuration domain.Configuration
+	saved         domain.SaveConfiguration
+}
+
+func (store *persistedRuntimeConfigurationStore) Load(context.Context) (domain.Configuration, error) {
+	return store.configuration, nil
+}
+
+func (store *persistedRuntimeConfigurationStore) Save(_ context.Context, save domain.SaveConfiguration) (domain.Configuration, error) {
+	if save.ExpectedVersion != store.configuration.Version {
+		return domain.Configuration{}, domain.ErrVersionConflict
+	}
+	store.saved = save
+	store.configuration.Version++
+	store.configuration.Settings = save.Settings
+	return store.configuration, nil
+}
+
+func (store *persistedRuntimeConfigurationStore) GetSecret(context.Context, string) (domain.EncryptedSecret, error) {
+	return domain.EncryptedSecret{}, domain.ErrNotFound
 }
 
 func requireSecretRevealNoStore(t *testing.T, response *httptest.ResponseRecorder) {
@@ -225,6 +250,7 @@ func TestConfigurationResponseContainsOnlyMaskedSecretMetadata(t *testing.T) {
 				QualityMode: "crf", QualityValue: 20, AudioPolicy: "transcode", AudioCodec: "aac",
 				Preset: "medium", PixelFormat: "yuv420p", ThreadCount: 2, MaxConcurrency: 1,
 			},
+			Events: domain.EventsSettings{RetentionDays: 30},
 		},
 		Secrets: map[string]domain.SecretMetadata{
 			domain.SecretQBittorrentPassword: {Configured: true, MaskedHint: "********5678"},
@@ -276,6 +302,114 @@ func TestConfigurationResponseContainsOnlyMaskedSecretMetadata(t *testing.T) {
 	if decoded.Paths.AnimeLibraryRoot != `C:\legacy\anime` || decoded.Paths.MovieLibraryRoot != "" {
 		t.Fatalf("library roots = %#v, want legacy anime fallback and empty movie root", decoded.Paths)
 	}
+	if decoded.Events.RetentionDays != 30 {
+		t.Fatalf("event retention days = %d, want 30", decoded.Events.RetentionDays)
+	}
+}
+
+func rawConfigurationUpdateBody(t *testing.T, events map[string]any) []byte {
+	t.Helper()
+	root := t.TempDir()
+	body := map[string]any{
+		"expectedVersion": int32(8),
+		"qBittorrent": map[string]any{
+			"url": "http://qb.test", "username": "downloader", "password": map[string]any{"action": "keep"},
+			"downloadRateLimitKibPerSecond": 4096, "uploadRateLimitKibPerSecond": 1024,
+		},
+		"emby":         map[string]any{"url": "https://emby.test", "apiKey": map[string]any{"action": "keep"}},
+		"tmdb":         map[string]any{"apiToken": map[string]any{"action": "keep"}},
+		"networkProxy": map[string]any{"enabled": false, "url": ""},
+		"agent": map[string]any{
+			"enabled": false, "protocol": "openai_chat_completions", "baseUrl": "", "model": "",
+			"apiKey": map[string]any{"action": "keep"}, "useNetworkProxy": true, "requestTimeoutSeconds": 60,
+			"rssCoordinateMode": "off", "downloadFileSelectionMode": "off", "catalogMatchEnabled": false,
+			"episodeMappingEnabled": false, "allowAutomaticEpisodeMapping": false, "subtitleVideoMatchMode": "off",
+		},
+		"paths": map[string]any{
+			"downloadRoot": filepath.Join(root, "downloads"), "workRoot": filepath.Join(root, "work"),
+			"stagingRoot": filepath.Join(root, "staging"), "animeLibraryRoot": filepath.Join(root, "anime"),
+			"movieLibraryRoot": filepath.Join(root, "movies"), "ffmpegPath": "ffmpeg", "ffprobePath": "ffprobe",
+		},
+		"transcode": map[string]any{
+			"name": "h264", "videoCodec": "h264", "encoder": "libx264", "container": "mp4", "fileExtension": "mp4",
+			"qualityMode": "crf", "qualityValue": 20, "audioPolicy": "transcode", "audioCodec": "aac",
+			"preset": "medium", "pixelFormat": "yuv420p", "threadCount": 2, "maxConcurrency": 1,
+		},
+	}
+	if events != nil {
+		body["events"] = events
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("encode configuration update body: %v", err)
+	}
+	return encoded
+}
+
+func TestConfigurationUpdateRawHTTPEnforcesEventRetentionPresenceAndBounds(t *testing.T) {
+	userID := uuid.MustParse("10000000-0000-0000-0000-000000000006")
+	authentication := &authenticationStub{authenticated: domain.Session{User: domain.AdminUser{ID: userID, Username: "admin"}}}
+
+	for _, test := range []struct {
+		name       string
+		events     map[string]any
+		wantStatus int
+		wantDays   int32
+	}{
+		{name: "legacy body omits events", wantStatus: http.StatusOK, wantDays: 73},
+		{name: "events object omits required retention days", events: map[string]any{}, wantStatus: http.StatusBadRequest, wantDays: 73},
+		{name: "explicit zero disables cleanup", events: map[string]any{"retentionDays": 0}, wantStatus: http.StatusOK, wantDays: 0},
+		{name: "negative retention is rejected", events: map[string]any{"retentionDays": -1}, wantStatus: http.StatusBadRequest, wantDays: 73},
+		{name: "retention above maximum is rejected", events: map[string]any{"retentionDays": 36501}, wantStatus: http.StatusBadRequest, wantDays: 73},
+		{name: "non-integer retention is rejected", events: map[string]any{"retentionDays": "thirty"}, wantStatus: http.StatusBadRequest, wantDays: 73},
+		{name: "null retention is rejected", events: map[string]any{"retentionDays": nil}, wantStatus: http.StatusBadRequest, wantDays: 73},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &persistedRuntimeConfigurationStore{configuration: domain.Configuration{
+				Version:  8,
+				Settings: domain.RuntimeSettings{Events: domain.EventsSettings{RetentionDays: 73}},
+				Secrets:  map[string]domain.SecretMetadata{},
+			}}
+			cipher, err := appservice.NewSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
+			if err != nil {
+				t.Fatalf("NewSecretCipher() error = %v", err)
+			}
+			handler := NewHandler(NewServer(
+				readinessStub{},
+				WithAuthentication(authentication, false),
+				WithRuntimeConfiguration(appservice.NewConfigurationService(store, cipher)),
+			))
+			request := httptest.NewRequest(http.MethodPut, "/api/v1/config", strings.NewReader(string(rawConfigurationUpdateBody(t, test.events))))
+			request.Header.Set("Content-Type", "application/json")
+			request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "valid-token"})
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d, body = %s", response.Code, test.wantStatus, response.Body.String())
+			}
+			if got := store.configuration.Settings.Events.RetentionDays; got != test.wantDays {
+				t.Fatalf("persisted retention days = %d, want %d", got, test.wantDays)
+			}
+			if test.wantStatus != http.StatusOK {
+				if store.configuration.Version != 8 {
+					t.Fatalf("configuration version = %d, want unchanged version 8", store.configuration.Version)
+				}
+				return
+			}
+			if got := store.saved.Settings.Events.RetentionDays; got != test.wantDays {
+				t.Fatalf("saved retention days = %d, want %d", got, test.wantDays)
+			}
+			var decoded Configuration
+			if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if decoded.Events.RetentionDays != test.wantDays {
+				t.Fatalf("response retention days = %d, want %d", decoded.Events.RetentionDays, test.wantDays)
+			}
+		})
+	}
 }
 
 func TestConfigurationUpdateMapsExplicitSecretActionsAndActor(t *testing.T) {
@@ -295,7 +429,8 @@ func TestConfigurationUpdateMapsExplicitSecretActionsAndActor(t *testing.T) {
 		"networkProxy":{"enabled":true,"url":"http://127.0.0.1:7890"},
 		"agent":{"enabled":true,"protocol":"openai_chat_completions","baseUrl":"https://agent.example/v1","model":"fixture-model","apiKey":{"action":"set","value":"agent-secret"},"useNetworkProxy":true,"requestTimeoutSeconds":60,"rssCoordinateMode":"suggest","downloadFileSelectionMode":"off","catalogMatchEnabled":false,"episodeMappingEnabled":true,"allowAutomaticEpisodeMapping":false},
 		"paths":{"downloadRoot":"C:\\media\\downloads","workRoot":"C:\\media\\work","stagingRoot":"C:\\media\\staging","animeLibraryRoot":"C:\\media\\library\\anime","movieLibraryRoot":"C:\\media\\library\\movies","ffmpegPath":"ffmpeg","ffprobePath":"ffprobe"},
-		"transcode":{"name":"h264","videoCodec":"h264","encoder":"libx264","container":"mp4","fileExtension":"mp4","qualityMode":"crf","qualityValue":20,"audioPolicy":"transcode","audioCodec":"aac","preset":"medium","pixelFormat":"yuv420p","threadCount":2,"maxConcurrency":1}
+		"transcode":{"name":"h264","videoCodec":"h264","encoder":"libx264","container":"mp4","fileExtension":"mp4","qualityMode":"crf","qualityValue":20,"audioPolicy":"transcode","audioCodec":"aac","preset":"medium","pixelFormat":"yuv420p","threadCount":2,"maxConcurrency":1},
+		"events":{"retentionDays":90}
 	}`
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/config", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
@@ -327,6 +462,9 @@ func TestConfigurationUpdateMapsExplicitSecretActionsAndActor(t *testing.T) {
 	}
 	if settings := configuration.update.Settings.QBittorrent; settings.DownloadRateLimitKibPerSecond != 4096 || settings.UploadRateLimitKibPerSecond != 1024 {
 		t.Fatalf("qBittorrent rate limits = %#v, want 4096/1024 KiB/s", settings)
+	}
+	if configuration.update.Events == nil || configuration.update.Events.RetentionDays != 90 || configuration.update.Settings.Events.RetentionDays != 90 {
+		t.Fatalf("event retention update = %#v, settings = %#v; want explicit 90", configuration.update.Events, configuration.update.Settings.Events)
 	}
 	if proxy := configuration.update.Settings.NetworkProxy; !proxy.Enabled || proxy.URL != "http://127.0.0.1:7890" {
 		t.Fatalf("network proxy = %#v", proxy)

@@ -36,3 +36,18 @@ JOIN events AS cursor_event ON cursor_event.id = sqlc.arg(cursor_id)
 WHERE event.event_sequence > cursor_event.event_sequence
 ORDER BY event.event_sequence
 LIMIT sqlc.arg(page_size);
+
+-- name: DeleteExpiredEvents :execrows
+-- event_is_discardable 是 fail-closed allowlist，也是 partial index 的谓词；
+-- 未知、新增和 read-model provenance topic 默认保留。
+WITH expired AS (
+    SELECT events.id
+    FROM events
+    WHERE events.occurred_at < sqlc.arg(before)
+      AND event_is_discardable(events.topic)
+    ORDER BY events.occurred_at, events.event_sequence
+    LIMIT sqlc.arg(max_rows)
+)
+DELETE FROM events
+USING expired
+WHERE events.id = expired.id;
