@@ -2303,14 +2303,14 @@ components:
           type: integer
           format: int64
           minimum: 0
-          maximum: 2097151
-          description: Per-torrent download rate limit in KiB/s. Zero disables the limit.
+          maximum: 2147483647
+          description: Per-torrent download rate limit in KiB/s. Zero disables the limit. Responses preserve legacy persisted values above the current update limit.
         uploadRateLimitKibPerSecond:
           type: integer
           format: int64
           minimum: 0
-          maximum: 2097151
-          description: Per-torrent upload rate limit in KiB/s. Zero disables the limit.
+          maximum: 2147483647
+          description: Per-torrent upload rate limit in KiB/s. Zero disables the limit. Responses preserve legacy persisted values above the current update limit.
     EmbyConfiguration:
       type: object
       additionalProperties: false

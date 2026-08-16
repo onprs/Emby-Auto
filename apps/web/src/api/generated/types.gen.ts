@@ -98,11 +98,11 @@ export type QBittorrentConfiguration = {
     username: string;
     password: SecretStatus;
     /**
-     * Per-torrent download rate limit in KiB/s. Zero disables the limit.
+     * Per-torrent download rate limit in KiB/s. Zero disables the limit. Responses preserve legacy persisted values above the current update limit.
      */
     downloadRateLimitKibPerSecond: number;
     /**
-     * Per-torrent upload rate limit in KiB/s. Zero disables the limit.
+     * Per-torrent upload rate limit in KiB/s. Zero disables the limit. Responses preserve legacy persisted values above the current update limit.
      */
     uploadRateLimitKibPerSecond: number;
 };
