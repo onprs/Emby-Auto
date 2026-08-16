@@ -331,6 +331,55 @@ describe("SettingsServicesPage", () => {
     });
   });
 
+  it("tests qBittorrent login without resubmitting legacy rate limits", async () => {
+    mockConfig();
+    const legacyConfiguration: Configuration = {
+      ...baseConfiguration,
+      qBittorrent: {
+        ...baseConfiguration.qBittorrent,
+        downloadRateLimitKibPerSecond: 2097152,
+        uploadRateLimitKibPerSecond: 2147483647,
+      },
+    };
+    let captured: Record<string, unknown> | null = null;
+    server.use(
+      http.get("*/api/v1/config", () => HttpResponse.json(legacyConfiguration)),
+      http.post("*/api/v1/config/test", async ({ request }) => {
+        captured = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          target: "qbittorrent",
+          success: true,
+          code: "ok",
+          message: "connection succeeded",
+          checkedAt: "2026-08-16T19:00:00Z",
+        });
+      }),
+    );
+
+    renderWithProviders(<SettingsServicesPage />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("密码")).toHaveValue("qb-real-password"),
+    );
+    const heading = screen.getByRole("heading", { name: "qBittorrent" });
+    const card = heading.parentElement?.parentElement;
+    if (!card) {
+      throw new Error("qBittorrent card was not rendered");
+    }
+    await userEvent.click(
+      within(card).getByRole("button", { name: "测试连接" }),
+    );
+
+    await waitFor(() => expect(captured).not.toBeNull());
+    expect(captured).toEqual({
+      target: "qbittorrent",
+      qBittorrent: {
+        url: "http://qb:8080",
+        username: "admin",
+        password: { action: "keep" },
+      },
+    });
+  });
+
   it("adjusts and saves qBittorrent per-torrent rate limits", async () => {
     mockConfig();
     let captured: UpdateConfigurationRequest | null = null;

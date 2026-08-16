@@ -266,8 +266,6 @@ function ServicesForm({
                   url: qbUrl,
                   username: qbUsername,
                   password: qbPasswordPayload(),
-                  downloadRateLimitKibPerSecond: qbDownloadRateLimit,
-                  uploadRateLimitKibPerSecond: qbUploadRateLimit,
                 },
               }}
             />
