@@ -593,6 +593,9 @@ WITH candidate_events AS MATERIALIZED (
            identity.explicit_attempt_count = 1
            AND identity.explicit_download_attempt IS NOT NULL
        )
+-- A legacy-only acquisition can derive attempts by stable first download order.
+-- When any other download has a trusted attempt, legacy ordering is ambiguous;
+-- skip that legacy identity instead of inventing a cross-source attempt.
 ), legacy_download_attempts AS (
     SELECT
         identity.*,
@@ -603,6 +606,11 @@ WITH candidate_events AS MATERIALIZED (
     FROM download_identities AS identity
     WHERE identity.live_download_attempt IS NULL
       AND identity.explicit_attempt_count = 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM trusted_download_attempts AS trusted
+          WHERE trusted.acquisition_id = identity.acquisition_id
+      )
 ), trusted_max_attempts AS (
     SELECT
         trusted.acquisition_id,
