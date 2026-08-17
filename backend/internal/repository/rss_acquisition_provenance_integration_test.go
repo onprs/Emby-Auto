@@ -465,6 +465,10 @@ func insertProvenanceTriggerEvent(
 		resourceType = "rss_entry"
 		resourceID = entryID
 		data = enqueueProvenanceData(acquisitionID, downloadID, 1)
+	} else if event.topic == "task.created" {
+		data = fmt.Sprintf(`{"downloadId":"%s"}`, downloadID)
+	} else if event.topic == "task.created" {
+		data = `{"downloadId":"` + downloadID.String() + `"}`
 	}
 	insertProvenanceEvent(t, ctx, exec, event.topic, resourceType, resourceID, data, occurredAt)
 }
@@ -633,6 +637,7 @@ func TestRSSAcquisitionProvenanceTriggerRollbackRemainsAtomicIntegration(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tx.Rollback(ctx)
 	for _, event := range []provenanceTriggerEventSpec{
 		{topic: "rss.entry.enqueueing", offset: 0},
 		{topic: "task.created", offset: time.Minute},
