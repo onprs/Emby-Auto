@@ -226,6 +226,9 @@ WHERE acquisition_id = $1
 		t.Fatalf("provenance after event retention = %d, want 1", provenanceRows)
 	}
 
+	if _, err := pool.Exec(ctx, `DELETE FROM acquisitions WHERE id = $1`, acquisitionID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, `DELETE FROM rss_subscriptions WHERE id = $1`, subscriptionID); err != nil {
 		t.Fatal(err)
 	}
@@ -273,6 +276,9 @@ INSERT INTO rss_entries (
 		t.Fatal(err)
 	}
 	seedProvenanceAttempt(t, ctx, pool, deletedAcquisitionID, profileID, deletedDownloadID, uuid.New(), 1)
+	if _, err := pool.Exec(ctx, `DELETE FROM acquisitions WHERE id = $1`, deletedAcquisitionID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, `DELETE FROM rss_entries WHERE id = $1`, deletedEntryID); err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +444,7 @@ WITH candidate_events AS MATERIALIZED (
 SELECT count(*) FROM candidate_events
 `)
 	lowerPlan := strings.ToLower(plan)
-	if strings.Count(lowerPlan, " on events") != 1 || !strings.Contains(lowerPlan, "cte scan on candidate_events") {
+	if strings.Count(lowerPlan, "scan on events ") != 1 || !strings.Contains(lowerPlan, "cte scan on candidate_events") {
 		t.Fatalf("materialized candidate plan = %s, want one events scan and CTE scan", plan)
 	}
 }
