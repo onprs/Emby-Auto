@@ -451,8 +451,8 @@ func seedMigrationProvenanceFixture(t *testing.T, ctx context.Context, pool *pgx
 	fixture := migrationProvenanceFixture{
 		entries:      map[string]uuid.UUID{"e1": uuid.New(), "e2": uuid.New()},
 		acquisitions: map[string]uuid.UUID{"a1": uuid.New(), "a2": uuid.New()},
-		downloads:    map[string]uuid.UUID{"d1": uuid.New(), "d2": uuid.New()},
-		tasks:        map[string]uuid.UUID{"t1": uuid.New(), "t2": uuid.New()},
+		downloads:    map[string]uuid.UUID{"d1": uuid.New(), "d2": uuid.New(), "d3": uuid.New()},
+		tasks:        map[string]uuid.UUID{"t1": uuid.New(), "t2": uuid.New(), "t3": uuid.New()},
 	}
 	seriesID, subscriptionID, profileID := uuid.New(), uuid.New(), uuid.New()
 	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, title) VALUES ($1, 'Provenance state fixture')`, seriesID); err != nil {
@@ -489,24 +489,33 @@ VALUES ($1, $2, 'rss', $3)
 			t.Fatal(err)
 		}
 	}
-	for index, key := range []string{"d1", "d2"} {
+	for _, item := range []struct {
+		key         string
+		acquisition string
+		attempt     int
+	}{
+		{key: "d1", acquisition: "a1", attempt: 1},
+		{key: "d2", acquisition: "a1", attempt: 2},
+		{key: "d3", acquisition: "a2", attempt: 1},
+	} {
 		if _, err := pool.Exec(ctx, `
 INSERT INTO downloads (id, acquisition_id, attempt, status)
 VALUES ($1, $2, $3, 'enqueue_pending')
-`, fixture.downloads[key], fixture.acquisitions["a"+fmt.Sprint(index+1)], index+1); err != nil {
+`, fixture.downloads[item.key], fixture.acquisitions[item.acquisition], item.attempt); err != nil {
 			t.Fatal(err)
 		}
 		fileID := uuid.New()
 		if _, err := pool.Exec(ctx, `
 INSERT INTO download_files (id, download_id, file_index, relative_path, size_bytes, media_kind, selected)
 VALUES ($1, $2, 0, $3, 1024, 'video', true)
-`, fileID, fixture.downloads[key], "state-"+key+".mkv"); err != nil {
+`, fileID, fixture.downloads[item.key], "state-"+item.key+".mkv"); err != nil {
 			t.Fatal(err)
 		}
+		taskKey := map[string]string{"d1": "t1", "d2": "t2", "d3": "t3"}[item.key]
 		if _, err := pool.Exec(ctx, `
 INSERT INTO episode_tasks (id, acquisition_id, source_video_file_id, transcode_profile_id)
 VALUES ($1, $2, $3, $4)
-`, fixture.tasks["t"+fmt.Sprint(index+1)], fixture.acquisitions["a"+fmt.Sprint(index+1)], fileID, profileID); err != nil {
+`, fixture.tasks[taskKey], fixture.acquisitions[item.acquisition], fileID, profileID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -644,7 +653,7 @@ func TestRSSAcquisitionProvenanceMigrationStateMachineCasesIntegration(t *testin
 		{
 			name: "live cross owner download is rejected",
 			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
-				return []migrationProvenanceEvent{migrationEnqueueEvent(f, "a1", "e1", "d2", 2, base)}
+				return []migrationProvenanceEvent{migrationEnqueueEvent(f, "a1", "e1", "d3", 2, base)}
 			},
 			want: migrationProvenanceExpectation{},
 		},
@@ -652,12 +661,12 @@ func TestRSSAcquisitionProvenanceMigrationStateMachineCasesIntegration(t *testin
 			name: "deleted cross owner soft deleted download is rejected",
 			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
 				return []migrationProvenanceEvent{
-					migrationEnqueueEvent(f, "a1", "e1", "d2", 2, base),
+					migrationEnqueueEvent(f, "a1", "e1", "d3", 2, base),
 					migrationDeleteEvent(f, "a1", base.Add(time.Minute)),
 				}
 			},
 			prepare: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f migrationProvenanceFixture) {
-				if _, err := pool.Exec(ctx, `UPDATE downloads SET deleted_at = now() WHERE id = $1`, f.downloads["d2"]); err != nil {
+				if _, err := pool.Exec(ctx, `UPDATE downloads SET deleted_at = now() WHERE id = $1`, f.downloads["d3"]); err != nil {
 					t.Fatal(err)
 				}
 				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a1", "")
