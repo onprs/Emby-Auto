@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/onprs/emby-auto/backend/internal/maintenance"
 	"github.com/onprs/emby-auto/backend/internal/platform/database"
+	"github.com/onprs/emby-auto/backend/internal/service"
 )
 
 func main() {
@@ -87,7 +88,9 @@ func run(arguments []string, input io.Reader, output io.Writer) error {
 		return fmt.Errorf("connect to database")
 	}
 
-	result, err := maintenance.NewRSSHistoryRestorer(database.NewTransactor(pool)).Restore(ctx, request)
+	transactor := database.NewTransactor(pool)
+	service.RegisterRSSSubscriptionProgressCommitHook(transactor)
+	result, err := maintenance.NewRSSHistoryRestorer(transactor).Restore(ctx, request)
 	if err != nil {
 		return err
 	}

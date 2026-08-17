@@ -5,6 +5,31 @@ import (
 	"testing"
 )
 
+func TestBundledApplicationMigrationsContainRSSSubscriptionProgressReadModel(t *testing.T) {
+	migrations, err := loadApplicationMigrations()
+	if err != nil {
+		t.Fatalf("loadApplicationMigrations() error = %v", err)
+	}
+	if len(migrations) < 39 {
+		t.Fatalf("migration count = %d, want at least 39", len(migrations))
+	}
+	progress := migrations[38]
+	if progress.version != 39 || progress.name != "000039_rss_subscription_progress_read_model.up.sql" {
+		t.Fatalf("migration 39 = %d %q", progress.version, progress.name)
+	}
+	for _, required := range []string{
+		"CREATE TABLE rss_subscription_progress",
+		"mark_rss_subscription_progress_from_change",
+		"source_revision",
+		"dirtied_transaction_id",
+		"rss_subscription_progress_sort_idx",
+	} {
+		if !strings.Contains(progress.sql, required) {
+			t.Fatalf("migration 39 is missing %q", required)
+		}
+	}
+}
+
 func TestBundledApplicationMigrationsContainScrapingProxyRemoval(t *testing.T) {
 	migrations, err := loadApplicationMigrations()
 	if err != nil {

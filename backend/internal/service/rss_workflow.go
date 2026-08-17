@@ -22,9 +22,10 @@ import (
 )
 
 type RSSWorkflow struct {
-	queries    *db.Queries
-	transactor *database.Transactor
-	operations *OperationScheduler
+	queries           *db.Queries
+	transactor        *database.Transactor
+	operations        *OperationScheduler
+	progressReadModel *rssSubscriptionProgressReadModel
 }
 
 func NewRSSWorkflow(
@@ -32,7 +33,12 @@ func NewRSSWorkflow(
 	transactor *database.Transactor,
 	operations *OperationScheduler,
 ) *RSSWorkflow {
-	return &RSSWorkflow{queries: queries, transactor: transactor, operations: operations}
+	return &RSSWorkflow{
+		queries:           queries,
+		transactor:        transactor,
+		operations:        operations,
+		progressReadModel: newRSSSubscriptionProgressReadModel(queries, transactor),
+	}
 }
 
 func (workflow *RSSWorkflow) LoadPollCommand(

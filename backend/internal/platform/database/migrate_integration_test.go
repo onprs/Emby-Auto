@@ -12,9 +12,100 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	appmigrations "github.com/onprs/emby-auto/backend/db/migrations"
+	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/platform/database"
+	"github.com/onprs/emby-auto/backend/internal/service"
 	"github.com/onprs/emby-auto/backend/internal/testutil"
 )
+
+func TestRSSSubscriptionProgressMigrationBackfillsThroughUnifiedReconciliationIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	databaseURL, pool := testutil.NewMigratedPostgres(t)
+	downgradeApplication(t, ctx, pool, 38)
+
+	seriesID, subscriptionID := uuid.New(), uuid.New()
+	entryID, acquisitionID, downloadID := uuid.New(), uuid.New(), uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, tmdb_series_id, title) VALUES ($1, $2, 'Progress migration fixture')`, seriesID, time.Now().UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO rss_subscriptions (id, series_id, name, feed_url, enabled, poll_interval_seconds, source_season)
+VALUES ($1, $2, 'Progress migration fixture', $3, true, 900, 1)
+`, subscriptionID, seriesID, "https://example.test/"+subscriptionID.String()+".xml"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO rss_entries (
+    id, subscription_id, identity_key, title, download_uri, downloadable,
+    rejection_reasons, source_season, source_episode, status
+) VALUES ($1, $2, $3, 'Fixture S01E01', 'https://example.test/episode.torrent', true, ARRAY[]::text[], 1, 1, 'enqueued')
+`, entryID, subscriptionID, "guid:"+entryID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO acquisitions (id, series_id, source_kind, rss_entry_id) VALUES ($1, $2, 'rss', $3)`, acquisitionID, seriesID, entryID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO downloads (id, acquisition_id, status, progress) VALUES ($1, $2, 'downloading', 0.5)`, downloadID, acquisitionID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.NewMigrator().Migrate(ctx, databaseURL); err != nil {
+		t.Fatalf("Migrate() from v38 error = %v", err)
+	}
+	var triggerCount int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*)
+FROM pg_trigger
+WHERE NOT tgisinternal
+  AND tgname LIKE 'rss_subscription_progress_%_changes'
+`).Scan(&triggerCount); err != nil {
+		t.Fatal(err)
+	}
+	if triggerCount != 13 {
+		t.Fatalf("progress dependency trigger count = %d, want 13", triggerCount)
+	}
+	var sortIndex, dirtyIndex string
+	if err := pool.QueryRow(ctx, `
+SELECT COALESCE(to_regclass('rss_subscription_progress_sort_idx')::text, ''),
+       COALESCE(to_regclass('rss_subscription_progress_dirty_idx')::text, '')
+`).Scan(&sortIndex, &dirtyIndex); err != nil {
+		t.Fatal(err)
+	}
+	if sortIndex == "" || dirtyIndex == "" {
+		t.Fatalf("progress indexes = sort %v dirty %v", sortIndex, dirtyIndex)
+	}
+	var dirty bool
+	var sourceRevision, calculatedRevision int64
+	var modelVersion int32
+	if err := pool.QueryRow(ctx, `
+SELECT dirty, source_revision, calculated_revision, model_version
+FROM rss_subscription_progress
+WHERE subscription_id = $1
+`, subscriptionID).Scan(&dirty, &sourceRevision, &calculatedRevision, &modelVersion); err != nil {
+		t.Fatal(err)
+	}
+	if !dirty || sourceRevision != 1 || calculatedRevision != 0 || modelVersion != 0 {
+		t.Fatalf("backfill row = dirty %t revisions %d/%d model %d", dirty, sourceRevision, calculatedRevision, modelVersion)
+	}
+
+	workflow := service.NewRSSWorkflow(db.New(pool), database.NewTransactor(pool), nil)
+	reconciled, err := workflow.ReconcileSubscriptionProgress(ctx)
+	if err != nil || reconciled != 1 {
+		t.Fatalf("ReconcileSubscriptionProgress() = %d, %v, want 1, nil", reconciled, err)
+	}
+	detail, err := workflow.GetSubscription(ctx, subscriptionID)
+	if err != nil {
+		t.Fatalf("GetSubscription() error = %v", err)
+	}
+	if detail.OverallProgress != 0.16 || detail.TaskCount != 1 || detail.CompletedTaskCount != 0 || detail.AttentionTaskCount != 0 {
+		t.Fatalf("reconciled detail = %#v, want progress 0.16 and counts 1/0/0", detail)
+	}
+	replayed, err := workflow.ReconcileSubscriptionProgress(ctx)
+	if err != nil || replayed != 0 {
+		t.Fatalf("replayed ReconcileSubscriptionProgress() = %d, %v, want 0, nil", replayed, err)
+	}
+}
 
 func TestApplicationMigrationsUpgradeV8AndV9Integration(t *testing.T) {
 	for _, startingVersion := range []int64{8, 9} {

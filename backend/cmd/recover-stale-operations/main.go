@@ -16,6 +16,7 @@ import (
 	"github.com/onprs/emby-auto/backend/internal/platform/config"
 	"github.com/onprs/emby-auto/backend/internal/platform/database"
 	"github.com/onprs/emby-auto/backend/internal/repository"
+	"github.com/onprs/emby-auto/backend/internal/service"
 	"github.com/riverqueue/river/riverdriver"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
@@ -82,6 +83,7 @@ func main() {
 	}
 
 	transactor := database.NewTransactor(pool)
+	service.RegisterRSSSubscriptionProgressCommitHook(transactor)
 	riverDriver := riverpgxv5.New(pool)
 	recovered := 0
 	for {
