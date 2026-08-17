@@ -337,12 +337,16 @@ VALUES ($1, $2, 2, 'enqueue_pending')
 
 	insertProvenanceEvent(t, ctx, pool, "rss.entry.enqueueing", "rss_entry", entryID, enqueueProvenanceData(acquisitionID, download1, 1), base)
 	insertProvenanceEvent(t, ctx, pool, "task.created", "episode_task", task1, `{"downloadId":"`+download2.String()+`"}`, base.Add(time.Minute))
-	var pendingTaskID *uuid.UUID
-	if err := pool.QueryRow(ctx, `SELECT pending_task_id FROM rss_acquisition_provenance WHERE acquisition_id = $1`, acquisitionID).Scan(&pendingTaskID); err != nil {
+	var pendingDownloadID, pendingTaskID *uuid.UUID
+	if err := pool.QueryRow(ctx, `
+SELECT pending_download_id, pending_task_id
+FROM rss_acquisition_provenance
+WHERE acquisition_id = $1
+`, acquisitionID).Scan(&pendingDownloadID, &pendingTaskID); err != nil {
 		t.Fatal(err)
 	}
-	if pendingTaskID != nil {
-		t.Fatalf("mismatched task source populated pending task %s", pendingTaskID)
+	if pendingDownloadID == nil || *pendingDownloadID != download1 || pendingTaskID != nil {
+		t.Fatalf("mismatched task source pending = %v/%v, want D1/nil", pendingDownloadID, pendingTaskID)
 	}
 
 	insertProvenanceEvent(t, ctx, pool, "task.created", "episode_task", task1, `{"downloadId":"`+download1.String()+`"}`, base.Add(2*time.Minute))

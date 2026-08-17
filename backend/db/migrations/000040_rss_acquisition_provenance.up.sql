@@ -513,6 +513,7 @@ WITH candidate_events AS MATERIALIZED (
         enqueue.acquisition_id,
         enqueue.download_id,
         COALESCE(download.attempt, enqueue.event_download_attempt, enqueue.event_enqueue_attempt, enqueue.fallback_download_attempt) AS download_attempt,
+        download.acquisition_id AS live_download_acquisition_id,
         download.id IS NOT NULL AS live_download,
         enqueue.occurred_at,
         enqueue.event_sequence
@@ -538,6 +539,7 @@ WITH candidate_events AS MATERIALIZED (
         acquisition.id IS NOT NULL
         AND acquisition.rss_entry_id = enqueue.rss_entry_id
         AND enqueue.live_download
+        AND enqueue.live_download_acquisition_id = enqueue.acquisition_id
     ) OR (
         acquisition.id IS NULL
         AND archived.acquisition_id IS NOT NULL
@@ -633,6 +635,8 @@ WITH candidate_events AS MATERIALIZED (
           OR imported.imported_event_sequence < enqueue.archived_event_sequence
       )
     ORDER BY enqueue.acquisition_id, enqueue.download_attempt DESC, imported.imported_at DESC, enqueue.event_sequence DESC, created.event_sequence DESC, created.task_id
+-- Keep the verified enqueue as the pending base even when task.created is
+-- malformed/mismatched; task details are optional and must stay on this download.
 ), pending_tasks AS (
     SELECT DISTINCT ON (enqueue.acquisition_id)
         enqueue.acquisition_id,
@@ -684,6 +688,8 @@ INSERT INTO rss_acquisition_provenance (
     pending_artifact_ready_at,
     pending_reviewed_at
 )
+-- successful_history is the only condition that clears the latest pending
+-- enqueue; the optional pending task CTE cannot erase it by failing to join.
 SELECT
     latest.acquisition_id,
     latest.rss_entry_id,
@@ -698,10 +704,22 @@ SELECT
     successful.reviewed_at,
     successful.imported_at,
     archived.archived_at,
-    pending.download_id,
-    pending.download_attempt,
-    pending.occurred_at,
-    pending.event_sequence,
+    CASE
+        WHEN successful.acquisition_id IS NULL THEN latest.download_id
+        ELSE NULL
+    END,
+    CASE
+        WHEN successful.acquisition_id IS NULL THEN latest.download_attempt
+        ELSE NULL
+    END,
+    CASE
+        WHEN successful.acquisition_id IS NULL THEN latest.occurred_at
+        ELSE NULL
+    END,
+    CASE
+        WHEN successful.acquisition_id IS NULL THEN latest.event_sequence
+        ELSE NULL
+    END,
     pending.task_id,
     pending.task_created_at,
     pending.video_ready_at,

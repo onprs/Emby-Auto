@@ -332,6 +332,8 @@ VALUES ($1, $2, $3, $4::jsonb, $5)
 	base := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
 	// Live task T1 is sourced from D1, while task.created claims D2.
 	insertEvent("rss.entry.enqueueing", "rss_entry", entries[0], enqueueProvenanceData(acquisitionIDs[0], downloads[0], 1), base)
+	// The entry and acquisition are correct, but D2 belongs to A2 and must not be accepted for A1.
+	insertEvent("rss.entry.enqueueing", "rss_entry", entries[0], enqueueProvenanceData(acquisitionIDs[0], downloads[1], 1), base.Add(30*time.Second))
 	insertEvent("task.created", "episode_task", tasks[0], `{"downloadId":"`+downloads[1].String()+`"}`, base.Add(time.Minute))
 	insertEvent("task.imported", "episode_task", tasks[0], `{}`, base.Add(2*time.Minute))
 	// Live A2 belongs to E2, but its enqueue event claims E3.
@@ -370,8 +372,24 @@ WHERE acquisition_id = $1
 `, acquisitionIDs[0]).Scan(&liveDownload, &liveTask, &livePending, &liveImported); err != nil {
 		t.Fatal(err)
 	}
-	if liveDownload != nil || liveTask != nil || livePending != nil || liveImported {
-		t.Fatalf("live source mismatch provenance = %v/%v/%v/imported=%t, want no success or pending provenance", liveDownload, liveTask, livePending, liveImported)
+	if liveDownload != nil || liveTask != nil || livePending == nil || *livePending != downloads[0] || liveImported {
+		t.Fatalf("live source mismatch provenance = %v/%v/%v/imported=%t, want D1 pending and no success", liveDownload, liveTask, livePending, liveImported)
+	}
+	// A legal replay after migration must use the retained D1 pending fact and complete normally.
+	insertEvent("task.created", "episode_task", tasks[0], `{"downloadId":"`+downloads[0].String()+`"}`, base.Add(16*time.Minute))
+	insertEvent("task.imported", "episode_task", tasks[0], `{}`, base.Add(17*time.Minute))
+	var replayDownload, replayTask, replayPending *uuid.UUID
+	var replayAttempt int
+	var replayImported bool
+	if err := pool.QueryRow(ctx, `
+SELECT download_id, task_id, pending_download_id, download_attempt, imported_at IS NOT NULL
+FROM rss_acquisition_provenance
+WHERE acquisition_id = $1
+`, acquisitionIDs[0]).Scan(&replayDownload, &replayTask, &replayPending, &replayAttempt, &replayImported); err != nil {
+		t.Fatal(err)
+	}
+	if replayDownload == nil || *replayDownload != downloads[0] || replayTask == nil || *replayTask != tasks[0] || replayPending != nil || replayAttempt != 1 || !replayImported {
+		t.Fatalf("legal replay provenance = %v/%v/pending=%v/attempt=%d/imported=%t, want D1/T1 success", replayDownload, replayTask, replayPending, replayAttempt, replayImported)
 	}
 	var count int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rss_acquisition_provenance WHERE acquisition_id = $1`, acquisitionIDs[1]).Scan(&count); err != nil {
