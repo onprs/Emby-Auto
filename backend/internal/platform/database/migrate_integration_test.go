@@ -419,6 +419,385 @@ WHERE acquisition_id = $1
 	}
 }
 
+type migrationProvenanceFixture struct {
+	entries      map[string]uuid.UUID
+	acquisitions map[string]uuid.UUID
+	downloads    map[string]uuid.UUID
+	tasks        map[string]uuid.UUID
+}
+
+type migrationProvenanceEvent struct {
+	topic        string
+	resourceType string
+	resourceID   uuid.UUID
+	data         string
+	occurredAt   time.Time
+}
+
+type migrationProvenanceExpectation struct {
+	rows                   int
+	download               string
+	task                   string
+	pendingDownload        string
+	pendingTask            string
+	downloadAttempt        int
+	pendingDownloadAttempt int
+	imported               bool
+	archived               bool
+}
+
+func seedMigrationProvenanceFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) migrationProvenanceFixture {
+	t.Helper()
+	fixture := migrationProvenanceFixture{
+		entries:      map[string]uuid.UUID{"e1": uuid.New(), "e2": uuid.New()},
+		acquisitions: map[string]uuid.UUID{"a1": uuid.New(), "a2": uuid.New()},
+		downloads:    map[string]uuid.UUID{"d1": uuid.New(), "d2": uuid.New()},
+		tasks:        map[string]uuid.UUID{"t1": uuid.New(), "t2": uuid.New()},
+	}
+	seriesID, subscriptionID, profileID := uuid.New(), uuid.New(), uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, title) VALUES ($1, 'Provenance state fixture')`, seriesID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO rss_subscriptions (id, series_id, name, feed_url, enabled, poll_interval_seconds, source_season)
+VALUES ($1, $2, 'Provenance state fixture', $3, true, 900, 1)
+`, subscriptionID, seriesID, "https://example.test/"+subscriptionID.String()+".xml"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO transcode_profiles (
+    id, name, version, active, is_default, video_codec, encoder, container,
+    file_extension, quality_mode, quality_value, audio_policy, preset,
+    pixel_format, thread_count, max_concurrency
+) VALUES ($1, $2, 1, true, false, 'h264', 'libx264', 'matroska', 'mkv', 'crf', 20, 'copy', 'medium', 'yuv420p', 0, 1)
+`, profileID, "provenance-state-"+profileID.String()); err != nil {
+		t.Fatal(err)
+	}
+	for index, key := range []string{"e1", "e2"} {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO rss_entries (
+    id, subscription_id, identity_key, title, download_uri, downloadable,
+    rejection_reasons, source_season, source_episode, status
+) VALUES ($1, $2, $3, $4, $5, true, ARRAY[]::text[], 1, $6, 'enqueued')
+`, fixture.entries[key], subscriptionID, "guid:"+fixture.entries[key].String(), "Fixture "+key, "https://example.test/"+key+".torrent", index+1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `
+INSERT INTO acquisitions (id, series_id, source_kind, rss_entry_id)
+VALUES ($1, $2, 'rss', $3)
+`, fixture.acquisitions["a"+fmt.Sprint(index+1)], seriesID, fixture.entries[key]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index, key := range []string{"d1", "d2"} {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO downloads (id, acquisition_id, attempt, status)
+VALUES ($1, $2, $3, 'enqueue_pending')
+`, fixture.downloads[key], fixture.acquisitions["a"+fmt.Sprint(index+1)], index+1); err != nil {
+			t.Fatal(err)
+		}
+		fileID := uuid.New()
+		if _, err := pool.Exec(ctx, `
+INSERT INTO download_files (id, download_id, file_index, relative_path, size_bytes, media_kind, selected)
+VALUES ($1, $2, 0, $3, 1024, 'video', true)
+`, fileID, fixture.downloads[key], "state-"+key+".mkv"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `
+INSERT INTO episode_tasks (id, acquisition_id, source_video_file_id, transcode_profile_id)
+VALUES ($1, $2, $3, $4)
+`, fixture.tasks["t"+fmt.Sprint(index+1)], fixture.acquisitions["a"+fmt.Sprint(index+1)], fileID, profileID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return fixture
+}
+
+func migrationEnqueueEvent(fixture migrationProvenanceFixture, acquisition, entry, download string, attempt int, occurredAt time.Time) migrationProvenanceEvent {
+	return migrationProvenanceEvent{
+		topic:        "rss.entry.enqueueing",
+		resourceType: "rss_entry",
+		resourceID:   fixture.entries[entry],
+		data:         enqueueProvenanceData(fixture.acquisitions[acquisition], fixture.downloads[download], attempt),
+		occurredAt:   occurredAt,
+	}
+}
+
+func migrationTaskCreatedEvent(fixture migrationProvenanceFixture, task, download string, occurredAt time.Time) migrationProvenanceEvent {
+	return migrationProvenanceEvent{
+		topic:        "task.created",
+		resourceType: "episode_task",
+		resourceID:   fixture.tasks[task],
+		data:         `{"downloadId":"` + fixture.downloads[download].String() + `"}`,
+		occurredAt:   occurredAt,
+	}
+}
+
+func migrationTaskImportedEvent(fixture migrationProvenanceFixture, task string, occurredAt time.Time) migrationProvenanceEvent {
+	return migrationProvenanceEvent{
+		topic:        "task.imported",
+		resourceType: "episode_task",
+		resourceID:   fixture.tasks[task],
+		data:         `{}`,
+		occurredAt:   occurredAt,
+	}
+}
+
+func migrationDeleteEvent(fixture migrationProvenanceFixture, acquisition string, occurredAt time.Time) migrationProvenanceEvent {
+	return migrationProvenanceEvent{
+		topic:        "acquisition.delete_completed",
+		resourceType: "acquisition",
+		resourceID:   fixture.acquisitions[acquisition],
+		data:         `{}`,
+		occurredAt:   occurredAt,
+	}
+}
+
+func insertMigrationProvenanceEvents(t *testing.T, ctx context.Context, pool *pgxpool.Pool, events []migrationProvenanceEvent) {
+	t.Helper()
+	for _, event := range events {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO events (topic, resource_type, resource_id, data, occurred_at)
+VALUES ($1, $2, $3, $4::jsonb, $5)
+`, event.topic, event.resourceType, event.resourceID, event.data, event.occurredAt); err != nil {
+			t.Fatalf("insert %s event: %v", event.topic, err)
+		}
+	}
+}
+
+func deleteMigrationFixtureAcquisition(t *testing.T, ctx context.Context, pool *pgxpool.Pool, fixture migrationProvenanceFixture, acquisition, task string) {
+	t.Helper()
+	if task != "" {
+		if _, err := pool.Exec(ctx, `DELETE FROM episode_tasks WHERE id = $1`, fixture.tasks[task]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM acquisitions WHERE id = $1`, fixture.acquisitions[acquisition]); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertMigrationProvenanceExpectation(t *testing.T, ctx context.Context, pool *pgxpool.Pool, fixture migrationProvenanceFixture, acquisition string, want migrationProvenanceExpectation) {
+	t.Helper()
+	var rows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rss_acquisition_provenance WHERE acquisition_id = $1`, fixture.acquisitions[acquisition]).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != want.rows {
+		t.Fatalf("provenance rows = %d, want %d", rows, want.rows)
+	}
+	if want.rows == 0 {
+		return
+	}
+	var gotDownload, gotTask, gotPendingDownload, gotPendingTask *uuid.UUID
+	var gotDownloadAttempt, gotPendingAttempt *int
+	var gotImported, gotArchived bool
+	if err := pool.QueryRow(ctx, `
+SELECT download_id, task_id, download_attempt,
+       pending_download_id, pending_task_id, pending_download_attempt,
+       imported_at IS NOT NULL, archived_at IS NOT NULL
+FROM rss_acquisition_provenance
+WHERE acquisition_id = $1
+`, fixture.acquisitions[acquisition]).Scan(
+		&gotDownload, &gotTask, &gotDownloadAttempt,
+		&gotPendingDownload, &gotPendingTask, &gotPendingAttempt,
+		&gotImported, &gotArchived,
+	); err != nil {
+		t.Fatal(err)
+	}
+	wantDownload := fixture.downloads[want.download]
+	wantTask := fixture.tasks[want.task]
+	wantPendingDownload := fixture.downloads[want.pendingDownload]
+	wantPendingTask := fixture.tasks[want.pendingTask]
+	if want.download == "" && gotDownload != nil || want.download != "" && (gotDownload == nil || *gotDownload != wantDownload) {
+		t.Fatalf("download = %v, want %q", gotDownload, want.download)
+	}
+	if want.task == "" && gotTask != nil || want.task != "" && (gotTask == nil || *gotTask != wantTask) {
+		t.Fatalf("task = %v, want %q", gotTask, want.task)
+	}
+	if want.pendingDownload == "" && gotPendingDownload != nil || want.pendingDownload != "" && (gotPendingDownload == nil || *gotPendingDownload != wantPendingDownload) {
+		t.Fatalf("pending download = %v, want %q", gotPendingDownload, want.pendingDownload)
+	}
+	if want.pendingTask == "" && gotPendingTask != nil || want.pendingTask != "" && (gotPendingTask == nil || *gotPendingTask != wantPendingTask) {
+		t.Fatalf("pending task = %v, want %q", gotPendingTask, want.pendingTask)
+	}
+	if want.downloadAttempt == 0 && gotDownloadAttempt != nil || want.downloadAttempt != 0 && (gotDownloadAttempt == nil || *gotDownloadAttempt != want.downloadAttempt) {
+		t.Fatalf("download attempt = %v, want %d", gotDownloadAttempt, want.downloadAttempt)
+	}
+	if want.pendingDownloadAttempt == 0 && gotPendingAttempt != nil || want.pendingDownloadAttempt != 0 && (gotPendingAttempt == nil || *gotPendingAttempt != want.pendingDownloadAttempt) {
+		t.Fatalf("pending attempt = %v, want %d", gotPendingAttempt, want.pendingDownloadAttempt)
+	}
+	if gotImported != want.imported || gotArchived != want.archived {
+		t.Fatalf("terminal flags = imported %t archived %t, want imported %t archived %t", gotImported, gotArchived, want.imported, want.archived)
+	}
+}
+
+func TestRSSAcquisitionProvenanceMigrationStateMachineCasesIntegration(t *testing.T) {
+	type migrationCase struct {
+		name    string
+		before  func(migrationProvenanceFixture, time.Time) []migrationProvenanceEvent
+		after   func(migrationProvenanceFixture, time.Time) []migrationProvenanceEvent
+		prepare func(*testing.T, context.Context, *pgxpool.Pool, migrationProvenanceFixture)
+		want    migrationProvenanceExpectation
+	}
+	cases := []migrationCase{
+		{
+			name: "live cross owner download is rejected",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{migrationEnqueueEvent(f, "a1", "e1", "d2", 2, base)}
+			},
+			want: migrationProvenanceExpectation{},
+		},
+		{
+			name: "deleted cross owner soft deleted download is rejected",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d2", 2, base),
+					migrationDeleteEvent(f, "a1", base.Add(time.Minute)),
+				}
+			},
+			prepare: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f migrationProvenanceFixture) {
+				if _, err := pool.Exec(ctx, `UPDATE downloads SET deleted_at = now() WHERE id = $1`, f.downloads["d2"]); err != nil {
+					t.Fatal(err)
+				}
+				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a1", "")
+			},
+			want: migrationProvenanceExpectation{},
+		},
+		{
+			name: "deleted missing download with complete chain succeeds",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(time.Minute)),
+					migrationTaskImportedEvent(f, "t1", base.Add(2*time.Minute)),
+					migrationDeleteEvent(f, "a1", base.Add(3*time.Minute)),
+				}
+			},
+			prepare: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f migrationProvenanceFixture) {
+				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a1", "t1")
+			},
+			want: migrationProvenanceExpectation{rows: 1, download: "d1", task: "t1", downloadAttempt: 1, imported: true, archived: true},
+		},
+		{
+			name: "deleted missing download with mismatched task chain stays pending",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskCreatedEvent(f, "t1", "d2", base.Add(time.Minute)),
+					migrationTaskImportedEvent(f, "t1", base.Add(2*time.Minute)),
+					migrationDeleteEvent(f, "a1", base.Add(3*time.Minute)),
+				}
+			},
+			prepare: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f migrationProvenanceFixture) {
+				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a1", "t1")
+			},
+			want: migrationProvenanceExpectation{rows: 1, pendingDownload: "d1", pendingDownloadAttempt: 1, archived: true},
+		},
+		{
+			name: "higher attempt before old import leaves higher pending",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(time.Minute)),
+					migrationEnqueueEvent(f, "a1", "e1", "d2", 2, base.Add(2*time.Minute)),
+					migrationTaskImportedEvent(f, "t1", base.Add(3*time.Minute)),
+				}
+			},
+			want: migrationProvenanceExpectation{rows: 1, pendingDownload: "d2", pendingDownloadAttempt: 2},
+		},
+		{
+			name: "success before higher attempt remains success",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(time.Minute)),
+					migrationTaskImportedEvent(f, "t1", base.Add(2*time.Minute)),
+					migrationEnqueueEvent(f, "a1", "e1", "d2", 2, base.Add(3*time.Minute)),
+				}
+			},
+			want: migrationProvenanceExpectation{rows: 1, download: "d1", task: "t1", downloadAttempt: 1, imported: true},
+		},
+		{
+			name: "higher attempt succeeds after superseding old chain",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(time.Minute)),
+					migrationEnqueueEvent(f, "a1", "e1", "d2", 2, base.Add(2*time.Minute)),
+					migrationTaskCreatedEvent(f, "t2", "d2", base.Add(3*time.Minute)),
+					migrationTaskImportedEvent(f, "t2", base.Add(4*time.Minute)),
+					migrationTaskImportedEvent(f, "t1", base.Add(5*time.Minute)),
+				}
+			},
+			want: migrationProvenanceExpectation{rows: 1, download: "d2", task: "t2", downloadAttempt: 2, imported: true},
+		},
+		{
+			name: "duplicate enqueue keeps task for late import",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(time.Minute)),
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base.Add(2*time.Minute)),
+				}
+			},
+			after: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{migrationTaskImportedEvent(f, "t1", base.Add(3*time.Minute))}
+			},
+			want: migrationProvenanceExpectation{rows: 1, download: "d1", task: "t1", downloadAttempt: 1, imported: true},
+		},
+		{
+			name: "duplicate enqueue after import does not replace success",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(time.Minute)),
+					migrationTaskImportedEvent(f, "t1", base.Add(2*time.Minute)),
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base.Add(3*time.Minute)),
+				}
+			},
+			want: migrationProvenanceExpectation{rows: 1, download: "d1", task: "t1", downloadAttempt: 1, imported: true},
+		},
+		{
+			name: "same timestamp duplicate task replay keeps late import owner",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskCreatedEvent(f, "t1", "d1", base),
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskCreatedEvent(f, "t1", "d1", base),
+				}
+			},
+			after: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{migrationTaskImportedEvent(f, "t1", base)}
+			},
+			want: migrationProvenanceExpectation{rows: 1, download: "d1", task: "t1", downloadAttempt: 1, imported: true},
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer cancel()
+			databaseURL, pool := testutil.NewMigratedPostgres(t)
+			downgradeApplication(t, ctx, pool, 39)
+			fixture := seedMigrationProvenanceFixture(t, ctx, pool)
+			base := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+			insertMigrationProvenanceEvents(t, ctx, pool, testCase.before(fixture, base))
+			if testCase.prepare != nil {
+				testCase.prepare(t, ctx, pool, fixture)
+			}
+			if err := database.NewMigrator().Migrate(ctx, databaseURL); err != nil {
+				t.Fatalf("Migrate() from v39 error = %v", err)
+			}
+			if testCase.after != nil {
+				insertMigrationProvenanceEvents(t, ctx, pool, testCase.after(fixture, base))
+			}
+			assertMigrationProvenanceExpectation(t, ctx, pool, fixture, "a1", testCase.want)
+		})
+	}
+}
+
 func TestApplicationMigrationsUpgradeV8AndV9Integration(t *testing.T) {
 	for _, startingVersion := range []int64{8, 9} {
 		t.Run(fmt.Sprintf("v%d", startingVersion), func(t *testing.T) {
