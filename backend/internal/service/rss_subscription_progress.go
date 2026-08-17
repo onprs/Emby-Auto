@@ -11,12 +11,13 @@ import (
 	"github.com/onprs/emby-auto/backend/internal/repository"
 )
 
-// subscriptionProgressBySubscriptions 批量计算多个 RSS 订阅的进度统计。
-// 订阅列表接口使用固定数量的批量查询替代逐订阅的 N+1 查询（acquisitions、
-// imported counts、媒体系列、下载、任务与映射完整性各一条），分组后在内存中
-// 复用与单订阅路径完全相同的汇总逻辑，保证列表与详情页语义一致。
-func (workflow *RSSWorkflow) subscriptionProgressBySubscriptions(
+// subscriptionProgressBySubscriptionsWithQueries 批量计算多个 RSS 订阅的进度统计。
+// 持久化 read model 的唯一重算入口使用固定数量的批量查询（acquisitions、
+// imported counts、媒体系列、下载、任务与映射完整性各一条），分组后复用
+// `deriveAcquisitionLifecycle` 与订阅汇总规则，避免 SQL 维护第二套 lifecycle。
+func subscriptionProgressBySubscriptionsWithQueries(
 	ctx context.Context,
+	queries *db.Queries,
 	subscriptionIDs []uuid.UUID,
 ) (map[uuid.UUID]rssSubscriptionProgress, error) {
 	progress := make(map[uuid.UUID]rssSubscriptionProgress, len(subscriptionIDs))
@@ -28,16 +29,16 @@ func (workflow *RSSWorkflow) subscriptionProgressBySubscriptions(
 		pgSubscriptionIDs[index] = repository.UUIDToPG(id)
 	}
 
-	acquisitionRows, err := workflow.queries.ListRSSSubscriptionAcquisitionsBySubscriptionIDs(ctx, pgSubscriptionIDs)
+	acquisitionRows, err := queries.ListRSSSubscriptionAcquisitionsBySubscriptionIDs(ctx, pgSubscriptionIDs)
 	if err != nil {
 		return nil, fmt.Errorf("list subscription acquisitions: %w", err)
 	}
-	viewsBySubscription, err := subscriptionProgressViews(ctx, workflow.queries, acquisitionRows)
+	viewsBySubscription, err := subscriptionProgressViews(ctx, queries, acquisitionRows)
 	if err != nil {
 		return nil, err
 	}
 
-	importedRows, err := workflow.queries.ListRSSSubscriptionImportedCountsBySubscriptionIDs(ctx, pgSubscriptionIDs)
+	importedRows, err := queries.ListRSSSubscriptionImportedCountsBySubscriptionIDs(ctx, pgSubscriptionIDs)
 	if err != nil {
 		return nil, fmt.Errorf("load RSS subscription imported counts: %w", err)
 	}

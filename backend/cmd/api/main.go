@@ -214,6 +214,10 @@ func buildRuntimeHandler(
 	operationScheduler := service.NewOperationScheduler(transactor, jobClient)
 	searchWorkflow := service.NewSearchWorkflow(queries, transactor, operationScheduler)
 	rssWorkflow := service.NewRSSWorkflow(queries, transactor, operationScheduler)
+	if _, err := rssWorkflow.ReconcileSubscriptionProgress(ctx); err != nil {
+		pool.Close()
+		return nil, nil, fmt.Errorf("reconcile RSS subscription progress: %w", err)
+	}
 	taskWorkflow := service.NewTaskWorkflow(queries, transactor, operationScheduler)
 	catalogWorkflow := service.NewCatalogWorkflow(queries, transactor, operationScheduler)
 	embyCatalogWorkflow := service.NewEmbyCatalogWorkflow(queries, transactor, operationScheduler)

@@ -30,7 +30,10 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 )
 
-const eventsRetentionCleanupPeriod = time.Hour
+const (
+	eventsRetentionCleanupPeriod                = time.Hour
+	rssSubscriptionProgressReconciliationPeriod = time.Minute
+)
 
 func eventsRetentionCleanupSchedule() river.PeriodicSchedule {
 	return river.PeriodicInterval(eventsRetentionCleanupPeriod)
@@ -53,6 +56,26 @@ func newEventsRetentionPeriodicJob() *river.PeriodicJob {
 		eventsRetentionCleanupSchedule(),
 		eventsRetentionCleanupJob,
 		&river.PeriodicJobOpts{ID: "events_retention_cleanup", RunOnStart: true},
+	)
+}
+
+func rssSubscriptionProgressReconciliationJob() (river.JobArgs, *river.InsertOpts) {
+	return appqueue.RSSSubscriptionProgressReconcileArgs{}, &river.InsertOpts{
+		MaxAttempts: 3,
+		Queue:       appqueue.QueueGeneral,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs:   true,
+			ByQueue:  true,
+			ByPeriod: rssSubscriptionProgressReconciliationPeriod,
+		},
+	}
+}
+
+func newRSSSubscriptionProgressReconciliationPeriodicJob() *river.PeriodicJob {
+	return river.NewPeriodicJob(
+		river.PeriodicInterval(rssSubscriptionProgressReconciliationPeriod),
+		rssSubscriptionProgressReconciliationJob,
+		&river.PeriodicJobOpts{ID: "rss_subscription_progress_reconciliation"},
 	)
 }
 
@@ -228,6 +251,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, checkOnly 
 		workerID,
 	)
 	river.AddWorker(workers, appworker.NewEventsRetentionWorker(configuration, repository.NewEvents(queries)))
+	river.AddWorker(workers, appworker.NewRSSSubscriptionProgressReconcileWorker(rssWorkflow))
 	transcodeWorkers := cfg.RiverTranscodeWorkers
 	if profile, profileErr := queries.GetDefaultTranscodeProfile(ctx); profileErr == nil && profile.MaxConcurrency > 0 {
 		transcodeWorkers = int(profile.MaxConcurrency)
@@ -244,7 +268,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, checkOnly 
 		},
 		MaxAttempts:          3,
 		RescueStuckJobsAfter: 25 * time.Hour,
-		PeriodicJobs:         []*river.PeriodicJob{newEventsRetentionPeriodicJob()},
+		PeriodicJobs: []*river.PeriodicJob{
+			newEventsRetentionPeriodicJob(),
+			newRSSSubscriptionProgressReconciliationPeriodicJob(),
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("create River client: %w", err)
@@ -286,6 +313,13 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, checkOnly 
 	}
 	if reconciledReviews > 0 {
 		logger.Info("reconciled RSS automatic reviews", "task_count", reconciledReviews)
+	}
+	reconciledSubscriptionProgress, err := rssWorkflow.ReconcileSubscriptionProgress(ctx)
+	if err != nil {
+		return fmt.Errorf("reconcile RSS subscription progress: %w", err)
+	}
+	if reconciledSubscriptionProgress > 0 {
+		logger.Info("reconciled RSS subscription progress", "subscription_count", reconciledSubscriptionProgress)
 	}
 	if err := riverClient.Start(ctx); err != nil {
 		return fmt.Errorf("start River client: %w", err)

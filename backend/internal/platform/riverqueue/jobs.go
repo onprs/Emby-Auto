@@ -13,27 +13,28 @@ const (
 	QueueTranscode = "transcode"
 	QueueAgent     = "agent"
 
-	KindSearchRun               = "search.run"
-	KindRSSPoll                 = "rss.poll"
-	KindDownloadEnqueue         = "download.enqueue"
-	KindDownloadSync            = "download.sync"
-	KindDownloadMaterialize     = "download.materialize"
-	KindSubtitlePrepare         = "subtitle.prepare"
-	KindTranscodeRun            = "transcode.run"
-	KindMediaFinalize           = "media.finalize"
-	KindEmbyImport              = "emby.import"
-	KindCleanupRun              = "cleanup.run"
-	KindEmbyRefresh             = "emby.refresh"
-	KindEmbyScan                = "emby.scan"
-	KindTMDbSync                = "tmdb.sync"
-	KindTaskCancel              = "task.cancel"
-	KindDownloadCancel          = "download.cancel"
-	KindAcquisitionDelete       = "acquisition.delete"
-	KindRSSSubscriptionComplete = "rss.subscription.complete"
-	KindRSSSubscriptionDelete   = "rss.subscription.delete"
-	KindAgentResolve            = "agent.resolve"
-	KindDownloadSelectionApply  = "download.selection.apply"
-	KindEventsRetentionCleanup  = "events.retention.cleanup"
+	KindSearchRun                        = "search.run"
+	KindRSSPoll                          = "rss.poll"
+	KindDownloadEnqueue                  = "download.enqueue"
+	KindDownloadSync                     = "download.sync"
+	KindDownloadMaterialize              = "download.materialize"
+	KindSubtitlePrepare                  = "subtitle.prepare"
+	KindTranscodeRun                     = "transcode.run"
+	KindMediaFinalize                    = "media.finalize"
+	KindEmbyImport                       = "emby.import"
+	KindCleanupRun                       = "cleanup.run"
+	KindEmbyRefresh                      = "emby.refresh"
+	KindEmbyScan                         = "emby.scan"
+	KindTMDbSync                         = "tmdb.sync"
+	KindTaskCancel                       = "task.cancel"
+	KindDownloadCancel                   = "download.cancel"
+	KindAcquisitionDelete                = "acquisition.delete"
+	KindRSSSubscriptionComplete          = "rss.subscription.complete"
+	KindRSSSubscriptionDelete            = "rss.subscription.delete"
+	KindAgentResolve                     = "agent.resolve"
+	KindDownloadSelectionApply           = "download.selection.apply"
+	KindEventsRetentionCleanup           = "events.retention.cleanup"
+	KindRSSSubscriptionProgressReconcile = "rss.subscription.progress.reconcile"
 )
 
 type OperationArgs struct {
@@ -137,6 +138,12 @@ func (DownloadCancelArgs) Kind() string { return KindDownloadCancel }
 type EventsRetentionCleanupArgs struct{}
 
 func (EventsRetentionCleanupArgs) Kind() string { return KindEventsRetentionCleanup }
+
+type RSSSubscriptionProgressReconcileArgs struct{}
+
+func (RSSSubscriptionProgressReconcileArgs) Kind() string {
+	return KindRSSSubscriptionProgressReconcile
+}
 
 func NewJobArgs(kind string, operationID uuid.UUID, timeout time.Duration) (river.JobArgs, error) {
 	if operationID == uuid.Nil {

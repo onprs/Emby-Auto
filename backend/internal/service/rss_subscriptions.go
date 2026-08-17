@@ -1,14 +1,12 @@
 package service
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/url"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -141,11 +139,10 @@ func (workflow *RSSWorkflow) ListSubscriptions(
 		field = *sortBy
 	}
 	direction := listSortDirection(sortOrder, "asc")
-	// progress 依赖实时聚合的进度值，无法在 SQL 层精确复刻排序键，
-	// 保留全量加载 + 内存排序路径以维持既有排序语义；其余稳定字段
-	// 走 SQL 层 cursor 分页，只加载并计算当前页订阅的进度。
+	// progress 使用由同一 Go lifecycle 入口维护的持久化排序键；其余字段
+	// 继续使用既有 SQL keyset 查询。两条路径都只读取当前页。
 	if field == "progress" {
-		return workflow.listSubscriptionsByComputedProgress(ctx, cursor, limit, query, direction)
+		return workflow.listSubscriptionsByProgress(ctx, cursor, limit, query, direction)
 	}
 	return workflow.listSubscriptionsBySQLSort(ctx, cursor, limit, query, field, direction)
 }
@@ -198,7 +195,7 @@ func (workflow *RSSWorkflow) listSubscriptionsBySQLSort(
 	for _, row := range rows {
 		items = append(items, subscriptionFromListRow(sortedSubscriptionToListRow(row)))
 	}
-	progressBySubscription, err := workflow.subscriptionProgressBySubscriptions(ctx, subscriptionIDsOf(items))
+	progressBySubscription, err := workflow.persistedSubscriptionProgressByIDs(ctx, subscriptionIDsOf(items))
 	if err != nil {
 		return domain.RSSSubscriptionPage{}, err
 	}
@@ -211,60 +208,169 @@ func (workflow *RSSWorkflow) listSubscriptionsBySQLSort(
 	}, nil
 }
 
-// listSubscriptionsByComputedProgress 为 progress 排序保留既有语义：
-// 全量加载订阅后计算所有进度，在内存中排序并按 cursor 窗口分页。
-func (workflow *RSSWorkflow) listSubscriptionsByComputedProgress(
+const rssSubscriptionProgressListSnapshotAttempts = 3
+
+var errRSSSubscriptionProgressSnapshotNotReady = errors.New("RSS subscription progress snapshot is not ready")
+
+// listSubscriptionsByProgress 使用 `(overall_progress, subscription_id)`
+// 作为稳定 SQL keyset。cursor 继续遵循现有 UUID 实时游标契约：页面间若
+// 排序键发生变化，后续请求以 cursor 订阅最新已提交投影作为边界。
+func (workflow *RSSWorkflow) listSubscriptionsByProgress(
 	ctx context.Context,
 	cursor *uuid.UUID,
 	limit int,
 	query *string,
 	direction int,
 ) (domain.RSSSubscriptionPage, error) {
-	const batchSize = 200
-	baseSort := "newest"
-	var batchCursor *uuid.UUID
-	items := make([]domain.RSSSubscription, 0, batchSize)
-	for {
-		params := db.ListRSSSubscriptionsParams{Query: query, Sort: &baseSort, PageSize: batchSize}
-		if batchCursor != nil {
-			params.CursorID = repository.UUIDToPG(*batchCursor)
+	for attempt := 0; attempt < rssSubscriptionProgressListSnapshotAttempts; attempt++ {
+		page, err := workflow.listSubscriptionsByProgressSnapshot(ctx, cursor, limit, query, direction)
+		if err == nil {
+			return page, nil
 		}
-		rows, err := workflow.queries.ListRSSSubscriptions(ctx, params)
-		if err != nil {
-			return domain.RSSSubscriptionPage{}, fmt.Errorf("list RSS subscriptions: %w", err)
+		if !errors.Is(err, errRSSSubscriptionProgressSnapshotNotReady) {
+			return domain.RSSSubscriptionPage{}, err
 		}
-		for _, row := range rows {
-			items = append(items, subscriptionFromListRow(row))
-		}
-		if len(rows) < batchSize {
+		if attempt == rssSubscriptionProgressListSnapshotAttempts-1 {
 			break
 		}
-		last := repository.UUIDFromPG(rows[len(rows)-1].ID)
-		batchCursor = &last
+		if _, err := workflow.ReconcileSubscriptionProgress(ctx); err != nil {
+			return domain.RSSSubscriptionPage{}, err
+		}
 	}
-	progressBySubscription, err := workflow.subscriptionProgressBySubscriptions(ctx, subscriptionIDsOf(items))
+	return domain.RSSSubscriptionPage{}, fmt.Errorf(
+		"RSS subscription progress did not stabilize after %d attempts: %w",
+		rssSubscriptionProgressListSnapshotAttempts,
+		errRSSSubscriptionProgressSnapshotNotReady,
+	)
+}
+
+func (workflow *RSSWorkflow) listSubscriptionsByProgressSnapshot(
+	ctx context.Context,
+	cursor *uuid.UUID,
+	limit int,
+	query *string,
+	direction int,
+) (domain.RSSSubscriptionPage, error) {
+	if workflow == nil || workflow.transactor == nil {
+		return domain.RSSSubscriptionPage{}, errors.New("RSS subscription progress snapshot storage is unavailable")
+	}
+	var page domain.RSSSubscriptionPage
+	err := workflow.transactor.WithinReadTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead}, func(scope database.TxScope) error {
+		readiness, err := scope.Queries.GetRSSSubscriptionProgressReadiness(ctx, rssSubscriptionProgressModelVersion)
+		if err != nil {
+			return fmt.Errorf("inspect RSS subscription progress readiness: %w", err)
+		}
+		if readiness.HasNewerModel {
+			return fmt.Errorf("RSS subscription progress model is newer than supported version %d", rssSubscriptionProgressModelVersion)
+		}
+		if readiness.HasDirty || readiness.HasOutdatedModel {
+			return errRSSSubscriptionProgressSnapshotNotReady
+		}
+		page, err = listSubscriptionsByProgressWithQueries(ctx, scope.Queries, cursor, limit, query, direction)
+		return err
+	})
 	if err != nil {
 		return domain.RSSSubscriptionPage{}, err
 	}
-	for index := range items {
-		applyRSSSubscriptionProgress(&items[index], progressBySubscription[items[index].ID])
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		left, right := items[i], items[j]
-		comparison := cmp.Compare(left.OverallProgress, right.OverallProgress)
-		if comparison == 0 {
-			comparison = strings.Compare(left.ID.String(), right.ID.String())
+	return page, nil
+}
+
+func listSubscriptionsByProgressWithQueries(
+	ctx context.Context,
+	queries *db.Queries,
+	cursor *uuid.UUID,
+	limit int,
+	query *string,
+	direction int,
+) (domain.RSSSubscriptionPage, error) {
+	cursorID := pgtype.UUID{}
+	var cursorProgress *float64
+	if cursor != nil {
+		if _, err := queries.GetRSSSubscription(ctx, repository.UUIDToPG(*cursor)); errors.Is(err, pgx.ErrNoRows) {
+			return domain.RSSSubscriptionPage{}, NewError("invalid_cursor", "the list cursor was not found", ErrInvalidInput, map[string]any{"cursor": cursor.String()})
+		} else if err != nil {
+			return domain.RSSSubscriptionPage{}, fmt.Errorf("load RSS subscription cursor: %w", err)
 		}
-		return direction*comparison < 0
-	})
-	window, hasMore, err := cursorWindow(items, cursor, limit, func(item domain.RSSSubscription) uuid.UUID { return item.ID })
-	if err != nil {
+		row, err := queries.GetRSSSubscriptionProgress(ctx, repository.UUIDToPG(*cursor))
+		if err != nil {
+			return domain.RSSSubscriptionPage{}, fmt.Errorf("load RSS subscription progress cursor: %w", err)
+		}
+		if _, err := rssSubscriptionProgressFromRow(row); err != nil {
+			return domain.RSSSubscriptionPage{}, err
+		}
+		cursorID = repository.UUIDToPG(*cursor)
+		value := row.OverallProgress
+		cursorProgress = &value
+	}
+
+	items := make([]domain.RSSSubscription, 0, limit+1)
+	if direction < 0 {
+		rows, err := queries.ListRSSSubscriptionsByProgressDesc(ctx, db.ListRSSSubscriptionsByProgressDescParams{
+			ModelVersion:   rssSubscriptionProgressModelVersion,
+			Query:          query,
+			CursorID:       cursorID,
+			CursorProgress: cursorProgress,
+			PageSize:       int32(limit) + 1,
+		})
+		if err != nil {
+			return domain.RSSSubscriptionPage{}, fmt.Errorf("list RSS subscriptions by progress: %w", err)
+		}
+		for _, row := range rows {
+			items = append(items, subscriptionFromProgressListRow(db.ListRSSSubscriptionsByProgressAscRow(row)))
+		}
+	} else {
+		rows, err := queries.ListRSSSubscriptionsByProgressAsc(ctx, db.ListRSSSubscriptionsByProgressAscParams{
+			ModelVersion:   rssSubscriptionProgressModelVersion,
+			Query:          query,
+			CursorID:       cursorID,
+			CursorProgress: cursorProgress,
+			PageSize:       int32(limit) + 1,
+		})
+		if err != nil {
+			return domain.RSSSubscriptionPage{}, fmt.Errorf("list RSS subscriptions by progress: %w", err)
+		}
+		for _, row := range rows {
+			items = append(items, subscriptionFromProgressListRow(row))
+		}
+	}
+
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	if err := loadRSSSubscriptionRetryableTaskCounts(ctx, queries, items); err != nil {
 		return domain.RSSSubscriptionPage{}, err
 	}
 	return domain.RSSSubscriptionPage{
-		Items:      window,
-		NextCursor: pageCursor(hasMore, len(window), func(i int) uuid.UUID { return window[i].ID }),
+		Items:      items,
+		NextCursor: pageCursor(hasMore, len(items), func(i int) uuid.UUID { return items[i].ID }),
 	}, nil
+}
+
+func loadRSSSubscriptionRetryableTaskCounts(
+	ctx context.Context,
+	queries *db.Queries,
+	items []domain.RSSSubscription,
+) error {
+	if len(items) == 0 {
+		return nil
+	}
+	rows, err := queries.ListRSSSubscriptionRetryableTaskCountsByIDs(ctx, uniquePGUUIDs(subscriptionIDsOf(items)))
+	if err != nil {
+		return fmt.Errorf("list RSS subscription retryable task counts: %w", err)
+	}
+	counts := make(map[uuid.UUID]int64, len(rows))
+	for _, row := range rows {
+		counts[repository.UUIDFromPG(row.SubscriptionID)] = row.RetryableTaskCount
+	}
+	for index := range items {
+		count, ok := counts[items[index].ID]
+		if !ok {
+			return fmt.Errorf("RSS subscription retryable task count is missing for %s", items[index].ID)
+		}
+		items[index].RetryableTaskCount = int(count)
+	}
+	return nil
 }
 
 func subscriptionIDsOf(items []domain.RSSSubscription) []uuid.UUID {
@@ -284,7 +390,7 @@ func (workflow *RSSWorkflow) GetSubscription(ctx context.Context, id uuid.UUID) 
 		return domain.RSSSubscription{}, fmt.Errorf("get RSS subscription: %w", err)
 	}
 	subscription := subscriptionFromGetRow(row)
-	progress, err := workflow.subscriptionProgress(ctx, subscription.ID)
+	progress, err := workflow.persistedSubscriptionProgress(ctx, subscription.ID)
 	if err != nil {
 		return domain.RSSSubscription{}, fmt.Errorf("load RSS subscription progress: %w", err)
 	}
@@ -349,10 +455,6 @@ func (workflow *RSSWorkflow) UpdateSubscription(
 	input.ExcludeKeywords = excludeKeywords
 	if err := validateRSSSubscription(1, "existing", input.Name, input.FeedURL, input.SourceSeason, input.PollInterval); err != nil {
 		return domain.RSSSubscription{}, err
-	}
-	progress, err := workflow.subscriptionProgress(ctx, input.ID)
-	if err != nil {
-		return domain.RSSSubscription{}, fmt.Errorf("load RSS subscription progress: %w", err)
 	}
 	var result domain.RSSSubscription
 	err = workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
@@ -477,6 +579,10 @@ func (workflow *RSSWorkflow) UpdateSubscription(
 	})
 	if err != nil {
 		return domain.RSSSubscription{}, rssCommandError("update RSS subscription", err)
+	}
+	progress, err := workflow.persistedSubscriptionProgress(ctx, input.ID)
+	if err != nil {
+		return domain.RSSSubscription{}, fmt.Errorf("load RSS subscription progress: %w", err)
 	}
 	applyRSSSubscriptionProgress(&result, progress)
 	return result, nil
@@ -883,25 +989,6 @@ type rssSubscriptionProgress struct {
 	attentionTaskCount int
 }
 
-func (workflow *RSSWorkflow) subscriptionProgress(ctx context.Context, subscriptionID uuid.UUID) (rssSubscriptionProgress, error) {
-	rows, err := workflow.queries.ListRSSSubscriptionAcquisitions(ctx, repository.UUIDToPG(subscriptionID))
-	if err != nil {
-		return rssSubscriptionProgress{}, fmt.Errorf("list subscription acquisitions: %w", err)
-	}
-	views, err := NewReadService(workflow.queries).acquisitionViews(ctx, rows)
-	if err != nil {
-		return rssSubscriptionProgress{}, err
-	}
-	importedCount, err := workflow.queries.GetRSSSubscriptionImportedCount(ctx, repository.UUIDToPG(subscriptionID))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return summarizeRSSSubscriptionProgress(views), nil
-	}
-	if err != nil {
-		return rssSubscriptionProgress{}, fmt.Errorf("load RSS subscription imported count: %w", err)
-	}
-	return summarizeRSSSubscriptionImportedProgress(int(importedCount), views), nil
-}
-
 func summarizeRSSSubscriptionImportedProgress(importedCount int, views []domain.AcquisitionView) rssSubscriptionProgress {
 	progress := rssSubscriptionProgress{
 		taskCount:          max(0, importedCount),
@@ -1041,6 +1128,40 @@ func subscriptionFromListRow(row db.ListRSSSubscriptionsRow) domain.RSSSubscript
 		NextPollAt:                optionalTimePointer(row.NextPollAt),
 		CompletedAt:               optionalTimePointer(row.CompletedAt),
 		RetryableTaskCount:        int(row.RetryableTaskCount),
+		Version:                   row.Version,
+		CreatedAt:                 row.CreatedAt.Time,
+		UpdatedAt:                 row.UpdatedAt.Time,
+	}
+}
+
+func subscriptionFromProgressListRow(row db.ListRSSSubscriptionsByProgressAscRow) domain.RSSSubscription {
+	tmdbID := int64(0)
+	if row.TmdbSeriesID != nil {
+		tmdbID = *row.TmdbSeriesID
+	}
+	return domain.RSSSubscription{
+		ID:                        repository.UUIDFromPG(row.ID),
+		SeriesID:                  repository.UUIDFromPG(row.SeriesID),
+		SeriesTitle:               row.SeriesTitle,
+		TMDbSeriesID:              tmdbID,
+		MappingProfileID:          repository.UUIDFromPG(row.MappingProfileID),
+		Name:                      row.Name,
+		FeedURL:                   row.FeedUrl,
+		IncludeKeywords:           row.IncludeKeywords,
+		ExcludeKeywords:           row.ExcludeKeywords,
+		Enabled:                   row.Enabled,
+		AutoEpisodeMapping:        row.AutoEpisodeMapping,
+		AutoReview:                row.AutoReview,
+		CleanupSourceOnCompletion: row.CleanupSourceOnCompletion,
+		SourceSeason:              int(row.SourceSeason),
+		PollInterval:              time.Duration(row.PollIntervalSeconds) * time.Second,
+		LastPolledAt:              optionalTimePointer(row.LastPolledAt),
+		NextPollAt:                optionalTimePointer(row.NextPollAt),
+		CompletedAt:               optionalTimePointer(row.CompletedAt),
+		OverallProgress:           row.OverallProgress,
+		TaskCount:                 int(row.TaskCount),
+		CompletedTaskCount:        int(row.CompletedTaskCount),
+		AttentionTaskCount:        int(row.AttentionTaskCount),
 		Version:                   row.Version,
 		CreatedAt:                 row.CreatedAt.Time,
 		UpdatedAt:                 row.UpdatedAt.Time,

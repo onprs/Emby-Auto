@@ -552,6 +552,21 @@ type RssSubscription struct {
 	AutoEpisodeMapping        bool               `db:"auto_episode_mapping" json:"auto_episode_mapping"`
 }
 
+type RssSubscriptionProgress struct {
+	SubscriptionID       pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
+	OverallProgress      float64            `db:"overall_progress" json:"overall_progress"`
+	TaskCount            int32              `db:"task_count" json:"task_count"`
+	CompletedTaskCount   int32              `db:"completed_task_count" json:"completed_task_count"`
+	AttentionTaskCount   int32              `db:"attention_task_count" json:"attention_task_count"`
+	SourceRevision       int64              `db:"source_revision" json:"source_revision"`
+	CalculatedRevision   int64              `db:"calculated_revision" json:"calculated_revision"`
+	ModelVersion         int32              `db:"model_version" json:"model_version"`
+	Dirty                bool               `db:"dirty" json:"dirty"`
+	DirtiedTransactionID int64              `db:"dirtied_transaction_id" json:"dirtied_transaction_id"`
+	DirtiedAt            pgtype.Timestamptz `db:"dirtied_at" json:"dirtied_at"`
+	CalculatedAt         pgtype.Timestamptz `db:"calculated_at" json:"calculated_at"`
+}
+
 type RssTargetRealtimeCheck struct {
 	TargetEpisodeID pgtype.UUID        `db:"target_episode_id" json:"target_episode_id"`
 	CheckID         pgtype.UUID        `db:"check_id" json:"check_id"`

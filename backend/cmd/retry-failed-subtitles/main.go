@@ -68,6 +68,7 @@ func run(arguments []string, output io.Writer) error {
 	}
 	queries := db.New(pool)
 	transactor := database.NewTransactor(pool)
+	service.RegisterRSSSubscriptionProgressCommitHook(transactor)
 	operations := service.NewOperationScheduler(transactor, riverClient)
 	tasks := service.NewTaskWorkflow(queries, transactor, operations)
 	commands := service.NewTaskCommandWorkflow(queries, transactor, operations, tasks)

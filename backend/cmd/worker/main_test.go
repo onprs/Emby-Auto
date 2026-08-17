@@ -7,6 +7,23 @@ import (
 	appqueue "github.com/onprs/emby-auto/backend/internal/platform/riverqueue"
 )
 
+func TestRSSSubscriptionProgressReconciliationScheduleAndUniquenessAreMinutely(t *testing.T) {
+	args, options := rssSubscriptionProgressReconciliationJob()
+	if args.Kind() != appqueue.KindRSSSubscriptionProgressReconcile {
+		t.Fatalf("job kind = %q, want %q", args.Kind(), appqueue.KindRSSSubscriptionProgressReconcile)
+	}
+	if options.MaxAttempts != 3 || options.Queue != appqueue.QueueGeneral {
+		t.Fatalf("insert options = %#v, want three attempts on the general queue", options)
+	}
+	if !options.UniqueOpts.ByArgs || !options.UniqueOpts.ByQueue ||
+		options.UniqueOpts.ByPeriod != rssSubscriptionProgressReconciliationPeriod {
+		t.Fatalf("unique options = %#v, want args/queue uniqueness in one-minute periods", options.UniqueOpts)
+	}
+	if newRSSSubscriptionProgressReconciliationPeriodicJob() == nil {
+		t.Fatal("newRSSSubscriptionProgressReconciliationPeriodicJob() = nil")
+	}
+}
+
 func TestEventsRetentionCleanupScheduleAndUniquenessAreHourly(t *testing.T) {
 	startedAt := time.Date(2026, 8, 16, 12, 15, 0, 0, time.UTC)
 	if next := eventsRetentionCleanupSchedule().Next(startedAt); !next.Equal(startedAt.Add(time.Hour)) {
