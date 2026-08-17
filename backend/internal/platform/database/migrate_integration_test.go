@@ -442,6 +442,8 @@ type migrationProvenanceExpectation struct {
 	pendingTask            string
 	downloadAttempt        int
 	pendingDownloadAttempt int
+	videoReady             bool
+	pendingVideoReady      bool
 	imported               bool
 	archived               bool
 }
@@ -542,6 +544,26 @@ func migrationTaskCreatedEvent(fixture migrationProvenanceFixture, task, downloa
 	}
 }
 
+func migrationLegacyEnqueueEvent(fixture migrationProvenanceFixture, acquisition, entry, download string, enqueueAttempt int, occurredAt time.Time) migrationProvenanceEvent {
+	return migrationProvenanceEvent{
+		topic:        "rss.entry.enqueueing",
+		resourceType: "rss_entry",
+		resourceID:   fixture.entries[entry],
+		data:         fmt.Sprintf(`{"acquisitionId":"%s","downloadId":"%s","enqueueAttempt":%d}`, fixture.acquisitions[acquisition], fixture.downloads[download], enqueueAttempt),
+		occurredAt:   occurredAt,
+	}
+}
+
+func migrationTaskMilestoneEvent(fixture migrationProvenanceFixture, task, topic string, occurredAt time.Time) migrationProvenanceEvent {
+	return migrationProvenanceEvent{
+		topic:        topic,
+		resourceType: "episode_task",
+		resourceID:   fixture.tasks[task],
+		data:         `{}`,
+		occurredAt:   occurredAt,
+	}
+}
+
 func migrationTaskImportedEvent(fixture migrationProvenanceFixture, task string, occurredAt time.Time) migrationProvenanceEvent {
 	return migrationProvenanceEvent{
 		topic:        "task.imported",
@@ -574,12 +596,10 @@ VALUES ($1, $2, $3, $4::jsonb, $5)
 	}
 }
 
-func deleteMigrationFixtureAcquisition(t *testing.T, ctx context.Context, pool *pgxpool.Pool, fixture migrationProvenanceFixture, acquisition, task string) {
+func deleteMigrationFixtureAcquisition(t *testing.T, ctx context.Context, pool *pgxpool.Pool, fixture migrationProvenanceFixture, acquisition string) {
 	t.Helper()
-	if task != "" {
-		if _, err := pool.Exec(ctx, `DELETE FROM episode_tasks WHERE id = $1`, fixture.tasks[task]); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := pool.Exec(ctx, `DELETE FROM episode_tasks WHERE acquisition_id = $1`, fixture.acquisitions[acquisition]); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM acquisitions WHERE id = $1`, fixture.acquisitions[acquisition]); err != nil {
 		t.Fatal(err)
@@ -600,17 +620,19 @@ func assertMigrationProvenanceExpectation(t *testing.T, ctx context.Context, poo
 	}
 	var gotDownload, gotTask, gotPendingDownload, gotPendingTask *uuid.UUID
 	var gotDownloadAttempt, gotPendingAttempt *int
+	var gotVideoReady, gotPendingVideoReady bool
 	var gotImported, gotArchived bool
 	if err := pool.QueryRow(ctx, `
 SELECT download_id, task_id, download_attempt,
        pending_download_id, pending_task_id, pending_download_attempt,
+       video_ready_at IS NOT NULL, pending_video_ready_at IS NOT NULL,
        imported_at IS NOT NULL, archived_at IS NOT NULL
 FROM rss_acquisition_provenance
 WHERE acquisition_id = $1
 `, fixture.acquisitions[acquisition]).Scan(
 		&gotDownload, &gotTask, &gotDownloadAttempt,
 		&gotPendingDownload, &gotPendingTask, &gotPendingAttempt,
-		&gotImported, &gotArchived,
+		&gotVideoReady, &gotPendingVideoReady, &gotImported, &gotArchived,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -636,6 +658,9 @@ WHERE acquisition_id = $1
 	if want.pendingDownloadAttempt == 0 && gotPendingAttempt != nil || want.pendingDownloadAttempt != 0 && (gotPendingAttempt == nil || *gotPendingAttempt != want.pendingDownloadAttempt) {
 		t.Fatalf("pending attempt = %v, want %d", gotPendingAttempt, want.pendingDownloadAttempt)
 	}
+	if gotVideoReady != want.videoReady || gotPendingVideoReady != want.pendingVideoReady {
+		t.Fatalf("milestone flags = video %t pending video %t, want video %t pending video %t", gotVideoReady, gotPendingVideoReady, want.videoReady, want.pendingVideoReady)
+	}
 	if gotImported != want.imported || gotArchived != want.archived {
 		t.Fatalf("terminal flags = imported %t archived %t, want imported %t archived %t", gotImported, gotArchived, want.imported, want.archived)
 	}
@@ -648,6 +673,7 @@ func TestRSSAcquisitionProvenanceMigrationStateMachineCasesIntegration(t *testin
 		after   func(migrationProvenanceFixture, time.Time) []migrationProvenanceEvent
 		prepare func(*testing.T, context.Context, *pgxpool.Pool, migrationProvenanceFixture)
 		want    migrationProvenanceExpectation
+		check   func(*testing.T, context.Context, *pgxpool.Pool, migrationProvenanceFixture)
 	}
 	cases := []migrationCase{
 		{
@@ -669,7 +695,7 @@ func TestRSSAcquisitionProvenanceMigrationStateMachineCasesIntegration(t *testin
 				if _, err := pool.Exec(ctx, `UPDATE downloads SET deleted_at = now() WHERE id = $1`, f.downloads["d3"]); err != nil {
 					t.Fatal(err)
 				}
-				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a1", "")
+				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a1")
 			},
 			want: migrationProvenanceExpectation{},
 		},
@@ -684,7 +710,7 @@ func TestRSSAcquisitionProvenanceMigrationStateMachineCasesIntegration(t *testin
 				}
 			},
 			prepare: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f migrationProvenanceFixture) {
-				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a1", "t1")
+				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a1")
 			},
 			want: migrationProvenanceExpectation{rows: 1, download: "d1", task: "t1", downloadAttempt: 1, imported: true, archived: true},
 		},
@@ -699,7 +725,7 @@ func TestRSSAcquisitionProvenanceMigrationStateMachineCasesIntegration(t *testin
 				}
 			},
 			prepare: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f migrationProvenanceFixture) {
-				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a1", "t1")
+				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a1")
 			},
 			want: migrationProvenanceExpectation{rows: 1, pendingDownload: "d1", pendingDownloadAttempt: 1, archived: true},
 		},
@@ -782,6 +808,169 @@ func TestRSSAcquisitionProvenanceMigrationStateMachineCasesIntegration(t *testin
 			},
 			want: migrationProvenanceExpectation{rows: 1, download: "d1", task: "t1", downloadAttempt: 1, imported: true},
 		},
+		{
+			name: "legacy duplicate hard deleted chain keeps one attempt",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationLegacyEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(time.Minute)),
+					migrationLegacyEnqueueEvent(f, "a1", "e1", "d1", 2, base.Add(2*time.Minute)),
+					migrationTaskImportedEvent(f, "t1", base.Add(3*time.Minute)),
+					migrationDeleteEvent(f, "a1", base.Add(4*time.Minute)),
+				}
+			},
+			prepare: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f migrationProvenanceFixture) {
+				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a1")
+			},
+			want: migrationProvenanceExpectation{rows: 1, download: "d1", task: "t1", downloadAttempt: 1, imported: true, archived: true},
+		},
+		{
+			name: "legacy different downloads use stable first order",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationLegacyEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationLegacyEnqueueEvent(f, "a1", "e1", "d2", 1, base.Add(time.Minute)),
+					migrationTaskCreatedEvent(f, "t2", "d2", base.Add(2*time.Minute)),
+					migrationTaskImportedEvent(f, "t2", base.Add(3*time.Minute)),
+					migrationDeleteEvent(f, "a1", base.Add(4*time.Minute)),
+				}
+			},
+			prepare: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f migrationProvenanceFixture) {
+				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a1")
+			},
+			want: migrationProvenanceExpectation{rows: 1, download: "d2", task: "t2", downloadAttempt: 2, imported: true, archived: true},
+		},
+		{
+			name: "explicit and legacy attempts use non-colliding priority",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationLegacyEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationEnqueueEvent(f, "a1", "e1", "d2", 1, base.Add(time.Minute)),
+					migrationTaskCreatedEvent(f, "t2", "d2", base.Add(2*time.Minute)),
+					migrationTaskImportedEvent(f, "t2", base.Add(3*time.Minute)),
+					migrationDeleteEvent(f, "a1", base.Add(4*time.Minute)),
+				}
+			},
+			prepare: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f migrationProvenanceFixture) {
+				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a1")
+			},
+			want: migrationProvenanceExpectation{rows: 1, download: "d2", task: "t2", downloadAttempt: 1, imported: true, archived: true},
+		},
+		{
+			name: "first deletion blocks stale chain and duplicate deletion",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationLegacyEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationDeleteEvent(f, "a1", base.Add(time.Minute)),
+					migrationLegacyEnqueueEvent(f, "a1", "e1", "d1", 2, base.Add(2*time.Minute)),
+					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(3*time.Minute)),
+					migrationTaskImportedEvent(f, "t1", base.Add(4*time.Minute)),
+					migrationDeleteEvent(f, "a1", base.Add(5*time.Minute)),
+				}
+			},
+			prepare: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f migrationProvenanceFixture) {
+				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a1")
+			},
+			want: migrationProvenanceExpectation{rows: 1, pendingDownload: "d1", pendingDownloadAttempt: 1, archived: true},
+		},
+		{
+			name: "preterminal success survives duplicate deletion",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(time.Minute)),
+					migrationTaskImportedEvent(f, "t1", base.Add(2*time.Minute)),
+					migrationDeleteEvent(f, "a1", base.Add(3*time.Minute)),
+					migrationDeleteEvent(f, "a1", base.Add(3*time.Minute)),
+				}
+			},
+			prepare: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f migrationProvenanceFixture) {
+				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a1")
+			},
+			want: migrationProvenanceExpectation{rows: 1, download: "d1", task: "t1", downloadAttempt: 1, imported: true, archived: true},
+		},
+		{
+			name: "milestone before task created is ignored",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskMilestoneEvent(f, "t1", "task.video_ready", base.Add(time.Minute)),
+					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(2*time.Minute)),
+				}
+			},
+			want: migrationProvenanceExpectation{rows: 1, pendingDownload: "d1", pendingTask: "t1", pendingDownloadAttempt: 1},
+		},
+		{
+			name: "milestone after task created is retained",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(time.Minute)),
+					migrationTaskMilestoneEvent(f, "t1", "task.video_ready", base.Add(2*time.Minute)),
+				}
+			},
+			want: migrationProvenanceExpectation{rows: 1, pendingDownload: "d1", pendingTask: "t1", pendingDownloadAttempt: 1, pendingVideoReady: true},
+		},
+		{
+			name: "milestone after import is ignored",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(time.Minute)),
+					migrationTaskImportedEvent(f, "t1", base.Add(2*time.Minute)),
+					migrationTaskMilestoneEvent(f, "t1", "task.video_ready", base.Add(3*time.Minute)),
+				}
+			},
+			want: migrationProvenanceExpectation{rows: 1, download: "d1", task: "t1", downloadAttempt: 1, imported: true},
+		},
+		{
+			name: "duplicate task created keeps generation milestone",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(time.Minute)),
+					migrationTaskMilestoneEvent(f, "t1", "task.video_ready", base.Add(2*time.Minute)),
+					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(3*time.Minute)),
+					migrationTaskImportedEvent(f, "t1", base.Add(4*time.Minute)),
+				}
+			},
+			want: migrationProvenanceExpectation{rows: 1, download: "d1", task: "t1", downloadAttempt: 1, videoReady: true, imported: true},
+		},
+		{
+			name: "milestone timestamp tie follows event sequence",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskMilestoneEvent(f, "t1", "task.video_ready", base.Add(time.Minute)),
+					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(time.Minute)),
+					migrationTaskMilestoneEvent(f, "t1", "task.video_ready", base.Add(time.Minute)),
+					migrationTaskImportedEvent(f, "t1", base.Add(2*time.Minute)),
+				}
+			},
+			want: migrationProvenanceExpectation{rows: 1, download: "d1", task: "t1", downloadAttempt: 1, videoReady: true, imported: true},
+		},
+		{
+			name: "hard deleted task identity rejects two owners",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationEnqueueEvent(f, "a2", "e2", "d3", 1, base.Add(time.Minute)),
+					migrationTaskCreatedEvent(f, "t2", "d1", base.Add(2*time.Minute)),
+					migrationTaskCreatedEvent(f, "t2", "d3", base.Add(3*time.Minute)),
+					migrationTaskImportedEvent(f, "t2", base.Add(4*time.Minute)),
+					migrationDeleteEvent(f, "a1", base.Add(5*time.Minute)),
+					migrationDeleteEvent(f, "a2", base.Add(6*time.Minute)),
+				}
+			},
+			prepare: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f migrationProvenanceFixture) {
+				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a1")
+				deleteMigrationFixtureAcquisition(t, ctx, pool, f, "a2")
+			},
+			want: migrationProvenanceExpectation{rows: 1, pendingDownload: "d1", pendingDownloadAttempt: 1, archived: true},
+			check: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f migrationProvenanceFixture) {
+				assertMigrationProvenanceExpectation(t, ctx, pool, f, "a2", migrationProvenanceExpectation{rows: 1, pendingDownload: "d3", pendingDownloadAttempt: 1, archived: true})
+			},
+		},
 	}
 
 	for _, testCase := range cases {
@@ -803,6 +992,9 @@ func TestRSSAcquisitionProvenanceMigrationStateMachineCasesIntegration(t *testin
 				insertMigrationProvenanceEvents(t, ctx, pool, testCase.after(fixture, base))
 			}
 			assertMigrationProvenanceExpectation(t, ctx, pool, fixture, "a1", testCase.want)
+			if testCase.check != nil {
+				testCase.check(t, ctx, pool, fixture)
+			}
 		})
 	}
 }

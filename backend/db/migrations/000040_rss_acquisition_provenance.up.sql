@@ -472,7 +472,7 @@ WITH candidate_events AS MATERIALIZED (
     SELECT
         event.resource_id AS acquisition_id,
         max(event.occurred_at) AS archived_at,
-        max(event.event_sequence) AS archived_event_sequence
+        min(event.event_sequence) AS archived_event_sequence
     FROM candidate_events AS event
     WHERE event.resource_type = 'acquisition'
       AND event.topic = 'acquisition.delete_completed'
@@ -499,33 +499,27 @@ WITH candidate_events AS MATERIALIZED (
     FROM enqueue_candidates AS enqueue
     GROUP BY enqueue.acquisition_id
     HAVING count(DISTINCT enqueue.rss_entry_id) = 1
-), enqueue_ranked AS (
-    SELECT
-        enqueue.*,
-        row_number() OVER (
-            PARTITION BY enqueue.acquisition_id
-            ORDER BY enqueue.event_sequence
-        )::integer AS fallback_download_attempt
-    FROM enqueue_candidates AS enqueue
-), enqueue_attempts AS (
+), enqueue_associations AS (
     SELECT
         enqueue.rss_entry_id,
         enqueue.acquisition_id,
         enqueue.download_id,
-        COALESCE(download.attempt, enqueue.event_download_attempt, enqueue.event_enqueue_attempt, enqueue.fallback_download_attempt) AS download_attempt,
+        enqueue.event_download_attempt,
+        enqueue.event_enqueue_attempt AS legacy_enqueue_attempt,
+        download.attempt AS live_download_attempt,
         download.acquisition_id AS known_download_acquisition_id,
         download.deleted_at AS known_download_deleted_at,
         download.id IS NOT NULL AS known_download,
         download.id IS NOT NULL AND download.deleted_at IS NULL AS live_download,
         enqueue.occurred_at,
         enqueue.event_sequence
-    FROM enqueue_ranked AS enqueue
+    FROM enqueue_candidates AS enqueue
     LEFT JOIN downloads AS download
       ON download.id = enqueue.download_id
 ), historical_download_identity AS (
     SELECT
         enqueue.download_id
-    FROM enqueue_attempts AS enqueue
+    FROM enqueue_associations AS enqueue
     WHERE NOT enqueue.known_download
     GROUP BY enqueue.download_id
     HAVING count(DISTINCT enqueue.acquisition_id) = 1
@@ -534,39 +528,142 @@ WITH candidate_events AS MATERIALIZED (
 -- Once acquisition rows are deleted, a known soft-deleted download still has
 -- an authoritative owner; only a completely missing download uses the
 -- conservative, unobservable event-chain identity check.
-), verified_enqueue_attempts AS (
+), verified_enqueue_events AS (
     SELECT
         enqueue.*,
         acquisition.id IS NOT NULL AS live_acquisition,
         archived.archived_event_sequence
-    FROM enqueue_attempts AS enqueue
+    FROM enqueue_associations AS enqueue
     LEFT JOIN acquisitions AS acquisition ON acquisition.id = enqueue.acquisition_id
     LEFT JOIN archived ON archived.acquisition_id = enqueue.acquisition_id
     LEFT JOIN historical_enqueue_entry_consistent AS historical
       ON historical.acquisition_id = enqueue.acquisition_id
     LEFT JOIN historical_download_identity AS download_history
       ON download_history.download_id = enqueue.download_id
-    WHERE (
-        acquisition.id IS NOT NULL
-        AND acquisition.rss_entry_id = enqueue.rss_entry_id
-        AND enqueue.live_download
-        AND enqueue.known_download_acquisition_id = enqueue.acquisition_id
-    ) OR (
-        acquisition.id IS NULL
-        AND archived.acquisition_id IS NOT NULL
-        AND historical.acquisition_id IS NOT NULL
-        AND (
-            (
-                enqueue.known_download
-                AND enqueue.known_download_acquisition_id = enqueue.acquisition_id
-                AND enqueue.known_download_deleted_at IS NOT NULL
-            )
-            OR (
-                NOT enqueue.known_download
-                AND download_history.download_id IS NOT NULL
-            )
-        )
-    )
+    WHERE (archived.archived_event_sequence IS NULL OR enqueue.event_sequence < archived.archived_event_sequence)
+      AND (
+          (
+              acquisition.id IS NOT NULL
+              AND acquisition.rss_entry_id = enqueue.rss_entry_id
+              AND enqueue.live_download
+              AND enqueue.known_download_acquisition_id = enqueue.acquisition_id
+          ) OR (
+              acquisition.id IS NULL
+              AND archived.acquisition_id IS NOT NULL
+              AND historical.acquisition_id IS NOT NULL
+              AND (
+                  (
+                      enqueue.known_download
+                      AND enqueue.known_download_acquisition_id = enqueue.acquisition_id
+                      AND enqueue.known_download_deleted_at IS NOT NULL
+                  )
+                  OR (
+                      NOT enqueue.known_download
+                      AND download_history.download_id IS NOT NULL
+                  )
+              )
+          )
+      )
+), download_identities AS (
+    SELECT
+        enqueue.acquisition_id,
+        enqueue.rss_entry_id,
+        enqueue.download_id,
+        min(enqueue.occurred_at) AS occurred_at,
+        min(enqueue.event_sequence) AS first_event_sequence,
+        max(enqueue.event_sequence) AS last_event_sequence,
+        bool_or(enqueue.live_acquisition) AS live_acquisition,
+        min(enqueue.archived_event_sequence) AS archived_event_sequence,
+        count(DISTINCT enqueue.live_download_attempt) AS live_attempt_count,
+        max(enqueue.live_download_attempt) AS live_download_attempt,
+        count(DISTINCT enqueue.event_download_attempt) AS explicit_attempt_count,
+        max(enqueue.event_download_attempt) AS explicit_download_attempt
+    FROM verified_enqueue_events AS enqueue
+    GROUP BY enqueue.acquisition_id, enqueue.rss_entry_id, enqueue.download_id
+), trusted_download_attempts AS (
+    SELECT
+        identity.*,
+        CASE
+            WHEN identity.live_download_attempt IS NOT NULL THEN identity.live_download_attempt
+            ELSE identity.explicit_download_attempt
+        END AS download_attempt
+    FROM download_identities AS identity
+    WHERE identity.live_download_attempt IS NOT NULL
+       OR (
+           identity.explicit_attempt_count = 1
+           AND identity.explicit_download_attempt IS NOT NULL
+       )
+), legacy_download_attempts AS (
+    SELECT
+        identity.*,
+        row_number() OVER (
+            PARTITION BY identity.acquisition_id
+            ORDER BY identity.first_event_sequence, identity.download_id
+        )::integer AS legacy_attempt_rank
+    FROM download_identities AS identity
+    WHERE identity.live_download_attempt IS NULL
+      AND identity.explicit_attempt_count = 0
+), trusted_max_attempts AS (
+    SELECT
+        trusted.acquisition_id,
+        max(trusted.download_attempt) AS max_download_attempt
+    FROM trusted_download_attempts AS trusted
+    GROUP BY trusted.acquisition_id
+), assigned_download_attempts_raw AS (
+    SELECT
+        trusted.acquisition_id,
+        trusted.rss_entry_id,
+        trusted.download_id,
+        trusted.download_attempt,
+        trusted.occurred_at,
+        trusted.first_event_sequence,
+        trusted.last_event_sequence,
+        trusted.live_acquisition,
+        trusted.archived_event_sequence
+    FROM trusted_download_attempts AS trusted
+    UNION ALL
+    SELECT
+        legacy.acquisition_id,
+        legacy.rss_entry_id,
+        legacy.download_id,
+        COALESCE(maximum.max_download_attempt, 0) + legacy.legacy_attempt_rank,
+        legacy.occurred_at,
+        legacy.first_event_sequence,
+        legacy.last_event_sequence,
+        legacy.live_acquisition,
+        legacy.archived_event_sequence
+    FROM legacy_download_attempts AS legacy
+    LEFT JOIN trusted_max_attempts AS maximum
+      ON maximum.acquisition_id = legacy.acquisition_id
+), attempt_collisions AS (
+    SELECT
+        assigned.acquisition_id,
+        assigned.download_attempt
+    FROM assigned_download_attempts_raw AS assigned
+    GROUP BY assigned.acquisition_id, assigned.download_attempt
+    HAVING count(DISTINCT assigned.download_id) > 1
+), assigned_download_attempts AS (
+    SELECT assigned.*
+    FROM assigned_download_attempts_raw AS assigned
+    LEFT JOIN attempt_collisions AS collision
+      ON collision.acquisition_id = assigned.acquisition_id
+     AND collision.download_attempt = assigned.download_attempt
+    WHERE collision.acquisition_id IS NULL
+), verified_enqueue_attempts AS (
+    SELECT
+        enqueue.rss_entry_id,
+        enqueue.acquisition_id,
+        enqueue.download_id,
+        assigned.download_attempt,
+        enqueue.occurred_at,
+        enqueue.event_sequence,
+        enqueue.live_acquisition,
+        enqueue.archived_event_sequence
+    FROM verified_enqueue_events AS enqueue
+    JOIN assigned_download_attempts AS assigned
+      ON assigned.acquisition_id = enqueue.acquisition_id
+     AND assigned.rss_entry_id = enqueue.rss_entry_id
+     AND assigned.download_id = enqueue.download_id
 ), attempt_downloads AS (
     SELECT
         enqueue.acquisition_id,
@@ -609,6 +706,29 @@ WITH candidate_events AS MATERIALIZED (
 -- Live tasks are checked through their actual source file. Deleted task rows
 -- can only be reconstructed from an already verified deleted acquisition chain;
 -- a payload UUID alone is never sufficient for either path.
+), historical_task_claims AS (
+    SELECT
+        enqueue.acquisition_id,
+        candidate.task_id,
+        candidate.download_id,
+        candidate.task_created_at,
+        candidate.event_sequence
+    FROM task_created_candidates AS candidate
+    JOIN attempt_winners AS enqueue ON enqueue.download_id = candidate.download_id
+    WHERE NOT enqueue.live_acquisition
+      AND (enqueue.archived_event_sequence IS NULL OR candidate.event_sequence < enqueue.archived_event_sequence)
+      AND NOT EXISTS (
+          SELECT 1
+          FROM episode_tasks AS task
+          WHERE task.id = candidate.task_id
+      )
+), historical_task_identity AS (
+    SELECT
+        claim.task_id
+    FROM historical_task_claims AS claim
+    GROUP BY claim.task_id
+    HAVING count(DISTINCT claim.acquisition_id) = 1
+       AND count(DISTINCT claim.download_id) = 1
 ), task_created_events AS (
     SELECT
         task.acquisition_id,
@@ -620,35 +740,60 @@ WITH candidate_events AS MATERIALIZED (
     JOIN episode_tasks AS task ON task.id = candidate.task_id
     JOIN download_files AS source_file ON source_file.id = task.source_video_file_id
     JOIN downloads AS source_download ON source_download.id = source_file.download_id
+    LEFT JOIN archived AS task_archived ON task_archived.acquisition_id = task.acquisition_id
     WHERE source_download.id = candidate.download_id
       AND source_download.acquisition_id = task.acquisition_id
       AND source_download.deleted_at IS NULL
+      AND (task_archived.archived_event_sequence IS NULL OR candidate.event_sequence < task_archived.archived_event_sequence)
     UNION ALL
     SELECT
-        enqueue.acquisition_id,
-        candidate.task_id,
-        candidate.download_id,
-        candidate.task_created_at,
-        candidate.event_sequence
-    FROM task_created_candidates AS candidate
-    JOIN attempt_winners AS enqueue ON enqueue.download_id = candidate.download_id
-    WHERE NOT enqueue.live_acquisition
-      AND NOT EXISTS (
-          SELECT 1
-          FROM episode_tasks AS task
-          WHERE task.id = candidate.task_id
-      )
-), task_milestones AS (
+        claim.acquisition_id,
+        claim.task_id,
+        claim.download_id,
+        claim.task_created_at,
+        claim.event_sequence
+    FROM historical_task_claims AS claim
+    JOIN historical_task_identity AS identity ON identity.task_id = claim.task_id
+), task_created_sequence AS (
+    SELECT
+        created.*,
+        lag(created.task_id) OVER (
+            PARTITION BY created.acquisition_id, created.download_id
+            ORDER BY created.event_sequence
+        ) AS previous_task_id
+    FROM task_created_events AS created
+), task_created_ordered AS (
+    SELECT
+        created.*,
+        max(
+            CASE
+                WHEN created.previous_task_id IS DISTINCT FROM created.task_id THEN created.event_sequence
+                ELSE NULL
+            END
+        ) OVER (
+            PARTITION BY created.acquisition_id, created.download_id
+            ORDER BY created.event_sequence
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS task_generation_start_sequence
+    FROM task_created_sequence AS created
+), task_created_history AS (
+    SELECT
+        created.*,
+        min(created.task_created_at) OVER (
+            PARTITION BY created.acquisition_id, created.download_id, created.task_generation_start_sequence
+            ORDER BY created.event_sequence
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS task_created_at_through_event
+    FROM task_created_ordered AS created
+), task_milestone_events AS (
     SELECT
         event.resource_id AS task_id,
-        max(event.occurred_at) FILTER (WHERE event.topic = 'task.video_ready') AS video_ready_at,
-        max(event.occurred_at) FILTER (WHERE event.topic = 'task.subtitle_ready') AS subtitle_ready_at,
-        max(event.occurred_at) FILTER (WHERE event.topic = 'task.awaiting_review') AS artifact_ready_at,
-        max(event.occurred_at) FILTER (WHERE event.topic = 'task.reviewed') AS reviewed_at
+        event.topic,
+        event.occurred_at,
+        event.event_sequence
     FROM candidate_events AS event
     WHERE event.resource_type = 'episode_task'
       AND event.topic IN ('task.video_ready', 'task.subtitle_ready', 'task.awaiting_review', 'task.reviewed')
-    GROUP BY event.resource_id
 ), task_imported_events AS (
     SELECT
         event.resource_id AS task_id,
@@ -666,18 +811,11 @@ WITH candidate_events AS MATERIALIZED (
         imported.imported_at,
         imported.imported_event_sequence,
         created.task_id,
-        (
-            SELECT min(history.task_created_at)
-            FROM task_created_events AS history
-            WHERE history.acquisition_id = attempt.acquisition_id
-              AND history.download_id = attempt.download_id
-              AND history.task_id = created.task_id
-              AND history.event_sequence > attempt.first_event_sequence
-              AND history.event_sequence < imported.imported_event_sequence
-        ) AS task_created_at,
+        created.task_generation_start_sequence,
+        created.task_created_at_through_event AS task_created_at,
         created.event_sequence AS task_created_event_sequence
     FROM attempt_winners AS attempt
-    JOIN task_created_events AS created
+    JOIN task_created_history AS created
       ON created.acquisition_id = attempt.acquisition_id
      AND created.download_id = attempt.download_id
      AND created.event_sequence > attempt.first_event_sequence
@@ -686,7 +824,7 @@ WITH candidate_events AS MATERIALIZED (
      AND imported.imported_event_sequence > created.event_sequence
     WHERE NOT EXISTS (
         SELECT 1
-        FROM task_created_events AS newer
+        FROM task_created_history AS newer
         WHERE newer.acquisition_id = attempt.acquisition_id
           AND newer.download_id = attempt.download_id
           AND newer.event_sequence > created.event_sequence
@@ -694,20 +832,18 @@ WITH candidate_events AS MATERIALIZED (
     )
     ORDER BY attempt.acquisition_id, attempt.download_id, attempt.download_attempt, imported.imported_event_sequence, created.event_sequence DESC
 ), successful_candidates AS (
-    SELECT DISTINCT ON (current.acquisition_id, current.imported_event_sequence)
+    SELECT
         current.acquisition_id,
         attempt.rss_entry_id,
         attempt.download_id,
         attempt.download_attempt,
-        min(enqueue.occurred_at) OVER (
-            PARTITION BY current.acquisition_id, current.imported_event_sequence
-        ) AS acquisition_created_at,
+        min(enqueue.occurred_at) AS acquisition_created_at,
         current.task_id,
         current.task_created_at,
-        milestones.video_ready_at,
-        milestones.subtitle_ready_at,
-        milestones.artifact_ready_at,
-        milestones.reviewed_at,
+        max(milestone.occurred_at) FILTER (WHERE milestone.topic = 'task.video_ready') AS video_ready_at,
+        max(milestone.occurred_at) FILTER (WHERE milestone.topic = 'task.subtitle_ready') AS subtitle_ready_at,
+        max(milestone.occurred_at) FILTER (WHERE milestone.topic = 'task.awaiting_review') AS artifact_ready_at,
+        max(milestone.occurred_at) FILTER (WHERE milestone.topic = 'task.reviewed') AS reviewed_at,
         current.imported_at,
         current.imported_event_sequence
     FROM task_current_before_import AS current
@@ -720,8 +856,13 @@ WITH candidate_events AS MATERIALIZED (
      AND enqueue.download_id = attempt.download_id
      AND enqueue.download_attempt = attempt.download_attempt
      AND enqueue.event_sequence < current.imported_event_sequence
-    LEFT JOIN task_milestones AS milestones ON milestones.task_id = current.task_id
+    LEFT JOIN task_milestone_events AS milestone
+      ON milestone.task_id = current.task_id
+     AND milestone.event_sequence > current.task_generation_start_sequence
+     AND milestone.event_sequence < current.imported_event_sequence
+     AND (attempt.archived_event_sequence IS NULL OR milestone.event_sequence < attempt.archived_event_sequence)
     WHERE current.task_id = current.imported_task_id
+      AND (attempt.archived_event_sequence IS NULL OR current.imported_event_sequence < attempt.archived_event_sequence)
       AND NOT EXISTS (
           SELECT 1
           FROM attempt_winners AS higher
@@ -729,11 +870,16 @@ WITH candidate_events AS MATERIALIZED (
             AND higher.download_attempt > attempt.download_attempt
             AND higher.first_event_sequence < current.imported_event_sequence
       )
-      AND (
-          attempt.live_acquisition
-          OR current.imported_event_sequence < attempt.archived_event_sequence
-      )
-    ORDER BY current.acquisition_id, current.imported_event_sequence, enqueue.event_sequence
+    GROUP BY
+        current.acquisition_id,
+        attempt.rss_entry_id,
+        attempt.download_id,
+        attempt.download_attempt,
+        current.task_id,
+        current.task_generation_start_sequence,
+        current.task_created_at,
+        current.imported_at,
+        current.imported_event_sequence
 ), successful_history AS (
     -- The first valid import wins. A higher attempt only invalidates an older
     -- chain when its enqueue arrived before that chain's import.
@@ -752,45 +898,56 @@ WITH candidate_events AS MATERIALIZED (
         candidate.imported_event_sequence
     FROM successful_candidates AS candidate
     ORDER BY candidate.acquisition_id, candidate.imported_event_sequence
-), pending_task_candidates AS (
-    SELECT
+), pending_task_states AS (
+    SELECT DISTINCT ON (latest.acquisition_id, latest.download_id)
         latest.acquisition_id,
         latest.download_id,
         latest.download_attempt,
         latest.occurred_at,
         latest.event_sequence,
+        latest.archived_event_sequence,
         created.task_id,
-        min(created.task_created_at) AS task_created_at,
-        milestones.video_ready_at,
-        milestones.subtitle_ready_at,
-        milestones.artifact_ready_at,
-        milestones.reviewed_at,
-        max(created.event_sequence) AS task_event_sequence
+        created.task_generation_start_sequence,
+        created.task_created_at_through_event AS task_created_at,
+        created.event_sequence AS task_event_sequence
     FROM latest_enqueue AS latest
-    JOIN task_created_events AS created
+    JOIN task_created_history AS created
       ON created.acquisition_id = latest.acquisition_id
      AND created.download_id = latest.download_id
      AND created.event_sequence > latest.first_event_sequence
-    LEFT JOIN task_milestones AS milestones ON milestones.task_id = created.task_id
-    LEFT JOIN successful_history AS successful ON successful.acquisition_id = latest.acquisition_id
-    WHERE successful.acquisition_id IS NULL
-      AND (
-          latest.live_acquisition
-          OR created.event_sequence < latest.archived_event_sequence
-      )
+     AND (latest.archived_event_sequence IS NULL OR created.event_sequence < latest.archived_event_sequence)
+    ORDER BY latest.acquisition_id, latest.download_id, created.event_sequence DESC
+), pending_task_candidates AS (
+    SELECT
+        state.acquisition_id,
+        state.download_id,
+        state.download_attempt,
+        state.occurred_at,
+        state.event_sequence,
+        state.task_id,
+        state.task_created_at,
+        max(milestone.occurred_at) FILTER (WHERE milestone.topic = 'task.video_ready') AS video_ready_at,
+        max(milestone.occurred_at) FILTER (WHERE milestone.topic = 'task.subtitle_ready') AS subtitle_ready_at,
+        max(milestone.occurred_at) FILTER (WHERE milestone.topic = 'task.awaiting_review') AS artifact_ready_at,
+        max(milestone.occurred_at) FILTER (WHERE milestone.topic = 'task.reviewed') AS reviewed_at,
+        successful.acquisition_id IS NOT NULL AS has_success
+    FROM pending_task_states AS state
+    LEFT JOIN task_milestone_events AS milestone
+      ON milestone.task_id = state.task_id
+     AND milestone.event_sequence > state.task_generation_start_sequence
+     AND (state.archived_event_sequence IS NULL OR milestone.event_sequence < state.archived_event_sequence)
+    LEFT JOIN successful_history AS successful ON successful.acquisition_id = state.acquisition_id
     GROUP BY
-        latest.acquisition_id,
-        latest.download_id,
-        latest.download_attempt,
-        latest.occurred_at,
-        latest.event_sequence,
-        created.task_id,
-        milestones.video_ready_at,
-        milestones.subtitle_ready_at,
-        milestones.artifact_ready_at,
-        milestones.reviewed_at
+        state.acquisition_id,
+        state.download_id,
+        state.download_attempt,
+        state.occurred_at,
+        state.event_sequence,
+        state.task_id,
+        state.task_created_at,
+        successful.acquisition_id
 ), pending_tasks AS (
-    SELECT DISTINCT ON (candidate.acquisition_id)
+    SELECT
         candidate.acquisition_id,
         candidate.download_id,
         candidate.download_attempt,
@@ -803,7 +960,7 @@ WITH candidate_events AS MATERIALIZED (
         candidate.artifact_ready_at,
         candidate.reviewed_at
     FROM pending_task_candidates AS candidate
-    ORDER BY candidate.acquisition_id, candidate.task_event_sequence DESC, candidate.task_id
+    WHERE NOT candidate.has_success
 )
 INSERT INTO rss_acquisition_provenance (
     acquisition_id,
