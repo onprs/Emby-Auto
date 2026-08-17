@@ -494,10 +494,18 @@ WITH candidate_events AS MATERIALIZED (
       AND jsonb_typeof(event.data->'downloadId') = 'string'
       AND rss_provenance_uuid(event.data->>'acquisitionId') IS NOT NULL
       AND rss_provenance_uuid(event.data->>'downloadId') IS NOT NULL
+), enqueue_candidates_before_terminal AS (
+    -- 身份聚合必须先按第一次删除完成事件截断；终止后的陈旧声明
+    -- 既不能推翻之前唯一的关系，也不能扩展已接受的历史链。
+    SELECT enqueue.*
+    FROM enqueue_candidates AS enqueue
+    LEFT JOIN archived ON archived.acquisition_id = enqueue.acquisition_id
+    WHERE archived.archived_event_sequence IS NULL
+       OR enqueue.event_sequence < archived.archived_event_sequence
 ), historical_enqueue_entry_consistent AS (
     SELECT
         enqueue.acquisition_id
-    FROM enqueue_candidates AS enqueue
+    FROM enqueue_candidates_before_terminal AS enqueue
     GROUP BY enqueue.acquisition_id
     HAVING count(DISTINCT enqueue.rss_entry_id) = 1
 ), enqueue_associations AS (
@@ -514,7 +522,7 @@ WITH candidate_events AS MATERIALIZED (
         download.id IS NOT NULL AND download.deleted_at IS NULL AS live_download,
         enqueue.occurred_at,
         enqueue.event_sequence
-    FROM enqueue_candidates AS enqueue
+    FROM enqueue_candidates_before_terminal AS enqueue
     LEFT JOIN downloads AS download
       ON download.id = enqueue.download_id
 ), historical_download_identity AS (
