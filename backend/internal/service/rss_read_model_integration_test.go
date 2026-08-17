@@ -123,6 +123,7 @@ func TestArchivedRSSImportRemainsLinkedWithCompletedStagesIntegration(t *testing
 
 	seriesID, seasonID, episodeID, profileID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	subscriptionID, entryID, acquisitionID, downloadID, taskID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	fileID, transcodeProfileID := uuid.New(), uuid.New()
 	if _, err := testutil.ExecFixture(ctx, pool, `
 INSERT INTO media_series (id, tmdb_series_id, title) VALUES ($1, 99001, 'Archived RSS Series');
 INSERT INTO tmdb_seasons (id, series_id, season_number, episode_count) VALUES ($2, $1, 1, 1);
@@ -142,7 +143,19 @@ INSERT INTO rss_entries (
 )
 VALUES ($6, $5, 'guid:archived-entry', 'Archived RSS S01E01', 'https://example.test/archive.torrent', true,
         ARRAY[]::text[], 1, 1, 'enqueued', now(), 'managed_import');
-`, seriesID, seasonID, episodeID, profileID, subscriptionID, entryID); err != nil {
+INSERT INTO acquisitions (id, series_id, source_kind, rss_entry_id)
+VALUES ($7, $1, 'rss', $6);
+INSERT INTO downloads (id, acquisition_id, attempt, status)
+VALUES ($8, $7, 1, 'materialized');
+INSERT INTO download_files (id, download_id, file_index, relative_path, size_bytes, media_kind, selected)
+VALUES ($9, $8, 0, 'Archived.S01E01.mkv', 1024, 'video', true);
+INSERT INTO transcode_profiles (
+    id, name, version, active, is_default, video_codec, encoder, container,
+    file_extension, quality_mode, quality_value, audio_policy, preset,
+    pixel_format, thread_count, max_concurrency
+) VALUES ($10, 'archived-provenance', 1, true, false, 'h264', 'libx264', 'matroska', 'mkv', 'crf', 20, 'copy', 'medium', 'yuv420p', 0, 1);
+INSERT INTO episode_tasks (id, acquisition_id, source_video_file_id, transcode_profile_id)
+VALUES ($11, $7, $9, $10);`, seriesID, seasonID, episodeID, profileID, subscriptionID, entryID, acquisitionID, downloadID, fileID, transcodeProfileID, taskID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `
@@ -158,6 +171,9 @@ INSERT INTO events (id, topic, resource_type, resource_id, data, occurred_at) VA
     (gen_random_uuid(), 'task.imported', 'episode_task', $4, '{}'::jsonb, now() - interval '4 minutes'),
     (gen_random_uuid(), 'acquisition.delete_completed', 'acquisition', $2, '{}'::jsonb, now() - interval '3 minutes');
 `, entryID, acquisitionID, downloadID, taskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM acquisitions WHERE id = $1`, acquisitionID); err != nil {
 		t.Fatal(err)
 	}
 

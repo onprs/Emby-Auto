@@ -7,6 +7,11 @@ import (
 	"github.com/google/uuid"
 )
 
+type EventStats struct {
+	Count              int64
+	EarliestOccurredAt *time.Time
+}
+
 type Event struct {
 	ID           uuid.UUID
 	Topic        string

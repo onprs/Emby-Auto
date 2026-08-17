@@ -83,6 +83,7 @@ export function useConfigurationSave(configuration: Configuration) {
       setSavedAt(new Date().toISOString());
       queryClient.setQueryData(['configuration'], updated);
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      void queryClient.invalidateQueries({ queryKey: ['event-stats'] });
     },
     onError: (cause) => {
       if (cause instanceof ApiFailure && cause.isConflict) {

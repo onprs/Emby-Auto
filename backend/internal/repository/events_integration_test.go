@@ -14,6 +14,48 @@ import (
 	"github.com/onprs/emby-auto/backend/internal/testutil"
 )
 
+func TestEventStatsReportsEmptyOldestAndRetentionChangesIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, pool := testutil.NewMigratedPostgres(t)
+	queries := db.New(pool)
+	events := NewEvents(queries)
+
+	stats, err := events.Stats(ctx)
+	if err != nil {
+		t.Fatalf("Stats() on empty table error = %v", err)
+	}
+	if stats.Count != 0 || stats.EarliestOccurredAt != nil {
+		t.Fatalf("empty stats = %#v, want zero and null", stats)
+	}
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	oldest := now.Add(-40 * 24 * time.Hour)
+	newest := now.Add(-24 * time.Hour)
+	appendTestEvent(t, ctx, pool, queries, "operation.started", oldest)
+	appendTestEvent(t, ctx, pool, queries, "operation.started", newest)
+
+	stats, err = events.Stats(ctx)
+	if err != nil {
+		t.Fatalf("Stats() with events error = %v", err)
+	}
+	if stats.Count != 2 || stats.EarliestOccurredAt == nil || !stats.EarliestOccurredAt.Equal(oldest) {
+		t.Fatalf("two-event stats = %#v, want count 2 and oldest %v", stats, oldest)
+	}
+
+	deleted, err := events.DeleteExpired(ctx, now.Add(-30*24*time.Hour), 100)
+	if err != nil || deleted != 1 {
+		t.Fatalf("DeleteExpired() = %d, %v, want one row", deleted, err)
+	}
+	stats, err = events.Stats(ctx)
+	if err != nil {
+		t.Fatalf("Stats() after retention error = %v", err)
+	}
+	if stats.Count != 1 || stats.EarliestOccurredAt == nil || !stats.EarliestOccurredAt.Equal(newest) {
+		t.Fatalf("post-retention stats = %#v, want count 1 and %v", stats, newest)
+	}
+}
+
 func appendTestEvent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, topic string, occurredAt time.Time) uuid.UUID {
 	t.Helper()
 	event, err := queries.AppendEvent(ctx, db.AppendEventParams{
@@ -33,7 +75,7 @@ func appendTestEvent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, quer
 	return id
 }
 
-// read model 依赖的 provenance 事件必须被保留。
+// 结构化 read model 现在持久化这些 topic 所需事实；事件本身进入有限期。
 var provenanceEventTopics = []string{
 	"rss.entry.enqueueing",
 	"task.created",
@@ -79,6 +121,8 @@ var discardableEventTopics = []string{
 	"search.cancelled",
 	"acquisition.created",
 	"acquisition.delete_requested",
+	"acquisition.delete_completed",
+	"task.created",
 	"task.finalizing",
 	"task.import_queued",
 	"task.cleanup_completed",
@@ -90,6 +134,11 @@ var discardableEventTopics = []string{
 	"task.cleanup_cancelled",
 	"task.import_cancelled",
 	"task.media_cancelled",
+	"task.video_ready",
+	"task.subtitle_ready",
+	"task.awaiting_review",
+	"task.reviewed",
+	"task.imported",
 	"agent.resolution_queued",
 	"agent.resolution_failed",
 	"agent.resolution_cancelled",
@@ -102,6 +151,7 @@ var discardableEventTopics = []string{
 	"emby.scan_completed",
 	"emby.scan_failed",
 	"emby.scan_cancelled",
+	"rss.entry.enqueueing",
 	"rss.entry.ignored",
 	"rss.entry.target_occupied",
 	"rss.entry.fulfillment_expired",
@@ -135,9 +185,6 @@ func TestDeleteExpiredRemovesOnlyDiscardableEventsIntegration(t *testing.T) {
 		expired = append(expired, appendTestEvent(t, ctx, pool, queries, topic, now.Add(-40*24*time.Hour)))
 	}
 	var kept []uuid.UUID
-	for _, topic := range provenanceEventTopics {
-		kept = append(kept, appendTestEvent(t, ctx, pool, queries, topic, now.Add(-200*24*time.Hour)))
-	}
 	for _, topic := range []string{
 		"future.read_model.provenance",
 		"rss.subscription.incomplete_recovery_future",
@@ -236,16 +283,7 @@ func TestDeleteExpiredSkipsLargeProtectedBacklogIntegration(t *testing.T) {
 	if _, err := pool.Exec(ctx, `
 INSERT INTO events (topic, data, occurred_at)
 SELECT
-    (ARRAY[
-        'rss.entry.enqueueing',
-        'task.created',
-        'task.imported',
-        'task.video_ready',
-        'task.subtitle_ready',
-        'task.awaiting_review',
-        'task.reviewed',
-        'acquisition.delete_completed'
-    ]::text[])[((candidate - 1) % 8) + 1],
+    'future.read_model.provenance',
     '{}'::jsonb,
     $1
 FROM generate_series(1, 5000) AS candidates(candidate)
@@ -265,9 +303,8 @@ FROM generate_series(1, 5000) AS candidates(candidate)
 	}
 	var protectedCount int64
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM events WHERE occurred_at = $1 AND topic = ANY($2::text[])`,
+		`SELECT count(*) FROM events WHERE occurred_at = $1 AND topic = 'future.read_model.provenance'`,
 		occurredAt,
-		provenanceEventTopics,
 	).Scan(&protectedCount); err != nil {
 		t.Fatalf("count protected backlog: %v", err)
 	}
@@ -281,6 +318,15 @@ func TestEventDiscardabilityFunctionAndPartialIndexIntegration(t *testing.T) {
 	defer cancel()
 	_, pool := testutil.NewMigratedPostgres(t)
 
+	for _, topic := range provenanceEventTopics {
+		var discardable bool
+		if err := pool.QueryRow(ctx, `SELECT event_is_discardable($1)`, topic).Scan(&discardable); err != nil {
+			t.Fatalf("event_is_discardable(%q): %v", topic, err)
+		}
+		if !discardable {
+			t.Fatalf("provenance event_is_discardable(%q) = false, want true", topic)
+		}
+	}
 	for _, topic := range discardableEventTopics {
 		var discardable bool
 		if err := pool.QueryRow(ctx, `SELECT event_is_discardable($1)`, topic).Scan(&discardable); err != nil {
@@ -290,12 +336,11 @@ func TestEventDiscardabilityFunctionAndPartialIndexIntegration(t *testing.T) {
 			t.Fatalf("event_is_discardable(%q) = false, want true", topic)
 		}
 	}
-	protectedTopics := append([]string{}, provenanceEventTopics...)
-	protectedTopics = append(protectedTopics,
+	protectedTopics := []string{
 		"future.read_model.provenance",
 		"rss.subscription.incomplete_recovery_future",
 		"legacy.custom.history",
-	)
+	}
 	for _, topic := range protectedTopics {
 		var discardable bool
 		if err := pool.QueryRow(ctx, `SELECT event_is_discardable($1)`, topic).Scan(&discardable); err != nil {

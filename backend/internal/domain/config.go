@@ -36,7 +36,7 @@ type RuntimeSettings struct {
 }
 
 // EventsSettings 控制 allowlist 中可由业务表恢复事件的保留策略。
-// RetentionDays 为 0 时禁用定期清理；provenance 与未知事件始终保留。
+// RetentionDays 为 0 时禁用定期清理；结构化 provenance 事实与未知事件始终保留。
 type EventsSettings struct {
 	RetentionDays int32 `json:"retentionDays"`
 }

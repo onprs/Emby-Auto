@@ -17,6 +17,7 @@ import (
 type eventSourceStub struct {
 	mutex      sync.Mutex
 	events     []domain.Event
+	stats      domain.EventStats
 	err        error
 	firstCall  chan struct{}
 	signalOnce sync.Once
@@ -39,6 +40,68 @@ func (stub *eventSourceStub) List(_ context.Context, cursor *uuid.UUID, _ int32)
 		return stub.events, nil
 	}
 	return nil, nil
+}
+
+func (stub *eventSourceStub) Stats(context.Context) (domain.EventStats, error) {
+	stub.mutex.Lock()
+	defer stub.mutex.Unlock()
+	return stub.stats, stub.err
+}
+
+func TestEventStatsResponsePreservesNullableEarliestTimestamp(t *testing.T) {
+	tests := []struct {
+		name      string
+		stats     domain.EventStats
+		wantCount int64
+		wantTime  *time.Time
+	}{
+		{
+			name:      "empty events",
+			stats:     domain.EventStats{},
+			wantCount: 0,
+		},
+		{
+			name: "non-empty events",
+			stats: domain.EventStats{
+				Count:              3,
+				EarliestOccurredAt: timePointer(time.Date(2026, time.July, 21, 12, 30, 0, 0, time.UTC)),
+			},
+			wantCount: 3,
+			wantTime:  timePointer(time.Date(2026, time.July, 21, 12, 30, 0, 0, time.UTC)),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := &eventSourceStub{stats: test.stats}
+			handler := NewHandler(NewServer(readinessStub{}, WithEvents(source)))
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/events/stats", nil)
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+			var body EventStats
+			if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.EventCount != test.wantCount {
+				t.Fatalf("event count = %d, want %d", body.EventCount, test.wantCount)
+			}
+			if test.wantTime == nil {
+				if body.EarliestOccurredAt != nil {
+					t.Fatalf("earliest timestamp = %v, want null", body.EarliestOccurredAt)
+				}
+			} else if body.EarliestOccurredAt == nil || !body.EarliestOccurredAt.Equal(*test.wantTime) {
+				t.Fatalf("earliest timestamp = %v, want %v", body.EarliestOccurredAt, test.wantTime)
+			}
+		})
+	}
+}
+
+func timePointer(value time.Time) *time.Time {
+	return &value
 }
 
 func TestEventStreamWritesPublicUUIDCursorAndEnvelope(t *testing.T) {

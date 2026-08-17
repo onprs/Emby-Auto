@@ -48,16 +48,16 @@ type AgentResolutionTMDbSearch interface {
 }
 
 type AgentResolutionService struct {
-	queries       *db.Queries
-	transactor    *database.Transactor
-	operations    *OperationScheduler
-	configuration AgentResolutionConfiguration
-	catalog       AgentResolutionCatalog
-	tmdbSearch    AgentResolutionTMDbSearch
-	rssRealtime   RSSRealtimeTargetVerifier
-	rssMapping    RSSPreacquisitionMappingAgent
-	runner        agentharness.Runner
-	now           func() time.Time
+	queries        *db.Queries
+	transactor     *database.Transactor
+	operations     *OperationScheduler
+	configuration  AgentResolutionConfiguration
+	catalog        AgentResolutionCatalog
+	tmdbSearch     AgentResolutionTMDbSearch
+	rssRealtime    RSSRealtimeTargetVerifier
+	rssMapping     RSSPreacquisitionMappingAgent
+	runner         agentharness.Runner
+	now            func() time.Time
 	subtitleReader SubtitleTextInspector
 }
 
@@ -1233,7 +1233,7 @@ func (service *AgentResolutionService) applyRSSReleaseAdjudication(
 				return fmt.Errorf("schedule adjudicated RSS download: %w", err)
 			}
 			if err := appendResourceEvent(ctx, scope.Queries, "rss_entry", entryID, scheduled.Operation.ID, uuid.Nil, "rss.entry.enqueueing", map[string]any{
-				"status": domain.RSSEnqueueing, "enqueueAttempt": enqueueing.EnqueueAttempts,
+				"status": domain.RSSEnqueueing, "enqueueAttempt": enqueueing.EnqueueAttempts, "downloadAttempt": download.Attempt,
 				"acquisitionId": repository.UUIDFromPG(acquisition.ID), "downloadId": repository.UUIDFromPG(download.ID),
 				"agentResolutionId": resolution.ID, "adjudicationBatchId": proposal.BatchID,
 			}); err != nil {
@@ -1388,7 +1388,7 @@ func (service *AgentResolutionService) applyRSSCoordinate(
 			}
 			downstreamOperationID = scheduled.Operation.ID
 			if err := appendResourceEvent(ctx, scope.Queries, "rss_entry", resolution.ResourceID, scheduled.Operation.ID, uuid.Nil, "rss.entry.enqueueing", map[string]any{
-				"status": domain.RSSEnqueueing, "enqueueAttempt": updated.EnqueueAttempts,
+				"status": domain.RSSEnqueueing, "enqueueAttempt": updated.EnqueueAttempts, "downloadAttempt": download.Attempt,
 				"acquisitionId": repository.UUIDFromPG(acquisition.ID), "downloadId": repository.UUIDFromPG(download.ID),
 				"agentResolutionId": resolution.ID,
 			}); err != nil {

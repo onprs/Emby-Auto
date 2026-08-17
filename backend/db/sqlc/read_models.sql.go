@@ -439,51 +439,25 @@ func (q *Queries) GetAcquisitionMappingCompletenessByAcquisitionIDs(ctx context.
 
 const getArchivedRSSAcquisitionByID = `-- name: GetArchivedRSSAcquisitionByID :one
 WITH successful_history AS (
-    SELECT DISTINCT ON (enqueue.resource_id)
-        enqueue.resource_id AS entry_id,
-        (enqueue.data->>'acquisitionId')::uuid AS acquisition_id,
-        (enqueue.data->>'downloadId')::uuid AS download_id,
-        enqueue.occurred_at AS acquisition_created_at,
-        created.resource_id AS task_id,
-        created.occurred_at AS task_created_at,
-        imported.occurred_at AS imported_at
-    FROM events AS enqueue
-    JOIN rss_entries AS entry
-      ON entry.id = enqueue.resource_id
-     AND entry.imported_at IS NOT NULL
-    JOIN events AS created
-      ON created.resource_type = 'episode_task'
-     AND created.topic = 'task.created'
-     AND created.data->>'downloadId' = enqueue.data->>'downloadId'
-    JOIN events AS imported
-      ON imported.resource_type = 'episode_task'
-     AND imported.resource_id = created.resource_id
-     AND imported.topic = 'task.imported'
-    WHERE enqueue.resource_type = 'rss_entry'
-      AND enqueue.topic = 'rss.entry.enqueueing'
-      AND enqueue.data ? 'acquisitionId'
-      AND enqueue.data ? 'downloadId'
-      AND (enqueue.data->>'acquisitionId')::uuid = $1::uuid
-    ORDER BY enqueue.resource_id, imported.occurred_at DESC, enqueue.occurred_at DESC
-), task_milestones AS (
     SELECT
-        event.resource_id AS task_id,
-        max(event.occurred_at) FILTER (WHERE event.topic = 'task.video_ready')::timestamptz AS video_ready_at,
-        max(event.occurred_at) FILTER (WHERE event.topic = 'task.subtitle_ready')::timestamptz AS subtitle_ready_at,
-        max(event.occurred_at) FILTER (WHERE event.topic = 'task.awaiting_review')::timestamptz AS artifact_ready_at,
-        max(event.occurred_at) FILTER (WHERE event.topic = 'task.reviewed')::timestamptz AS reviewed_at
-    FROM events AS event
-    WHERE event.resource_type = 'episode_task'
-      AND event.topic IN ('task.video_ready', 'task.subtitle_ready', 'task.awaiting_review', 'task.reviewed')
-    GROUP BY event.resource_id
-), acquisition_milestones AS (
-    SELECT
-        event.resource_id AS acquisition_id,
-        max(event.occurred_at)::timestamptz AS archived_at
-    FROM events AS event
-    WHERE event.resource_type = 'acquisition'
-      AND event.topic = 'acquisition.delete_completed'
-    GROUP BY event.resource_id
+        provenance.rss_entry_id AS entry_id,
+        provenance.acquisition_id,
+        provenance.download_id,
+        provenance.acquisition_created_at,
+        provenance.task_id,
+        provenance.task_created_at,
+        provenance.video_ready_at,
+        provenance.subtitle_ready_at,
+        provenance.artifact_ready_at,
+        provenance.reviewed_at,
+        provenance.imported_at,
+        provenance.archived_at
+    FROM rss_acquisition_provenance AS provenance
+    JOIN rss_entries AS entry ON entry.id = provenance.rss_entry_id
+    WHERE provenance.acquisition_id = $1::uuid
+      AND entry.imported_at IS NOT NULL
+      AND provenance.task_id IS NOT NULL
+      AND provenance.imported_at IS NOT NULL
 )
 SELECT
     history.acquisition_id,
@@ -502,12 +476,12 @@ SELECT
     target_episode.title AS target_episode_title,
     history.acquisition_created_at,
     history.task_created_at,
-    milestones.video_ready_at,
-    milestones.subtitle_ready_at,
-    milestones.artifact_ready_at,
-    milestones.reviewed_at,
+    history.video_ready_at,
+    history.subtitle_ready_at,
+    history.artifact_ready_at,
+    history.reviewed_at,
     history.imported_at,
-    COALESCE(subscription.completed_at, acquisition_milestones.archived_at, history.imported_at)::timestamptz AS archived_at
+    COALESCE(subscription.completed_at, history.archived_at, history.imported_at)::timestamptz AS archived_at
 FROM successful_history AS history
 JOIN rss_entries AS entry ON entry.id = history.entry_id
 JOIN rss_subscriptions AS subscription ON subscription.id = entry.subscription_id
@@ -519,8 +493,6 @@ LEFT JOIN episode_mappings AS mapping
  AND mapping.mapping_status = 'mapped'
 LEFT JOIN media_episodes AS target_episode ON target_episode.id = mapping.target_episode_id
 LEFT JOIN tmdb_seasons AS target_season ON target_season.id = target_episode.season_id
-LEFT JOIN task_milestones AS milestones ON milestones.task_id = history.task_id
-LEFT JOIN acquisition_milestones ON acquisition_milestones.acquisition_id = history.acquisition_id
 LIMIT 1
 `
 
@@ -1539,20 +1511,10 @@ SELECT
     adjudication.related_entry_id,
     EXISTS (
         SELECT 1
-        FROM events AS enqueue
-        JOIN events AS created
-          ON created.resource_type = 'episode_task'
-         AND created.topic = 'task.created'
-         AND created.data->>'downloadId' = enqueue.data->>'downloadId'
-        JOIN events AS imported
-          ON imported.resource_type = 'episode_task'
-         AND imported.resource_id = created.resource_id
-         AND imported.topic = 'task.imported'
-        WHERE enqueue.resource_type = 'rss_entry'
-          AND enqueue.topic = 'rss.entry.enqueueing'
-          AND enqueue.resource_id = entry.id
-          AND enqueue.data ? 'acquisitionId'
-          AND enqueue.data ? 'downloadId'
+        FROM rss_acquisition_provenance AS provenance
+        WHERE provenance.rss_entry_id = entry.id
+          AND provenance.task_id IS NOT NULL
+          AND provenance.imported_at IS NOT NULL
     ) AS successful_import_present
 FROM rss_entries AS entry
 LEFT JOIN rss_entry_adjudications AS adjudication ON adjudication.entry_id = entry.id

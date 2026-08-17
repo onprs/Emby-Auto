@@ -29,7 +29,7 @@ type EventsRetentionStore interface {
 
 // EventsRetentionWorker 由 River 周期任务触发，按保留期分批清理过期事件。
 // 保留期为 0 时跳过清理，允许保留全部事件历史；每个任务最多删除 10 批，积压由后续小时任务继续清理；
-// 仅清理 fail-closed allowlist 中可由业务表恢复的事件，provenance 与未知事件始终保留。
+// 仅清理 fail-closed allowlist 中可由业务表恢复的事件，结构化 provenance 事实与未知事件始终保留。
 type EventsRetentionWorker struct {
 	river.WorkerDefaults[appqueue.EventsRetentionCleanupArgs]
 	configuration EventsRetentionConfiguration

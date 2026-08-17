@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import { LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -23,12 +24,13 @@ import {
   SecretField,
   SettingsFeedback,
 } from "@/features/configuration/settings-shared";
-import { revealSecrets } from "@/features/configuration/api";
+import { fetchEventStats, revealSecrets } from "@/features/configuration/api";
 import {
   secretPayload,
   useConfigurationSave,
   useSettingsData,
 } from "@/features/configuration/use-settings";
+import { formatDateTime } from "@/lib/format";
 
 const maxQBittorrentRateLimitKibPerSecond = 2097151;
 
@@ -75,6 +77,10 @@ function ServicesForm({
   >;
   dependencies: ReturnType<typeof useSettingsData>["dependencies"];
 }) {
+  const eventStats = useQuery({
+    queryKey: ["event-stats"],
+    queryFn: fetchEventStats,
+  });
   const [qbUrl, setQbUrl] = useState(configuration.qBittorrent.url);
   const [qbUsername, setQbUsername] = useState(
     configuration.qBittorrent.username,
@@ -426,8 +432,22 @@ function ServicesForm({
                 }
               />
             </Field>
+            <dl className="grid gap-3 border-y border-zinc-200 py-3 text-sm sm:grid-cols-2">
+              <div>
+                <dt className="text-zinc-500">当前事件总量</dt>
+                <dd className="mt-1 font-medium tabular-nums text-zinc-900">
+                  {eventStats.isPending ? "读取中" : eventStats.error ? "—" : eventStats.data?.eventCount.toLocaleString("zh-CN") ?? "—"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-zinc-500">最早事件时间</dt>
+                <dd className="mt-1 font-medium text-zinc-900">
+                  {eventStats.isPending ? "读取中" : eventStats.error ? "—" : formatDateTime(eventStats.data?.earliestOccurredAt)}
+                </dd>
+              </div>
+            </dl>
             <p className="text-xs text-zinc-500">
-              超过保留天数且可由业务状态恢复的系统事件会被定期删除，业务导入历史与未知事件类型始终保留；
+              超过保留天数且可由业务状态恢复的系统事件会被定期删除，业务导入历史由独立记录保留，未知事件类型始终保留；
               设置为 0 时保留全部事件历史。
             </p>
           </CardContent>

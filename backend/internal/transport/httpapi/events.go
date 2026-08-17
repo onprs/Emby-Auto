@@ -16,6 +16,25 @@ import (
 
 const eventBatchSize int32 = 100
 
+func (server *Server) GetEventStats(
+	ctx context.Context,
+	_ GetEventStatsRequestObject,
+) (GetEventStatsResponseObject, error) {
+	if server.events == nil {
+		return GetEventStats503JSONResponse{ServiceUnavailableJSONResponse: serviceUnavailableError(ctx, "postgresql")}, nil
+	}
+	stats, err := server.events.Stats(ctx)
+	if err != nil {
+		return GetEventStats503JSONResponse{ServiceUnavailableJSONResponse: serviceUnavailableError(ctx, "postgresql")}, nil
+	}
+	response := EventStats{EventCount: stats.Count}
+	if stats.EarliestOccurredAt != nil {
+		earliest := stats.EarliestOccurredAt.UTC()
+		response.EarliestOccurredAt = &earliest
+	}
+	return GetEventStats200JSONResponse(response), nil
+}
+
 func (server *Server) StreamEvents(
 	ctx context.Context,
 	request StreamEventsRequestObject,

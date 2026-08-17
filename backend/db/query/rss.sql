@@ -1075,33 +1075,17 @@ WHERE entry.subscription_id = sqlc.arg(subscription_id)
 ORDER BY task.created_at, task.id;
 
 -- name: ListRSSImportedEntryAcquisitions :many
-WITH successful_history AS (
-    SELECT DISTINCT ON (enqueue.resource_id)
-        enqueue.resource_id AS entry_id,
-        (enqueue.data->>'acquisitionId')::uuid AS acquisition_id,
-        imported.occurred_at AS imported_at
-    FROM events AS enqueue
-    JOIN rss_entries AS entry
-      ON entry.id = enqueue.resource_id
-     AND entry.imported_at IS NOT NULL
-    JOIN events AS created
-      ON created.resource_type = 'episode_task'
-     AND created.topic = 'task.created'
-     AND created.data->>'downloadId' = enqueue.data->>'downloadId'
-    JOIN events AS imported
-      ON imported.resource_type = 'episode_task'
-     AND imported.resource_id = created.resource_id
-     AND imported.topic = 'task.imported'
-    WHERE enqueue.resource_type = 'rss_entry'
-      AND enqueue.topic = 'rss.entry.enqueueing'
-      AND entry.subscription_id = sqlc.arg(subscription_id)
-      AND enqueue.data ? 'acquisitionId'
-      AND enqueue.data ? 'downloadId'
-    ORDER BY enqueue.resource_id, imported.occurred_at DESC, enqueue.occurred_at DESC
-)
-SELECT entry_id, acquisition_id, imported_at
-FROM successful_history
-ORDER BY entry_id;
+SELECT DISTINCT ON (provenance.rss_entry_id)
+    provenance.rss_entry_id AS entry_id,
+    provenance.acquisition_id,
+    provenance.imported_at
+FROM rss_acquisition_provenance AS provenance
+JOIN rss_entries AS entry ON entry.id = provenance.rss_entry_id
+WHERE entry.subscription_id = sqlc.arg(subscription_id)
+  AND entry.imported_at IS NOT NULL
+  AND provenance.task_id IS NOT NULL
+  AND provenance.imported_at IS NOT NULL
+ORDER BY provenance.rss_entry_id, provenance.imported_at DESC, provenance.acquisition_created_at DESC, provenance.acquisition_id;
 
 -- name: GetRSSSubscriptionImportedCount :one
 SELECT
