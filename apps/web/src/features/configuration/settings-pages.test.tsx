@@ -78,6 +78,12 @@ function mockConfig() {
       qbPassword: "qb-real-password",
       embyApiKey: "emby-real-api-key",
     })),
+    http.get("*/api/v1/events/stats", () =>
+      HttpResponse.json({
+        eventCount: 12,
+        earliestOccurredAt: "2026-07-21T12:30:00Z",
+      }),
+    ),
     http.get("*/api/v1/dashboard/summary", () =>
       HttpResponse.json({
         counts: {
@@ -162,6 +168,31 @@ describe("SettingsServicesPage", () => {
       ),
     );
   }
+
+  it("shows event volume and oldest timestamp in the event history settings", async () => {
+    mockConfig();
+    renderWithProviders(<SettingsServicesPage />);
+
+    expect(await screen.findByText("当前事件总量")).toBeInTheDocument();
+    expect(screen.getByText("12")).toBeInTheDocument();
+    expect(screen.getByText("最早事件时间")).toBeInTheDocument();
+    expect(screen.getByText(/2026/)).toBeInTheDocument();
+  });
+
+  it("shows an empty marker when the event table has no oldest timestamp", async () => {
+    mockConfig();
+    server.use(
+      http.get("*/api/v1/events/stats", () =>
+        HttpResponse.json({ eventCount: 0, earliestOccurredAt: null }),
+      ),
+    );
+    renderWithProviders(<SettingsServicesPage />);
+
+    expect(await screen.findByText("当前事件总量")).toBeInTheDocument();
+    expect(screen.getByText("0")).toBeInTheDocument();
+    const label = screen.getByText("最早事件时间");
+    expect(label.parentElement).toHaveTextContent("—");
+  });
 
   it("reveals configured secrets as editable real values and keeps them when unchanged", async () => {
     mockConfig();

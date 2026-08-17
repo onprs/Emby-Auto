@@ -1,9 +1,13 @@
 import { unwrap } from '@/api/app-client';
-import { getConfiguration, revealConfigurationSecrets, testConnectivity, updateConfiguration } from '@/api/generated/sdk.gen';
-import type { Configuration, ConnectivityTestRequest, ConnectivityTestResult, RevealedSecrets, UpdateConfigurationRequest } from '@/api/generated/types.gen';
+import { getConfiguration, getEventStats, revealConfigurationSecrets, testConnectivity, updateConfiguration } from '@/api/generated/sdk.gen';
+import type { Configuration, ConnectivityTestRequest, ConnectivityTestResult, EventStats, RevealedSecrets, UpdateConfigurationRequest } from '@/api/generated/types.gen';
 
 export function fetchConfiguration(): Promise<Configuration> {
   return unwrap<Configuration>(getConfiguration(), '无法读取配置');
+}
+
+export function fetchEventStats(): Promise<EventStats> {
+  return unwrap<EventStats>(getEventStats(), '无法读取事件统计');
 }
 
 export function saveConfiguration(body: UpdateConfigurationRequest): Promise<Configuration> {

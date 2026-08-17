@@ -88,7 +88,7 @@ export type Configuration = {
 
 export type EventsConfiguration = {
     /**
-     * 明确标记为可由业务表恢复事件的保留天数。后台定期任务删除超过保留期的 allowlist 事件；业务导入历史等 provenance 及未知事件类型始终保留；0 表示禁用定期清理。
+     * 明确标记为可由业务表恢复的事件保留天数。后台定期任务删除超过保留期的 allowlist 事件；业务导入历史由结构化 provenance 记录保留，未知事件类型始终保留；0 表示禁用定期清理。
      */
     retentionDays: number;
 };
@@ -1225,6 +1225,11 @@ export type EventRecord = {
 export type EventPage = {
     items: Array<EventRecord>;
     nextCursor?: string;
+};
+
+export type EventStats = {
+    eventCount: number;
+    earliestOccurredAt: string | null;
 };
 
 export type ConnectivityTestRequest = {
@@ -3501,6 +3506,35 @@ export type GetOperationResponses = {
 };
 
 export type GetOperationResponse = GetOperationResponses[keyof GetOperationResponses];
+
+export type GetEventStatsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/events/stats';
+};
+
+export type GetEventStatsErrors = {
+    /**
+     * Authentication is required or failed.
+     */
+    401: ApiError;
+    /**
+     * A required dependency is unavailable.
+     */
+    503: ApiError;
+};
+
+export type GetEventStatsError = GetEventStatsErrors[keyof GetEventStatsErrors];
+
+export type GetEventStatsResponses = {
+    /**
+     * The current persisted event volume.
+     */
+    200: EventStats;
+};
+
+export type GetEventStatsResponse = GetEventStatsResponses[keyof GetEventStatsResponses];
 
 export type ListEventsData = {
     body?: never;

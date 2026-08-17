@@ -23,6 +23,12 @@ SELECT *
 FROM events
 WHERE id = sqlc.arg(id);
 
+-- name: GetEventStats :one
+SELECT
+    count(*)::bigint AS event_count,
+    min(occurred_at)::timestamptz AS earliest_occurred_at
+FROM events;
+
 -- name: ListEvents :many
 SELECT *
 FROM events
@@ -38,8 +44,8 @@ ORDER BY event.event_sequence
 LIMIT sqlc.arg(page_size);
 
 -- name: DeleteExpiredEvents :execrows
--- event_is_discardable 是 fail-closed allowlist，也是 partial index 的谓词；
--- 未知、新增和 read-model provenance topic 默认保留。
+-- 结构化 provenance 已独立保留业务事实，事件本身仍按 fail-closed allowlist 清理；
+-- 未知、新增 topic 默认保留。
 WITH expired AS (
     SELECT events.id
     FROM events

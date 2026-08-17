@@ -15,6 +15,7 @@ import (
 
 type eventQueries interface {
 	GetEvent(context.Context, pgtype.UUID) (db.Event, error)
+	GetEventStats(context.Context) (db.GetEventStatsRow, error)
 	ListEvents(context.Context, int32) ([]db.Event, error)
 	ListEventsAfter(context.Context, db.ListEventsAfterParams) ([]db.Event, error)
 	DeleteExpiredEvents(context.Context, db.DeleteExpiredEventsParams) (int64, error)
@@ -69,8 +70,21 @@ func (repository *Events) List(
 	return events, nil
 }
 
+func (repository *Events) Stats(ctx context.Context) (domain.EventStats, error) {
+	row, err := repository.queries.GetEventStats(ctx)
+	if err != nil {
+		return domain.EventStats{}, fmt.Errorf("get event stats: %w", err)
+	}
+	stats := domain.EventStats{Count: row.EventCount}
+	if row.EarliestOccurredAt.Valid {
+		earliest := row.EarliestOccurredAt.Time.UTC()
+		stats.EarliestOccurredAt = &earliest
+	}
+	return stats, nil
+}
+
 // DeleteExpired 分批删除早于 before 且在 fail-closed allowlist 中的事件，
-// provenance 与未知事件由 SQL 默认保留；每批最多删除 maxRows 行。
+// 结构化 provenance 事实与未知事件由独立存储/SQL 默认保留；每批最多删除 maxRows 行。
 func (repository *Events) DeleteExpired(ctx context.Context, before time.Time, maxRows int32) (int64, error) {
 	if maxRows <= 0 {
 		return 0, fmt.Errorf("event deletion batch size must be positive")

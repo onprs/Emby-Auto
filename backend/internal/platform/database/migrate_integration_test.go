@@ -107,6 +107,98 @@ WHERE subscription_id = $1
 	}
 }
 
+func TestRSSAcquisitionProvenanceMigrationBackfillsAndRestoresRollbackBoundaryIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	databaseURL, pool := testutil.NewMigratedPostgres(t)
+	downgradeApplication(t, ctx, pool, 39)
+
+	seriesID, subscriptionID, entryID := uuid.New(), uuid.New(), uuid.New()
+	acquisitionID, downloadID, taskID := uuid.New(), uuid.New(), uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, title) VALUES ($1, 'Provenance migration fixture')`, seriesID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO rss_subscriptions (id, series_id, name, feed_url, enabled, poll_interval_seconds, source_season)
+VALUES ($1, $2, 'Provenance migration fixture', $3, true, 900, 1)
+`, subscriptionID, seriesID, "https://example.test/"+subscriptionID.String()+".xml"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO rss_entries (
+    id, subscription_id, identity_key, title, download_uri, downloadable,
+    rejection_reasons, source_season, source_episode, status, imported_at
+) VALUES ($1, $2, $3, 'Fixture S01E01', 'https://example.test/episode.torrent', true, ARRAY[]::text[], 1, 1, 'enqueued', $4)
+`, entryID, subscriptionID, "guid:"+entryID.String(), time.Date(2026, 7, 1, 12, 6, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `
+INSERT INTO events (topic, resource_type, resource_id, data, occurred_at)
+VALUES
+    ('rss.entry.enqueueing', 'rss_entry', $1, jsonb_build_object('acquisitionId', $2, 'downloadId', $3), $4),
+    ('task.created', 'episode_task', $5, jsonb_build_object('downloadId', $3), $6),
+    ('task.video_ready', 'episode_task', $5, '{}'::jsonb, $7),
+    ('task.imported', 'episode_task', $5, '{}'::jsonb, $8),
+    ('acquisition.delete_completed', 'acquisition', $2, '{}'::jsonb, $9)
+`, entryID, acquisitionID, downloadID, base, taskID, base.Add(time.Minute), base.Add(2*time.Minute), base.Add(6*time.Minute), base.Add(7*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.NewMigrator().Migrate(ctx, databaseURL); err != nil {
+		t.Fatalf("Migrate() from v39 error = %v", err)
+	}
+	assertProvenanceMigrationRow(t, ctx, pool, acquisitionID, downloadID, taskID)
+	var discardable bool
+	if err := pool.QueryRow(ctx, `SELECT event_is_discardable('task.created')`).Scan(&discardable); err != nil {
+		t.Fatal(err)
+	}
+	if !discardable {
+		t.Fatal("task.created remained protected after provenance migration")
+	}
+
+	if err := database.NewMigrator().Migrate(ctx, databaseURL); err != nil {
+		t.Fatalf("repeated Migrate() at v40 error = %v", err)
+	}
+	assertProvenanceMigrationRow(t, ctx, pool, acquisitionID, downloadID, taskID)
+
+	downgradeApplication(t, ctx, pool, 39)
+	var tableExists bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('rss_acquisition_provenance') IS NOT NULL`).Scan(&tableExists); err != nil {
+		t.Fatal(err)
+	}
+	if tableExists {
+		t.Fatal("provenance table still exists after migration 40 down")
+	}
+	if err := pool.QueryRow(ctx, `SELECT event_is_discardable('task.created')`).Scan(&discardable); err != nil {
+		t.Fatal(err)
+	}
+	if discardable {
+		t.Fatal("migration 40 down did not restore protected task.created topic")
+	}
+
+	if err := database.NewMigrator().Migrate(ctx, databaseURL); err != nil {
+		t.Fatalf("Migrate() after rollback boundary error = %v", err)
+	}
+	assertProvenanceMigrationRow(t, ctx, pool, acquisitionID, downloadID, taskID)
+}
+
+func assertProvenanceMigrationRow(t *testing.T, ctx context.Context, pool *pgxpool.Pool, acquisitionID, downloadID, taskID uuid.UUID) {
+	t.Helper()
+	var gotDownloadID, gotTaskID uuid.UUID
+	var gotVideoReady time.Time
+	if err := pool.QueryRow(ctx, `
+SELECT download_id, task_id, video_ready_at
+FROM rss_acquisition_provenance
+WHERE acquisition_id = $1
+`, acquisitionID).Scan(&gotDownloadID, &gotTaskID, &gotVideoReady); err != nil {
+		t.Fatal(err)
+	}
+	if gotDownloadID != downloadID || gotTaskID != taskID || gotVideoReady.IsZero() {
+		t.Fatalf("backfilled provenance = %s/%s/%v, want %s/%s/nonzero", gotDownloadID, gotTaskID, gotVideoReady, downloadID, taskID)
+	}
+}
+
 func TestApplicationMigrationsUpgradeV8AndV9Integration(t *testing.T) {
 	for _, startingVersion := range []int64{8, 9} {
 		t.Run(fmt.Sprintf("v%d", startingVersion), func(t *testing.T) {

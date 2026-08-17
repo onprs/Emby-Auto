@@ -86,8 +86,8 @@ type DeleteExpiredEventsParams struct {
 	MaxRows int32              `db:"max_rows" json:"max_rows"`
 }
 
-// event_is_discardable 是 fail-closed allowlist，也是 partial index 的谓词；
-// 未知、新增和 read-model provenance topic 默认保留。
+// 结构化 provenance 已独立保留业务事实，事件本身仍按 fail-closed allowlist 清理；
+// 未知、新增 topic 默认保留。
 func (q *Queries) DeleteExpiredEvents(ctx context.Context, arg DeleteExpiredEventsParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteExpiredEvents, arg.Before, arg.MaxRows)
 	if err != nil {
@@ -116,6 +116,25 @@ func (q *Queries) GetEvent(ctx context.Context, id pgtype.UUID) (Event, error) {
 		&i.Data,
 		&i.OccurredAt,
 	)
+	return i, err
+}
+
+const getEventStats = `-- name: GetEventStats :one
+SELECT
+    count(*)::bigint AS event_count,
+    min(occurred_at)::timestamptz AS earliest_occurred_at
+FROM events
+`
+
+type GetEventStatsRow struct {
+	EventCount         int64              `db:"event_count" json:"event_count"`
+	EarliestOccurredAt pgtype.Timestamptz `db:"earliest_occurred_at" json:"earliest_occurred_at"`
+}
+
+func (q *Queries) GetEventStats(ctx context.Context) (GetEventStatsRow, error) {
+	row := q.db.QueryRow(ctx, getEventStats)
+	var i GetEventStatsRow
+	err := row.Scan(&i.EventCount, &i.EarliestOccurredAt)
 	return i, err
 }
 
