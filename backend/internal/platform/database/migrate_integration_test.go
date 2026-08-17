@@ -120,6 +120,9 @@ func TestRSSAcquisitionProvenanceMigrationBackfillsAndRestoresRollbackBoundaryIn
 	seriesID, subscriptionID, entryID := uuid.New(), uuid.New(), uuid.New()
 	acquisitionID, downloadID, taskID := uuid.New(), uuid.New(), uuid.New()
 	profileID, fileID := uuid.New(), uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, title) VALUES ($1, 'Provenance migration fixture')`, seriesID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO rss_subscriptions (id, series_id, name, feed_url, enabled, poll_interval_seconds, source_season)
 VALUES ($1, $2, 'Provenance migration fixture', $3, true, 900, 1)
@@ -358,8 +361,7 @@ VALUES ($1, $2, $3, $4::jsonb, $5)
 	if err := database.NewMigrator().Migrate(ctx, databaseURL); err != nil {
 		t.Fatalf("Migrate() from v39 error = %v", err)
 	}
-	var liveDownload, liveTask *uuid.UUID
-	var livePending uuid.UUID
+	var liveDownload, liveTask, livePending *uuid.UUID
 	var liveImported bool
 	if err := pool.QueryRow(ctx, `
 SELECT download_id, task_id, pending_download_id, imported_at IS NOT NULL
@@ -368,8 +370,8 @@ WHERE acquisition_id = $1
 `, acquisitionIDs[0]).Scan(&liveDownload, &liveTask, &livePending, &liveImported); err != nil {
 		t.Fatal(err)
 	}
-	if liveDownload != nil || liveTask != nil || livePending != downloads[0] || liveImported {
-		t.Fatalf("live source mismatch provenance = %v/%v/%s/imported=%t, want no success and D1 pending", liveDownload, liveTask, livePending, liveImported)
+	if liveDownload != nil || liveTask != nil || livePending != nil || liveImported {
+		t.Fatalf("live source mismatch provenance = %v/%v/%v/imported=%t, want no success or pending provenance", liveDownload, liveTask, livePending, liveImported)
 	}
 	var count int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rss_acquisition_provenance WHERE acquisition_id = $1`, acquisitionIDs[1]).Scan(&count); err != nil {
