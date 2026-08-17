@@ -136,11 +136,11 @@ INSERT INTO rss_entries (
 	if _, err := pool.Exec(ctx, `
 INSERT INTO events (topic, resource_type, resource_id, data, occurred_at)
 VALUES
-    ('rss.entry.enqueueing', 'rss_entry', $1, jsonb_build_object('acquisitionId', $2, 'downloadId', $3), $4),
-    ('task.created', 'episode_task', $5, jsonb_build_object('downloadId', $3), $6),
-    ('task.video_ready', 'episode_task', $5, '{}'::jsonb, $7),
-    ('task.imported', 'episode_task', $5, '{}'::jsonb, $8),
-    ('acquisition.delete_completed', 'acquisition', $2, '{}'::jsonb, $9)
+    ('rss.entry.enqueueing', 'rss_entry', $1::uuid, jsonb_build_object('acquisitionId', $2::uuid, 'downloadId', $3::uuid), $4::timestamptz),
+    ('task.created', 'episode_task', $5::uuid, jsonb_build_object('downloadId', $3::uuid), $6::timestamptz),
+    ('task.video_ready', 'episode_task', $5::uuid, '{}'::jsonb, $7::timestamptz),
+    ('task.imported', 'episode_task', $5::uuid, '{}'::jsonb, $8::timestamptz),
+    ('acquisition.delete_completed', 'acquisition', $2::uuid, '{}'::jsonb, $9::timestamptz)
 `, entryID, acquisitionID, downloadID, base, taskID, base.Add(time.Minute), base.Add(2*time.Minute), base.Add(6*time.Minute), base.Add(7*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
