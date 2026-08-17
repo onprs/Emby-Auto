@@ -430,6 +430,247 @@ FROM rss_acquisition_provenance WHERE acquisition_id = $1
 	}
 }
 
+type provenanceTriggerEventSpec struct {
+	topic  string
+	offset time.Duration
+}
+
+type provenanceTriggerStageSnapshot struct {
+	downloadID         uuid.UUID
+	taskID             uuid.UUID
+	downloadAttempt    int
+	taskCreatedAt      string
+	videoReadyAt       string
+	subtitleReadyAt    string
+	artifactReadyAt    string
+	reviewedAt         string
+	importedAt         string
+	pendingDownloadNil bool
+	pendingTaskNil     bool
+}
+
+func insertProvenanceTriggerEvent(
+	t *testing.T,
+	ctx context.Context,
+	exec provenanceExec,
+	entryID, acquisitionID, downloadID, taskID uuid.UUID,
+	event provenanceTriggerEventSpec,
+	occurredAt time.Time,
+) {
+	t.Helper()
+	resourceType := "episode_task"
+	resourceID := taskID
+	data := `{}`
+	if event.topic == "rss.entry.enqueueing" {
+		resourceType = "rss_entry"
+		resourceID = entryID
+		data = enqueueProvenanceData(acquisitionID, downloadID, 1)
+	}
+	insertProvenanceEvent(t, ctx, exec, event.topic, resourceType, resourceID, data, occurredAt)
+}
+
+func readProvenanceTriggerStageSnapshot(t *testing.T, ctx context.Context, pool *pgxpool.Pool, acquisitionID uuid.UUID) provenanceTriggerStageSnapshot {
+	t.Helper()
+	var snapshot provenanceTriggerStageSnapshot
+	if err := pool.QueryRow(ctx, `
+SELECT download_id, task_id, download_attempt,
+       COALESCE(to_char(task_created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF'), ''),
+       COALESCE(to_char(video_ready_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF'), ''),
+       COALESCE(to_char(subtitle_ready_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF'), ''),
+       COALESCE(to_char(artifact_ready_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF'), ''),
+       COALESCE(to_char(reviewed_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF'), ''),
+       COALESCE(to_char(imported_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF'), ''),
+       pending_download_id IS NULL, pending_task_id IS NULL
+FROM rss_acquisition_provenance
+WHERE acquisition_id = $1
+`, acquisitionID).Scan(
+		&snapshot.downloadID, &snapshot.taskID, &snapshot.downloadAttempt,
+		&snapshot.taskCreatedAt, &snapshot.videoReadyAt, &snapshot.subtitleReadyAt,
+		&snapshot.artifactReadyAt, &snapshot.reviewedAt, &snapshot.importedAt,
+		&snapshot.pendingDownloadNil, &snapshot.pendingTaskNil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func assertProvenanceTriggerSuccessSnapshot(t *testing.T, snapshot provenanceTriggerStageSnapshot, downloadID, taskID uuid.UUID, wantStages bool) {
+	t.Helper()
+	if snapshot.downloadID != downloadID || snapshot.taskID != taskID || snapshot.downloadAttempt != 1 || snapshot.taskCreatedAt == "" || snapshot.importedAt == "" {
+		t.Fatalf("success snapshot = %#v, want download %s/task %s/attempt 1 with created and imported times", snapshot, downloadID, taskID)
+	}
+	if !snapshot.pendingDownloadNil || !snapshot.pendingTaskNil {
+		t.Fatalf("success snapshot retained pending state = %#v", snapshot)
+	}
+	stages := []string{snapshot.videoReadyAt, snapshot.subtitleReadyAt, snapshot.artifactReadyAt, snapshot.reviewedAt}
+	for index, stage := range stages {
+		if (stage != "") != wantStages {
+			t.Fatalf("success stage %d = %q, want populated=%t; snapshot=%#v", index, stage, wantStages, snapshot)
+		}
+	}
+}
+
+func TestRSSAcquisitionProvenanceOnlineImportBoundaryIntegration(t *testing.T) {
+	cases := []struct {
+		name       string
+		initial    []provenanceTriggerEventSpec
+		replay     []provenanceTriggerEventSpec
+		wantStages bool
+	}{
+		{
+			name: "late milestones after import are ignored",
+			initial: []provenanceTriggerEventSpec{
+				{topic: "rss.entry.enqueueing", offset: 0},
+				{topic: "task.created", offset: time.Minute},
+				{topic: "task.imported", offset: 2 * time.Minute},
+			},
+			replay: []provenanceTriggerEventSpec{
+				{topic: "task.video_ready", offset: 3 * time.Minute},
+				{topic: "task.subtitle_ready", offset: 4 * time.Minute},
+				{topic: "task.awaiting_review", offset: 5 * time.Minute},
+				{topic: "task.reviewed", offset: 6 * time.Minute},
+			},
+		},
+		{
+			name: "pre-import milestones transfer to success",
+			initial: []provenanceTriggerEventSpec{
+				{topic: "rss.entry.enqueueing", offset: 0},
+				{topic: "task.created", offset: time.Minute},
+				{topic: "task.video_ready", offset: 2 * time.Minute},
+				{topic: "task.subtitle_ready", offset: 3 * time.Minute},
+				{topic: "task.awaiting_review", offset: 4 * time.Minute},
+				{topic: "task.reviewed", offset: 5 * time.Minute},
+				{topic: "task.imported", offset: 6 * time.Minute},
+			},
+			wantStages: true,
+		},
+		{
+			name: "same timestamp import before milestones",
+			initial: []provenanceTriggerEventSpec{
+				{topic: "rss.entry.enqueueing", offset: 0},
+				{topic: "task.created", offset: time.Minute},
+				{topic: "task.imported", offset: 2 * time.Minute},
+				{topic: "task.video_ready", offset: 2 * time.Minute},
+				{topic: "task.subtitle_ready", offset: 2 * time.Minute},
+				{topic: "task.awaiting_review", offset: 2 * time.Minute},
+				{topic: "task.reviewed", offset: 2 * time.Minute},
+			},
+		},
+		{
+			name: "same timestamp milestones before import",
+			initial: []provenanceTriggerEventSpec{
+				{topic: "rss.entry.enqueueing", offset: 0},
+				{topic: "task.created", offset: time.Minute},
+				{topic: "task.video_ready", offset: 2 * time.Minute},
+				{topic: "task.subtitle_ready", offset: 2 * time.Minute},
+				{topic: "task.awaiting_review", offset: 2 * time.Minute},
+				{topic: "task.reviewed", offset: 2 * time.Minute},
+				{topic: "task.imported", offset: 2 * time.Minute},
+			},
+			wantStages: true,
+		},
+		{
+			name: "success ignores duplicate task and milestone replay",
+			initial: []provenanceTriggerEventSpec{
+				{topic: "rss.entry.enqueueing", offset: 0},
+				{topic: "task.created", offset: time.Minute},
+				{topic: "task.video_ready", offset: 2 * time.Minute},
+				{topic: "task.subtitle_ready", offset: 3 * time.Minute},
+				{topic: "task.awaiting_review", offset: 4 * time.Minute},
+				{topic: "task.reviewed", offset: 5 * time.Minute},
+				{topic: "task.imported", offset: 6 * time.Minute},
+			},
+			replay: []provenanceTriggerEventSpec{
+				{topic: "task.created", offset: 10 * time.Minute},
+				{topic: "task.video_ready", offset: 10 * time.Minute},
+				{topic: "task.subtitle_ready", offset: 10 * time.Minute},
+				{topic: "task.awaiting_review", offset: 10 * time.Minute},
+				{topic: "task.reviewed", offset: 10 * time.Minute},
+			},
+			wantStages: true,
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer cancel()
+			_, pool := testutil.NewMigratedPostgres(t)
+			_, _, entryID, acquisitionID := seedProvenanceEntities(t, ctx, pool)
+			profileID := seedProvenanceProfile(t, ctx, pool)
+			downloadID, taskID := uuid.New(), uuid.New()
+			seedProvenanceAttempt(t, ctx, pool, acquisitionID, profileID, downloadID, taskID, 1)
+			base := time.Date(2026, time.July, 6, 12, 0, 0, 0, time.UTC)
+
+			for _, event := range testCase.initial {
+				insertProvenanceTriggerEvent(t, ctx, pool, entryID, acquisitionID, downloadID, taskID, event, base.Add(event.offset))
+			}
+			beforeReplay := readProvenanceTriggerStageSnapshot(t, ctx, pool, acquisitionID)
+			for _, event := range testCase.replay {
+				insertProvenanceTriggerEvent(t, ctx, pool, entryID, acquisitionID, downloadID, taskID, event, base.Add(event.offset))
+			}
+			afterReplay := readProvenanceTriggerStageSnapshot(t, ctx, pool, acquisitionID)
+
+			assertProvenanceTriggerSuccessSnapshot(t, afterReplay, downloadID, taskID, testCase.wantStages)
+			if len(testCase.replay) > 0 && beforeReplay != afterReplay {
+				t.Fatalf("success state changed after replay: before=%#v after=%#v", beforeReplay, afterReplay)
+			}
+		})
+	}
+}
+
+func TestRSSAcquisitionProvenanceTriggerRollbackRemainsAtomicIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, pool := testutil.NewMigratedPostgres(t)
+	_, _, entryID, acquisitionID := seedProvenanceEntities(t, ctx, pool)
+	profileID := seedProvenanceProfile(t, ctx, pool)
+	downloadID, taskID := uuid.New(), uuid.New()
+	seedProvenanceAttempt(t, ctx, pool, acquisitionID, profileID, downloadID, taskID, 1)
+	base := time.Date(2026, time.July, 6, 13, 0, 0, 0, time.UTC)
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []provenanceTriggerEventSpec{
+		{topic: "rss.entry.enqueueing", offset: 0},
+		{topic: "task.created", offset: time.Minute},
+		{topic: "task.video_ready", offset: 2 * time.Minute},
+		{topic: "task.subtitle_ready", offset: 3 * time.Minute},
+		{topic: "task.awaiting_review", offset: 4 * time.Minute},
+		{topic: "task.reviewed", offset: 5 * time.Minute},
+		{topic: "task.imported", offset: 6 * time.Minute},
+	} {
+		insertProvenanceTriggerEvent(t, ctx, tx, entryID, acquisitionID, downloadID, taskID, event, base.Add(event.offset))
+	}
+	var imported bool
+	if err := tx.QueryRow(ctx, `
+SELECT imported_at IS NOT NULL
+FROM rss_acquisition_provenance
+WHERE acquisition_id = $1
+`, acquisitionID).Scan(&imported); err != nil {
+		t.Fatal(err)
+	}
+	if !imported {
+		t.Fatal("provenance success was not visible inside the transaction")
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var eventRows, provenanceRows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM events`).Scan(&eventRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rss_acquisition_provenance`).Scan(&provenanceRows); err != nil {
+		t.Fatal(err)
+	}
+	if eventRows != 0 || provenanceRows != 0 {
+		t.Fatalf("rolled back trigger sequence left events=%d provenance=%d, want 0/0", eventRows, provenanceRows)
+	}
+}
+
 func TestRSSAcquisitionProvenanceMigrationBackfillUsesMigrationSQLPlanIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

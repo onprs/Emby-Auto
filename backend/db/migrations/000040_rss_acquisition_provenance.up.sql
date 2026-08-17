@@ -314,6 +314,7 @@ BEGIN
             END,
             updated_at = clock_timestamp()
         WHERE provenance.acquisition_id = event_task_acquisition_id
+          AND provenance.imported_at IS NULL
           AND (provenance.pending_task_id = NEW.resource_id OR provenance.task_id = NEW.resource_id);
         RETURN NEW;
     END IF;

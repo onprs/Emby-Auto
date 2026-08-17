@@ -443,7 +443,13 @@ type migrationProvenanceExpectation struct {
 	downloadAttempt        int
 	pendingDownloadAttempt int
 	videoReady             bool
+	subtitleReady          bool
+	artifactReady          bool
+	reviewed               bool
 	pendingVideoReady      bool
+	pendingSubtitleReady   bool
+	pendingArtifactReady   bool
+	pendingReviewed        bool
 	imported               bool
 	archived               bool
 }
@@ -620,19 +626,25 @@ func assertMigrationProvenanceExpectation(t *testing.T, ctx context.Context, poo
 	}
 	var gotDownload, gotTask, gotPendingDownload, gotPendingTask *uuid.UUID
 	var gotDownloadAttempt, gotPendingAttempt *int
-	var gotVideoReady, gotPendingVideoReady bool
+	var gotVideoReady, gotSubtitleReady, gotArtifactReady, gotReviewed bool
+	var gotPendingVideoReady, gotPendingSubtitleReady, gotPendingArtifactReady, gotPendingReviewed bool
 	var gotImported, gotArchived bool
 	if err := pool.QueryRow(ctx, `
 SELECT download_id, task_id, download_attempt,
        pending_download_id, pending_task_id, pending_download_attempt,
-       video_ready_at IS NOT NULL, pending_video_ready_at IS NOT NULL,
+       video_ready_at IS NOT NULL, subtitle_ready_at IS NOT NULL,
+       artifact_ready_at IS NOT NULL, reviewed_at IS NOT NULL,
+       pending_video_ready_at IS NOT NULL, pending_subtitle_ready_at IS NOT NULL,
+       pending_artifact_ready_at IS NOT NULL, pending_reviewed_at IS NOT NULL,
        imported_at IS NOT NULL, archived_at IS NOT NULL
 FROM rss_acquisition_provenance
 WHERE acquisition_id = $1
 `, fixture.acquisitions[acquisition]).Scan(
 		&gotDownload, &gotTask, &gotDownloadAttempt,
 		&gotPendingDownload, &gotPendingTask, &gotPendingAttempt,
-		&gotVideoReady, &gotPendingVideoReady, &gotImported, &gotArchived,
+		&gotVideoReady, &gotSubtitleReady, &gotArtifactReady, &gotReviewed,
+		&gotPendingVideoReady, &gotPendingSubtitleReady, &gotPendingArtifactReady, &gotPendingReviewed,
+		&gotImported, &gotArchived,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -658,8 +670,13 @@ WHERE acquisition_id = $1
 	if want.pendingDownloadAttempt == 0 && gotPendingAttempt != nil || want.pendingDownloadAttempt != 0 && (gotPendingAttempt == nil || *gotPendingAttempt != want.pendingDownloadAttempt) {
 		t.Fatalf("pending attempt = %v, want %d", gotPendingAttempt, want.pendingDownloadAttempt)
 	}
-	if gotVideoReady != want.videoReady || gotPendingVideoReady != want.pendingVideoReady {
-		t.Fatalf("milestone flags = video %t pending video %t, want video %t pending video %t", gotVideoReady, gotPendingVideoReady, want.videoReady, want.pendingVideoReady)
+	if gotVideoReady != want.videoReady || gotSubtitleReady != want.subtitleReady || gotArtifactReady != want.artifactReady || gotReviewed != want.reviewed ||
+		gotPendingVideoReady != want.pendingVideoReady || gotPendingSubtitleReady != want.pendingSubtitleReady || gotPendingArtifactReady != want.pendingArtifactReady || gotPendingReviewed != want.pendingReviewed {
+		t.Fatalf("milestone flags = success video %t subtitle %t artifact %t reviewed %t; pending video %t subtitle %t artifact %t reviewed %t, want success video %t subtitle %t artifact %t reviewed %t; pending video %t subtitle %t artifact %t reviewed %t",
+			gotVideoReady, gotSubtitleReady, gotArtifactReady, gotReviewed,
+			gotPendingVideoReady, gotPendingSubtitleReady, gotPendingArtifactReady, gotPendingReviewed,
+			want.videoReady, want.subtitleReady, want.artifactReady, want.reviewed,
+			want.pendingVideoReady, want.pendingSubtitleReady, want.pendingArtifactReady, want.pendingReviewed)
 	}
 	if gotImported != want.imported || gotArchived != want.archived {
 		t.Fatalf("terminal flags = imported %t archived %t, want imported %t archived %t", gotImported, gotArchived, want.imported, want.archived)
@@ -919,9 +936,34 @@ func TestRSSAcquisitionProvenanceMigrationStateMachineCasesIntegration(t *testin
 					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(time.Minute)),
 					migrationTaskImportedEvent(f, "t1", base.Add(2*time.Minute)),
 					migrationTaskMilestoneEvent(f, "t1", "task.video_ready", base.Add(3*time.Minute)),
+					migrationTaskMilestoneEvent(f, "t1", "task.subtitle_ready", base.Add(4*time.Minute)),
+					migrationTaskMilestoneEvent(f, "t1", "task.awaiting_review", base.Add(5*time.Minute)),
+					migrationTaskMilestoneEvent(f, "t1", "task.reviewed", base.Add(6*time.Minute)),
 				}
 			},
 			want: migrationProvenanceExpectation{rows: 1, download: "d1", task: "t1", downloadAttempt: 1, imported: true},
+		},
+		{
+			name: "pre-import milestones survive post-import replay",
+			before: func(f migrationProvenanceFixture, base time.Time) []migrationProvenanceEvent {
+				return []migrationProvenanceEvent{
+					migrationEnqueueEvent(f, "a1", "e1", "d1", 1, base),
+					migrationTaskCreatedEvent(f, "t1", "d1", base.Add(time.Minute)),
+					migrationTaskMilestoneEvent(f, "t1", "task.video_ready", base.Add(2*time.Minute)),
+					migrationTaskMilestoneEvent(f, "t1", "task.subtitle_ready", base.Add(3*time.Minute)),
+					migrationTaskMilestoneEvent(f, "t1", "task.awaiting_review", base.Add(4*time.Minute)),
+					migrationTaskMilestoneEvent(f, "t1", "task.reviewed", base.Add(5*time.Minute)),
+					migrationTaskImportedEvent(f, "t1", base.Add(6*time.Minute)),
+					migrationTaskMilestoneEvent(f, "t1", "task.video_ready", base.Add(7*time.Minute)),
+					migrationTaskMilestoneEvent(f, "t1", "task.subtitle_ready", base.Add(8*time.Minute)),
+					migrationTaskMilestoneEvent(f, "t1", "task.awaiting_review", base.Add(9*time.Minute)),
+					migrationTaskMilestoneEvent(f, "t1", "task.reviewed", base.Add(10*time.Minute)),
+				}
+			},
+			want: migrationProvenanceExpectation{
+				rows: 1, download: "d1", task: "t1", downloadAttempt: 1,
+				videoReady: true, subtitleReady: true, artifactReady: true, reviewed: true, imported: true,
+			},
 		},
 		{
 			name: "duplicate task created keeps generation milestone",
