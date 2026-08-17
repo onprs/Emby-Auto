@@ -73,9 +73,10 @@ VALUES ($1, $2, 1, 'Trigger fixture episode')
 		t.Fatal(err)
 	}
 	if _, err := fixture.pool.Exec(ctx, `
-INSERT INTO episode_mapping_profiles (id, series_id, name, version, source_season_lengths)
-VALUES ($1, $2, $3, 1, ARRAY[1])
-`, ids.mappingProfileID, fixture.seriesID, "progress-trigger-"+ids.mappingProfileID.String()); err != nil {
+INSERT INTO episode_mapping_profiles (
+    id, series_id, name, version, source_season_lengths, created_by, decision_source
+) VALUES ($1, $2, $3, 1, ARRAY[1], $4, 'user')
+`, ids.mappingProfileID, fixture.seriesID, "progress-trigger-"+ids.mappingProfileID.String(), fixture.actorID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.pool.Exec(ctx, `
