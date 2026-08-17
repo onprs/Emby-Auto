@@ -80,18 +80,6 @@ CREATE TABLE rss_acquisition_provenance (
 CREATE INDEX rss_acquisition_provenance_entry_idx
     ON rss_acquisition_provenance (rss_entry_id);
 
-CREATE INDEX rss_acquisition_provenance_pending_download_idx
-    ON rss_acquisition_provenance (pending_download_id)
-    WHERE pending_download_id IS NOT NULL;
-
-CREATE INDEX rss_acquisition_provenance_pending_task_idx
-    ON rss_acquisition_provenance (pending_task_id)
-    WHERE pending_task_id IS NOT NULL;
-
-CREATE INDEX rss_acquisition_provenance_task_idx
-    ON rss_acquisition_provenance (task_id)
-    WHERE task_id IS NOT NULL;
-
 -- 这些列不引用已清理的 download/task 行；rss_entry 生命周期负责清理一行
 -- acquisition provenance，因而同一业务实体的重复事件只覆盖已有状态。
 CREATE FUNCTION sync_rss_acquisition_provenance_from_event()
@@ -224,9 +212,11 @@ BEGIN
         SELECT task.acquisition_id
         INTO event_task_acquisition_id
         FROM episode_tasks AS task
-        JOIN downloads AS download ON download.acquisition_id = task.acquisition_id
+        JOIN download_files AS source_file ON source_file.id = task.source_video_file_id
+        JOIN downloads AS download ON download.id = source_file.download_id
         WHERE task.id = NEW.resource_id
-          AND download.id = event_download_id
+          AND source_file.download_id = event_download_id
+          AND download.acquisition_id = task.acquisition_id
           AND download.deleted_at IS NULL;
         IF NOT FOUND THEN
             RETURN NEW;
@@ -272,7 +262,11 @@ BEGIN
         SELECT task.acquisition_id
         INTO event_task_acquisition_id
         FROM episode_tasks AS task
-        WHERE task.id = NEW.resource_id;
+        JOIN download_files AS source_file ON source_file.id = task.source_video_file_id
+        JOIN downloads AS download ON download.id = source_file.download_id
+        WHERE task.id = NEW.resource_id
+          AND download.acquisition_id = task.acquisition_id
+          AND download.deleted_at IS NULL;
         IF NOT FOUND THEN
             RETURN NEW;
         END IF;
@@ -330,7 +324,11 @@ BEGIN
         SELECT task.acquisition_id
         INTO event_task_acquisition_id
         FROM episode_tasks AS task
-        WHERE task.id = NEW.resource_id;
+        JOIN download_files AS source_file ON source_file.id = task.source_video_file_id
+        JOIN downloads AS download ON download.id = source_file.download_id
+        WHERE task.id = NEW.resource_id
+          AND download.acquisition_id = task.acquisition_id
+          AND download.deleted_at IS NULL;
         IF NOT FOUND THEN
             RETURN NEW;
         END IF;
@@ -446,6 +444,7 @@ CREATE TRIGGER rss_acquisition_provenance_event_sync
     AFTER INSERT ON events
     FOR EACH ROW EXECUTE FUNCTION sync_rss_acquisition_provenance_from_event();
 
+-- BEGIN MIGRATION_40_RSS_PROVENANCE_BACKFILL
 -- Backfill current and historical successful facts from migration 39 events.
 -- The materialized candidate relation reads events once; all later joins and
 -- aggregations operate on that bounded topic/resource projection.
@@ -469,6 +468,15 @@ WITH candidate_events AS MATERIALIZED (
         'acquisition.delete_completed'
     )
       AND event.resource_id IS NOT NULL
+), archived AS (
+    SELECT
+        event.resource_id AS acquisition_id,
+        max(event.occurred_at) AS archived_at,
+        max(event.event_sequence) AS archived_event_sequence
+    FROM candidate_events AS event
+    WHERE event.resource_type = 'acquisition'
+      AND event.topic = 'acquisition.delete_completed'
+    GROUP BY event.resource_id
 ), enqueue_candidates AS (
     SELECT
         event.resource_id AS rss_entry_id,
@@ -485,6 +493,12 @@ WITH candidate_events AS MATERIALIZED (
       AND jsonb_typeof(event.data->'downloadId') = 'string'
       AND rss_provenance_uuid(event.data->>'acquisitionId') IS NOT NULL
       AND rss_provenance_uuid(event.data->>'downloadId') IS NOT NULL
+), historical_enqueue_entry_consistent AS (
+    SELECT
+        enqueue.acquisition_id
+    FROM enqueue_candidates AS enqueue
+    GROUP BY enqueue.acquisition_id
+    HAVING count(DISTINCT enqueue.rss_entry_id) = 1
 ), enqueue_ranked AS (
     SELECT
         enqueue.*,
@@ -499,16 +513,42 @@ WITH candidate_events AS MATERIALIZED (
         enqueue.acquisition_id,
         enqueue.download_id,
         COALESCE(download.attempt, enqueue.event_download_attempt, enqueue.event_enqueue_attempt, enqueue.fallback_download_attempt) AS download_attempt,
+        download.id IS NOT NULL AS live_download,
         enqueue.occurred_at,
         enqueue.event_sequence
     FROM enqueue_ranked AS enqueue
-    LEFT JOIN downloads AS download ON download.id = enqueue.download_id
+    LEFT JOIN downloads AS download
+      ON download.id = enqueue.download_id
+     AND download.deleted_at IS NULL
+-- A live enqueue is accepted only when all three business links agree:
+-- acquisition -> rss_entry, download -> acquisition, and a non-deleted download.
+-- Once acquisition rows are deleted, the only retained relation is the event chain;
+-- require a deletion event and one consistent entry identity before replaying it.
+), verified_enqueue_attempts AS (
+    SELECT
+        enqueue.*,
+        acquisition.id IS NOT NULL AS live_acquisition,
+        archived.archived_event_sequence
+    FROM enqueue_attempts AS enqueue
+    LEFT JOIN acquisitions AS acquisition ON acquisition.id = enqueue.acquisition_id
+    LEFT JOIN archived ON archived.acquisition_id = enqueue.acquisition_id
+    LEFT JOIN historical_enqueue_entry_consistent AS historical
+      ON historical.acquisition_id = enqueue.acquisition_id
+    WHERE (
+        acquisition.id IS NOT NULL
+        AND acquisition.rss_entry_id = enqueue.rss_entry_id
+        AND enqueue.live_download
+    ) OR (
+        acquisition.id IS NULL
+        AND archived.acquisition_id IS NOT NULL
+        AND historical.acquisition_id IS NOT NULL
+    )
 ), latest_enqueue AS (
     SELECT DISTINCT ON (enqueue.acquisition_id)
         enqueue.*
-    FROM enqueue_attempts AS enqueue
+    FROM verified_enqueue_attempts AS enqueue
     ORDER BY enqueue.acquisition_id, enqueue.download_attempt DESC, enqueue.event_sequence DESC
-), task_created_events AS (
+), task_created_candidates AS (
     SELECT
         event.resource_id AS task_id,
         rss_provenance_uuid(event.data->>'downloadId') AS download_id,
@@ -519,6 +559,36 @@ WITH candidate_events AS MATERIALIZED (
       AND event.resource_type = 'episode_task'
       AND jsonb_typeof(event.data->'downloadId') = 'string'
       AND rss_provenance_uuid(event.data->>'downloadId') IS NOT NULL
+-- Live tasks are checked through their actual source file. Deleted task rows
+-- can only be reconstructed from an already verified deleted acquisition chain;
+-- a payload UUID alone is never sufficient for either path.
+), task_created_events AS (
+    SELECT
+        candidate.task_id,
+        candidate.download_id,
+        candidate.task_created_at,
+        candidate.event_sequence
+    FROM task_created_candidates AS candidate
+    JOIN episode_tasks AS task ON task.id = candidate.task_id
+    JOIN download_files AS source_file ON source_file.id = task.source_video_file_id
+    JOIN downloads AS source_download ON source_download.id = source_file.download_id
+    WHERE source_download.id = candidate.download_id
+      AND source_download.acquisition_id = task.acquisition_id
+      AND source_download.deleted_at IS NULL
+    UNION ALL
+    SELECT
+        candidate.task_id,
+        candidate.download_id,
+        candidate.task_created_at,
+        candidate.event_sequence
+    FROM task_created_candidates AS candidate
+    JOIN verified_enqueue_attempts AS enqueue ON enqueue.download_id = candidate.download_id
+    WHERE NOT enqueue.live_acquisition
+      AND NOT EXISTS (
+          SELECT 1
+          FROM episode_tasks AS task
+          WHERE task.id = candidate.task_id
+      )
 ), task_milestones AS (
     SELECT
         event.resource_id AS task_id,
@@ -533,7 +603,8 @@ WITH candidate_events AS MATERIALIZED (
 ), task_imported_events AS (
     SELECT
         event.resource_id AS task_id,
-        max(event.occurred_at) AS imported_at
+        max(event.occurred_at) AS imported_at,
+        max(event.event_sequence) AS imported_event_sequence
     FROM candidate_events AS event
     WHERE event.resource_type = 'episode_task'
       AND event.topic = 'task.imported'
@@ -551,10 +622,16 @@ WITH candidate_events AS MATERIALIZED (
         milestones.artifact_ready_at,
         milestones.reviewed_at,
         imported.imported_at
-    FROM enqueue_attempts AS enqueue
+    FROM verified_enqueue_attempts AS enqueue
     JOIN task_created_events AS created ON created.download_id = enqueue.download_id
     JOIN task_imported_events AS imported ON imported.task_id = created.task_id
     LEFT JOIN task_milestones AS milestones ON milestones.task_id = created.task_id
+    WHERE created.event_sequence > enqueue.event_sequence
+      AND imported.imported_event_sequence > created.event_sequence
+      AND (
+          enqueue.live_acquisition
+          OR imported.imported_event_sequence < enqueue.archived_event_sequence
+      )
     ORDER BY enqueue.acquisition_id, enqueue.download_attempt DESC, imported.imported_at DESC, enqueue.event_sequence DESC, created.event_sequence DESC, created.task_id
 ), pending_tasks AS (
     SELECT DISTINCT ON (enqueue.acquisition_id)
@@ -570,19 +647,17 @@ WITH candidate_events AS MATERIALIZED (
         milestones.artifact_ready_at,
         milestones.reviewed_at
     FROM latest_enqueue AS enqueue
-    JOIN task_created_events AS created ON created.download_id = enqueue.download_id
+    JOIN task_created_events AS created
+      ON created.download_id = enqueue.download_id
+     AND created.event_sequence > enqueue.event_sequence
     LEFT JOIN task_milestones AS milestones ON milestones.task_id = created.task_id
     LEFT JOIN successful_history AS successful ON successful.acquisition_id = enqueue.acquisition_id
     WHERE successful.acquisition_id IS NULL
+      AND (
+          enqueue.live_acquisition
+          OR created.event_sequence < enqueue.archived_event_sequence
+      )
     ORDER BY enqueue.acquisition_id, created.task_created_at DESC, created.event_sequence DESC, created.task_id
-), archived AS (
-    SELECT
-        event.resource_id AS acquisition_id,
-        max(event.occurred_at) AS archived_at
-    FROM candidate_events AS event
-    WHERE event.resource_type = 'acquisition'
-      AND event.topic = 'acquisition.delete_completed'
-    GROUP BY event.resource_id
 )
 INSERT INTO rss_acquisition_provenance (
     acquisition_id,
@@ -662,6 +737,8 @@ SET rss_entry_id = EXCLUDED.rss_entry_id,
     pending_artifact_ready_at = EXCLUDED.pending_artifact_ready_at,
     pending_reviewed_at = EXCLUDED.pending_reviewed_at,
     updated_at = clock_timestamp();
+
+-- END MIGRATION_40_RSS_PROVENANCE_BACKFILL
 
 -- 结构化 provenance 已成为读模型来源；旧 provenance 事件进入与其它
 -- 可由业务表恢复事件相同的有限期，未知/未来 topic 仍 fail closed。

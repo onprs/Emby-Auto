@@ -18,6 +18,10 @@ import (
 	"github.com/onprs/emby-auto/backend/internal/testutil"
 )
 
+func enqueueProvenanceData(acquisitionID, downloadID uuid.UUID, attempt int) string {
+	return fmt.Sprintf(`{"acquisitionId":"%s","downloadId":"%s","downloadAttempt":%d}`, acquisitionID, downloadID, attempt)
+}
+
 func TestRSSSubscriptionProgressMigrationBackfillsThroughUnifiedReconciliationIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -115,9 +119,7 @@ func TestRSSAcquisitionProvenanceMigrationBackfillsAndRestoresRollbackBoundaryIn
 
 	seriesID, subscriptionID, entryID := uuid.New(), uuid.New(), uuid.New()
 	acquisitionID, downloadID, taskID := uuid.New(), uuid.New(), uuid.New()
-	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, title) VALUES ($1, 'Provenance migration fixture')`, seriesID); err != nil {
-		t.Fatal(err)
-	}
+	profileID, fileID := uuid.New(), uuid.New()
 	if _, err := pool.Exec(ctx, `
 INSERT INTO rss_subscriptions (id, series_id, name, feed_url, enabled, poll_interval_seconds, source_season)
 VALUES ($1, $2, 'Provenance migration fixture', $3, true, 900, 1)
@@ -130,6 +132,33 @@ INSERT INTO rss_entries (
     rejection_reasons, source_season, source_episode, status, imported_at
 ) VALUES ($1, $2, $3, 'Fixture S01E01', 'https://example.test/episode.torrent', true, ARRAY[]::text[], 1, 1, 'enqueued', $4)
 `, entryID, subscriptionID, "guid:"+entryID.String(), time.Date(2026, 7, 1, 12, 6, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO acquisitions (id, series_id, source_kind, rss_entry_id) VALUES ($1, $2, 'rss', $3)`, acquisitionID, seriesID, entryID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO transcode_profiles (
+    id, name, version, active, is_default, video_codec, encoder, container,
+    file_extension, quality_mode, quality_value, audio_policy, preset,
+    pixel_format, thread_count, max_concurrency
+) VALUES ($1, $2, 1, true, false, 'h264', 'libx264', 'matroska', 'mkv', 'crf', 20, 'copy', 'medium', 'yuv420p', 0, 1)
+`, profileID, "migration-provenance-"+profileID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO downloads (id, acquisition_id, attempt, status) VALUES ($1, $2, 1, 'enqueue_pending')`, downloadID, acquisitionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO download_files (id, download_id, file_index, relative_path, size_bytes, media_kind, selected)
+VALUES ($1, $2, 0, $3, 1024, 'video', true)
+`, fileID, downloadID, "migration-"+fileID.String()+".mkv"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO episode_tasks (id, acquisition_id, source_video_file_id, transcode_profile_id)
+VALUES ($1, $2, $3, $4)
+`, taskID, acquisitionID, fileID, profileID); err != nil {
 		t.Fatal(err)
 	}
 	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
@@ -175,10 +204,7 @@ VALUES
 SELECT count(*)
 FROM pg_indexes
 WHERE indexname IN (
-    'rss_acquisition_provenance_entry_idx',
-    'rss_acquisition_provenance_pending_download_idx',
-    'rss_acquisition_provenance_pending_task_idx',
-    'rss_acquisition_provenance_task_idx'
+    'rss_acquisition_provenance_entry_idx'
 )
 `).Scan(&droppedIndexes); err != nil {
 		t.Fatal(err)
@@ -220,6 +246,156 @@ WHERE acquisition_id = $1
 	}
 	if gotDownloadID != downloadID || gotAttempt != 1 || gotTaskID != taskID || gotVideoReady.IsZero() {
 		t.Fatalf("backfilled provenance = %s/attempt%d/%s/%v, want %s/attempt1/%s/nonzero", gotDownloadID, gotAttempt, gotTaskID, gotVideoReady, downloadID, taskID)
+	}
+}
+
+func TestRSSAcquisitionProvenanceMigrationRejectsUnverifiedAssociationHistoryIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	databaseURL, pool := testutil.NewMigratedPostgres(t)
+	downgradeApplication(t, ctx, pool, 39)
+
+	seriesID, subscriptionID := uuid.New(), uuid.New()
+	entries := []uuid.UUID{uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()}
+	acquisitionIDs := []uuid.UUID{uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()}
+	downloads := []uuid.UUID{uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()}
+	profileID := uuid.New()
+	files := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
+	tasks := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
+	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, title) VALUES ($1, 'Provenance association migration fixture')`, seriesID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO rss_subscriptions (id, series_id, name, feed_url, enabled, poll_interval_seconds, source_season)
+VALUES ($1, $2, 'Provenance association migration fixture', $3, true, 900, 1)
+`, subscriptionID, seriesID, "https://example.test/"+subscriptionID.String()+".xml"); err != nil {
+		t.Fatal(err)
+	}
+	for index, entryID := range entries {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO rss_entries (
+    id, subscription_id, identity_key, title, download_uri, downloadable,
+    rejection_reasons, source_season, source_episode, status
+) VALUES ($1, $2, $3, $4, $5, true, ARRAY[]::text[], 1, $6, 'enqueued')
+`, entryID, subscriptionID, "guid:"+entryID.String(), fmt.Sprintf("Fixture S01E%02d", index+1), "https://example.test/"+entryID.String()+".torrent", index+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index, acquisitionID := range acquisitionIDs {
+		if _, err := pool.Exec(ctx, `INSERT INTO acquisitions (id, series_id, source_kind, rss_entry_id) VALUES ($1, $2, 'rss', $3)`, acquisitionID, seriesID, entries[index]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO transcode_profiles (
+    id, name, version, active, is_default, video_codec, encoder, container,
+    file_extension, quality_mode, quality_value, audio_policy, preset,
+    pixel_format, thread_count, max_concurrency
+) VALUES ($1, $2, 1, true, false, 'h264', 'libx264', 'matroska', 'mkv', 'crf', 20, 'copy', 'medium', 'yuv420p', 0, 1)
+`, profileID, "migration-association-"+profileID.String()); err != nil {
+		t.Fatal(err)
+	}
+	for index, downloadID := range downloads {
+		if _, err := pool.Exec(ctx, `INSERT INTO downloads (id, acquisition_id, attempt, status) VALUES ($1, $2, 1, 'enqueue_pending')`, downloadID, acquisitionIDs[index]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index, fileID := range []uuid.UUID{files[0], files[1], files[2]} {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO download_files (id, download_id, file_index, relative_path, size_bytes, media_kind, selected)
+VALUES ($1, $2, 0, $3, 1024, 'video', true)
+`, fileID, downloads[[]int{0, 2, 3}[index]], "migration-association-"+fileID.String()+".mkv"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index, taskID := range []uuid.UUID{tasks[0], tasks[1], tasks[2]} {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO episode_tasks (id, acquisition_id, source_video_file_id, transcode_profile_id)
+VALUES ($1, $2, $3, $4)
+`, taskID, acquisitionIDs[[]int{0, 2, 3}[index]], files[index], profileID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	insertEvent := func(topic, resourceType string, resourceID uuid.UUID, data string, occurredAt time.Time) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `
+INSERT INTO events (topic, resource_type, resource_id, data, occurred_at)
+VALUES ($1, $2, $3, $4::jsonb, $5)
+`, topic, resourceType, resourceID, data, occurredAt); err != nil {
+			t.Fatalf("insert %s event: %v", topic, err)
+		}
+	}
+	base := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	// Live task T1 is sourced from D1, while task.created claims D2.
+	insertEvent("rss.entry.enqueueing", "rss_entry", entries[0], enqueueProvenanceData(acquisitionIDs[0], downloads[0], 1), base)
+	insertEvent("task.created", "episode_task", tasks[0], `{"downloadId":"`+downloads[1].String()+`"}`, base.Add(time.Minute))
+	insertEvent("task.imported", "episode_task", tasks[0], `{}`, base.Add(2*time.Minute))
+	// Live A2 belongs to E2, but its enqueue event claims E3.
+	insertEvent("rss.entry.enqueueing", "rss_entry", entries[2], enqueueProvenanceData(acquisitionIDs[1], downloads[1], 1), base.Add(3*time.Minute))
+	// Deleted A3 has a complete and ordered historical chain.
+	insertEvent("rss.entry.enqueueing", "rss_entry", entries[2], enqueueProvenanceData(acquisitionIDs[2], downloads[2], 1), base.Add(4*time.Minute))
+	insertEvent("task.created", "episode_task", tasks[1], `{"downloadId":"`+downloads[2].String()+`"}`, base.Add(5*time.Minute))
+	insertEvent("task.video_ready", "episode_task", tasks[1], `{}`, base.Add(6*time.Minute))
+	insertEvent("task.imported", "episode_task", tasks[1], `{}`, base.Add(7*time.Minute))
+	insertEvent("acquisition.delete_completed", "acquisition", acquisitionIDs[2], `{}`, base.Add(8*time.Minute))
+	// Deleted A4 has two competing entry identities, so its chain is not deterministic.
+	insertEvent("rss.entry.enqueueing", "rss_entry", entries[3], enqueueProvenanceData(acquisitionIDs[3], downloads[3], 1), base.Add(9*time.Minute))
+	insertEvent("rss.entry.enqueueing", "rss_entry", entries[4], enqueueProvenanceData(acquisitionIDs[3], downloads[3], 1), base.Add(10*time.Minute))
+	insertEvent("task.created", "episode_task", tasks[2], `{"downloadId":"`+downloads[3].String()+`"}`, base.Add(11*time.Minute))
+	insertEvent("task.imported", "episode_task", tasks[2], `{}`, base.Add(12*time.Minute))
+	insertEvent("acquisition.delete_completed", "acquisition", acquisitionIDs[3], `{}`, base.Add(13*time.Minute))
+	// Deleted A5 has only enqueue/delete evidence and must not become a success.
+	insertEvent("rss.entry.enqueueing", "rss_entry", entries[4], enqueueProvenanceData(acquisitionIDs[4], downloads[4], 1), base.Add(14*time.Minute))
+	insertEvent("acquisition.delete_completed", "acquisition", acquisitionIDs[4], `{}`, base.Add(15*time.Minute))
+	if _, err := pool.Exec(ctx, `DELETE FROM episode_tasks WHERE id = ANY($1::uuid[])`, []uuid.UUID{tasks[1], tasks[2]}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM acquisitions WHERE id = ANY($1::uuid[])`, []uuid.UUID{acquisitionIDs[2], acquisitionIDs[3], acquisitionIDs[4]}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.NewMigrator().Migrate(ctx, databaseURL); err != nil {
+		t.Fatalf("Migrate() from v39 error = %v", err)
+	}
+	var liveDownload, liveTask *uuid.UUID
+	var livePending uuid.UUID
+	var liveImported bool
+	if err := pool.QueryRow(ctx, `
+SELECT download_id, task_id, pending_download_id, imported_at IS NOT NULL
+FROM rss_acquisition_provenance
+WHERE acquisition_id = $1
+`, acquisitionIDs[0]).Scan(&liveDownload, &liveTask, &livePending, &liveImported); err != nil {
+		t.Fatal(err)
+	}
+	if liveDownload != nil || liveTask != nil || livePending != downloads[0] || liveImported {
+		t.Fatalf("live source mismatch provenance = %v/%v/%s/imported=%t, want no success and D1 pending", liveDownload, liveTask, livePending, liveImported)
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rss_acquisition_provenance WHERE acquisition_id = $1`, acquisitionIDs[1]).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("live acquisition/entry mismatch rows = %d, want 0", count)
+	}
+	assertProvenanceMigrationRow(t, ctx, pool, acquisitionIDs[2], downloads[2], tasks[1])
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rss_acquisition_provenance WHERE acquisition_id = $1`, acquisitionIDs[3]).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("deleted conflicting history rows = %d, want 0", count)
+	}
+	var incompleteTask *uuid.UUID
+	var incompleteImported, incompleteArchived bool
+	if err := pool.QueryRow(ctx, `
+SELECT task_id, imported_at IS NOT NULL, archived_at IS NOT NULL
+FROM rss_acquisition_provenance
+WHERE acquisition_id = $1
+`, acquisitionIDs[4]).Scan(&incompleteTask, &incompleteImported, &incompleteArchived); err != nil {
+		t.Fatal(err)
+	}
+	if incompleteTask != nil || incompleteImported || !incompleteArchived {
+		t.Fatalf("deleted incomplete history = %v/imported=%t/archived=%t, want archive-only", incompleteTask, incompleteImported, incompleteArchived)
 	}
 }
 

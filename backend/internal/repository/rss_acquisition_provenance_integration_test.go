@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	appmigrations "github.com/onprs/emby-auto/backend/db/migrations"
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/testutil"
 )
@@ -316,6 +318,54 @@ INSERT INTO rss_entries (
 	}
 }
 
+func TestRSSAcquisitionProvenanceRejectsTaskSourceDownloadMismatchIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, pool := testutil.NewMigratedPostgres(t)
+	_, _, entryID, acquisitionID := seedProvenanceEntities(t, ctx, pool)
+	profileID := seedProvenanceProfile(t, ctx, pool)
+	download1, task1 := uuid.New(), uuid.New()
+	seedProvenanceAttempt(t, ctx, pool, acquisitionID, profileID, download1, task1, 1)
+	download2 := uuid.New()
+	if _, err := pool.Exec(ctx, `
+INSERT INTO downloads (id, acquisition_id, attempt, status)
+VALUES ($1, $2, 2, 'enqueue_pending')
+`, download2, acquisitionID); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, time.July, 2, 13, 0, 0, 0, time.UTC)
+
+	insertProvenanceEvent(t, ctx, pool, "rss.entry.enqueueing", "rss_entry", entryID, enqueueProvenanceData(acquisitionID, download1, 1), base)
+	insertProvenanceEvent(t, ctx, pool, "task.created", "episode_task", task1, `{"downloadId":"`+download2.String()+`"}`, base.Add(time.Minute))
+	var pendingTaskID *uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT pending_task_id FROM rss_acquisition_provenance WHERE acquisition_id = $1`, acquisitionID).Scan(&pendingTaskID); err != nil {
+		t.Fatal(err)
+	}
+	if pendingTaskID != nil {
+		t.Fatalf("mismatched task source populated pending task %s", pendingTaskID)
+	}
+
+	insertProvenanceEvent(t, ctx, pool, "task.created", "episode_task", task1, `{"downloadId":"`+download1.String()+`"}`, base.Add(2*time.Minute))
+	if err := pool.QueryRow(ctx, `SELECT pending_task_id FROM rss_acquisition_provenance WHERE acquisition_id = $1`, acquisitionID).Scan(&pendingTaskID); err != nil {
+		t.Fatal(err)
+	}
+	if pendingTaskID == nil || *pendingTaskID != task1 {
+		t.Fatalf("valid task source did not populate task %s: got %v", task1, pendingTaskID)
+	}
+	insertProvenanceEvent(t, ctx, pool, "task.imported", "episode_task", task1, `{}`, base.Add(3*time.Minute))
+	var gotDownloadID, gotTaskID uuid.UUID
+	if err := pool.QueryRow(ctx, `
+SELECT download_id, task_id
+FROM rss_acquisition_provenance
+WHERE acquisition_id = $1
+`, acquisitionID).Scan(&gotDownloadID, &gotTaskID); err != nil {
+		t.Fatal(err)
+	}
+	if gotDownloadID != download1 || gotTaskID != task1 {
+		t.Fatalf("valid task source result = %s/%s, want %s/%s", gotDownloadID, gotTaskID, download1, task1)
+	}
+}
+
 func TestRSSAcquisitionProvenanceRejectsLateAttemptReplayAndPreservesSuccessIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -376,7 +426,7 @@ FROM rss_acquisition_provenance WHERE acquisition_id = $1
 	}
 }
 
-func TestRSSAcquisitionProvenanceIndexesAndMaterializedCandidatePlanIntegration(t *testing.T) {
+func TestRSSAcquisitionProvenanceMigrationBackfillUsesMigrationSQLPlanIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, pool := testutil.NewMigratedPostgres(t)
@@ -386,38 +436,6 @@ func TestRSSAcquisitionProvenanceIndexesAndMaterializedCandidatePlanIntegration(
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	targetDownloadID, targetTaskID := uuid.New(), uuid.New()
-	if _, err := tx.Exec(ctx, `
-INSERT INTO rss_acquisition_provenance (
-    acquisition_id, rss_entry_id, pending_download_id, pending_download_attempt,
-    pending_task_id, task_id
-)
-SELECT
-    gen_random_uuid(), $1, CASE WHEN item = 1 THEN $2 ELSE gen_random_uuid() END, 1,
-    CASE WHEN item = 1 THEN $3 ELSE gen_random_uuid() END,
-    CASE WHEN item = 1 THEN $3 ELSE gen_random_uuid() END
-FROM generate_series(1, 2000) AS item
-`, entryID, targetDownloadID, targetTaskID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(ctx, `ANALYZE rss_acquisition_provenance`); err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
-		name, indexName, query string
-		value                  uuid.UUID
-	}{
-		{"pending download", "rss_acquisition_provenance_pending_download_idx", `SELECT acquisition_id FROM rss_acquisition_provenance WHERE pending_download_id = $1`, targetDownloadID},
-		{"pending task", "rss_acquisition_provenance_pending_task_idx", `SELECT acquisition_id FROM rss_acquisition_provenance WHERE pending_task_id = $1`, targetTaskID},
-		{"successful task", "rss_acquisition_provenance_task_idx", `SELECT acquisition_id FROM rss_acquisition_provenance WHERE task_id = $1`, targetTaskID},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			plan := explainPlan(t, ctx, tx, test.query, test.value)
-			if !strings.Contains(strings.ToLower(plan), test.indexName) {
-				t.Fatalf("lookup plan = %s, want %s", plan, test.indexName)
-			}
-		})
-	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO events (topic, data, occurred_at)
 SELECT 'plan.unrelated', '{}'::jsonb, now()
@@ -425,49 +443,81 @@ FROM generate_series(1, 5000)
 `); err != nil {
 		t.Fatal(err)
 	}
-	plan := explainPlan(t, ctx, tx, `
-WITH candidate_events AS MATERIALIZED (
-    SELECT event_sequence, topic, resource_type, resource_id, data, occurred_at
-    FROM events AS event
-    WHERE event.topic IN (
-        'rss.entry.enqueueing',
-        'task.created',
-        'task.video_ready',
-        'task.subtitle_ready',
-        'task.awaiting_review',
-        'task.reviewed',
-        'task.imported',
-        'acquisition.delete_completed'
-    )
-      AND event.resource_id IS NOT NULL
-)
-SELECT count(*) FROM candidate_events
-`)
-	lowerPlan := strings.ToLower(plan)
-	if strings.Count(lowerPlan, "scan on events ") != 1 || !strings.Contains(lowerPlan, "cte scan on candidate_events") {
-		t.Fatalf("materialized candidate plan = %s, want one events scan and CTE scan", plan)
+	if _, err := tx.Exec(ctx, `ANALYZE events`); err != nil {
+		t.Fatal(err)
+	}
+	backfill := migration40BackfillSQL(t)
+	plan := explainJSONPlan(t, ctx, tx, backfill)
+	if strings.Count(strings.ToLower(backfill), "from events") != 1 {
+		t.Fatalf("migration backfill source has multiple events reads: %s", backfill)
+	}
+	relationScans, candidateScans := countBackfillPlanNodes(plan)
+	if relationScans != 1 || candidateScans == 0 {
+		t.Fatalf("migration backfill plan relation scans = %d, candidate CTE scans = %d, want one events relation and at least one candidate CTE scan", relationScans, candidateScans)
+	}
+	if entryID == uuid.Nil {
+		t.Fatal("fixture entry ID is unexpectedly nil")
 	}
 }
 
-func explainPlan(t *testing.T, ctx context.Context, exec interface {
-	Query(context.Context, string, ...any) (pgx.Rows, error)
-}, query string, args ...any) string {
+func migration40BackfillSQL(t *testing.T) string {
 	t.Helper()
-	rows, err := exec.Query(ctx, "EXPLAIN (FORMAT TEXT) "+query, args...)
+	source, err := appmigrations.Files.ReadFile("000040_rss_acquisition_provenance.up.sql")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read migration 40 source: %v", err)
 	}
-	defer rows.Close()
-	lines := make([]string, 0, 8)
-	for rows.Next() {
-		var line string
-		if err := rows.Scan(&line); err != nil {
-			t.Fatal(err)
+	const startMarker = "-- BEGIN MIGRATION_40_RSS_PROVENANCE_BACKFILL"
+	const endMarker = "-- END MIGRATION_40_RSS_PROVENANCE_BACKFILL"
+	start := strings.Index(string(source), startMarker)
+	end := strings.Index(string(source), endMarker)
+	if start < 0 || end <= start {
+		t.Fatalf("migration 40 backfill markers are missing or out of order")
+	}
+	backfill := strings.TrimSpace(string(source)[start+len(startMarker) : end])
+	if !strings.HasPrefix(backfill, "-- Backfill current and historical successful facts") || !strings.Contains(backfill, "INSERT INTO rss_acquisition_provenance") {
+		t.Fatalf("migration 40 marker does not enclose the backfill statement")
+	}
+	return backfill
+}
+
+func explainJSONPlan(t *testing.T, ctx context.Context, tx pgx.Tx, query string) map[string]any {
+	t.Helper()
+	var raw []byte
+	if err := tx.QueryRow(ctx, "EXPLAIN (FORMAT JSON) "+query).Scan(&raw); err != nil {
+		t.Fatalf("explain migration backfill: %v", err)
+	}
+	var plans []map[string]any
+	if err := json.Unmarshal(raw, &plans); err != nil {
+		t.Fatalf("decode JSON plan: %v", err)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("JSON plan roots = %d, want 1", len(plans))
+	}
+	return plans[0]
+}
+
+func countBackfillPlanNodes(plan map[string]any) (relationScans, candidateScans int) {
+	var visit func(any)
+	visit = func(value any) {
+		object, ok := value.(map[string]any)
+		if !ok {
+			if list, ok := value.([]any); ok {
+				for _, item := range list {
+					visit(item)
+				}
+			}
+			return
 		}
-		lines = append(lines, line)
+		if object["Relation Name"] == "events" {
+			relationScans++
+		}
+		if object["Node Type"] == "CTE Scan" && object["CTE Name"] == "candidate_events" {
+			candidateScans++
+		}
+		for _, child := range object {
+			visit(child)
+		}
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return strings.Join(lines, "\n")
+	visit(plan)
+	return relationScans, candidateScans
 }
