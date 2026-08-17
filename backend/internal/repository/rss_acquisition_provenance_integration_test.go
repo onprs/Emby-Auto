@@ -467,8 +467,6 @@ func insertProvenanceTriggerEvent(
 		data = enqueueProvenanceData(acquisitionID, downloadID, 1)
 	} else if event.topic == "task.created" {
 		data = fmt.Sprintf(`{"downloadId":"%s"}`, downloadID)
-	} else if event.topic == "task.created" {
-		data = `{"downloadId":"` + downloadID.String() + `"}`
 	}
 	insertProvenanceEvent(t, ctx, exec, event.topic, resourceType, resourceID, data, occurredAt)
 }
