@@ -450,27 +450,30 @@ type Review struct {
 }
 
 type RssAcquisitionProvenance struct {
-	AcquisitionID          pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
-	RssEntryID             pgtype.UUID        `db:"rss_entry_id" json:"rss_entry_id"`
-	DownloadID             pgtype.UUID        `db:"download_id" json:"download_id"`
-	TaskID                 pgtype.UUID        `db:"task_id" json:"task_id"`
-	AcquisitionCreatedAt   pgtype.Timestamptz `db:"acquisition_created_at" json:"acquisition_created_at"`
-	TaskCreatedAt          pgtype.Timestamptz `db:"task_created_at" json:"task_created_at"`
-	VideoReadyAt           pgtype.Timestamptz `db:"video_ready_at" json:"video_ready_at"`
-	SubtitleReadyAt        pgtype.Timestamptz `db:"subtitle_ready_at" json:"subtitle_ready_at"`
-	ArtifactReadyAt        pgtype.Timestamptz `db:"artifact_ready_at" json:"artifact_ready_at"`
-	ReviewedAt             pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
-	ImportedAt             pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
-	ArchivedAt             pgtype.Timestamptz `db:"archived_at" json:"archived_at"`
-	PendingDownloadID      pgtype.UUID        `db:"pending_download_id" json:"pending_download_id"`
-	PendingEnqueueAt       pgtype.Timestamptz `db:"pending_enqueue_at" json:"pending_enqueue_at"`
-	PendingTaskID          pgtype.UUID        `db:"pending_task_id" json:"pending_task_id"`
-	PendingTaskCreatedAt   pgtype.Timestamptz `db:"pending_task_created_at" json:"pending_task_created_at"`
-	PendingVideoReadyAt    pgtype.Timestamptz `db:"pending_video_ready_at" json:"pending_video_ready_at"`
-	PendingSubtitleReadyAt pgtype.Timestamptz `db:"pending_subtitle_ready_at" json:"pending_subtitle_ready_at"`
-	PendingArtifactReadyAt pgtype.Timestamptz `db:"pending_artifact_ready_at" json:"pending_artifact_ready_at"`
-	PendingReviewedAt      pgtype.Timestamptz `db:"pending_reviewed_at" json:"pending_reviewed_at"`
-	UpdatedAt              pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	AcquisitionID               pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
+	RssEntryID                  pgtype.UUID        `db:"rss_entry_id" json:"rss_entry_id"`
+	DownloadID                  pgtype.UUID        `db:"download_id" json:"download_id"`
+	DownloadAttempt             *int32             `db:"download_attempt" json:"download_attempt"`
+	TaskID                      pgtype.UUID        `db:"task_id" json:"task_id"`
+	AcquisitionCreatedAt        pgtype.Timestamptz `db:"acquisition_created_at" json:"acquisition_created_at"`
+	TaskCreatedAt               pgtype.Timestamptz `db:"task_created_at" json:"task_created_at"`
+	VideoReadyAt                pgtype.Timestamptz `db:"video_ready_at" json:"video_ready_at"`
+	SubtitleReadyAt             pgtype.Timestamptz `db:"subtitle_ready_at" json:"subtitle_ready_at"`
+	ArtifactReadyAt             pgtype.Timestamptz `db:"artifact_ready_at" json:"artifact_ready_at"`
+	ReviewedAt                  pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
+	ImportedAt                  pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
+	ArchivedAt                  pgtype.Timestamptz `db:"archived_at" json:"archived_at"`
+	PendingDownloadID           pgtype.UUID        `db:"pending_download_id" json:"pending_download_id"`
+	PendingDownloadAttempt      *int32             `db:"pending_download_attempt" json:"pending_download_attempt"`
+	PendingEnqueueAt            pgtype.Timestamptz `db:"pending_enqueue_at" json:"pending_enqueue_at"`
+	PendingEnqueueEventSequence *int64             `db:"pending_enqueue_event_sequence" json:"pending_enqueue_event_sequence"`
+	PendingTaskID               pgtype.UUID        `db:"pending_task_id" json:"pending_task_id"`
+	PendingTaskCreatedAt        pgtype.Timestamptz `db:"pending_task_created_at" json:"pending_task_created_at"`
+	PendingVideoReadyAt         pgtype.Timestamptz `db:"pending_video_ready_at" json:"pending_video_ready_at"`
+	PendingSubtitleReadyAt      pgtype.Timestamptz `db:"pending_subtitle_ready_at" json:"pending_subtitle_ready_at"`
+	PendingArtifactReadyAt      pgtype.Timestamptz `db:"pending_artifact_ready_at" json:"pending_artifact_ready_at"`
+	PendingReviewedAt           pgtype.Timestamptz `db:"pending_reviewed_at" json:"pending_reviewed_at"`
+	UpdatedAt                   pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 type RssAdjudicationBatch struct {

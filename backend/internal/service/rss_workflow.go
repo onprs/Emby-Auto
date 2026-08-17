@@ -1115,10 +1115,11 @@ func (workflow *RSSWorkflow) scheduleRSSDownload(
 			return fmt.Errorf("schedule RSS download enqueue: %w", err)
 		}
 		data, err := json.Marshal(map[string]any{
-			"status":         domain.RSSEnqueueing,
-			"enqueueAttempt": updated.EnqueueAttempts,
-			"acquisitionId":  repository.UUIDFromPG(acquisition.ID),
-			"downloadId":     repository.UUIDFromPG(download.ID),
+			"status":          domain.RSSEnqueueing,
+			"enqueueAttempt":  updated.EnqueueAttempts,
+			"downloadAttempt": download.Attempt,
+			"acquisitionId":   repository.UUIDFromPG(acquisition.ID),
+			"downloadId":      repository.UUIDFromPG(download.ID),
 		})
 		if err != nil {
 			return fmt.Errorf("encode RSS enqueue event: %w", err)

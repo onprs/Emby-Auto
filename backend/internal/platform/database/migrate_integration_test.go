@@ -136,7 +136,7 @@ INSERT INTO rss_entries (
 	if _, err := pool.Exec(ctx, `
 INSERT INTO events (topic, resource_type, resource_id, data, occurred_at)
 VALUES
-    ('rss.entry.enqueueing', 'rss_entry', $1::uuid, jsonb_build_object('acquisitionId', $2::uuid, 'downloadId', $3::uuid), $4::timestamptz),
+    ('rss.entry.enqueueing', 'rss_entry', $1::uuid, jsonb_build_object('acquisitionId', $2::uuid, 'downloadId', $3::uuid, 'downloadAttempt', 1, 'enqueueAttempt', 1), $4::timestamptz),
     ('task.created', 'episode_task', $5::uuid, jsonb_build_object('downloadId', $3::uuid), $6::timestamptz),
     ('task.video_ready', 'episode_task', $5::uuid, '{}'::jsonb, $7::timestamptz),
     ('task.imported', 'episode_task', $5::uuid, '{}'::jsonb, $8::timestamptz),
@@ -170,6 +170,29 @@ VALUES
 	if tableExists {
 		t.Fatal("provenance table still exists after migration 40 down")
 	}
+	var droppedIndexes, droppedHelpers int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*)
+FROM pg_indexes
+WHERE indexname IN (
+    'rss_acquisition_provenance_entry_idx',
+    'rss_acquisition_provenance_pending_download_idx',
+    'rss_acquisition_provenance_pending_task_idx',
+    'rss_acquisition_provenance_task_idx'
+)
+`).Scan(&droppedIndexes); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+SELECT count(*)
+FROM pg_proc
+WHERE proname IN ('rss_provenance_uuid', 'rss_provenance_positive_int', 'sync_rss_acquisition_provenance_from_event')
+`).Scan(&droppedHelpers); err != nil {
+		t.Fatal(err)
+	}
+	if droppedIndexes != 0 || droppedHelpers != 0 {
+		t.Fatalf("migration 40 down dependencies = indexes %d helpers %d, want 0/0", droppedIndexes, droppedHelpers)
+	}
 	if err := pool.QueryRow(ctx, `SELECT event_is_discardable('task.created')`).Scan(&discardable); err != nil {
 		t.Fatal(err)
 	}
@@ -186,16 +209,17 @@ VALUES
 func assertProvenanceMigrationRow(t *testing.T, ctx context.Context, pool *pgxpool.Pool, acquisitionID, downloadID, taskID uuid.UUID) {
 	t.Helper()
 	var gotDownloadID, gotTaskID uuid.UUID
+	var gotAttempt int
 	var gotVideoReady time.Time
 	if err := pool.QueryRow(ctx, `
-SELECT download_id, task_id, video_ready_at
+SELECT download_id, download_attempt, task_id, video_ready_at
 FROM rss_acquisition_provenance
 WHERE acquisition_id = $1
-`, acquisitionID).Scan(&gotDownloadID, &gotTaskID, &gotVideoReady); err != nil {
+`, acquisitionID).Scan(&gotDownloadID, &gotAttempt, &gotTaskID, &gotVideoReady); err != nil {
 		t.Fatal(err)
 	}
-	if gotDownloadID != downloadID || gotTaskID != taskID || gotVideoReady.IsZero() {
-		t.Fatalf("backfilled provenance = %s/%s/%v, want %s/%s/nonzero", gotDownloadID, gotTaskID, gotVideoReady, downloadID, taskID)
+	if gotDownloadID != downloadID || gotAttempt != 1 || gotTaskID != taskID || gotVideoReady.IsZero() {
+		t.Fatalf("backfilled provenance = %s/attempt%d/%s/%v, want %s/attempt1/%s/nonzero", gotDownloadID, gotAttempt, gotTaskID, gotVideoReady, downloadID, taskID)
 	}
 }
 

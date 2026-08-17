@@ -2,6 +2,12 @@ DROP INDEX IF EXISTS events_discardable_occurred_at_sequence_idx;
 
 DROP TRIGGER IF EXISTS rss_acquisition_provenance_event_sync ON events;
 DROP FUNCTION IF EXISTS sync_rss_acquisition_provenance_from_event();
+DROP FUNCTION IF EXISTS rss_provenance_positive_int(text);
+DROP FUNCTION IF EXISTS rss_provenance_uuid(text);
+DROP INDEX IF EXISTS rss_acquisition_provenance_entry_idx;
+DROP INDEX IF EXISTS rss_acquisition_provenance_pending_download_idx;
+DROP INDEX IF EXISTS rss_acquisition_provenance_pending_task_idx;
+DROP INDEX IF EXISTS rss_acquisition_provenance_task_idx;
 DROP TABLE IF EXISTS rss_acquisition_provenance;
 
 CREATE OR REPLACE FUNCTION event_is_discardable(event_topic text)
