@@ -81,9 +81,10 @@ function createTestRouter(ui: ReactNode, routePath: TestRoutePath, initialEntry:
 
   if (routePath === '/searches') {
     const testRoute = createRoute({ getParentRoute: () => rootRoute, path: '/searches', component: () => <>{ui}</> });
-    const detailRoute = createRoute({ getParentRoute: () => rootRoute, path: '/acquisitions/$acquisitionId', component: () => <div>acquisition detail</div> });
+    const acquisitionDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: '/acquisitions/$acquisitionId', component: () => <div>acquisition detail</div> });
+    const searchDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: '/searches/$searchId', component: () => <div>search detail</div> });
     return createRouter({
-      routeTree: rootRoute.addChildren([testRoute, detailRoute, catchAllRoute]),
+      routeTree: rootRoute.addChildren([testRoute, acquisitionDetailRoute, searchDetailRoute, catchAllRoute]),
       history: createMemoryHistory({ initialEntries: [initialEntry] }),
     });
   }

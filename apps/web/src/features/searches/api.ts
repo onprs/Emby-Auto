@@ -28,6 +28,10 @@ export function fetchSearch(searchId: string): Promise<SearchRun> {
   return unwrap<SearchRun>(getSearch({ path: { searchId } }), '无法读取搜索');
 }
 
+export function fetchRecentSearches(): Promise<SearchRunPage> {
+  return unwrap<SearchRunPage>(listSearches({ query: { limit: 5 } }), '无法读取最近搜索');
+}
+
 export function startSearch(key: string, query: string): Promise<SearchCommandAccepted> {
   return unwrap<SearchCommandAccepted>(createSearch({ headers: { 'Idempotency-Key': key }, body: { query } }), '创建搜索失败');
 }
