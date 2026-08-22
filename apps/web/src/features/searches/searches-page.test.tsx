@@ -1,8 +1,8 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SearchesPage } from '@/features/searches/searches-page';
 import { SearchAcquisitionsSection } from '@/features/searches/search-acquisitions-section';
@@ -79,29 +79,81 @@ function renderCandidateTable(candidates: ReleaseCandidate[], onAcquired?: () =>
   );
 }
 
+async function flushMicrotasks() {
+  for (let i = 0; i < 4; i += 1) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+}
+
+async function advancePoll(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+  for (let i = 0; i < 8; i += 1) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe('SearchesPage live and recent', () => {
-  it('keeps path at /searches after POST and shows live candidates after polling', async () => {
+  it('keeps path at /searches and polls queued -> running -> completed with fake timers, stops after completed', async () => {
+    vi.useFakeTimers();
     let pollCount = 0;
-    const recentSpy = vi.fn();
+    let recentCalls = 0;
+    const candidateTitle = 'Fixture Show S01E01 [1080p] Very Long Title That Should Wrap Across Multiple Lines Without Overflow And Keep Break Words Behavior For Long Titles';
     server.use(
       http.get('*/api/v1/searches/recent-candidates', ({ request }) => {
         const url = new URL(request.url);
         if (url.searchParams.get('limit') !== '5') {
           return HttpResponse.json({ code: 'bad_request', message: 'limit' }, { status: 400 });
         }
-        recentSpy(url.search);
+        recentCalls += 1;
         return HttpResponse.json({ items: [] });
       }),
       http.post('*/api/v1/searches', async () =>
-        HttpResponse.json({ search: { id: SEARCH_ID, query: 'Fixture Show', status: 'queued', createdAt: '2026-08-22T08:00:00Z', updatedAt: '2026-08-22T08:00:00Z', candidates: [] }, operationId: 'op-1', status: 'queued' }, { status: 202 }),
+        HttpResponse.json(
+          { search: { id: SEARCH_ID, query: 'Fixture Show', status: 'queued', createdAt: '2026-08-22T08:00:00Z', updatedAt: '2026-08-22T08:00:00Z', candidates: [] }, operationId: 'op-1', status: 'queued' },
+          { status: 202 },
+        ),
       ),
       http.get(`*/api/v1/searches/${SEARCH_ID}`, () => {
         pollCount += 1;
+        if (pollCount === 1) {
+          return HttpResponse.json({
+            id: SEARCH_ID,
+            query: 'Fixture Show',
+            status: 'queued',
+            candidates: [],
+            createdAt: '2026-08-22T08:00:00Z',
+            updatedAt: '2026-08-22T08:00:00Z',
+          });
+        }
+        if (pollCount === 2) {
+          return HttpResponse.json({
+            id: SEARCH_ID,
+            query: 'Fixture Show',
+            status: 'running',
+            candidates: [],
+            createdAt: '2026-08-22T08:00:00Z',
+            updatedAt: '2026-08-22T08:01:00Z',
+          });
+        }
         return HttpResponse.json({
           id: SEARCH_ID,
           query: 'Fixture Show',
           status: 'completed',
-          candidates: [candidateFixture({ id: CANDIDATE_NEW, title: 'Fixture Show S01E01 [1080p] Very Long Title That Should Wrap Across Multiple Lines Without Overflow And Keep Break Words Behavior For Long Titles' })],
+          candidates: [candidateFixture({ id: CANDIDATE_NEW, title: candidateTitle })],
           createdAt: '2026-08-22T08:00:00Z',
           updatedAt: '2026-08-22T08:02:00Z',
         });
@@ -109,23 +161,50 @@ describe('SearchesPage live and recent', () => {
       http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [] })),
     );
 
-    const { router } = renderWithProviders(<SearchesPage />, { routePath: '/searches', initialEntry: '/searches' });
+    const { router, queryClient } = renderWithProviders(<SearchesPage />, { routePath: '/searches', initialEntry: '/searches' });
 
-    await screen.findByText('最近搜索');
-    expect(recentSpy).toHaveBeenCalled();
+    await flushMicrotasks();
+    // 初始最近搜索已加载
+    expect(screen.getByText('最近搜索')).toBeInTheDocument();
+    const initialRecent = recentCalls;
+    expect(initialRecent).toBeGreaterThanOrEqual(1);
 
-    await userEvent.type(await screen.findByLabelText('关键词'), 'Fixture Show');
-    await userEvent.click(screen.getByRole('button', { name: '搜索' }));
+    const input = screen.getByLabelText('关键词');
+    await act(async () => {
+      fireEvent.change(input, { target: { value: 'Fixture Show' } });
+    });
+    await flushMicrotasks();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '搜索' }));
+    });
 
-    await waitFor(() => expect(router.state.location.pathname).toBe('/searches'));
-    expect(await screen.findByText(/关键词：Fixture Show/)).toBeInTheDocument();
+    await flushMicrotasks();
+    await flushMicrotasks();
 
-    await waitFor(() => expect(screen.getAllByText('Fixture Show S01E01 [1080p] Very Long Title That Should Wrap Across Multiple Lines Without Overflow And Keep Break Words Behavior For Long Titles').length).toBeGreaterThan(0), { timeout: 4000 });
+    expect(screen.getByText(/排队中/)).toBeInTheDocument();
+    expect(pollCount).toBe(1);
+    expect(router.state.location.pathname).toBe('/searches');
 
-    const titleEl = screen.getAllByText('Fixture Show S01E01 [1080p] Very Long Title That Should Wrap Across Multiple Lines Without Overflow And Keep Break Words Behavior For Long Titles')[0];
+    // 推进 3000ms 进入 running
+    await advancePoll(3000);
+    expect(screen.getByText(/搜索中/)).toBeInTheDocument();
+    expect(pollCount).toBe(2);
+
+    // 再推进 3000ms 进入 completed，候选出现，recent 被精确刷新一次
+    await advancePoll(3000);
+    expect(screen.getAllByText(candidateTitle)[0]).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe('/searches');
+    expect(pollCount).toBe(3);
+    expect(recentCalls).toBe(initialRecent + 1);
+    const titleEl = screen.getAllByText(candidateTitle)[0];
     expect(titleEl.className).toMatch(/break-words/);
     expect(titleEl.className).toMatch(/whitespace-normal/);
-    expect(pollCount).toBeGreaterThanOrEqual(1);
+
+    // completed 后再推进一个 interval，轮询停止
+    await advancePoll(3000);
+    expect(pollCount).toBe(3);
+    expect(recentCalls).toBe(initialRecent + 1);
+    vi.useRealTimers();
   });
 
   it('renders current and recent without status or seeders columns, and disables non-downloadable with reason', async () => {
@@ -174,27 +253,113 @@ describe('SearchesPage live and recent', () => {
     });
   });
 
-  it('refreshes recent once when search transitions to completed and not on failed', async () => {
+  it('refreshes recent exactly once when search transitions to completed', async () => {
+    vi.useFakeTimers();
     let recentCalls = 0;
+    let pollCount = 0;
     server.use(
       http.get('*/api/v1/searches/recent-candidates', () => {
         recentCalls += 1;
         return HttpResponse.json({ items: [] });
       }),
       http.post('*/api/v1/searches', () => HttpResponse.json({ search: { id: SEARCH_ID, query: 'Q', status: 'queued', createdAt: '2026-08-22T08:00:00Z', updatedAt: '2026-08-22T08:00:00Z', candidates: [] }, operationId: 'op-1', status: 'queued' }, { status: 202 })),
-      http.get(`*/api/v1/searches/${SEARCH_ID}`, () => HttpResponse.json({ id: SEARCH_ID, query: 'Q', status: 'completed', candidates: [candidateFixture({ id: CANDIDATE_NEW, title: 'Completed Candidate' })], createdAt: '2026-08-22T08:00:00Z', updatedAt: '2026-08-22T08:02:00Z' })),
+      http.get(`*/api/v1/searches/${SEARCH_ID}`, () => {
+        pollCount += 1;
+        if (pollCount === 1) {
+          return HttpResponse.json({ id: SEARCH_ID, query: 'Q', status: 'queued', candidates: [], createdAt: '2026-08-22T08:00:00Z', updatedAt: '2026-08-22T08:00:00Z' });
+        }
+        return HttpResponse.json({ id: SEARCH_ID, query: 'Q', status: 'completed', candidates: [candidateFixture({ id: CANDIDATE_NEW, title: 'Completed Candidate' })], createdAt: '2026-08-22T08:00:00Z', updatedAt: '2026-08-22T08:02:00Z' });
+      }),
       http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [] })),
     );
     renderWithProviders(<SearchesPage />, { routePath: '/searches', initialEntry: '/searches' });
-    await screen.findByText('最近搜索');
+    await flushMicrotasks();
+    expect(screen.getByText('最近搜索')).toBeInTheDocument();
     const initialCalls = recentCalls;
-    await userEvent.type(await screen.findByLabelText('关键词'), 'Q');
-    await userEvent.click(screen.getByRole('button', { name: '搜索' }));
-    await screen.findAllByText('Completed Candidate');
-    await waitFor(() => expect(recentCalls).toBeGreaterThan(initialCalls));
+
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('关键词'), { target: { value: 'Q' } });
+    });
+    await flushMicrotasks();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '搜索' }));
+    });
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+    expect(screen.getByText(/排队中/)).toBeInTheDocument();
+    expect(pollCount).toBe(1);
+
+    await advancePoll(3000);
+    expect(screen.getAllByText('Completed Candidate')[0]).toBeInTheDocument();
+    expect(pollCount).toBe(2);
+    expect(recentCalls).toBe(initialCalls + 1);
     const afterCompleted = recentCalls;
-    await new Promise((r) => setTimeout(r, 300));
+    await advancePoll(3000);
     expect(recentCalls).toBe(afterCompleted);
+    expect(pollCount).toBe(2);
+    vi.useRealTimers();
+  });
+
+  it('does not refresh recent and shows single friendly error when search fails', async () => {
+    vi.useFakeTimers();
+    let recentCalls = 0;
+    let pollCount = 0;
+    const failedCandidateTitle = 'Should Not Appear';
+    server.use(
+      http.get('*/api/v1/searches/recent-candidates', () => {
+        recentCalls += 1;
+        return HttpResponse.json({ items: [] });
+      }),
+      http.post('*/api/v1/searches', () => HttpResponse.json({ search: { id: SEARCH_ID, query: 'Q', status: 'queued', createdAt: '2026-08-22T08:00:00Z', updatedAt: '2026-08-22T08:00:00Z', candidates: [] }, operationId: 'op-1', status: 'queued' }, { status: 202 })),
+      http.get(`*/api/v1/searches/${SEARCH_ID}`, () => {
+        pollCount += 1;
+        if (pollCount === 1) {
+          return HttpResponse.json({ id: SEARCH_ID, query: 'Q', status: 'queued', candidates: [], createdAt: '2026-08-22T08:00:00Z', updatedAt: '2026-08-22T08:00:00Z' });
+        }
+        return HttpResponse.json({
+          id: SEARCH_ID,
+          query: 'Q',
+          status: 'failed',
+          errorCode: 'search_provider_failed',
+          errorMessage: 'upstream search failed',
+          candidates: [],
+          createdAt: '2026-08-22T08:00:00Z',
+          updatedAt: '2026-08-22T08:02:00Z',
+        });
+      }),
+      http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [] })),
+    );
+    renderWithProviders(<SearchesPage />, { routePath: '/searches', initialEntry: '/searches' });
+    await flushMicrotasks();
+    expect(screen.getByText('最近搜索')).toBeInTheDocument();
+    const initialCalls = recentCalls;
+
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('关键词'), { target: { value: 'Q' } });
+    });
+    await flushMicrotasks();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '搜索' }));
+    });
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+    expect(screen.getByText(/排队中/)).toBeInTheDocument();
+    expect(pollCount).toBe(1);
+
+    await advancePoll(3000);
+    expect(screen.getByText('搜索失败')).toBeInTheDocument();
+    const friendly = '搜索来源暂时不可用，请稍后重试。';
+    const matches = screen.getAllByText(friendly);
+    expect(matches).toHaveLength(1);
+    expect(screen.queryByText(failedCandidateTitle)).not.toBeInTheDocument();
+    expect(recentCalls).toBe(initialCalls);
+    // failed 后轮询停止
+    await advancePoll(3000);
+    expect(pollCount).toBe(2);
+    expect(recentCalls).toBe(initialCalls);
+    vi.useRealTimers();
   });
 
   it('shows loading, empty and error states for recent', async () => {
@@ -240,7 +405,9 @@ describe('SearchAcquisitionsSection', () => {
 
   it('renders loading and empty for acquisitions', async () => {
     let resolve: (value: unknown) => void = () => {};
-    const pending = new Promise((r) => { resolve = r; });
+    const pending = new Promise((r) => {
+      resolve = r;
+    });
     server.use(
       http.get('*/api/v1/acquisitions', () => pending.then(() => HttpResponse.json({ items: [] })) as unknown as Response),
     );

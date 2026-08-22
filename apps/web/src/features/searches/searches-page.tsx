@@ -121,9 +121,11 @@ export function SearchesPage() {
             description={live.data.errorMessage ? friendlyError(live.data.errorCode, live.data.errorMessage) : '等待搜索返回具体资源'}
           />
         ) : (
-          <CandidateTable candidates={live.data.candidates} emptyLabel="未找到匹配的发布候选" onAcquired={handleAcquired} />
+          <>
+            <CandidateTable candidates={live.data.candidates} emptyLabel="未找到匹配的发布候选" onAcquired={handleAcquired} />
+            {live.data.errorMessage ? <ErrorState message={friendlyError(live.data.errorCode, live.data.errorMessage)} /> : null}
+          </>
         )}
-        {live.data?.errorMessage ? <ErrorState message={friendlyError(live.data.errorCode, live.data.errorMessage)} /> : null}
       </section>
 
       <section className="mb-8 space-y-3">
