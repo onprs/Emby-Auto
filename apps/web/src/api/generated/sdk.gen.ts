@@ -171,6 +171,8 @@ export const createSearch = <ThrowOnError extends boolean = false>(options: Opti
 
 /**
  * List recent release candidates
+ *
+ * Returns up to 5 recent persisted release candidates ordered by search run creation (newest run first), then candidate persistence order (created_at, id). This is installation-level history and is not filtered by actor. Upstream payload is not exposed. Limit is bounded to 1..5.
  */
 export const listRecentSearchCandidates = <ThrowOnError extends boolean = false>(options?: Options<ListRecentSearchCandidatesData, ThrowOnError>): RequestResult<ListRecentSearchCandidatesResponses, ListRecentSearchCandidatesErrors, ThrowOnError> => (options?.client ?? client).get<ListRecentSearchCandidatesResponses, ListRecentSearchCandidatesErrors, ThrowOnError>({
     security: [{

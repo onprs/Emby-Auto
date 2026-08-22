@@ -10,7 +10,6 @@ import { TMDbMoviePicker, type MovieSelection } from '@/features/tmdb/movie-pick
 import { TMDbSeriesPicker, type SeriesSelection } from '@/features/tmdb/series-picker';
 import { IdempotencyKeyHolder } from '@/lib/idempotency';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState, ErrorState } from '@/components/ui/feedback';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -155,8 +154,6 @@ function CandidateForm({ candidate, onAcquired }: { candidate: ReleaseCandidate;
       if (onAcquired) {
         onAcquired();
       }
-      // 保持在搜索页时不跳转，仅刷新任务；详情页等场景可选跳转，调用方可传入自定义行为
-      // 默认行为：若提供 onAcquired 则不跳转，否则跳转到任务详情
       if (!onAcquired) {
         void navigate({
           to: '/acquisitions/$acquisitionId',
@@ -175,57 +172,55 @@ function CandidateForm({ candidate, onAcquired }: { candidate: ReleaseCandidate;
   });
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>创建获取</CardTitle>
-        <CardDescription>{mediaType === 'movie' ? '绑定 TMDb 电影元数据' : '绑定 TMDb 番剧与源季集信息'}</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="space-y-2">
-          <Label htmlFor={`media-type-${candidate.id}`}>内容类型</Label>
-          <Select
-            id={`media-type-${candidate.id}`}
-            value={mediaType}
-            onChange={(value) => {
-              setMediaType(value as 'episode' | 'movie');
-              setError(null);
-            }}
-            options={[
-              { value: 'episode', label: '番剧' },
-              { value: 'movie', label: '电影' },
-            ]}
-          />
-        </div>
-        {mediaType === 'movie' ? <TMDbMoviePicker value={movie} onChange={setMovie} /> : <TMDbSeriesPicker value={series} onChange={setSeries} />}
-        {mediaType === 'episode' ? (
-          <div className="grid gap-4 sm:grid-cols-3">
-            <div className="space-y-2">
-              <Label htmlFor={`season-${candidate.id}`}>资源对应第几季</Label>
-              <Input id={`season-${candidate.id}`} type="number" min={1} value={sourceSeason} onChange={(event) => setSourceSeason(event.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor={`episode-${candidate.id}`}>资源对应第几集</Label>
-              <Input id={`episode-${candidate.id}`} type="number" min={0} value={sourceEpisode} onChange={(event) => setSourceEpisode(event.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor={`single-${candidate.id}`}>类型</Label>
-              <Select
-                id={`single-${candidate.id}`}
-                value={singleEpisode ? 'single' : 'pack'}
-                onChange={(value) => setSingleEpisode(value === 'single')}
-                options={[
-                  { value: 'single', label: '单集' },
-                  { value: 'pack', label: '季度包' },
-                ]}
-              />
-            </div>
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <div className="text-sm font-medium text-zinc-900">创建获取</div>
+        <p className="text-xs text-zinc-500">{mediaType === 'movie' ? '绑定 TMDb 电影元数据' : '绑定 TMDb 番剧与源季集信息'}</p>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor={`media-type-${candidate.id}`}>内容类型</Label>
+        <Select
+          id={`media-type-${candidate.id}`}
+          value={mediaType}
+          onChange={(value) => {
+            setMediaType(value as 'episode' | 'movie');
+            setError(null);
+          }}
+          options={[
+            { value: 'episode', label: '番剧' },
+            { value: 'movie', label: '电影' },
+          ]}
+        />
+      </div>
+      {mediaType === 'movie' ? <TMDbMoviePicker value={movie} onChange={setMovie} /> : <TMDbSeriesPicker value={series} onChange={setSeries} />}
+      {mediaType === 'episode' ? (
+        <div className="grid gap-4 sm:grid-cols-3">
+          <div className="space-y-2">
+            <Label htmlFor={`season-${candidate.id}`}>资源对应第几季</Label>
+            <Input id={`season-${candidate.id}`} type="number" min={1} value={sourceSeason} onChange={(event) => setSourceSeason(event.target.value)} />
           </div>
-        ) : null}
-        {error ? <ErrorState message={error} /> : null}
-        <Button type="button" onClick={() => select.mutate()} disabled={select.isPending || (mediaType === 'movie' ? !movie : !series)}>
-          创建获取并下载
-        </Button>
-      </CardContent>
-    </Card>
+          <div className="space-y-2">
+            <Label htmlFor={`episode-${candidate.id}`}>资源对应第几集</Label>
+            <Input id={`episode-${candidate.id}`} type="number" min={0} value={sourceEpisode} onChange={(event) => setSourceEpisode(event.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor={`single-${candidate.id}`}>类型</Label>
+            <Select
+              id={`single-${candidate.id}`}
+              value={singleEpisode ? 'single' : 'pack'}
+              onChange={(value) => setSingleEpisode(value === 'single')}
+              options={[
+                { value: 'single', label: '单集' },
+                { value: 'pack', label: '季度包' },
+              ]}
+            />
+          </div>
+        </div>
+      ) : null}
+      {error ? <ErrorState message={error} /> : null}
+      <Button type="button" onClick={() => select.mutate()} disabled={select.isPending || (mediaType === 'movie' ? !movie : !series)}>
+        创建获取并下载
+      </Button>
+    </div>
   );
 }

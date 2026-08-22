@@ -340,6 +340,7 @@ paths:
     get:
       operationId: listRecentSearchCandidates
       summary: List recent release candidates
+      description: Returns up to 5 recent persisted release candidates ordered by search run creation (newest run first), then candidate persistence order (created_at, id). This is installation-level history and is not filtered by actor. Upstream payload is not exposed. Limit is bounded to 1..5.
       tags: [Search]
       parameters:
         - name: limit

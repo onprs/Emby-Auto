@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Search as SearchIcon } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { ApiFailure } from '@/api/app-client';
 import { fetchRecentCandidates, fetchSearch, startSearch } from '@/features/searches/api';
@@ -36,6 +36,21 @@ export function SearchesPage() {
     },
   });
 
+  const completedSyncRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (liveSearchId) {
+      completedSyncRef.current = null;
+    }
+  }, [liveSearchId]);
+
+  useEffect(() => {
+    if (live.data?.status === 'completed' && live.data.id !== completedSyncRef.current) {
+      completedSyncRef.current = live.data.id;
+      void queryClient.invalidateQueries({ queryKey: ['recent-candidates'] });
+    }
+  }, [live.data?.id, live.data?.status, queryClient]);
+
   const start = useMutation({
     mutationFn: (keywords: string) => startSearch(holder.get(), keywords),
     onSuccess: (result) => {
@@ -44,7 +59,6 @@ export function SearchesPage() {
       const searchId = result.search?.id;
       if (searchId) {
         setLiveSearchId(searchId);
-        void queryClient.invalidateQueries({ queryKey: ['recent-candidates'] });
       }
     },
     onError: (cause) => {
