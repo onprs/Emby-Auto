@@ -39,17 +39,19 @@ export function SearchesPage() {
     },
   });
 
-  const completedSyncRef = useRef<string | null>(null);
+  const terminalSyncRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (liveSearchId) {
-      completedSyncRef.current = null;
+      terminalSyncRef.current = null;
     }
   }, [liveSearchId]);
 
   useEffect(() => {
-    if (live.data?.status === 'completed' && live.data.id !== completedSyncRef.current) {
-      completedSyncRef.current = live.data.id;
+    const status = live.data?.status;
+    const isTerminal = status === 'completed' || status === 'failed' || status === 'cancelled';
+    if (isTerminal && live.data && live.data.id !== terminalSyncRef.current) {
+      terminalSyncRef.current = live.data.id;
       void queryClient.invalidateQueries({ queryKey: ['searches'] });
     }
   }, [live.data?.id, live.data?.status, queryClient]);
@@ -138,7 +140,7 @@ export function SearchesPage() {
         ) : recent.error ? (
           <ErrorState message={recent.error.message} onRetry={() => recent.refetch()} />
         ) : recent.data.items.length === 0 ? (
-          <EmptyState title="暂无最近结果" description="完成搜索后，最近 5 条搜索记录将在此显示" />
+          <EmptyState title="暂无最近结果" description="提交搜索后，最近 5 条搜索记录将在此显示" />
         ) : (
           <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-card">
             <ul className="divide-y divide-zinc-100">

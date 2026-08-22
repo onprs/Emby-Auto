@@ -346,7 +346,7 @@ describe('SearchesPage live and recent', () => {
     vi.useRealTimers();
   });
 
-  it('does not refresh recent and shows single friendly error when search fails', async () => {
+  it('refreshes recent once on failed terminal and shows single friendly error, stops polling without duplicate refresh', async () => {
     vi.useFakeTimers();
     let recentCalls = 0;
     let pollCount = 0;
@@ -392,6 +392,8 @@ describe('SearchesPage live and recent', () => {
     await flushMicrotasks();
     expect(screen.getByText(/排队中/)).toBeInTheDocument();
     expect(pollCount).toBe(1);
+    // onSuccess 已刷新一次
+    expect(recentCalls).toBe(initialCalls + 1);
 
     await advancePoll(3000);
     expect(screen.getByText('搜索失败')).toBeInTheDocument();
@@ -399,10 +401,14 @@ describe('SearchesPage live and recent', () => {
     const matches = screen.getAllByText(friendly);
     expect(matches).toHaveLength(1);
     expect(screen.queryByText(failedCandidateTitle)).not.toBeInTheDocument();
-    expect(recentCalls).toBe(initialCalls + 1);
-    await advancePoll(3000);
+    // 进入 failed 终态再刷新一次
+    expect(recentCalls).toBe(initialCalls + 2);
     expect(pollCount).toBe(2);
-    expect(recentCalls).toBe(initialCalls + 1);
+    const afterFailed = recentCalls;
+    await advancePoll(3000);
+    // 轮询停止且不重复刷新
+    expect(pollCount).toBe(2);
+    expect(recentCalls).toBe(afterFailed);
     vi.useRealTimers();
   });
 
