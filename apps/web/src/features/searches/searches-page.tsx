@@ -1,64 +1,64 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useLocation, useNavigate, useSearch } from '@tanstack/react-router';
 import { Search as SearchIcon } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { ApiFailure } from '@/api/app-client';
-import { appNavigationState, currentAppLocation, rememberListPosition, useListScrollRestoration } from '@/app/navigation-context';
-import { ContextLink } from '@/components/context-link';
-import { fetchSearches, startSearch } from '@/features/searches/api';
+import { fetchRecentCandidates, fetchSearch, startSearch } from '@/features/searches/api';
+import { CandidateTable } from '@/features/searches/candidate-selection';
+import { SearchAcquisitionsSection } from '@/features/searches/search-acquisitions-section';
 import { IdempotencyKeyHolder } from '@/lib/idempotency';
-import { DataTable, PageBody, PageHeader, PaginationControls } from '@/components/resource';
-import { StatusBadge } from '@/components/status-badge';
+import { PageBody, PageHeader } from '@/components/resource';
 import { Button } from '@/components/ui/button';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/feedback';
-import { FilterChip } from '@/components/ui/filter-chip';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { formatDateTime } from '@/lib/format';
 import { friendlyError } from '@/lib/presentation';
-import { useCursorPagination } from '@/lib/pagination';
-
-const searchStatusFilters = [
-  { value: '', label: '全部' },
-  { value: 'running', label: '进行中' },
-  { value: 'completed', label: '已完成' },
-  { value: 'failed', label: '失败' },
-] as const;
 
 export function SearchesPage() {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const listSource = currentAppLocation(location.href);
-  const listSearch = useSearch({ strict: false }) as { status?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'; query?: string };
   const queryClient = useQueryClient();
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [liveSearchId, setLiveSearchId] = useState<string | null>(null);
   const holder = useState(() => new IdempotencyKeyHolder())[0];
-  const pagination = useCursorPagination();
 
-  const searches = useQuery({
-    queryKey: ['searches', 'list', pagination.cursor, listSearch.status, listSearch.query],
-    queryFn: () => fetchSearches(pagination.cursor, listSearch.status ?? '', listSearch.query),
+  const recent = useQuery({
+    queryKey: ['recent-candidates'],
+    queryFn: () => fetchRecentCandidates(5),
   });
 
-  useListScrollRestoration(listSource, Boolean(searches.data));
+  const live = useQuery({
+    queryKey: ['search', liveSearchId],
+    queryFn: () => fetchSearch(liveSearchId!),
+    enabled: Boolean(liveSearchId),
+    refetchInterval: (q) => {
+      const status = q.state.data?.status;
+      return status === 'queued' || status === 'running' ? 3_000 : false;
+    },
+  });
+
+  const completedSyncRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (liveSearchId) {
+      completedSyncRef.current = null;
+    }
+  }, [liveSearchId]);
+
+  useEffect(() => {
+    if (live.data?.status === 'completed' && live.data.id !== completedSyncRef.current) {
+      completedSyncRef.current = live.data.id;
+      void queryClient.invalidateQueries({ queryKey: ['recent-candidates'] });
+    }
+  }, [live.data?.id, live.data?.status, queryClient]);
 
   const start = useMutation({
     mutationFn: (keywords: string) => startSearch(holder.get(), keywords),
     onSuccess: (result) => {
       holder.reset();
-      setQuery('');
-      void queryClient.invalidateQueries({ queryKey: ['searches'] });
+      setError(null);
       const searchId = result.search?.id;
       if (searchId) {
-        rememberListPosition(listSource);
-        void navigate({
-          to: '/searches/$searchId',
-          params: { searchId },
-          search: { from: listSource },
-          state: appNavigationState(listSource),
-        });
+        setLiveSearchId(searchId);
       }
     },
     onError: (cause) => {
@@ -68,6 +68,11 @@ export function SearchesPage() {
       setError(cause instanceof Error ? cause.message : '创建搜索失败');
     },
   });
+
+  const handleAcquired = () => {
+    void queryClient.invalidateQueries({ queryKey: ['acquisitions'] });
+    void queryClient.invalidateQueries({ queryKey: ['recent-candidates'] });
+  };
 
   return (
     <PageBody>
@@ -99,59 +104,61 @@ export function SearchesPage() {
       </form>
       {error ? <ErrorState className="mb-4" message={error} /> : null}
 
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-base font-semibold text-zinc-950">最近搜索</h2>
-        <div className="flex flex-wrap gap-2" role="group" aria-label="搜索状态筛选">
-          {searchStatusFilters.map((filter) => (
-            <FilterChip
-              key={filter.label}
-              to="/searches"
-              search={{
-                ...listSearch,
-                status: filter.value || undefined,
-                cursor: undefined,
-                cursorStack: undefined,
-              }}
-              active={listSearch.status === (filter.value || undefined)}
-              label={filter.label}
-            />
-          ))}
+      <section className="mb-8 space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold text-zinc-950">当前搜索结果</h2>
+          {live.data ? <span className="text-xs text-zinc-500">关键词：{live.data.query} · {friendlyStatus(live.data.status)}</span> : null}
         </div>
-      </div>
-
-      {searches.isPending ? (
-        <LoadingState label="正在读取搜索历史" />
-      ) : searches.error ? (
-        <ErrorState message={searches.error.message} onRetry={() => searches.refetch()} />
-      ) : searches.data.items.length === 0 ? (
-        <EmptyState title="暂无搜索" description="提交一次关键词搜索以开始" />
-      ) : (
-        <>
-          <DataTable head={['关键词', '状态', '结果', '搜索时间']}>
-            {searches.data.items.map((run) => (
-              <tr key={run.id}>
-                <td className="max-w-0 px-4 py-3">
-                  <ContextLink rememberList to="/searches/$searchId" params={{ searchId: run.id }} className="block truncate font-medium text-zinc-900 hover:underline">
-                    {run.query}
-                  </ContextLink>
-                </td>
-                <td className="px-4 py-3">
-                  <StatusBadge value={run.status} />
-                </td>
-                <td className="max-w-0 truncate px-4 py-3 text-zinc-600">{run.errorMessage ? friendlyError(run.errorCode, run.errorMessage) : '—'}</td>
-                <td className="px-4 py-3 text-zinc-600">{formatDateTime(run.createdAt)}</td>
-              </tr>
-            ))}
-          </DataTable>
-          <PaginationControls
-            canGoBack={pagination.canGoBack}
-            hasNext={Boolean(searches.data.nextCursor)}
-            onPrevious={pagination.goPrevious}
-            onNext={() => pagination.goNext(searches.data.nextCursor)}
-            isFetching={searches.isFetching}
+        {!liveSearchId ? (
+          <EmptyState title="尚未搜索" description="输入关键词并执行搜索，结果将在此实时显示" />
+        ) : live.isPending ? (
+          <LoadingState label="正在搜索" />
+        ) : live.error ? (
+          <ErrorState message={live.error.message} onRetry={() => live.refetch()} />
+        ) : live.data.candidates.length === 0 ? (
+          <EmptyState
+            title={live.data.status === 'completed' ? '未找到匹配的发布候选' : live.data.status === 'failed' ? '搜索失败' : '搜索仍在进行中'}
+            description={live.data.errorMessage ? friendlyError(live.data.errorCode, live.data.errorMessage) : '等待搜索返回具体资源'}
           />
-        </>
-      )}
+        ) : (
+          <>
+            <CandidateTable candidates={live.data.candidates} emptyLabel="未找到匹配的发布候选" onAcquired={handleAcquired} />
+            {live.data.errorMessage ? <ErrorState message={friendlyError(live.data.errorCode, live.data.errorMessage)} /> : null}
+          </>
+        )}
+      </section>
+
+      <section className="mb-8 space-y-3">
+        <h2 className="text-base font-semibold text-zinc-950">最近搜索</h2>
+        {recent.isPending ? (
+          <LoadingState label="正在读取最近搜索" />
+        ) : recent.error ? (
+          <ErrorState message={recent.error.message} onRetry={() => recent.refetch()} />
+        ) : recent.data.items.length === 0 ? (
+          <EmptyState title="暂无最近结果" description="完成搜索后，最近 5 条具体资源将在此显示" />
+        ) : (
+          <CandidateTable candidates={recent.data.items} emptyLabel="暂无最近结果" onAcquired={handleAcquired} />
+        )}
+      </section>
+
+      <SearchAcquisitionsSection />
     </PageBody>
   );
+}
+
+function friendlyStatus(status: string): string {
+  switch (status) {
+    case 'queued':
+      return '排队中';
+    case 'running':
+      return '搜索中';
+    case 'completed':
+      return '已完成';
+    case 'failed':
+      return '失败';
+    case 'cancelled':
+      return '已取消';
+    default:
+      return status;
+  }
 }

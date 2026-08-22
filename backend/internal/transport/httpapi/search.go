@@ -64,6 +64,31 @@ func (server *Server) GetSearch(
 	}
 }
 
+func (server *Server) ListRecentSearchCandidates(
+	ctx context.Context,
+	request ListRecentSearchCandidatesRequestObject,
+) (ListRecentSearchCandidatesResponseObject, error) {
+	if server.search == nil {
+		return ListRecentSearchCandidates503JSONResponse{ServiceUnavailableJSONResponse: serviceUnavailableError(ctx, "search")}, nil
+	}
+	limit := 5
+	if request.Params.Limit != nil {
+		limit = int(*request.Params.Limit)
+	}
+	if limit < 1 || limit > 5 {
+		return ListRecentSearchCandidates400JSONResponse{BadRequestJSONResponse: badRequestError(ctx, "limit must be between 1 and 5")}, nil
+	}
+	candidates, err := server.search.ListRecentCandidates(ctx, limit)
+	if err != nil {
+		return ListRecentSearchCandidates503JSONResponse{ServiceUnavailableJSONResponse: serviceUnavailableError(ctx, "postgresql")}, nil
+	}
+	items := make([]ReleaseCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		items = append(items, releaseCandidateResponse(candidate))
+	}
+	return ListRecentSearchCandidates200JSONResponse(ReleaseCandidatePage{Items: items}), nil
+}
+
 func (server *Server) CreateAcquisition(
 	ctx context.Context,
 	request CreateAcquisitionRequestObject,
@@ -131,6 +156,30 @@ func (server *Server) CreateAcquisition(
 	}
 }
 
+func releaseCandidateResponse(candidate domain.ReleaseCandidate) ReleaseCandidate {
+	item := ReleaseCandidate{
+		Id:           candidate.ID,
+		SearchRunId:  candidate.SearchRunID,
+		Provider:     candidate.Provider,
+		Title:        candidate.Title,
+		Downloadable: candidate.DownloadURI != "",
+		PublishedAt:  candidate.PublishedAt,
+		SizeBytes:    candidate.SizeBytes,
+		CreatedAt:    candidate.CreatedAt,
+	}
+	if candidate.DownloadURI != "" {
+		item.DownloadUri = &candidate.DownloadURI
+	} else {
+		reason := DownloadUriMissing
+		item.UnavailableReason = &reason
+	}
+	if candidate.Seeders != nil {
+		value := int32(*candidate.Seeders)
+		item.Seeders = &value
+	}
+	return item
+}
+
 func searchRunResponse(search domain.SearchRun) SearchRun {
 	response := SearchRun{
 		Id:          search.ID,
@@ -149,27 +198,7 @@ func searchRunResponse(search domain.SearchRun) SearchRun {
 		response.ErrorMessage = &search.ErrorMessage
 	}
 	for _, candidate := range search.Candidates {
-		item := ReleaseCandidate{
-			Id:           candidate.ID,
-			SearchRunId:  candidate.SearchRunID,
-			Provider:     candidate.Provider,
-			Title:        candidate.Title,
-			Downloadable: candidate.DownloadURI != "",
-			PublishedAt:  candidate.PublishedAt,
-			SizeBytes:    candidate.SizeBytes,
-			CreatedAt:    candidate.CreatedAt,
-		}
-		if candidate.DownloadURI != "" {
-			item.DownloadUri = &candidate.DownloadURI
-		} else {
-			reason := DownloadUriMissing
-			item.UnavailableReason = &reason
-		}
-		if candidate.Seeders != nil {
-			value := int32(*candidate.Seeders)
-			item.Seeders = &value
-		}
-		response.Candidates = append(response.Candidates, item)
+		response.Candidates = append(response.Candidates, releaseCandidateResponse(candidate))
 	}
 	return response
 }

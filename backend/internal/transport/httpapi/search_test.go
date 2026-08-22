@@ -20,6 +20,9 @@ type searchServiceStub struct {
 	getID             uuid.UUID
 	getResult         domain.SearchRun
 	getErr            error
+	recentLimit       int
+	recentResult      []domain.ReleaseCandidate
+	recentErr         error
 	acquisitionInput  domain.CreateSearchAcquisition
 	acquisitionResult domain.SearchAcquisitionResult
 	acquisitionErr    error
@@ -33,6 +36,11 @@ func (stub *searchServiceStub) CreateSearch(_ context.Context, input domain.Crea
 func (stub *searchServiceStub) GetSearch(_ context.Context, id uuid.UUID) (domain.SearchRun, error) {
 	stub.getID = id
 	return stub.getResult, stub.getErr
+}
+
+func (stub *searchServiceStub) ListRecentCandidates(_ context.Context, limit int) ([]domain.ReleaseCandidate, error) {
+	stub.recentLimit = limit
+	return stub.recentResult, stub.recentErr
 }
 
 func (stub *searchServiceStub) CreateAcquisition(_ context.Context, input domain.CreateSearchAcquisition) (domain.SearchAcquisitionResult, error) {
@@ -185,6 +193,46 @@ func TestCreateMovieAcquisitionForwardsCanonicalMovieMetadata(t *testing.T) {
 	input := stub.acquisitionInput
 	if input.CandidateID != candidateID || input.MediaType != domain.TaskMediaMovie || input.TMDbMovieID != 12345 || input.MovieTitle != "Fixture Movie" || input.ReleaseYear != 2024 || input.TMDbSeriesID != 0 || input.MappingProfileID != uuid.Nil || input.ActorUserID != actorID {
 		t.Fatalf("movie acquisition input = %#v", input)
+	}
+}
+
+func TestListRecentCandidatesCapsLimitAndMapsFields(t *testing.T) {
+	now := time.Date(2026, time.July, 22, 10, 0, 0, 0, time.UTC)
+	searchID := uuid.MustParse("73000000-0000-0000-0000-000000000020")
+	size := int64(123456)
+	stub := &searchServiceStub{recentResult: []domain.ReleaseCandidate{
+		{ID: uuid.MustParse("73000000-0000-0000-0000-000000000021"), SearchRunID: searchID, Provider: "dmhy", Title: "Show 01", DownloadURI: "magnet:?xt=urn:btih:abc", PublishedAt: &now, SizeBytes: &size, CreatedAt: now},
+	}}
+	handler := NewHandler(NewServer(readinessStub{}, WithSearch(stub)))
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/searches/recent-candidates?limit=5", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if stub.recentLimit != 5 {
+		t.Fatalf("recent limit = %d, want 5", stub.recentLimit)
+	}
+	var body ReleaseCandidatePage
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Items) != 1 || body.Items[0].Title != "Show 01" || !body.Items[0].Downloadable || body.Items[0].SizeBytes == nil || *body.Items[0].SizeBytes != size {
+		t.Fatalf("response = %#v", body)
+	}
+	if body.Items[0].Seeders != nil {
+		t.Fatalf("recent candidate should not expose seeders mapping yet, got %#v", body.Items[0])
+	}
+}
+
+func TestListRecentCandidatesRejectsExcessiveLimit(t *testing.T) {
+	stub := &searchServiceStub{}
+	handler := NewHandler(NewServer(readinessStub{}, WithSearch(stub)))
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/searches/recent-candidates?limit=10", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
 }
 

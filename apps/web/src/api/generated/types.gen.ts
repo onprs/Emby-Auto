@@ -440,6 +440,10 @@ export type SearchRunPage = {
     nextCursor?: string;
 };
 
+export type ReleaseCandidatePage = {
+    items: Array<ReleaseCandidate>;
+};
+
 export type ReleaseCandidate = {
     id: string;
     searchRunId: string;
@@ -1818,6 +1822,41 @@ export type CreateSearchResponses = {
 };
 
 export type CreateSearchResponse = CreateSearchResponses[keyof CreateSearchResponses];
+
+export type ListRecentSearchCandidatesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        limit?: number;
+    };
+    url: '/api/v1/searches/recent-candidates';
+};
+
+export type ListRecentSearchCandidatesErrors = {
+    /**
+     * The request is invalid.
+     */
+    400: ApiError;
+    /**
+     * Authentication is required or failed.
+     */
+    401: ApiError;
+    /**
+     * A required dependency is unavailable.
+     */
+    503: ApiError;
+};
+
+export type ListRecentSearchCandidatesError = ListRecentSearchCandidatesErrors[keyof ListRecentSearchCandidatesErrors];
+
+export type ListRecentSearchCandidatesResponses = {
+    /**
+     * Recent release candidates across recent searches.
+     */
+    200: ReleaseCandidatePage;
+};
+
+export type ListRecentSearchCandidatesResponse = ListRecentSearchCandidatesResponses[keyof ListRecentSearchCandidatesResponses];
 
 export type GetSearchData = {
     body?: never;

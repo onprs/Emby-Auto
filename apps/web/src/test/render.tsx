@@ -19,7 +19,7 @@ export function createTestQueryClient(): QueryClient {
   });
 }
 
-type TestRoutePath = '/' | '/tasks' | '/tasks/$taskId' | '/acquisitions' | '/acquisitions/$acquisitionId/mapping' | '/rss' | '/rss/$subscriptionId' | '/emby';
+type TestRoutePath = '/' | '/searches' | '/tasks' | '/tasks/$taskId' | '/acquisitions' | '/acquisitions/$acquisitionId' | '/acquisitions/$acquisitionId/mapping' | '/rss' | '/rss/$subscriptionId' | '/emby';
 
 function createTestRouter(ui: ReactNode, routePath: TestRoutePath, initialEntry: string) {
   const rootRoute = createRootRoute({ component: Outlet });
@@ -75,6 +75,15 @@ function createTestRouter(ui: ReactNode, routePath: TestRoutePath, initialEntry:
     const acquisitionRoute = createRoute({ getParentRoute: () => rootRoute, path: '/acquisitions/$acquisitionId', component: () => null });
     return createRouter({
       routeTree: rootRoute.addChildren([testRoute, acquisitionRoute, catchAllRoute]),
+      history: createMemoryHistory({ initialEntries: [initialEntry] }),
+    });
+  }
+
+  if (routePath === '/searches') {
+    const testRoute = createRoute({ getParentRoute: () => rootRoute, path: '/searches', component: () => <>{ui}</> });
+    const detailRoute = createRoute({ getParentRoute: () => rootRoute, path: '/acquisitions/$acquisitionId', component: () => <div>acquisition detail</div> });
+    return createRouter({
+      routeTree: rootRoute.addChildren([testRoute, detailRoute, catchAllRoute]),
       history: createMemoryHistory({ initialEntries: [initialEntry] }),
     });
   }
