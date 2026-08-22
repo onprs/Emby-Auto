@@ -275,6 +275,46 @@ func (q *Queries) GetSearchRun(ctx context.Context, id pgtype.UUID) (SearchRun, 
 	return i, err
 }
 
+const listRecentReleaseCandidates = `-- name: ListRecentReleaseCandidates :many
+SELECT rc.id, rc.search_run_id, rc.provider, rc.identity_key, rc.title, rc.download_uri, rc.published_at, rc.size_bytes, rc.seeders, rc.upstream_payload, rc.created_at
+FROM release_candidates AS rc
+JOIN search_runs AS sr ON sr.id = rc.search_run_id
+ORDER BY sr.created_at DESC, sr.id DESC, rc.created_at ASC, rc.id ASC
+LIMIT $1
+`
+
+func (q *Queries) ListRecentReleaseCandidates(ctx context.Context, rowLimit int32) ([]ReleaseCandidate, error) {
+	rows, err := q.db.Query(ctx, listRecentReleaseCandidates, rowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ReleaseCandidate{}
+	for rows.Next() {
+		var i ReleaseCandidate
+		if err := rows.Scan(
+			&i.ID,
+			&i.SearchRunID,
+			&i.Provider,
+			&i.IdentityKey,
+			&i.Title,
+			&i.DownloadUri,
+			&i.PublishedAt,
+			&i.SizeBytes,
+			&i.Seeders,
+			&i.UpstreamPayload,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listReleaseCandidates = `-- name: ListReleaseCandidates :many
 SELECT id, search_run_id, provider, identity_key, title, download_uri, published_at, size_bytes, seeders, upstream_payload, created_at
 FROM release_candidates

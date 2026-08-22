@@ -252,6 +252,7 @@ type Querier interface {
 	ListRSSSubscriptionsByProgressAsc(ctx context.Context, arg ListRSSSubscriptionsByProgressAscParams) ([]ListRSSSubscriptionsByProgressAscRow, error)
 	ListRSSSubscriptionsByProgressDesc(ctx context.Context, arg ListRSSSubscriptionsByProgressDescParams) ([]ListRSSSubscriptionsByProgressDescRow, error)
 	ListRSSSubscriptionsSorted(ctx context.Context, arg ListRSSSubscriptionsSortedParams) ([]ListRSSSubscriptionsSortedRow, error)
+	ListRecentReleaseCandidates(ctx context.Context, rowLimit int32) ([]ReleaseCandidate, error)
 	ListReleaseCandidates(ctx context.Context, searchRunID pgtype.UUID) ([]ReleaseCandidate, error)
 	ListResourceEvents(ctx context.Context, arg ListResourceEventsParams) ([]Event, error)
 	ListSearchRuns(ctx context.Context, arg ListSearchRunsParams) ([]SearchRun, error)

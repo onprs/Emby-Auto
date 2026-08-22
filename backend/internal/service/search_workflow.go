@@ -124,6 +124,28 @@ func (workflow *SearchWorkflow) GetSearch(ctx context.Context, id uuid.UUID) (do
 	return result, nil
 }
 
+func (workflow *SearchWorkflow) ListRecentCandidates(ctx context.Context, limit int) ([]domain.ReleaseCandidate, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	if limit > 5 {
+		limit = 5
+	}
+	rows, err := workflow.queries.ListRecentReleaseCandidates(ctx, int32(limit))
+	if err != nil {
+		return nil, fmt.Errorf("list recent release candidates: %w", err)
+	}
+	result := make([]domain.ReleaseCandidate, 0, len(rows))
+	for _, row := range rows {
+		mapped, mapErr := releaseCandidateFromDB(row)
+		if mapErr != nil {
+			return nil, mapErr
+		}
+		result = append(result, mapped)
+	}
+	return result, nil
+}
+
 func (workflow *SearchWorkflow) BeginSearch(
 	ctx context.Context,
 	searchID uuid.UUID,

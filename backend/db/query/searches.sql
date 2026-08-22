@@ -104,6 +104,13 @@ FROM release_candidates
 WHERE search_run_id = sqlc.arg(search_run_id)
 ORDER BY created_at, id;
 
+-- name: ListRecentReleaseCandidates :many
+SELECT rc.*
+FROM release_candidates AS rc
+JOIN search_runs AS sr ON sr.id = rc.search_run_id
+ORDER BY sr.created_at DESC, sr.id DESC, rc.created_at ASC, rc.id ASC
+LIMIT sqlc.arg(row_limit);
+
 -- name: GetReleaseCandidate :one
 SELECT *
 FROM release_candidates

@@ -33,6 +33,7 @@ type EventSource interface {
 type SearchService interface {
 	CreateSearch(context.Context, domain.CreateSearch) (domain.SearchCommandResult, error)
 	GetSearch(context.Context, uuid.UUID) (domain.SearchRun, error)
+	ListRecentCandidates(context.Context, int) ([]domain.ReleaseCandidate, error)
 	CreateAcquisition(context.Context, domain.CreateSearchAcquisition) (domain.SearchAcquisitionResult, error)
 }
 

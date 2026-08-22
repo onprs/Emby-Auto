@@ -336,6 +336,34 @@ paths:
           $ref: "#/components/responses/Conflict"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/searches/recent-candidates:
+    get:
+      operationId: listRecentSearchCandidates
+      summary: List recent release candidates
+      tags: [Search]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 5
+            default: 5
+      responses:
+        "200":
+          description: Recent release candidates across recent searches.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseCandidatePage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /api/v1/searches/{searchId}:
     get:
       operationId: getSearch
@@ -2998,6 +3026,15 @@ components:
         nextCursor:
           type: string
           format: uuid
+    ReleaseCandidatePage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReleaseCandidate"
     ReleaseCandidate:
       type: object
       additionalProperties: false
