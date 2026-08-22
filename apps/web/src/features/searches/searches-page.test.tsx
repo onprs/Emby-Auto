@@ -9,9 +9,10 @@ import { SearchAcquisitionsSection } from '@/features/searches/search-acquisitio
 import { CandidateTable } from '@/features/searches/candidate-selection';
 import { server } from '@/test/msw-server';
 import { createTestQueryClient, renderWithProviders } from '@/test/render';
-import type { Acquisition, ReleaseCandidate } from '@/api/generated/types.gen';
+import type { Acquisition, ReleaseCandidate, SearchRunSummary } from '@/api/generated/types.gen';
 
 const SEARCH_ID = 'aaaaaaaa-0000-4000-8000-000000000001';
+const SEARCH_ID_2 = 'aaaaaaaa-0000-4000-8000-000000000002';
 const CANDIDATE_NEW = 'bbbbbbbb-0000-4000-8000-000000000010';
 const CANDIDATE_OLD = 'bbbbbbbb-0000-4000-8000-000000000011';
 const ACQ_ID = 'cccccccc-0000-4000-8000-000000000020';
@@ -30,6 +31,18 @@ function candidateFixture(overrides: Partial<ReleaseCandidate> & { id: string; t
     unavailableReason: overrides.unavailableReason,
     seeders: undefined,
   } as ReleaseCandidate;
+}
+
+function searchRunFixture(overrides: Partial<SearchRunSummary> & { id: string; query: string }): SearchRunSummary {
+  return {
+    id: overrides.id,
+    query: overrides.query,
+    status: overrides.status ?? 'completed',
+    errorCode: overrides.errorCode,
+    errorMessage: overrides.errorMessage,
+    createdAt: overrides.createdAt ?? '2026-08-22T08:00:00Z',
+    updatedAt: overrides.updatedAt ?? '2026-08-22T08:01:00Z',
+  };
 }
 
 function acquisitionFixture(): Acquisition {
@@ -113,13 +126,13 @@ describe('SearchesPage live and recent', () => {
     let recentCalls = 0;
     const candidateTitle = 'Fixture Show S01E01 [1080p] Very Long Title That Should Wrap Across Multiple Lines Without Overflow And Keep Break Words Behavior For Long Titles';
     server.use(
-      http.get('*/api/v1/searches/recent-candidates', ({ request }) => {
+      http.get('*/api/v1/searches', ({ request }) => {
         const url = new URL(request.url);
         if (url.searchParams.get('limit') !== '5') {
           return HttpResponse.json({ code: 'bad_request', message: 'limit' }, { status: 400 });
         }
         recentCalls += 1;
-        return HttpResponse.json({ items: [] });
+        return HttpResponse.json({ items: [], nextCursor: null });
       }),
       http.post('*/api/v1/searches', async () =>
         HttpResponse.json(
@@ -161,10 +174,9 @@ describe('SearchesPage live and recent', () => {
       http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [] })),
     );
 
-    const { router, queryClient } = renderWithProviders(<SearchesPage />, { routePath: '/searches', initialEntry: '/searches' });
+    const { router } = renderWithProviders(<SearchesPage />, { routePath: '/searches', initialEntry: '/searches' });
 
     await flushMicrotasks();
-    // 初始最近搜索已加载
     expect(screen.getByText('最近搜索')).toBeInTheDocument();
     const initialRecent = recentCalls;
     expect(initialRecent).toBeGreaterThanOrEqual(1);
@@ -185,29 +197,26 @@ describe('SearchesPage live and recent', () => {
     expect(pollCount).toBe(1);
     expect(router.state.location.pathname).toBe('/searches');
 
-    // 推进 3000ms 进入 running
     await advancePoll(3000);
     expect(screen.getByText(/搜索中/)).toBeInTheDocument();
     expect(pollCount).toBe(2);
 
-    // 再推进 3000ms 进入 completed，候选出现，recent 被精确刷新一次
     await advancePoll(3000);
     expect(screen.getAllByText(candidateTitle)[0]).toBeInTheDocument();
     expect(router.state.location.pathname).toBe('/searches');
     expect(pollCount).toBe(3);
-    expect(recentCalls).toBe(initialRecent + 1);
+    expect(recentCalls).toBe(initialRecent + 2);
     const titleEl = screen.getAllByText(candidateTitle)[0];
     expect(titleEl.className).toMatch(/break-words/);
     expect(titleEl.className).toMatch(/whitespace-normal/);
 
-    // completed 后再推进一个 interval，轮询停止
     await advancePoll(3000);
     expect(pollCount).toBe(3);
-    expect(recentCalls).toBe(initialRecent + 1);
+    expect(recentCalls).toBe(initialRecent + 2);
     vi.useRealTimers();
   });
 
-  it('renders current and recent without status or seeders columns, and disables non-downloadable with reason', async () => {
+  it('renders current without status or seeders columns, and disables non-downloadable with reason', async () => {
     const downloadable = candidateFixture({ id: CANDIDATE_NEW, title: '可下载番剧 S01E01 [1080p]', sizeBytes: 987654321, publishedAt: '2026-08-22T07:00:00Z' });
     const nondl = candidateFixture({ id: CANDIDATE_OLD, title: '不可下载番剧 S01E02', downloadable: false, unavailableReason: 'download_uri_missing' as ReleaseCandidate['unavailableReason'] });
     (nondl as unknown as Record<string, unknown>).downloadable = false;
@@ -215,7 +224,7 @@ describe('SearchesPage live and recent', () => {
     (nondl as unknown as Record<string, unknown>).unavailableReason = 'download_uri_missing';
 
     server.use(
-      http.get('*/api/v1/searches/recent-candidates', () => HttpResponse.json({ items: [downloadable, nondl] })),
+      http.get('*/api/v1/searches', () => HttpResponse.json({ items: [], nextCursor: null })),
       http.get(`*/api/v1/searches/${SEARCH_ID}`, () => HttpResponse.json({ id: SEARCH_ID, query: 'Q', status: 'completed', candidates: [downloadable, nondl], createdAt: '2026-08-22T08:00:00Z', updatedAt: '2026-08-22T08:02:00Z' })),
       http.post('*/api/v1/searches', () => HttpResponse.json({ search: { id: SEARCH_ID, query: 'Q', status: 'completed', createdAt: '2026-08-22T08:00:00Z', updatedAt: '2026-08-22T08:02:00Z', candidates: [downloadable] }, operationId: 'op-1', status: 'queued' }, { status: 202 })),
       http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [] })),
@@ -236,11 +245,19 @@ describe('SearchesPage live and recent', () => {
     expect(disabledButtons.length).toBeGreaterThan(0);
   });
 
-  it('recent request is fixed limit=5', async () => {
+  it('recent request is fixed limit=5, caps UI at 5 and does not request recent-candidates', async () => {
     const urls: string[] = [];
+    let recentCandidatesCalled = false;
+    const manyRuns = Array.from({ length: 7 }, (_, i) =>
+      searchRunFixture({ id: `id-${i}`, query: `关键词-${i}-${'超长'.repeat(20)}`, status: 'completed', createdAt: '2026-08-22T08:00:00Z', updatedAt: '2026-08-22T08:01:00Z' }),
+    );
     server.use(
-      http.get('*/api/v1/searches/recent-candidates', ({ request }) => {
+      http.get('*/api/v1/searches', ({ request }) => {
         urls.push(request.url);
+        return HttpResponse.json({ items: manyRuns, nextCursor: null });
+      }),
+      http.get('*/api/v1/searches/recent-candidates', () => {
+        recentCandidatesCalled = true;
         return HttpResponse.json({ items: [] });
       }),
       http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [] })),
@@ -251,6 +268,34 @@ describe('SearchesPage live and recent', () => {
       const parsed = new URL(url);
       expect(parsed.searchParams.get('limit')).toBe('5');
     });
+    expect(recentCandidatesCalled).toBe(false);
+    // UI caps at 5 even though server returned 7
+    await screen.findByText('关键词-0-超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长');
+    const links = screen.getAllByRole('link', { name: /关键词-/ });
+    // Two links per run (title + 查看详情) => count doubled, but distinct query links at least 5
+    const queryLinks = links.filter((el) => el.textContent?.startsWith('关键词-'));
+    expect(queryLinks.length).toBe(5);
+    expect(screen.queryByText('关键词-5-超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长')).not.toBeInTheDocument();
+    expect(screen.queryByText('关键词-6-超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长超长')).not.toBeInTheDocument();
+    // long query wraps without overflow
+    const firstLink = queryLinks[0] as HTMLAnchorElement;
+    expect(firstLink.className).toMatch(/break-words/);
+    expect(firstLink.className).toMatch(/whitespace-normal/);
+  });
+
+  it('clicking recent search record navigates to /searches/{id}', async () => {
+    const runA = searchRunFixture({ id: SEARCH_ID, query: '导航测试关键词', status: 'completed', createdAt: '2026-08-22T08:00:00Z', updatedAt: '2026-08-22T08:01:00Z' });
+    const runB = searchRunFixture({ id: SEARCH_ID_2, query: '另一条记录', status: 'failed', errorCode: 'search_provider_failed', errorMessage: 'fail', createdAt: '2026-08-22T08:02:00Z', updatedAt: '2026-08-22T08:03:00Z' });
+    server.use(
+      http.get('*/api/v1/searches', () => HttpResponse.json({ items: [runA, runB], nextCursor: null })),
+      http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [] })),
+    );
+    const { router } = renderWithProviders(<SearchesPage />, { routePath: '/searches', initialEntry: '/searches' });
+    await screen.findByText('导航测试关键词');
+    const link = screen.getAllByRole('link', { name: '导航测试关键词' })[0];
+    expect(link.getAttribute('href')).toContain(SEARCH_ID);
+    await userEvent.click(link);
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/searches/${SEARCH_ID}`));
   });
 
   it('refreshes recent exactly once when search transitions to completed', async () => {
@@ -258,9 +303,9 @@ describe('SearchesPage live and recent', () => {
     let recentCalls = 0;
     let pollCount = 0;
     server.use(
-      http.get('*/api/v1/searches/recent-candidates', () => {
+      http.get('*/api/v1/searches', () => {
         recentCalls += 1;
-        return HttpResponse.json({ items: [] });
+        return HttpResponse.json({ items: [], nextCursor: null });
       }),
       http.post('*/api/v1/searches', () => HttpResponse.json({ search: { id: SEARCH_ID, query: 'Q', status: 'queued', createdAt: '2026-08-22T08:00:00Z', updatedAt: '2026-08-22T08:00:00Z', candidates: [] }, operationId: 'op-1', status: 'queued' }, { status: 202 })),
       http.get(`*/api/v1/searches/${SEARCH_ID}`, () => {
@@ -293,7 +338,7 @@ describe('SearchesPage live and recent', () => {
     await advancePoll(3000);
     expect(screen.getAllByText('Completed Candidate')[0]).toBeInTheDocument();
     expect(pollCount).toBe(2);
-    expect(recentCalls).toBe(initialCalls + 1);
+    expect(recentCalls).toBe(initialCalls + 2);
     const afterCompleted = recentCalls;
     await advancePoll(3000);
     expect(recentCalls).toBe(afterCompleted);
@@ -307,9 +352,9 @@ describe('SearchesPage live and recent', () => {
     let pollCount = 0;
     const failedCandidateTitle = 'Should Not Appear';
     server.use(
-      http.get('*/api/v1/searches/recent-candidates', () => {
+      http.get('*/api/v1/searches', () => {
         recentCalls += 1;
-        return HttpResponse.json({ items: [] });
+        return HttpResponse.json({ items: [], nextCursor: null });
       }),
       http.post('*/api/v1/searches', () => HttpResponse.json({ search: { id: SEARCH_ID, query: 'Q', status: 'queued', createdAt: '2026-08-22T08:00:00Z', updatedAt: '2026-08-22T08:00:00Z', candidates: [] }, operationId: 'op-1', status: 'queued' }, { status: 202 })),
       http.get(`*/api/v1/searches/${SEARCH_ID}`, () => {
@@ -354,30 +399,39 @@ describe('SearchesPage live and recent', () => {
     const matches = screen.getAllByText(friendly);
     expect(matches).toHaveLength(1);
     expect(screen.queryByText(failedCandidateTitle)).not.toBeInTheDocument();
-    expect(recentCalls).toBe(initialCalls);
-    // failed 后轮询停止
+    expect(recentCalls).toBe(initialCalls + 1);
     await advancePoll(3000);
     expect(pollCount).toBe(2);
-    expect(recentCalls).toBe(initialCalls);
+    expect(recentCalls).toBe(initialCalls + 1);
     vi.useRealTimers();
   });
 
   it('shows loading, empty and error states for recent', async () => {
     server.use(
-      http.get('*/api/v1/searches/recent-candidates', () => HttpResponse.json({ items: [] })),
+      http.get('*/api/v1/searches', () => HttpResponse.json({ items: [], nextCursor: null })),
       http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [] })),
     );
     renderWithProviders(<SearchesPage />, { routePath: '/searches', initialEntry: '/searches' });
     expect(await screen.findByText('暂无最近结果')).toBeInTheDocument();
   });
 
-  it('shows error for recent when request fails', async () => {
+  it('shows error for recent when request fails and retry works', async () => {
+    let shouldFail = true;
     server.use(
-      http.get('*/api/v1/searches/recent-candidates', () => HttpResponse.json({ code: 'internal', message: 'boom' }, { status: 500 })),
+      http.get('*/api/v1/searches', () => {
+        if (shouldFail) {
+          return HttpResponse.json({ code: 'internal', message: 'boom' }, { status: 500 });
+        }
+        return HttpResponse.json({ items: [], nextCursor: null });
+      }),
       http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [] })),
     );
     renderWithProviders(<SearchesPage />, { routePath: '/searches', initialEntry: '/searches' });
     await waitFor(() => expect(screen.getByText(/boom|无法读取最近搜索/)).toBeInTheDocument());
+    shouldFail = false;
+    const retryBtn = screen.getByRole('button', { name: /重试/ });
+    await userEvent.click(retryBtn);
+    await screen.findByText('暂无最近结果');
   });
 });
 
@@ -433,14 +487,10 @@ describe('Candidate selection', () => {
   });
 
   it('creates acquisition and shows conflict error, with bounded invalidation', async () => {
-    const recentSpy = vi.fn();
     const acqSpy = vi.fn();
     let createShouldConflict = false;
     server.use(
-      http.get('*/api/v1/searches/recent-candidates', ({ request }) => {
-        recentSpy(String(request.url));
-        return HttpResponse.json({ items: [] });
-      }),
+      http.get('*/api/v1/searches', () => HttpResponse.json({ items: [], nextCursor: null })),
       http.get('*/api/v1/acquisitions', ({ request }) => {
         acqSpy(String(request.url));
         return HttpResponse.json({ items: [] });
@@ -461,14 +511,12 @@ describe('Candidate selection', () => {
     await userEvent.click((await screen.findAllByRole('button', { name: '选择' }))[0]);
     await screen.findByText('创建获取');
 
-    // pick TMDb series
     const input = await screen.findByLabelText('TMDb 作品');
     await userEvent.type(input, 'Fixture');
     await userEvent.click(screen.getByRole('button', { name: '查询' }));
     await screen.findByText('Fixture Series');
     await userEvent.click(screen.getByText('Fixture Series'));
 
-    recentSpy.mockClear();
     acqSpy.mockClear();
     await userEvent.click(screen.getByRole('button', { name: '创建获取并下载' }));
     await waitFor(() => expect(onAcquired).toHaveBeenCalled());

@@ -1,17 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link } from '@tanstack/react-router';
 import { Search as SearchIcon } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
 import { ApiFailure } from '@/api/app-client';
-import { fetchRecentCandidates, fetchSearch, startSearch } from '@/features/searches/api';
+import { fetchRecentSearches, fetchSearch, startSearch } from '@/features/searches/api';
 import { CandidateTable } from '@/features/searches/candidate-selection';
 import { SearchAcquisitionsSection } from '@/features/searches/search-acquisitions-section';
 import { IdempotencyKeyHolder } from '@/lib/idempotency';
 import { PageBody, PageHeader } from '@/components/resource';
+import { StatusBadge } from '@/components/status-badge';
 import { Button } from '@/components/ui/button';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/feedback';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { formatDateTime } from '@/lib/format';
 import { friendlyError } from '@/lib/presentation';
 
 export function SearchesPage() {
@@ -22,8 +25,8 @@ export function SearchesPage() {
   const holder = useState(() => new IdempotencyKeyHolder())[0];
 
   const recent = useQuery({
-    queryKey: ['recent-candidates'],
-    queryFn: () => fetchRecentCandidates(5),
+    queryKey: ['searches', 'recent'],
+    queryFn: () => fetchRecentSearches(),
   });
 
   const live = useQuery({
@@ -47,7 +50,7 @@ export function SearchesPage() {
   useEffect(() => {
     if (live.data?.status === 'completed' && live.data.id !== completedSyncRef.current) {
       completedSyncRef.current = live.data.id;
-      void queryClient.invalidateQueries({ queryKey: ['recent-candidates'] });
+      void queryClient.invalidateQueries({ queryKey: ['searches'] });
     }
   }, [live.data?.id, live.data?.status, queryClient]);
 
@@ -60,6 +63,7 @@ export function SearchesPage() {
       if (searchId) {
         setLiveSearchId(searchId);
       }
+      void queryClient.invalidateQueries({ queryKey: ['searches'] });
     },
     onError: (cause) => {
       if (cause instanceof ApiFailure && cause.isConflict) {
@@ -71,7 +75,6 @@ export function SearchesPage() {
 
   const handleAcquired = () => {
     void queryClient.invalidateQueries({ queryKey: ['acquisitions'] });
-    void queryClient.invalidateQueries({ queryKey: ['recent-candidates'] });
   };
 
   return (
@@ -135,9 +138,37 @@ export function SearchesPage() {
         ) : recent.error ? (
           <ErrorState message={recent.error.message} onRetry={() => recent.refetch()} />
         ) : recent.data.items.length === 0 ? (
-          <EmptyState title="暂无最近结果" description="完成搜索后，最近 5 条具体资源将在此显示" />
+          <EmptyState title="暂无最近结果" description="完成搜索后，最近 5 条搜索记录将在此显示" />
         ) : (
-          <CandidateTable candidates={recent.data.items} emptyLabel="暂无最近结果" onAcquired={handleAcquired} />
+          <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-card">
+            <ul className="divide-y divide-zinc-100">
+              {recent.data.items.slice(0, 5).map((run) => (
+                <li key={run.id} className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0 flex-1">
+                    <Link
+                      to="/searches/$searchId"
+                      params={{ searchId: run.id }}
+                      className="block whitespace-normal break-words font-medium text-zinc-900 hover:underline"
+                    >
+                      {run.query}
+                    </Link>
+                    <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+                      <StatusBadge value={run.status} />
+                      <span>{formatDateTime(run.createdAt)}</span>
+                      {run.errorMessage ? <span className="break-words">{friendlyError(run.errorCode, run.errorMessage)}</span> : null}
+                    </p>
+                  </div>
+                  <Link
+                    to="/searches/$searchId"
+                    params={{ searchId: run.id }}
+                    className="shrink-0 text-sm font-medium text-emerald-700 hover:underline"
+                  >
+                    查看详情
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
       </section>
 
