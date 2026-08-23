@@ -80,6 +80,11 @@ const errorMessages: Record<string, string> = {
   acquisition_delete_roots_not_configured: '临时文件目录尚未配置完整。',
   acquisition_delete_file_failed: '暂时无法删除源文件或临时文件，请检查文件是否正在使用。',
   acquisition_delete_storage_unavailable: '暂时无法完成任务记录清理，请稍后重试。',
+  torrent_source_invalid: '下载链接无效，请检查订阅地址。',
+  torrent_source_unavailable: '暂时无法获取种子文件，请稍后重试。',
+  torrent_source_too_large: '种子文件过大，无法处理。',
+  torrent_source_not_torrent: '种子文件无效。',
+  qbittorrent_invalid_torrent: '种子文件无效，qBittorrent 无法识别。',
   network_proxy_not_configured: '请先在设置中启用并验证网络代理。',
   qbittorrent_delete_failed: '暂时无法从 qBittorrent 移除下载，请稍后重试。',
 };

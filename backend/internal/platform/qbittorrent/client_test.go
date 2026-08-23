@@ -1,8 +1,12 @@
 package qbittorrent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -418,6 +422,177 @@ func TestClientTorrentRuntimePauseClassification(t *testing.T) {
 	if IsTorrentStopped(Torrent{State: "stalledDL"}) {
 		t.Fatal("IsTorrentStopped(stalledDL) = true")
 	}
+}
+
+func TestClientAddAndConfirmUsesMultipartForTorrentBytes(t *testing.T) {
+	torrentBytes := []byte("d8:announce35:http://tracker.example.test:8080/announce4:infod6:lengthi999e4:name8:test.mkveee")
+	var capturedFields map[string]string
+	var capturedFilename, capturedContentType string
+	var capturedBytes []byte
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v2/torrents/info":
+			if strings.Contains(request.URL.RawQuery, "category=") && request.URL.Query().Get("category") != "emby-auto-test-category" {
+				t.Errorf("unexpected category query %q", request.URL.RawQuery)
+			}
+			requestedCategory := request.URL.Query().Get("category")
+			if capturedBytes == nil {
+				_ = json.NewEncoder(response).Encode([]Torrent{})
+				return
+			}
+			if requestedCategory == "emby-auto-test-category" {
+				_ = json.NewEncoder(response).Encode([]Torrent{{Hash: torrentHashA}})
+				return
+			}
+			_ = json.NewEncoder(response).Encode([]Torrent{})
+		case "/api/v2/torrents/add":
+			contentType := request.Header.Get("Content-Type")
+			if !strings.HasPrefix(contentType, "multipart/form-data;") {
+				t.Errorf("Content-Type = %q, want multipart/form-data", contentType)
+			}
+			_, params, err := mime.ParseMediaType(contentType)
+			if err != nil {
+				t.Fatalf("ParseMediaType() error = %v", err)
+			}
+			reader := multipart.NewReader(request.Body, params["boundary"])
+			fields := map[string]string{}
+			for {
+				part, err := reader.NextPart()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatalf("multipart NextPart() error = %v", err)
+				}
+				data, err := io.ReadAll(part)
+				if err != nil {
+					t.Fatalf("ReadAll() error = %v", err)
+				}
+				formName := part.FormName()
+				if formName == "torrents" {
+					capturedFilename = part.FileName()
+					capturedContentType = part.Header.Get("Content-Type")
+					capturedBytes = append([]byte(nil), data...)
+				} else {
+					fields[formName] = string(data)
+				}
+			}
+			capturedFields = fields
+			if fields["savepath"] != "/downloads/test" || fields["category"] != "emby-auto-test-category" || fields["stopped"] != "false" || fields["stopCondition"] != "MetadataReceived" {
+				t.Errorf("fields = %#v", fields)
+			}
+			if fields["urls"] != "" {
+				t.Errorf("unexpected urls field %q for torrent upload", fields["urls"])
+			}
+			_, _ = response.Write([]byte("Ok."))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, RequestTimeout: time.Second, PollInterval: time.Millisecond, ConfirmTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	resolution, err := client.AddAndConfirm(context.Background(), AddRequest{
+		Torrent:         torrentBytes,
+		TorrentFilename: "source.torrent",
+		SavePath:        "/downloads/test",
+		Category:        "emby-auto-test-category",
+	})
+	if err != nil {
+		t.Fatalf("AddAndConfirm() error = %v", err)
+	}
+	if resolution.Hash != torrentHashA || resolution.Reason != HashResolutionNew {
+		t.Fatalf("resolution = %#v, want %s/new", resolution, torrentHashA)
+	}
+	if capturedFilename != "source.torrent" || capturedContentType != "application/x-bittorrent" || !bytes.Equal(capturedBytes, torrentBytes) {
+		t.Fatalf("multipart torrents part = filename %q type %q bytes %v", capturedFilename, capturedContentType, capturedBytes)
+	}
+	if capturedFields["savepath"] != "/downloads/test" {
+		t.Fatalf("savepath not preserved in multipart")
+	}
+}
+
+func TestClientAddAndConfirmRejectsInvalidTorrentAndSurfaces415(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v2/torrents/info":
+			_ = json.NewEncoder(response).Encode([]Torrent{})
+		case "/api/v2/torrents/add":
+			http.Error(response, "torrent file is invalid", http.StatusUnsupportedMediaType)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, RequestTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	_, err = client.AddAndConfirm(context.Background(), AddRequest{
+		Torrent:         []byte("d8:announce31:http://tracker:8080/announce4:infod6:lengthi1e3:fooeee"),
+		TorrentFilename: "source.torrent",
+		SavePath:        "/downloads/test",
+		Category:        "emby-auto-test-category",
+	})
+	var httpErr *HTTPError
+	if !bytes.Contains([]byte(err.Error()), []byte("415")) || !errorsAsHTTPError(err, &httpErr) || httpErr.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("AddAndConfirm() error = %v, want HTTP 415", err)
+	}
+}
+
+func errorsAsHTTPError(err error, target **HTTPError) bool {
+	// helper to avoid importing errors at top for this file
+	return httpErrorAs(err, target)
+}
+
+func httpErrorAs(err error, target **HTTPError) bool {
+	for err != nil {
+		if h, ok := err.(*HTTPError); ok {
+			*target = h
+			return true
+		}
+		err = unwrapErr(err)
+	}
+	return false
+}
+
+func TestClientAddAndConfirmReusesExistingTorrentForFileUpload(t *testing.T) {
+	addCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v2/torrents/info":
+			_ = json.NewEncoder(response).Encode([]Torrent{{Hash: torrentHashA, Category: "emby-auto-123"}})
+		case "/api/v2/torrents/add":
+			addCalls++
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, RequestTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	resolution, err := client.AddAndConfirm(context.Background(), AddRequest{
+		Torrent:         []byte("d8:announce31:http://tracker:8080/announce4:infod6:lengthi1e3:fooeee"),
+		TorrentFilename: "source.torrent",
+		SavePath:        "/downloads/123",
+		Category:        "emby-auto-123",
+	})
+	if err != nil || resolution.Hash != torrentHashA || resolution.Reason != HashResolutionExisting || addCalls != 0 {
+		t.Fatalf("resolution/addCalls = %#v/%d, want existing %s without add", resolution, addCalls, torrentHashA)
+	}
+}
+
+func unwrapErr(err error) error {
+	type unwrapper interface{ Unwrap() error }
+	if ue, ok := err.(unwrapper); ok {
+		return ue.Unwrap()
+	}
+	return nil
 }
 
 func TestClientManagesFilesCategoriesAndExplicitDeletion(t *testing.T) {

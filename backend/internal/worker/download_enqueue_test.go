@@ -15,6 +15,20 @@ import (
 
 const workerTorrentHash = "0123456789abcdef0123456789abcdef01234567"
 
+var validTorrentFixture = []byte("d8:announce35:http://tracker.example.test:8080/announce4:infod6:lengthi12345e4:name10:testvideoseee")
+
+func stubTorrentFetcher(bytes []byte, err error) torrentSourceFetcher {
+	return func(context.Context, string, domain.NetworkProxySettings) ([]byte, error) {
+		if err != nil {
+			return nil, err
+		}
+		if bytes != nil {
+			return bytes, nil
+		}
+		return validTorrentFixture, nil
+	}
+}
+
 type downloadConfigurationStub struct {
 	configuration domain.Configuration
 	password      string
@@ -234,7 +248,7 @@ func TestDownloadEnqueueHandlerConfirmsHashSelectsFilesAndPersistsCompletion(t *
 			t.Fatalf("client options = %#v", options)
 		}
 		return client, nil
-	}, agent)
+	}, agent).WithTorrentSourceFetcher(stubTorrentFetcher(validTorrentFixture, nil))
 
 	err := handler.Handle(context.Background(), domain.Operation{
 		ID:           operationID,
@@ -249,7 +263,7 @@ func TestDownloadEnqueueHandlerConfirmsHashSelectsFilesAndPersistsCompletion(t *
 	if factoryCalls != 1 || !store.completed {
 		t.Fatalf("factory calls/completed = %d/%t, want 1/true", factoryCalls, store.completed)
 	}
-	if client.addRequest.Source != store.command.SourceURI || client.addRequest.SavePath != "/downloads/30000000-0000-0000-0000-000000000001" || client.addRequest.Category != "emby-auto-30000000-0000-0000-0000-000000000001" {
+	if len(client.addRequest.Torrent) == 0 || string(client.addRequest.Torrent) != string(validTorrentFixture) || client.addRequest.TorrentFilename != "source.torrent" || client.addRequest.Source != "" || client.addRequest.SavePath != "/downloads/30000000-0000-0000-0000-000000000001" || client.addRequest.Category != "emby-auto-30000000-0000-0000-0000-000000000001" {
 		t.Fatalf("add request = %#v", client.addRequest)
 	}
 	if !reflect.DeepEqual(client.calls, []string{"login", "ensure-category", "ensure-category", "add", "files"}) {
@@ -447,7 +461,7 @@ func TestDownloadEnqueueHandlerPersistsUnresolvedAndHardRejectedManifests(t *tes
 			store := &downloadStoreStub{command: domain.DownloadEnqueueCommand{DownloadID: downloadID, Status: domain.DownloadEnqueuePending, SourceURI: "https://example.test/show.torrent"}}
 			client := &torrentClientStub{resolution: qbittorrent.HashResolution{Hash: workerTorrentHash}, files: []qbittorrent.TorrentFile{test.file}}
 			agent := &downloadAgentResolutionStub{}
-			handler := NewDownloadEnqueueHandler(configuration, store, func(qbittorrent.ClientOptions) (TorrentClient, error) { return client, nil }, agent)
+			handler := NewDownloadEnqueueHandler(configuration, store, func(qbittorrent.ClientOptions) (TorrentClient, error) { return client, nil }, agent).WithTorrentSourceFetcher(stubTorrentFetcher(validTorrentFixture, nil))
 			err := handler.Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "download", ResourceID: downloadID, Payload: []byte(`{"defaultSeason":1}`)})
 			if err != nil {
 				t.Fatalf("Handle() error = %v", err)
@@ -482,7 +496,7 @@ func TestDownloadEnqueueHandlerUsesLegacyFlowAndImmediatelyTriggersEpisodeMappin
 	agent := &downloadAgentResolutionStub{}
 	handler := NewDownloadEnqueueHandler(configuration, store, func(qbittorrent.ClientOptions) (TorrentClient, error) {
 		return client, nil
-	}, agent).WithManifestResolutionEnabled(false)
+	}, agent).WithManifestResolutionEnabled(false).WithTorrentSourceFetcher(stubTorrentFetcher(validTorrentFixture, nil))
 
 	err := handler.Handle(context.Background(), domain.Operation{
 		ID: uuid.New(), ResourceType: "download", ResourceID: downloadID,
@@ -550,7 +564,7 @@ func TestDownloadEnqueueHandlerClassifiesMediaAndConfigurationFailures(t *testin
 			}}
 			handler := NewDownloadEnqueueHandler(test.configuration, store, func(qbittorrent.ClientOptions) (TorrentClient, error) {
 				return test.client, nil
-			})
+			}).WithTorrentSourceFetcher(stubTorrentFetcher(validTorrentFixture, nil))
 			err := handler.Handle(context.Background(), domain.Operation{
 				ResourceType: "download",
 				ResourceID:   downloadID,

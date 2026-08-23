@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -59,6 +60,7 @@ type DownloadEnqueueHandler struct {
 	store                     DownloadEnqueueStore
 	agentResolutions          DownloadAgentResolutionCreator
 	newClient                 TorrentClientFactory
+	torrentFetcher            torrentSourceFetcher
 	manifestResolutionEnabled bool
 	metadataPollInterval      time.Duration
 	metadataTimeout           time.Duration
@@ -92,6 +94,11 @@ func NewDownloadEnqueueHandler(
 
 func (handler *DownloadEnqueueHandler) WithManifestResolutionEnabled(enabled bool) *DownloadEnqueueHandler {
 	handler.manifestResolutionEnabled = enabled
+	return handler
+}
+
+func (handler *DownloadEnqueueHandler) WithTorrentSourceFetcher(fetcher torrentSourceFetcher) *DownloadEnqueueHandler {
+	handler.torrentFetcher = fetcher
 	return handler
 }
 
@@ -168,12 +175,38 @@ func (handler *DownloadEnqueueHandler) Handle(ctx context.Context, operation dom
 		defer cancel()
 		_ = client.DeleteCategory(cleanupCtx, correlationCategory)
 	}()
-	resolution, err := client.AddAndConfirm(ctx, qbittorrent.AddRequest{
-		Source:   command.SourceURI,
-		SavePath: savePath,
-		Category: correlationCategory,
-	})
+	sourceURI := strings.TrimSpace(command.SourceURI)
+	var addRequest qbittorrent.AddRequest
+	if isMagnetSource(sourceURI) {
+		addRequest = qbittorrent.AddRequest{
+			Source:   sourceURI,
+			SavePath: savePath,
+			Category: correlationCategory,
+		}
+	} else if isHTTPSource(sourceURI) {
+		fetcher := handler.torrentFetcher
+		if fetcher == nil {
+			fetcher = defaultTorrentSourceFetcher
+		}
+		torrentBytes, fetchErr := fetcher(ctx, sourceURI, settings.NetworkProxy)
+		if fetchErr != nil {
+			return fetchErr
+		}
+		addRequest = qbittorrent.AddRequest{
+			Torrent:         torrentBytes,
+			TorrentFilename: "source.torrent",
+			SavePath:        savePath,
+			Category:        correlationCategory,
+		}
+	} else {
+		return permanentFailure("torrent_source_invalid", "下载链接无效", nil)
+	}
+	resolution, err := client.AddAndConfirm(ctx, addRequest)
 	if err != nil {
+		var httpErr *qbittorrent.HTTPError
+		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusUnsupportedMediaType {
+			return permanentFailure("qbittorrent_invalid_torrent", "种子文件无效，qBittorrent 无法识别", err)
+		}
 		return retryableFailure("qbittorrent_enqueue_failed", "qBittorrent did not confirm the added torrent", err)
 	}
 	torrentOwnedByOperation := resolution.Reason != qbittorrent.HashResolutionExisting

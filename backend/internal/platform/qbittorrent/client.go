@@ -1,6 +1,7 @@
 package qbittorrent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base32"
 	"encoding/hex"
@@ -9,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
+	"net/textproto"
 	"net/url"
 	"sort"
 	"strconv"
@@ -72,9 +75,11 @@ type Client struct {
 }
 
 type AddRequest struct {
-	Source   string
-	SavePath string
-	Category string
+	Source          string
+	Torrent         []byte
+	TorrentFilename string
+	SavePath        string
+	Category        string
 }
 
 type HashResolutionReason string
@@ -190,15 +195,26 @@ func (client *Client) ListTorrents(ctx context.Context, category string) ([]Torr
 func (client *Client) AddAndConfirm(ctx context.Context, request AddRequest) (HashResolution, error) {
 	request.Source = strings.TrimSpace(request.Source)
 	request.Category = strings.TrimSpace(request.Category)
-	if request.Source == "" {
+	request.TorrentFilename = strings.TrimSpace(request.TorrentFilename)
+	hasTorrent := len(request.Torrent) > 0
+	if hasTorrent && request.Source != "" {
+		return HashResolution{}, fmt.Errorf("torrent source and torrent bytes are mutually exclusive")
+	}
+	if !hasTorrent && request.Source == "" {
 		return HashResolution{}, fmt.Errorf("torrent source must not be blank")
+	}
+	if hasTorrent && len(request.Torrent) == 0 {
+		return HashResolution{}, fmt.Errorf("torrent bytes must not be empty")
 	}
 	if request.Category == "" {
 		return HashResolution{}, fmt.Errorf("torrent category must not be blank")
 	}
+	if hasTorrent && request.TorrentFilename == "" {
+		request.TorrentFilename = "source.torrent"
+	}
 
 	categoryScope := request.Category
-	if ExtractBTIH(request.Source) != "" {
+	if !hasTorrent && ExtractBTIH(request.Source) != "" {
 		categoryScope = ""
 	}
 	before, err := client.ListTorrents(ctx, categoryScope)
@@ -208,13 +224,24 @@ func (client *Client) AddAndConfirm(ctx context.Context, request AddRequest) (Ha
 	if resolution, ok := existingCorrelatedTorrent(before, request.Source); ok {
 		return resolution, nil
 	}
-	response, err := client.postForm(ctx, "/api/v2/torrents/add", url.Values{
-		"urls":          {request.Source},
-		"savepath":      {request.SavePath},
-		"category":      {request.Category},
-		"stopped":       {"false"},
-		"stopCondition": {"MetadataReceived"},
-	})
+	var response *http.Response
+	if hasTorrent {
+		fields := map[string]string{
+			"savepath":      request.SavePath,
+			"category":      request.Category,
+			"stopped":       "false",
+			"stopCondition": "MetadataReceived",
+		}
+		response, err = client.postMultipart(ctx, "/api/v2/torrents/add", fields, "torrents", request.TorrentFilename, request.Torrent)
+	} else {
+		response, err = client.postForm(ctx, "/api/v2/torrents/add", url.Values{
+			"urls":          {request.Source},
+			"savepath":      {request.SavePath},
+			"category":      {request.Category},
+			"stopped":       {"false"},
+			"stopCondition": {"MetadataReceived"},
+		})
+	}
 	if err != nil {
 		return HashResolution{}, fmt.Errorf("add qBittorrent torrent: %w", err)
 	}
@@ -634,6 +661,41 @@ func torrentHashes(torrents []Torrent) map[string]struct{} {
 		}
 	}
 	return result
+}
+
+func (client *Client) postMultipart(ctx context.Context, endpoint string, fields map[string]string, fileField, fileName string, fileBytes []byte) (*http.Response, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			return nil, fmt.Errorf("encode multipart field %s: %w", key, err)
+		}
+	}
+	if fileField != "" && len(fileBytes) > 0 {
+		h := make(textproto.MIMEHeader)
+		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, escapeQuotes(fileField), escapeQuotes(fileName)))
+		h.Set("Content-Type", "application/x-bittorrent")
+		part, err := writer.CreatePart(h)
+		if err != nil {
+			return nil, fmt.Errorf("create multipart file part: %w", err)
+		}
+		if _, err := part.Write(fileBytes); err != nil {
+			return nil, fmt.Errorf("write multipart file part: %w", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("close multipart writer: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.baseURL+endpoint, &body)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	return client.do(request)
+}
+
+func escapeQuotes(value string) string {
+	return strings.ReplaceAll(value, `"`, `\"`)
 }
 
 func (client *Client) get(ctx context.Context, endpoint string, query url.Values) (*http.Response, error) {
