@@ -392,7 +392,7 @@ func TestDownloadRetryNoMainVideoClearsStaleManifestAndReenqueuesIntegration(t *
 	if _, err := fixture.pool.Exec(ctx, `
 INSERT INTO downloads (id, acquisition_id, torrent_hash, status, progress, failure_stage, error_code, error_message, version, save_path, client_state, last_synced_at, file_resolution_source, agent_resolution_id)
 VALUES ($1, $2, $3, 'failed', 0.42, 'file_resolution', 'download_no_main_video', 'the torrent contains no selectable main video', 1, $4, 'metadata_ready', now(), 'deterministic', NULL)
-`, downloadID, acquisitionID, torrentHash, savePath, "metadata_ready"); err != nil {
+`, downloadID, acquisitionID, torrentHash, savePath); err != nil {
 		t.Fatal(err)
 	}
 	// 陈旧清单：顶层复合标签被旧逻辑误判为 extra，实际应为视频/字幕
