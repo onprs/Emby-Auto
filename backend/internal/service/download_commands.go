@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -91,14 +92,71 @@ func (workflow *DownloadCommandWorkflow) Retry(ctx context.Context, downloadID u
 				"command": "retry", "defaultSeason": payload.SourceSeason, "defaultEpisode": payload.SourceEpisode, "singleEpisode": payload.SingleEpisode,
 			}
 		case "file_resolution":
-			if _, err := scope.Queries.RequeueDownloadFileResolutionStage(ctx, db.RequeueDownloadFileResolutionStageParams{
-				ID: repository.UUIDToPG(downloadID), ExpectedVersion: expectedVersion,
-			}); err != nil {
-				return fmt.Errorf("requeue download file resolution: %w", err)
+			errorCode := valueOrEmpty(current.ErrorCode)
+			files, listErr := scope.Queries.ListDownloadFiles(ctx, current.ID)
+			if listErr != nil {
+				return fmt.Errorf("list download files for retry: %w", listErr)
 			}
-			schedule.Kind = appqueue.KindDownloadSelectionApply
-			schedule.MaxAttempts = 5
-			schedule.Timeout = time.Minute
+			if shouldRetryViaEnqueueForNoMainVideo(errorCode, current.TorrentHash, len(files)) {
+				var payload struct {
+					SourceSeason  int  `json:"sourceSeason"`
+					SourceEpisode int  `json:"sourceEpisode"`
+					SingleEpisode bool `json:"singleEpisode"`
+				}
+				acquisition, err := scope.Queries.GetAcquisitionByID(ctx, current.AcquisitionID)
+				if err != nil {
+					return fmt.Errorf("load retry acquisition: %w", err)
+				}
+				if err := json.Unmarshal(acquisition.SourcePayload, &payload); err != nil {
+					return fmt.Errorf("decode retry acquisition: %w", err)
+				}
+				options := domain.FileSelectionOptions{
+					DefaultSeason:  payload.SourceSeason,
+					DefaultEpisode: payload.SourceEpisode,
+					SingleEpisode:  payload.SingleEpisode,
+				}
+				hasVideo, classifyErr := hasReclassifiableVideo(files, options)
+				if classifyErr != nil {
+					return NewError("download_file_manifest_invalid", "the download file manifest cannot be reclassified safely", ErrInvalidInput, map[string]any{"reason": classifyErr.Error()})
+				}
+				if hasVideo {
+					if err := scope.Queries.DeleteDownloadFilesByDownloadID(ctx, current.ID); err != nil {
+						return fmt.Errorf("delete stale download files: %w", err)
+					}
+					if _, err := scope.Queries.RequeueDownloadNoMainVideoFromFileResolution(ctx, db.RequeueDownloadNoMainVideoFromFileResolutionParams{
+						ID: repository.UUIDToPG(downloadID), ExpectedVersion: expectedVersion,
+					}); err != nil {
+						if errors.Is(err, pgx.ErrNoRows) {
+							return NewError("state_conflict", "the download was modified by another request", ErrStateConflict, map[string]any{"expectedVersion": expectedVersion})
+						}
+						return fmt.Errorf("requeue download for no main video: %w", err)
+					}
+					schedule.Kind = appqueue.KindDownloadEnqueue
+					schedule.MaxAttempts = 5
+					schedule.Timeout = DownloadEnqueueTimeout
+					schedule.Payload = map[string]any{
+						"command": "retry", "defaultSeason": payload.SourceSeason, "defaultEpisode": payload.SourceEpisode, "singleEpisode": payload.SingleEpisode,
+					}
+				} else {
+					if _, err := scope.Queries.RequeueDownloadFileResolutionStage(ctx, db.RequeueDownloadFileResolutionStageParams{
+						ID: repository.UUIDToPG(downloadID), ExpectedVersion: expectedVersion,
+					}); err != nil {
+						return fmt.Errorf("requeue download file resolution: %w", err)
+					}
+					schedule.Kind = appqueue.KindDownloadSelectionApply
+					schedule.MaxAttempts = 5
+					schedule.Timeout = time.Minute
+				}
+			} else {
+				if _, err := scope.Queries.RequeueDownloadFileResolutionStage(ctx, db.RequeueDownloadFileResolutionStageParams{
+					ID: repository.UUIDToPG(downloadID), ExpectedVersion: expectedVersion,
+				}); err != nil {
+					return fmt.Errorf("requeue download file resolution: %w", err)
+				}
+				schedule.Kind = appqueue.KindDownloadSelectionApply
+				schedule.MaxAttempts = 5
+				schedule.Timeout = time.Minute
+			}
 		case "sync":
 			if _, err := scope.Queries.RequeueDownloadSyncStage(ctx, db.RequeueDownloadSyncStageParams{
 				ID: repository.UUIDToPG(downloadID), ExpectedVersion: expectedVersion,
@@ -491,6 +549,42 @@ func validateSingleEpisodeFileResolution(files []db.DownloadFile, items []domain
 		}
 	}
 	return nil
+}
+
+// shouldRetryViaEnqueueForNoMainVideo 判断 file_resolution 下 download_no_main_video 是否应走重新 enqueue。
+// 仅当存在 torrent hash 且已有 manifest 时才重新分类，避免对无 manifest 或其它 file_resolution 失败误走 enqueue。
+func shouldRetryViaEnqueueForNoMainVideo(errorCode string, torrentHash *string, fileCount int) bool {
+	if errorCode != "download_no_main_video" {
+		return false
+	}
+	if torrentHash == nil || strings.TrimSpace(*torrentHash) == "" {
+		return false
+	}
+	return fileCount > 0
+}
+
+// hasReclassifiableVideo 使用当前 domain.ClassifyDownloadFiles 对持久化文件的 index/path/size 做确定性重分类，
+// 使用 acquisition payload 的 DefaultSeason/DefaultEpisode/SingleEpisode 约束。
+// 仅当分类结果含至少一个 MediaVideo 时才允许重新 enqueue， genuine extra-only/other-only 不应重新 fetch。
+func hasReclassifiableVideo(files []db.DownloadFile, options domain.FileSelectionOptions) (bool, error) {
+	downloadFiles := make([]domain.DownloadFile, 0, len(files))
+	for _, file := range files {
+		downloadFiles = append(downloadFiles, domain.DownloadFile{
+			Index:        int(file.FileIndex),
+			RelativePath: file.RelativePath,
+			SizeBytes:    file.SizeBytes,
+		})
+	}
+	classified, err := domain.ClassifyDownloadFiles(downloadFiles, options)
+	if err != nil {
+		return false, err
+	}
+	for _, file := range classified {
+		if file.Kind == domain.MediaVideo {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func optionalResolutionInt32(value *int) *int32 {

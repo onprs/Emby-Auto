@@ -84,6 +84,7 @@ type Querier interface {
 	DeleteAppSecret(ctx context.Context, name string) (int64, error)
 	DeleteArchivedRSSSubscription(ctx context.Context, id pgtype.UUID) (int64, error)
 	DeleteArtifactSetsForAcquisition(ctx context.Context, acquisitionID pgtype.UUID) (int64, error)
+	DeleteDownloadFilesByDownloadID(ctx context.Context, downloadID pgtype.UUID) error
 	DeleteEmptyRSSAdjudicationBatch(ctx context.Context, batchID pgtype.UUID) (int64, error)
 	DeleteEpisodeTasksForAcquisition(ctx context.Context, acquisitionID pgtype.UUID) (int64, error)
 	// 结构化 provenance 已独立保留业务事实，事件本身仍按 fail-closed allowlist 清理；
@@ -348,6 +349,7 @@ type Querier interface {
 	RequeueDownloadEnqueueStage(ctx context.Context, arg RequeueDownloadEnqueueStageParams) (Download, error)
 	RequeueDownloadFileResolutionStage(ctx context.Context, arg RequeueDownloadFileResolutionStageParams) (Download, error)
 	RequeueDownloadMaterializeStage(ctx context.Context, arg RequeueDownloadMaterializeStageParams) (Download, error)
+	RequeueDownloadNoMainVideoFromFileResolution(ctx context.Context, arg RequeueDownloadNoMainVideoFromFileResolutionParams) (Download, error)
 	RequeueDownloadSyncStage(ctx context.Context, arg RequeueDownloadSyncStageParams) (Download, error)
 	RequeueLatestFailedTaskCleanup(ctx context.Context, taskID pgtype.UUID) (CleanupRun, error)
 	RequeueLatestFailedTaskImport(ctx context.Context, taskID pgtype.UUID) (Import, error)

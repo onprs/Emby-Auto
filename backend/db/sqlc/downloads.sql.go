@@ -146,6 +146,16 @@ func (q *Queries) CreateDownloadFile(ctx context.Context, arg CreateDownloadFile
 	return i, err
 }
 
+const deleteDownloadFilesByDownloadID = `-- name: DeleteDownloadFilesByDownloadID :exec
+DELETE FROM download_files
+WHERE download_id = $1
+`
+
+func (q *Queries) DeleteDownloadFilesByDownloadID(ctx context.Context, downloadID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteDownloadFilesByDownloadID, downloadID)
+	return err
+}
+
 const getDownloadEnqueueCommand = `-- name: GetDownloadEnqueueCommand :one
 SELECT
     d.id,
@@ -854,6 +864,65 @@ type RequeueDownloadMaterializeStageParams struct {
 
 func (q *Queries) RequeueDownloadMaterializeStage(ctx context.Context, arg RequeueDownloadMaterializeStageParams) (Download, error) {
 	row := q.db.QueryRow(ctx, requeueDownloadMaterializeStage, arg.ID, arg.ExpectedVersion)
+	var i Download
+	err := row.Scan(
+		&i.ID,
+		&i.AcquisitionID,
+		&i.Attempt,
+		&i.ClientName,
+		&i.TorrentHash,
+		&i.Status,
+		&i.Progress,
+		&i.SavePath,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Version,
+		&i.FailureStage,
+		&i.ClientState,
+		&i.LastSyncedAt,
+		&i.DeletionRequestedAt,
+		&i.DeletedAt,
+		&i.FileResolutionSource,
+		&i.AgentResolutionID,
+	)
+	return i, err
+}
+
+const requeueDownloadNoMainVideoFromFileResolution = `-- name: RequeueDownloadNoMainVideoFromFileResolution :one
+UPDATE downloads
+SET status = 'enqueue_pending',
+    torrent_hash = NULL,
+    save_path = NULL,
+    progress = 0,
+    client_state = NULL,
+    last_synced_at = NULL,
+    file_resolution_source = NULL,
+    agent_resolution_id = NULL,
+    failure_stage = NULL,
+    error_code = NULL,
+    error_message = NULL,
+    version = version + 1,
+    updated_at = now()
+WHERE id = $1
+  AND status = 'failed'
+  AND failure_stage = 'file_resolution'
+  AND error_code = 'download_no_main_video'
+  AND torrent_hash IS NOT NULL
+  AND version = $2
+RETURNING id, acquisition_id, attempt, client_name, torrent_hash, status, progress, save_path, error_code, error_message, started_at, completed_at, created_at, updated_at, version, failure_stage, client_state, last_synced_at, deletion_requested_at, deleted_at, file_resolution_source, agent_resolution_id
+`
+
+type RequeueDownloadNoMainVideoFromFileResolutionParams struct {
+	ID              pgtype.UUID `db:"id" json:"id"`
+	ExpectedVersion int32       `db:"expected_version" json:"expected_version"`
+}
+
+func (q *Queries) RequeueDownloadNoMainVideoFromFileResolution(ctx context.Context, arg RequeueDownloadNoMainVideoFromFileResolutionParams) (Download, error) {
+	row := q.db.QueryRow(ctx, requeueDownloadNoMainVideoFromFileResolution, arg.ID, arg.ExpectedVersion)
 	var i Download
 	err := row.Scan(
 		&i.ID,
