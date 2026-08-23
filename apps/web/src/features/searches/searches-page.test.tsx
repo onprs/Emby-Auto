@@ -492,44 +492,25 @@ describe('Candidate selection', () => {
     expect(innerCards.length).toBe(0);
   });
 
-  it('creates acquisition and shows conflict error, with bounded invalidation', async () => {
-    const acqSpy = vi.fn();
-    let createShouldConflict = false;
+  it('shows friendly error for state_conflict', async () => {
     server.use(
       http.get('*/api/v1/searches', () => HttpResponse.json({ items: [], nextCursor: null })),
-      http.get('*/api/v1/acquisitions', ({ request }) => {
-        acqSpy(String(request.url));
-        return HttpResponse.json({ items: [] });
-      }),
+      http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [] })),
       http.get('*/api/v1/tmdb/series/search', () => HttpResponse.json({ items: [{ tmdbSeriesId: 123, name: 'Fixture Series', originalName: 'Fixture Series', firstAirDate: '2024-01-01' }] })),
-      http.post('*/api/v1/acquisitions', async () => {
-        if (createShouldConflict) {
-          return HttpResponse.json({ code: 'conflict', message: 'already selected' }, { status: 409 });
-        }
-        return HttpResponse.json({ acquisitionId: ACQ_ID, downloadId: 'dl-1', operationId: 'op-1', status: 'queued' }, { status: 202 });
-      }),
+      http.post('*/api/v1/acquisitions', async () => HttpResponse.json({ code: 'state_conflict', message: 'already selected', details: {} }, { status: 409 })),
     );
-
     const candidates = [candidateFixture({ id: CANDIDATE_NEW, title: '可创建候选 S01E01 [1080p]' })];
-    const onAcquired = vi.fn();
-    renderWithProviders(<CandidateTable candidates={candidates} emptyLabel="暂无候选" onAcquired={onAcquired} />, { routePath: '/searches', initialEntry: '/searches' });
-
+    renderWithProviders(<CandidateTable candidates={candidates} emptyLabel="暂无候选" />, { routePath: '/searches', initialEntry: '/searches' });
     await userEvent.click((await screen.findAllByRole('button', { name: '选择' }))[0]);
     await screen.findByText('创建获取');
-
     const input = await screen.findByLabelText('TMDb 作品');
     await userEvent.type(input, 'Fixture');
     await userEvent.click(screen.getByRole('button', { name: '查询' }));
     await screen.findByText('Fixture Series');
     await userEvent.click(screen.getByText('Fixture Series'));
-
-    acqSpy.mockClear();
     await userEvent.click(screen.getByRole('button', { name: '创建获取并下载' }));
-    await waitFor(() => expect(onAcquired).toHaveBeenCalled());
-
-    createShouldConflict = true;
-    await userEvent.click(screen.getByRole('button', { name: '创建获取并下载' }));
-    await screen.findByText(/already selected|创建获取失败|冲突/);
+    await screen.findByText('任务状态已经变化，请刷新后再试。');
+    expect(screen.queryByText('already selected')).not.toBeInTheDocument();
   });
 
   it('shows downloadable reason and disables button for non-downloadable', async () => {
@@ -545,5 +526,142 @@ describe('Candidate selection', () => {
     expect(disabled.length).toBeGreaterThan(0);
     expect(screen.queryByText('状态')).not.toBeInTheDocument();
     expect(screen.queryByText('做种')).not.toBeInTheDocument();
+  });
+});
+
+describe('Candidate selection season pack', () => {
+  it('defaults to single, hides episode for pack and restores on single', async () => {
+    const candidates = [candidateFixture({ id: CANDIDATE_NEW, title: '番剧候选 S01 [1080p]' })];
+    renderWithProviders(<CandidateTable candidates={candidates} emptyLabel="暂无候选" />, { routePath: '/searches', initialEntry: '/searches' });
+    await userEvent.click((await screen.findAllByRole('button', { name: '选择' }))[0]);
+    await screen.findByText('创建获取');
+    expect(screen.getByLabelText('资源对应第几季')).toBeInTheDocument();
+    expect(screen.getByLabelText('资源对应第几集')).toBeInTheDocument();
+    expect(screen.getByLabelText('类型')).toBeInTheDocument();
+    const gridSingle = document.querySelector('.grid.gap-4');
+    expect(gridSingle?.className).toMatch(/sm:grid-cols-3/);
+    const episodeInput = screen.getByLabelText('资源对应第几集') as HTMLInputElement;
+    expect(episodeInput.value).toBe('1');
+    await userEvent.selectOptions(screen.getByLabelText('类型'), 'pack');
+    expect(screen.queryByLabelText('资源对应第几集')).not.toBeInTheDocument();
+    const gridPack = document.querySelector('.grid.gap-4');
+    expect(gridPack?.className).toMatch(/sm:grid-cols-2/);
+    expect(gridPack?.className).not.toMatch(/sm:grid-cols-3/);
+    await userEvent.selectOptions(screen.getByLabelText('类型'), 'single');
+    const restored = screen.getByLabelText('资源对应第几集') as HTMLInputElement;
+    expect(restored).toBeInTheDocument();
+    expect(restored.value).toBe('1');
+    const gridRestored = document.querySelector('.grid.gap-4');
+    expect(gridRestored?.className).toMatch(/sm:grid-cols-3/);
+  });
+
+  it('sends season pack without sourceEpisode and singleEpisode false', async () => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(
+      http.get('*/api/v1/tmdb/series/search', () => HttpResponse.json({ items: [{ tmdbSeriesId: 123, name: 'Fixture Series', originalName: 'Fixture Series', firstAirDate: '2024-01-01' }] })),
+      http.post('*/api/v1/acquisitions', async ({ request }) => {
+        captured = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ acquisitionId: ACQ_ID, downloadId: 'dl-1', operationId: 'op-1', status: 'queued' }, { status: 202 });
+      }),
+    );
+    const candidates = [candidateFixture({ id: CANDIDATE_NEW, title: '可创建候选 S01 [1080p]' })];
+    renderWithProviders(<CandidateTable candidates={candidates} emptyLabel="暂无候选" />, { routePath: '/searches', initialEntry: '/searches' });
+    await userEvent.click((await screen.findAllByRole('button', { name: '选择' }))[0]);
+    await screen.findByText('创建获取');
+    const input = await screen.findByLabelText('TMDb 作品');
+    await userEvent.type(input, 'Fixture');
+    await userEvent.click(screen.getByRole('button', { name: '查询' }));
+    await screen.findByText('Fixture Series');
+    await userEvent.click(screen.getByText('Fixture Series'));
+    await userEvent.selectOptions(screen.getByLabelText('类型'), 'pack');
+    expect(screen.queryByLabelText('资源对应第几集')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '创建获取并下载' }));
+    await waitFor(() => expect(captured).not.toBeNull());
+    expect(captured).toMatchObject({ candidateId: CANDIDATE_NEW, mediaType: 'episode', sourceSeason: 1, singleEpisode: false });
+    expect(captured).not.toHaveProperty('sourceEpisode');
+  });
+
+  it('sends single episode with sourceEpisode and singleEpisode true', async () => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(
+      http.get('*/api/v1/tmdb/series/search', () => HttpResponse.json({ items: [{ tmdbSeriesId: 123, name: 'Fixture Series', originalName: 'Fixture Series', firstAirDate: '2024-01-01' }] })),
+      http.post('*/api/v1/acquisitions', async ({ request }) => {
+        captured = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ acquisitionId: ACQ_ID, downloadId: 'dl-1', operationId: 'op-1', status: 'queued' }, { status: 202 });
+      }),
+    );
+    const candidates = [candidateFixture({ id: CANDIDATE_NEW, title: '可创建候选 S01E01 [1080p]' })];
+    renderWithProviders(<CandidateTable candidates={candidates} emptyLabel="暂无候选" />, { routePath: '/searches', initialEntry: '/searches' });
+    await userEvent.click((await screen.findAllByRole('button', { name: '选择' }))[0]);
+    await screen.findByText('创建获取');
+    const input = await screen.findByLabelText('TMDb 作品');
+    await userEvent.type(input, 'Fixture');
+    await userEvent.click(screen.getByRole('button', { name: '查询' }));
+    await screen.findByText('Fixture Series');
+    await userEvent.click(screen.getByText('Fixture Series'));
+    await userEvent.click(screen.getByRole('button', { name: '创建获取并下载' }));
+    await waitFor(() => expect(captured).not.toBeNull());
+    expect(captured).toMatchObject({ candidateId: CANDIDATE_NEW, mediaType: 'episode', sourceSeason: 1, sourceEpisode: 1, singleEpisode: true });
+  });
+
+  it('navigates to acquisition detail even with onAcquired and keeps cache invalidation', async () => {
+    let postCount = 0;
+    server.use(
+      http.get('*/api/v1/tmdb/series/search', () => HttpResponse.json({ items: [{ tmdbSeriesId: 123, name: 'Fixture Series', originalName: 'Fixture Series', firstAirDate: '2024-01-01' }] })),
+      http.post('*/api/v1/acquisitions', async () => {
+        postCount += 1;
+        return HttpResponse.json({ acquisitionId: ACQ_ID, downloadId: 'dl-1', operationId: 'op-1', status: 'queued' }, { status: 202 });
+      }),
+      http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [] })),
+    );
+    const candidates = [candidateFixture({ id: CANDIDATE_NEW, title: '可创建候选 S01E01 [1080p]' })];
+    const onAcquired = vi.fn();
+    const { router } = renderWithProviders(<CandidateTable candidates={candidates} emptyLabel="暂无候选" onAcquired={onAcquired} />, { routePath: '/searches', initialEntry: '/searches' });
+    await userEvent.click((await screen.findAllByRole('button', { name: '选择' }))[0]);
+    await screen.findByText('创建获取');
+    const input = await screen.findByLabelText('TMDb 作品');
+    await userEvent.type(input, 'Fixture');
+    await userEvent.click(screen.getByRole('button', { name: '查询' }));
+    await screen.findByText('Fixture Series');
+    await userEvent.click(screen.getByText('Fixture Series'));
+    await userEvent.click(screen.getByRole('button', { name: '创建获取并下载' }));
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/acquisitions/${ACQ_ID}`));
+    expect(onAcquired).toHaveBeenCalledTimes(1);
+    expect(postCount).toBe(1);
+    expect(screen.queryByText('创建获取')).not.toBeInTheDocument();
+  });
+
+  it('keeps button disabled during pending and sends only one POST', async () => {
+    let postCount = 0;
+    let resolvePost: (value: unknown) => void = () => {};
+    const pending = new Promise((resolve) => {
+      resolvePost = resolve as (value: unknown) => void;
+    });
+    server.use(
+      http.get('*/api/v1/tmdb/series/search', () => HttpResponse.json({ items: [{ tmdbSeriesId: 123, name: 'Fixture Series', originalName: 'Fixture Series', firstAirDate: '2024-01-01' }] })),
+      http.post('*/api/v1/acquisitions', async () => {
+        postCount += 1;
+        await pending;
+        return HttpResponse.json({ acquisitionId: ACQ_ID, downloadId: 'dl-1', operationId: 'op-1', status: 'queued' }, { status: 202 });
+      }),
+    );
+    const candidates = [candidateFixture({ id: CANDIDATE_NEW, title: '可创建候选 S01E01 [1080p]' })];
+    const { router } = renderWithProviders(<CandidateTable candidates={candidates} emptyLabel="暂无候选" />, { routePath: '/searches', initialEntry: '/searches' });
+    await userEvent.click((await screen.findAllByRole('button', { name: '选择' }))[0]);
+    await screen.findByText('创建获取');
+    const input = await screen.findByLabelText('TMDb 作品');
+    await userEvent.type(input, 'Fixture');
+    await userEvent.click(screen.getByRole('button', { name: '查询' }));
+    await screen.findByText('Fixture Series');
+    await userEvent.click(screen.getByText('Fixture Series'));
+    const button = screen.getByRole('button', { name: '创建获取并下载' });
+    await userEvent.click(button);
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(true));
+    expect(postCount).toBe(1);
+    await userEvent.click(button).catch(() => {});
+    expect(postCount).toBe(1);
+    resolvePost(undefined);
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/acquisitions/${ACQ_ID}`));
+    expect(postCount).toBe(1);
   });
 });

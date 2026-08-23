@@ -69,6 +69,33 @@ func TestCreateSearchAcquisitionValidatesCoordinatesBeforeDatabaseAccess(t *test
 	}
 }
 
+func TestCreateSearchAcquisitionAllowsSeasonPackWithZeroEpisode(t *testing.T) {
+	valid := domain.CreateSearchAcquisition{
+		CandidateID:    uuid.MustParse("71000000-0000-0000-0000-000000000002"),
+		MediaType:      domain.TaskMediaEpisode,
+		TMDbSeriesID:   42,
+		SeriesTitle:    "Canonical Show",
+		SourceSeason:   1,
+		SourceEpisode:  0,
+		SingleEpisode:  false,
+		IdempotencyKey: "acquire-1",
+		ActorUserID:    uuid.MustParse("71000000-0000-0000-0000-000000000003"),
+	}
+	if err := validateSearchAcquisition(valid); err != nil {
+		t.Fatalf("validateSearchAcquisition() season pack zero episode error = %#v, want nil", err)
+	}
+	invalid := valid
+	invalid.SingleEpisode = true
+	if err := validateSearchAcquisition(invalid); err == nil {
+		t.Fatal("validateSearchAcquisition() single episode zero episode error = nil, want invalid_acquisition")
+	} else {
+		var serviceErr *Error
+		if !errors.As(err, &serviceErr) || serviceErr.Code != "invalid_acquisition" || serviceErr.Details["field"] != "sourceEpisode" {
+			t.Fatalf("validateSearchAcquisition() single zero error = %#v, want invalid_acquisition field sourceEpisode", err)
+		}
+	}
+}
+
 func TestDeterministicResourceIDSeparatesCommands(t *testing.T) {
 	first := deterministicResourceID("search.run:user:key")
 	if first != deterministicResourceID("search.run:user:key") {

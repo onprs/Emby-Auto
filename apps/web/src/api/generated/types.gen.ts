@@ -468,7 +468,13 @@ export type CreateAcquisitionRequest = {
     releaseYear?: number;
     mappingProfileId?: string;
     sourceSeason?: number;
+    /**
+     * 源集数。单集（singleEpisode=true）时必须为正数；季度包（singleEpisode=false）时应省略，后端按 0 处理并由下载清单中的每个视频确定季集。
+     */
     sourceEpisode?: number;
+    /**
+     * 是否为单集。true 表示单集资源，false 表示季度包；季度包的季集由下载清单中的每个视频确定。
+     */
     singleEpisode?: boolean;
 };
 
