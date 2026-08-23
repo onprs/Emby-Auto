@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/onprs/emby-auto/backend/internal/domain"
+	"github.com/onprs/emby-auto/backend/internal/platform/proxyhttp"
 )
 
 var testTorrentPayload = []byte("d8:announce35:http://tracker.example.test:8080/announce4:infod6:lengthi123e4:name8:test.mkveee")
@@ -194,6 +195,30 @@ func TestValidateTorrentSourceURLRejectsPrivateIPWithTrailingDot(t *testing.T) {
 	}
 }
 
+func TestValidateTorrentSourceURLRejectsZoneScopedIPv6(t *testing.T) {
+	// 验证带 zone 的 IPv6 字面量 link-local/loopback 仍被阻断，不依赖 net.ParseIP 字符串截断
+	invalid := []string{
+		"http://[fe80::1%25en0]/file.torrent",
+		"http://[fe80::1%25zone]/file.torrent",
+		"http://[fe80::1%25eth0]:8080/file.torrent",
+		"http://[fe80::1234:5678:abcd:ef12%25en0]/file.torrent",
+		"http://[::1%25lo0]/file.torrent",
+		"http://[fe80::1%25en0]/file.torrent?token=" + sensitiveTorrentQueryFixture,
+	}
+	for _, raw := range invalid {
+		t.Run(raw, func(t *testing.T) {
+			err := validateTorrentSourceURL(raw, torrentSourceOptions{allowPrivate: false})
+			var failure *Failure
+			if err == nil || !errorIsFailure(err, &failure) || failure.Code != "torrent_source_invalid" || failure.Retryable {
+				t.Fatalf("validateTorrentSourceURL(%q) = %#v, want permanent torrent_source_invalid", raw, err)
+			}
+			if strings.Contains(failure.Message, sensitiveTorrentQueryFixture) || (failure.Cause != nil && strings.Contains(failure.Cause.Error(), sensitiveTorrentQueryFixture)) {
+				t.Fatalf("error leaks sensitive fixture")
+			}
+		})
+	}
+}
+
 func errorIsFailure(err error, target **Failure) bool {
 	for err != nil {
 		if f, ok := err.(*Failure); ok {
@@ -260,46 +285,33 @@ func TestDefaultTorrentSourceFetcherFetchesViaProxyAndSanitizes(t *testing.T) {
 }
 
 func TestDefaultTorrentSourceFetcherDirectDoesNotUseEnvProxy(t *testing.T) {
-	var proxyHits atomic.Int32
-	envProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		proxyHits.Add(1)
-	}))
-	defer envProxy.Close()
+	// 对生产 proxyhttp.NewClient 禁用代理的 transport 做局部结构断言，不修改全局 transport/env
+	client, err := proxyhttp.NewClient(domain.NetworkProxySettings{Enabled: false})
+	if err != nil {
+		t.Fatalf("proxyhttp.NewClient disabled error = %v", err)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("client.Transport = %T, want *http.Transport", client.Transport)
+	}
+	if transport.Proxy != nil {
+		req := &http.Request{URL: mustParseURLProxy(t, "http://example.test/file.torrent")}
+		if got, _ := transport.Proxy(req); got != nil {
+			t.Fatalf("disabled transport proxy should be nil, got %v", got)
+		}
+	}
+	// 本地直连验证：使用真实生产 client 路径（allowPrivate 仅为测试本地服务器直连，不依赖 env proxy）
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(testTorrentPayload)
 	}))
 	defer target.Close()
-
-	// 注入一个基础 transport，其 Proxy 指向 envProxy，但 fetcher 在禁用代理时应将其覆盖为 nil，不走代理。
-	poisonedBase := &http.Transport{Proxy: http.ProxyURL(mustParseURLProxy(t, envProxy.URL))}
-	fetcher := func(ctx context.Context, rawURL string, settings domain.NetworkProxySettings) ([]byte, error) {
-		opts := torrentSourceOptions{
-			allowPrivate: true,
-			newClient: func(ps domain.NetworkProxySettings) (*http.Client, error) {
-				tr := poisonedBase.Clone()
-				tr.Proxy = nil
-				if ps.Enabled {
-					u, err := url.Parse(ps.URL)
-					if err != nil {
-						return nil, err
-					}
-					tr.Proxy = http.ProxyURL(u)
-				}
-				return &http.Client{Transport: tr}, nil
-			},
-		}
-		return fetchTorrentSource(ctx, rawURL, settings, opts)
-	}
-
-	bytes, err := fetcher(context.Background(), target.URL+"/file.torrent", domain.NetworkProxySettings{Enabled: false})
+	fetcher := fetcherWithAllowPrivate(true)
+	data, err := fetcher(context.Background(), target.URL+"/file.torrent", domain.NetworkProxySettings{Enabled: false})
 	if err != nil {
-		t.Fatalf("fetcher error = %v", err)
+		t.Fatalf("direct fetcher error = %v", err)
 	}
-	if string(bytes) != string(testTorrentPayload) {
-		t.Fatalf("bytes mismatch")
-	}
-	if proxyHits.Load() != 0 {
-		t.Fatalf("env proxy was used despite disabled settings, hits=%d", proxyHits.Load())
+	if string(data) != string(testTorrentPayload) {
+		t.Fatalf("direct fetch bytes mismatch")
 	}
 }
 
@@ -414,6 +426,39 @@ func TestDefaultTorrentSourceFetcherRejectsLocalhostRedirect(t *testing.T) {
 	}
 	if privateHit {
 		t.Fatalf("localhost redirect target should not be hit")
+	}
+}
+
+func TestDefaultTorrentSourceFetcherRejectsZoneScopedInitial(t *testing.T) {
+	// 初始 URL 为 zone-scoped link-local，应在发出请求前被永久拒绝，且不泄露敏感信息，不实际连接该地址
+	invalid := "http://[fe80::1%25en0]/file.torrent?token=" + sensitiveTorrentQueryFixture
+	_, err := fetchTorrentSource(context.Background(), invalid, domain.NetworkProxySettings{}, torrentSourceOptions{allowPrivate: false})
+	var failure *Failure
+	if !errorIsFailure(err, &failure) || failure.Code != "torrent_source_invalid" || failure.Retryable {
+		t.Fatalf("zone-scoped initial should be permanent invalid, got %#v", err)
+	}
+	if strings.Contains(err.Error(), sensitiveTorrentQueryFixture) || (failure.Cause != nil && strings.Contains(failure.Cause.Error(), sensitiveTorrentQueryFixture)) {
+		t.Fatalf("zone initial error leaks fixture: %v", err)
+	}
+}
+
+func TestDefaultTorrentSourceFetcherRejectsZoneScopedRedirect(t *testing.T) {
+	// 重定向到 zone-scoped link-local，应在 CheckRedirect 中被拒绝，不实际连接目标
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://[fe80::1%25en0]/file.torrent", http.StatusFound)
+	}))
+	defer redirecting.Close()
+	u, _ := url.Parse(redirecting.URL)
+	mapping := map[string]string{"redirect.example.test": u.Host}
+	fetcher := fetcherWithMapping(mapping, false)
+	redirectURL := "http://redirect.example.test:" + u.Port() + "/file.torrent"
+	_, err := fetcher(context.Background(), redirectURL, domain.NetworkProxySettings{})
+	var failure *Failure
+	if !errorIsFailure(err, &failure) || failure.Code != "torrent_source_invalid" || failure.Retryable {
+		t.Fatalf("zone redirect should be permanent invalid, got %#v", err)
+	}
+	if strings.Contains(err.Error(), "fe80") || (failure.Cause != nil && strings.Contains(failure.Cause.Error(), "fe80")) {
+		t.Fatalf("zone redirect error leaks URL: %v", err)
 	}
 }
 
@@ -538,15 +583,11 @@ func TestTorrentSourceFetcherSanitizesLeakOnNetworkError(t *testing.T) {
 }
 
 func TestTorrentSourceFetcherSanitizesLeakOnTimeout(t *testing.T) {
-	sensitiveURL := "https://cdn.example.test/secret.torrent?token=" + sensitiveTorrentQueryFixture
-	// 使用一个会超时的 server，并确保 URL 含敏感词
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		_, _ = w.Write(testTorrentPayload)
 	}))
 	defer server.Close()
-	// 将 server.URL 替换为含敏感 query 的 URL，但需要映射 host
-	// 直接使用 server.URL + sensitive query，但敏感词在 path/query 中
 	urlWithSensitive := server.URL + "/file.torrent?token=" + sensitiveTorrentQueryFixture
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
@@ -562,8 +603,6 @@ func TestTorrentSourceFetcherSanitizesLeakOnTimeout(t *testing.T) {
 	if failure.Cause != nil && strings.Contains(failure.Cause.Error(), sensitiveTorrentQueryFixture) {
 		t.Fatalf("timeout cause leaks fixture: %v", failure.Cause)
 	}
-	// 额外验证新路径：直接使用敏感URL字符串而非 server.URL，确保即使原始 URL 含敏感词也不泄露
-	_ = sensitiveURL
 }
 
 func TestTorrentSourceFetcherSanitizesLeakOnInvalidURL(t *testing.T) {
@@ -582,28 +621,6 @@ func TestTorrentSourceFetcherSanitizesLeakOnInvalidURL(t *testing.T) {
 	}
 	if failure.Cause != nil && strings.Contains(failure.Cause.Error(), "[::1") {
 		t.Fatalf("invalid URL cause leaks host: %v", failure.Cause)
-	}
-}
-
-func TestTorrentSourceFetcherSanitizesRequestCreationError(t *testing.T) {
-	// 构造一个包含敏感词且会导致 NewRequest 失败的 URL（例如包含换行或非法字符）
-	// 这里使用包含控制字符的 URL，url.Parse 可能成功但 NewRequest 会失败？简化：使用 parse 失败路径已覆盖
-	// 额外测试：使用超大或非法 URL
-	invalid := "http://example.test/file with space?token=" + sensitiveTorrentQueryFixture
-	_, err := fetchTorrentSource(context.Background(), invalid, domain.NetworkProxySettings{}, torrentSourceOptions{allowPrivate: false})
-	var failure *Failure
-	if !errorIsFailure(err, &failure) {
-		// 若未被判定为 failure，至少不应泄露
-		if strings.Contains(err.Error(), sensitiveTorrentQueryFixture) {
-			t.Fatalf("request creation err leaks: %v", err)
-		}
-		return
-	}
-	if strings.Contains(err.Error(), sensitiveTorrentQueryFixture) {
-		t.Fatalf("request creation failure leaks: %v", err)
-	}
-	if failure.Cause != nil && strings.Contains(failure.Cause.Error(), sensitiveTorrentQueryFixture) {
-		t.Fatalf("request creation cause leaks: %v", failure.Cause)
 	}
 }
 

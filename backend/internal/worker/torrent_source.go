@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -166,12 +167,31 @@ func isBlockedTorrentSourceHost(host string, allowPrivate bool) bool {
 	if allowPrivate {
 		return false
 	}
-	// 尝试直接解析 host 为 IP，处理带尾点的情况（如 127.0.0.1.）
+	// 使用结构化 IP 解析处理 IPv4/IPv6 及 zone，避免简单 % 截断掩盖无效输入。
+	// Hostname 已按 URL 语义归一化，zone 由 netip 校验，非法输入交由 URL/request 规则处理。
 	candidates := []string{host, strings.TrimRight(host, ".")}
 	for _, candidate := range candidates {
-		if ip := net.ParseIP(candidate); ip != nil {
-			return isBlockedTorrentSourceIP(ip)
+		if addr, err := netip.ParseAddr(candidate); err == nil {
+			if isBlockedNetipAddr(addr) {
+				return true
+			}
+			continue
 		}
+		if ip := net.ParseIP(candidate); ip != nil {
+			if isBlockedTorrentSourceIP(ip) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isBlockedNetipAddr(addr netip.Addr) bool {
+	if addr.IsLoopback() || addr.IsUnspecified() || addr.IsMulticast() || addr.IsLinkLocalUnicast() {
+		return true
+	}
+	if addr.IsPrivate() {
+		return true
 	}
 	return false
 }
