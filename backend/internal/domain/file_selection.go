@@ -26,15 +26,17 @@ var (
 	ErrDuplicateDownloadFile = errors.New("duplicate download file")
 	ErrNoMainVideo           = errors.New("no main video found")
 
-	extraTokenPattern       = regexp.MustCompile(`(?i)(^|[^[:alnum:]])(?:ncop|nced|op[0-9]*|ed[0-9]*|pv[0-9]*|cm[0-9]*|sp[0-9]*|menu|scans?|sample|trailer|teaser|bonus|creditless)(?:$|[^[:alnum:]])`)
-	seasonEpisodePattern    = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])s([0-9]{1,2})[ ._-]*e([0-9]{1,3})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
-	seasonDirectoryPattern  = regexp.MustCompile(`(?i)(?:^|/)(?:season|s)[ ._-]*([0-9]{1,2})(?:/|$)`)
-	eastAsianEpisodePattern = regexp.MustCompile(`(?:第[[:space:]]*)?([0-9]{1,3})[[:space:]]*[话話集]`)
-	episodeTokenPattern     = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:ep|episode|e)[ ._-]*([0-9]{1,3})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
-	delimitedEpisodePattern = regexp.MustCompile(`(?i)(?:^|[[:space:]._\[\]-])([0-9]{1,3})(?:v[0-9]+)?(?:$|[[:space:]._\]\)-])`)
-	drivePathPattern        = regexp.MustCompile(`(?i)^[a-z]:/`)
-	nonNamePattern          = regexp.MustCompile(`[^[:alnum:]]+`)
-	trailingLanguagePattern = regexp.MustCompile(`(?i)[ ._-]+(?:zh[ ._-]*(?:hans|hant|cn|sg|tw|hk|mo)|chs|cht|sc|tc|gb(?:2312|k)?|big5|简体(?:中文)?|簡體(?:中文)?|简中|簡中|ja|jpn|jp|en|eng)$`)
+	extraTokenPattern          = regexp.MustCompile(`(?i)(^|[^[:alnum:]])(?:ncop|nced|op[0-9]*|ed[0-9]*|pv[0-9]*|cm[0-9]*|sp[0-9]*|menu|scans?|sample|trailer|teaser|bonus|creditless)(?:$|[^[:alnum:]])`)
+	extraSingleTokenPattern    = regexp.MustCompile(`(?i)^(?:ncop|nced|op[0-9]*|ed[0-9]*|pv[0-9]*|cm[0-9]*|sp[0-9]*|menu|scans?|sample|trailer|teaser|bonus|creditless)$`)
+	extraDirectoryTokenPattern = regexp.MustCompile(`[A-Za-z0-9]+`)
+	seasonEpisodePattern       = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])s([0-9]{1,2})[ ._-]*e([0-9]{1,3})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
+	seasonDirectoryPattern     = regexp.MustCompile(`(?i)(?:^|/)(?:season|s)[ ._-]*([0-9]{1,2})(?:/|$)`)
+	eastAsianEpisodePattern    = regexp.MustCompile(`(?:第[[:space:]]*)?([0-9]{1,3})[[:space:]]*[话話集]`)
+	episodeTokenPattern        = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:ep|episode|e)[ ._-]*([0-9]{1,3})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
+	delimitedEpisodePattern    = regexp.MustCompile(`(?i)(?:^|[[:space:]._\[\]-])([0-9]{1,3})(?:v[0-9]+)?(?:$|[[:space:]._\]\)-])`)
+	drivePathPattern           = regexp.MustCompile(`(?i)^[a-z]:/`)
+	nonNamePattern             = regexp.MustCompile(`[^[:alnum:]]+`)
+	trailingLanguagePattern    = regexp.MustCompile(`(?i)[ ._-]+(?:zh[ ._-]*(?:hans|hant|cn|sg|tw|hk|mo)|chs|cht|sc|tc|gb(?:2312|k)?|big5|简体(?:中文)?|簡體(?:中文)?|简中|簡中|ja|jpn|jp|en|eng)$`)
 )
 
 var videoExtensions = map[string]struct{}{
@@ -218,10 +220,23 @@ func ParseSourceCoordinate(filePath string, defaultSeason int) (int, int, bool) 
 }
 
 func classifyDownloadPath(filePath string) MediaKind {
-	if extraTokenPattern.MatchString(strings.ReplaceAll(filePath, `\`, "/")) {
+	normalized := strings.ReplaceAll(filePath, `\`, "/")
+	// 叶子 basename 保留现有 token 匹配：含 extra 标记的文件始终为 extra
+	if extraTokenPattern.MatchString(path.Base(normalized)) {
 		return MediaExtra
 	}
-	extension := strings.ToLower(path.Ext(strings.ReplaceAll(filePath, `\`, "/")))
+	// 目录段按独立 extra 目录判定：仅当目录名本身主要由 extra token 构成时才污染子文件。
+	// 顶层复合发布目录（如同时表达正片季度与附带 SP 的发布目录）因此不会使全部后代变 extra，
+	// 而真正的独立 extra 目录（如 SP、NCOP）仍保持 extra。
+	dir := path.Dir(normalized)
+	if dir != "." {
+		for _, segment := range strings.Split(dir, "/") {
+			if isIndependentExtraDirectory(segment) {
+				return MediaExtra
+			}
+		}
+	}
+	extension := strings.ToLower(path.Ext(normalized))
 	if _, ok := videoExtensions[extension]; ok {
 		return MediaVideo
 	}
@@ -229,6 +244,48 @@ func classifyDownloadPath(filePath string) MediaKind {
 		return MediaSubtitle
 	}
 	return MediaOther
+}
+
+// isIndependentExtraDirectory 判断目录段是否为独立的 extra 目录。
+// 保守规则：目录名经 extraToken 预检后，提取全部字母数字 token；
+// 若存在非数字、非 extra 单 token 的实质词，则视为复合发布标签而非独立 extra 目录。
+// 纯数字 token 被忽略，以支持 “SP 01”、“NCOP 02” 等带序号的独立目录。
+func isIndependentExtraDirectory(segment string) bool {
+	trimmed := strings.TrimSpace(segment)
+	if trimmed == "" || trimmed == "." {
+		return false
+	}
+	if !extraTokenPattern.MatchString(trimmed) {
+		return false
+	}
+	tokens := extraDirectoryTokenPattern.FindAllString(strings.ToLower(trimmed), -1)
+	if len(tokens) == 0 {
+		return false
+	}
+	hasExtra := false
+	for _, token := range tokens {
+		if isAllDigits(token) {
+			continue
+		}
+		if extraSingleTokenPattern.MatchString(token) {
+			hasExtra = true
+			continue
+		}
+		return false
+	}
+	return hasExtra
+}
+
+func isAllDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func validateRelativeDownloadPath(filePath string) error {

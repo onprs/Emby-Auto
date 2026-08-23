@@ -164,6 +164,33 @@ WHERE id = sqlc.arg(id)
   AND version = sqlc.arg(expected_version)
 RETURNING *;
 
+-- name: DeleteDownloadFilesByDownloadID :exec
+DELETE FROM download_files
+WHERE download_id = sqlc.arg(download_id);
+
+-- name: RequeueDownloadNoMainVideoFromFileResolution :one
+UPDATE downloads
+SET status = 'enqueue_pending',
+    torrent_hash = NULL,
+    save_path = NULL,
+    progress = 0,
+    client_state = NULL,
+    last_synced_at = NULL,
+    file_resolution_source = NULL,
+    agent_resolution_id = NULL,
+    failure_stage = NULL,
+    error_code = NULL,
+    error_message = NULL,
+    version = version + 1,
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND status = 'failed'
+  AND failure_stage = 'file_resolution'
+  AND error_code = 'download_no_main_video'
+  AND torrent_hash IS NOT NULL
+  AND version = sqlc.arg(expected_version)
+RETURNING *;
+
 -- name: SetDownloadFileResolution :one
 UPDATE download_files
 SET selected = sqlc.arg(selected),
