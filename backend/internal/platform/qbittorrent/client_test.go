@@ -1,8 +1,12 @@
 package qbittorrent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -420,6 +424,177 @@ func TestClientTorrentRuntimePauseClassification(t *testing.T) {
 	}
 }
 
+func TestClientAddAndConfirmUsesMultipartForTorrentBytes(t *testing.T) {
+	torrentBytes := []byte("d8:announce35:http://tracker.example.test:8080/announce4:infod6:lengthi999e4:name8:test.mkveee")
+	var capturedFields map[string]string
+	var capturedFilename, capturedContentType string
+	var capturedBytes []byte
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v2/torrents/info":
+			if strings.Contains(request.URL.RawQuery, "category=") && request.URL.Query().Get("category") != "emby-auto-test-category" {
+				t.Errorf("unexpected category query %q", request.URL.RawQuery)
+			}
+			requestedCategory := request.URL.Query().Get("category")
+			if capturedBytes == nil {
+				_ = json.NewEncoder(response).Encode([]Torrent{})
+				return
+			}
+			if requestedCategory == "emby-auto-test-category" {
+				_ = json.NewEncoder(response).Encode([]Torrent{{Hash: torrentHashA}})
+				return
+			}
+			_ = json.NewEncoder(response).Encode([]Torrent{})
+		case "/api/v2/torrents/add":
+			contentType := request.Header.Get("Content-Type")
+			if !strings.HasPrefix(contentType, "multipart/form-data;") {
+				t.Errorf("Content-Type = %q, want multipart/form-data", contentType)
+			}
+			_, params, err := mime.ParseMediaType(contentType)
+			if err != nil {
+				t.Fatalf("ParseMediaType() error = %v", err)
+			}
+			reader := multipart.NewReader(request.Body, params["boundary"])
+			fields := map[string]string{}
+			for {
+				part, err := reader.NextPart()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatalf("multipart NextPart() error = %v", err)
+				}
+				data, err := io.ReadAll(part)
+				if err != nil {
+					t.Fatalf("ReadAll() error = %v", err)
+				}
+				formName := part.FormName()
+				if formName == "torrents" {
+					capturedFilename = part.FileName()
+					capturedContentType = part.Header.Get("Content-Type")
+					capturedBytes = append([]byte(nil), data...)
+				} else {
+					fields[formName] = string(data)
+				}
+			}
+			capturedFields = fields
+			if fields["savepath"] != "/downloads/test" || fields["category"] != "emby-auto-test-category" || fields["stopped"] != "false" || fields["stopCondition"] != "MetadataReceived" {
+				t.Errorf("fields = %#v", fields)
+			}
+			if fields["urls"] != "" {
+				t.Errorf("unexpected urls field %q for torrent upload", fields["urls"])
+			}
+			_, _ = response.Write([]byte("Ok."))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, RequestTimeout: time.Second, PollInterval: time.Millisecond, ConfirmTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	resolution, err := client.AddAndConfirm(context.Background(), AddRequest{
+		Torrent:         torrentBytes,
+		TorrentFilename: "source.torrent",
+		SavePath:        "/downloads/test",
+		Category:        "emby-auto-test-category",
+	})
+	if err != nil {
+		t.Fatalf("AddAndConfirm() error = %v", err)
+	}
+	if resolution.Hash != torrentHashA || resolution.Reason != HashResolutionNew {
+		t.Fatalf("resolution = %#v, want %s/new", resolution, torrentHashA)
+	}
+	if capturedFilename != "source.torrent" || capturedContentType != "application/x-bittorrent" || !bytes.Equal(capturedBytes, torrentBytes) {
+		t.Fatalf("multipart torrents part = filename %q type %q bytes %v", capturedFilename, capturedContentType, capturedBytes)
+	}
+	if capturedFields["savepath"] != "/downloads/test" {
+		t.Fatalf("savepath not preserved in multipart")
+	}
+}
+
+func TestClientAddAndConfirmRejectsInvalidTorrentAndSurfaces415(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v2/torrents/info":
+			_ = json.NewEncoder(response).Encode([]Torrent{})
+		case "/api/v2/torrents/add":
+			http.Error(response, "torrent file is invalid", http.StatusUnsupportedMediaType)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, RequestTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	_, err = client.AddAndConfirm(context.Background(), AddRequest{
+		Torrent:         []byte("d8:announce31:http://tracker:8080/announce4:infod6:lengthi1e3:fooeee"),
+		TorrentFilename: "source.torrent",
+		SavePath:        "/downloads/test",
+		Category:        "emby-auto-test-category",
+	})
+	var httpErr *HTTPError
+	if !bytes.Contains([]byte(err.Error()), []byte("415")) || !errorsAsHTTPError(err, &httpErr) || httpErr.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("AddAndConfirm() error = %v, want HTTP 415", err)
+	}
+}
+
+func errorsAsHTTPError(err error, target **HTTPError) bool {
+	// helper to avoid importing errors at top for this file
+	return httpErrorAs(err, target)
+}
+
+func httpErrorAs(err error, target **HTTPError) bool {
+	for err != nil {
+		if h, ok := err.(*HTTPError); ok {
+			*target = h
+			return true
+		}
+		err = unwrapErr(err)
+	}
+	return false
+}
+
+func TestClientAddAndConfirmReusesExistingTorrentForFileUpload(t *testing.T) {
+	addCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v2/torrents/info":
+			_ = json.NewEncoder(response).Encode([]Torrent{{Hash: torrentHashA, Category: "emby-auto-123"}})
+		case "/api/v2/torrents/add":
+			addCalls++
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, RequestTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	resolution, err := client.AddAndConfirm(context.Background(), AddRequest{
+		Torrent:         []byte("d8:announce31:http://tracker:8080/announce4:infod6:lengthi1e3:fooeee"),
+		TorrentFilename: "source.torrent",
+		SavePath:        "/downloads/123",
+		Category:        "emby-auto-123",
+	})
+	if err != nil || resolution.Hash != torrentHashA || resolution.Reason != HashResolutionExisting || addCalls != 0 {
+		t.Fatalf("resolution/addCalls = %#v/%d, want existing %s without add", resolution, addCalls, torrentHashA)
+	}
+}
+
+func unwrapErr(err error) error {
+	type unwrapper interface{ Unwrap() error }
+	if ue, ok := err.(unwrapper); ok {
+		return ue.Unwrap()
+	}
+	return nil
+}
+
 func TestClientManagesFilesCategoriesAndExplicitDeletion(t *testing.T) {
 	var priorityForms []url.Values
 	var deleteForms []url.Values
@@ -499,5 +674,150 @@ func TestClientManagesFilesCategoriesAndExplicitDeletion(t *testing.T) {
 	}
 	if len(deleteForms) != 2 || deleteForms[0].Get("hashes") != torrentHashA || deleteForms[0].Get("deleteFiles") != "false" || deleteForms[1].Get("deleteFiles") != "true" {
 		t.Fatalf("delete forms = %v", deleteForms)
+	}
+}
+
+func TestNewIsolatedQBTransportRemovesProxy(t *testing.T) {
+	proxyURL := mustParseURL(t, "http://proxy.example.test:8080")
+	base := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	isolated, err := newIsolatedQBTransport(base)
+	if err != nil {
+		t.Fatalf("newIsolatedQBTransport() error = %v", err)
+	}
+	if isolated == base {
+		t.Fatalf("isolated transport should be a clone")
+	}
+	if isolated.Proxy != nil {
+		req := &http.Request{URL: mustParseURL(t, "http://example.test/file.torrent")}
+		if got, _ := isolated.Proxy(req); got != nil {
+			t.Fatalf("隔离后的 qB 传输不应使用代理， got %v", got)
+		}
+	}
+	// 验证未修改原始 base 的代理行为
+	if base.Proxy == nil {
+		t.Fatalf("base transport proxy should remain")
+	}
+	req := &http.Request{URL: mustParseURL(t, "http://example.test/file.torrent")}
+	if got, _ := base.Proxy(req); got == nil || got.String() != proxyURL.String() {
+		t.Fatalf("base proxy should remain %v, got %v", proxyURL, got)
+	}
+}
+
+func TestNewClientPreservesExplicitTransportProxy(t *testing.T) {
+	proxyURL := mustParseURL(t, "http://proxy.example.test:8080")
+	explicit := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	explicitClient := &http.Client{Transport: explicit}
+	client, err := NewClient(ClientOptions{BaseURL: "http://qb:8080", RequestTimeout: time.Second, HTTPClient: explicitClient})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	transport, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok || transport != explicit {
+		t.Fatalf("显式传输应被保留， got %T %v", client.httpClient.Transport, client.httpClient.Transport)
+	}
+	req := &http.Request{URL: mustParseURL(t, "http://example.test/file.torrent")}
+	if got, _ := transport.Proxy(req); got == nil || got.String() != proxyURL.String() {
+		t.Fatalf("显式代理应保留 %v, got %v", proxyURL, got)
+	}
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("url.Parse(%q) error = %v", raw, err)
+	}
+	return parsed
+}
+
+type fakeDefaultRoundTripper struct{}
+
+func (f *fakeDefaultRoundTripper) RoundTrip(*http.Request) (*http.Response, error) { return nil, nil }
+
+func TestNewIsolatedQBTransportRejectsUnexpectedType(t *testing.T) {
+	_, err := newIsolatedQBTransport(&fakeDefaultRoundTripper{})
+	if err == nil || !strings.Contains(err.Error(), "*http.Transport") {
+		t.Fatalf("newIsolatedQBTransport() error = %v, want configuration error about *http.Transport", err)
+	}
+}
+
+func TestResolveTorrentBySavePathRequiresExactNormalizedMatch(t *testing.T) {
+	savePath := "/downloads/30000000-0000-0000-0000-000000000001"
+	tests := []struct {
+		name     string
+		torrents []Torrent
+		savePath string
+		wantHash string
+		wantOK   bool
+		wantErr  bool
+	}{
+		{
+			name:     "exact match in temporary category",
+			torrents: []Torrent{{Hash: torrentHashA, SavePath: savePath, Category: "emby-auto-30000000-0000-0000-0000-000000000001"}},
+			savePath: savePath,
+			wantHash: torrentHashA,
+			wantOK:   true,
+		},
+		{
+			name:     "exact match in managed category",
+			torrents: []Torrent{{Hash: torrentHashA, SavePath: savePath, Category: ManagedCategory}},
+			savePath: savePath,
+			wantHash: torrentHashA,
+			wantOK:   true,
+		},
+		{
+			name:     "trailing separator is normalized",
+			torrents: []Torrent{{Hash: torrentHashA, SavePath: savePath + "/", Category: ManagedCategory}},
+			savePath: savePath,
+			wantHash: torrentHashA,
+			wantOK:   true,
+		},
+		{
+			name:     "case sensitive mismatch",
+			torrents: []Torrent{{Hash: torrentHashA, SavePath: strings.ToUpper(savePath), Category: ManagedCategory}},
+			savePath: savePath,
+			wantOK:   false,
+		},
+		{
+			name:     "separator style preserved not cleaned",
+			torrents: []Torrent{{Hash: torrentHashA, SavePath: strings.ReplaceAll(savePath, "/", "\\"), Category: ManagedCategory}},
+			savePath: savePath,
+			wantOK:   false,
+		},
+		{
+			name:     "no match",
+			torrents: []Torrent{{Hash: torrentHashA, SavePath: "/downloads/other", Category: ManagedCategory}},
+			savePath: savePath,
+			wantOK:   false,
+		},
+		{
+			name:     "ambiguous multiple hashes",
+			torrents: []Torrent{{Hash: torrentHashA, SavePath: savePath}, {Hash: torrentHashB, SavePath: savePath}},
+			savePath: savePath,
+			wantErr:  true,
+		},
+		{
+			name:     "invalid hash is ambiguous",
+			torrents: []Torrent{{Hash: "invalid", SavePath: savePath}},
+			savePath: savePath,
+			wantErr:  true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok, err := ResolveTorrentBySavePath(test.torrents, test.savePath)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("ResolveTorrentBySavePath() error = nil, want ambiguous")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveTorrentBySavePath() error = %v", err)
+			}
+			if ok != test.wantOK || got.Hash != test.wantHash {
+				t.Fatalf("ResolveTorrentBySavePath() = %#v/%t, want hash %q ok %t", got, ok, test.wantHash, test.wantOK)
+			}
+		})
 	}
 }

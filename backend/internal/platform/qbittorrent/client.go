@@ -1,6 +1,7 @@
 package qbittorrent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base32"
 	"encoding/hex"
@@ -9,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
+	"net/textproto"
 	"net/url"
 	"sort"
 	"strconv"
@@ -72,9 +75,11 @@ type Client struct {
 }
 
 type AddRequest struct {
-	Source   string
-	SavePath string
-	Category string
+	Source          string
+	Torrent         []byte
+	TorrentFilename string
+	SavePath        string
+	Category        string
 }
 
 type HashResolutionReason string
@@ -119,11 +124,15 @@ func NewClient(options ClientOptions) (*Client, error) {
 
 	var httpClient *http.Client
 	if options.HTTPClient == nil {
+		transport, transportErr := newIsolatedQBTransport(http.DefaultTransport)
+		if transportErr != nil {
+			return nil, transportErr
+		}
 		jar, jarErr := cookiejar.New(nil)
 		if jarErr != nil {
 			return nil, fmt.Errorf("create qBittorrent cookie jar: %w", jarErr)
 		}
-		httpClient = &http.Client{Jar: jar, Timeout: options.RequestTimeout}
+		httpClient = &http.Client{Transport: transport, Jar: jar, Timeout: options.RequestTimeout}
 	} else {
 		clone := *options.HTTPClient
 		if clone.Jar == nil {
@@ -145,6 +154,18 @@ func NewClient(options ClientOptions) (*Client, error) {
 		confirmTimeout: options.ConfirmTimeout,
 		httpClient:     httpClient,
 	}, nil
+}
+
+// newIsolatedQBTransport 基于给定的 RoundTripper 克隆隔离的传输层，移除代理设置。
+// 接收 http.RoundTripper 并返回已清除 Proxy 的 *http.Transport，调用方仍可传入 http.DefaultTransport。
+func newIsolatedQBTransport(base http.RoundTripper) (*http.Transport, error) {
+	transport, ok := base.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("qBittorrent default transport is not *http.Transport")
+	}
+	cloned := transport.Clone()
+	cloned.Proxy = nil
+	return cloned, nil
 }
 
 func (client *Client) Login(ctx context.Context) error {
@@ -190,15 +211,26 @@ func (client *Client) ListTorrents(ctx context.Context, category string) ([]Torr
 func (client *Client) AddAndConfirm(ctx context.Context, request AddRequest) (HashResolution, error) {
 	request.Source = strings.TrimSpace(request.Source)
 	request.Category = strings.TrimSpace(request.Category)
-	if request.Source == "" {
+	request.TorrentFilename = strings.TrimSpace(request.TorrentFilename)
+	hasTorrent := len(request.Torrent) > 0
+	if hasTorrent && request.Source != "" {
+		return HashResolution{}, fmt.Errorf("torrent source and torrent bytes are mutually exclusive")
+	}
+	if !hasTorrent && request.Source == "" {
 		return HashResolution{}, fmt.Errorf("torrent source must not be blank")
+	}
+	if hasTorrent && len(request.Torrent) == 0 {
+		return HashResolution{}, fmt.Errorf("torrent bytes must not be empty")
 	}
 	if request.Category == "" {
 		return HashResolution{}, fmt.Errorf("torrent category must not be blank")
 	}
+	if hasTorrent && request.TorrentFilename == "" {
+		request.TorrentFilename = "source.torrent"
+	}
 
 	categoryScope := request.Category
-	if ExtractBTIH(request.Source) != "" {
+	if !hasTorrent && ExtractBTIH(request.Source) != "" {
 		categoryScope = ""
 	}
 	before, err := client.ListTorrents(ctx, categoryScope)
@@ -208,13 +240,24 @@ func (client *Client) AddAndConfirm(ctx context.Context, request AddRequest) (Ha
 	if resolution, ok := existingCorrelatedTorrent(before, request.Source); ok {
 		return resolution, nil
 	}
-	response, err := client.postForm(ctx, "/api/v2/torrents/add", url.Values{
-		"urls":          {request.Source},
-		"savepath":      {request.SavePath},
-		"category":      {request.Category},
-		"stopped":       {"false"},
-		"stopCondition": {"MetadataReceived"},
-	})
+	var response *http.Response
+	if hasTorrent {
+		fields := map[string]string{
+			"savepath":      request.SavePath,
+			"category":      request.Category,
+			"stopped":       "false",
+			"stopCondition": "MetadataReceived",
+		}
+		response, err = client.postMultipart(ctx, "/api/v2/torrents/add", fields, "torrents", request.TorrentFilename, request.Torrent)
+	} else {
+		response, err = client.postForm(ctx, "/api/v2/torrents/add", url.Values{
+			"urls":          {request.Source},
+			"savepath":      {request.SavePath},
+			"category":      {request.Category},
+			"stopped":       {"false"},
+			"stopCondition": {"MetadataReceived"},
+		})
+	}
 	if err != nil {
 		return HashResolution{}, fmt.Errorf("add qBittorrent torrent: %w", err)
 	}
@@ -634,6 +677,77 @@ func torrentHashes(torrents []Torrent) map[string]struct{} {
 		}
 	}
 	return result
+}
+
+func normalizeSavePath(path string) string {
+	return strings.TrimRight(strings.TrimSpace(path), "/\\")
+}
+
+// ResolveTorrentBySavePath 按 qB SavePath 精确匹配寻找与本次 download 唯一关联的 existing torrent。
+// 仅当存在唯一有效 hash 且 SavePath 归一化后精确匹配时复用；零命中返回 not found；
+// 多个不同 hash 或匹配项 hash 无效时返回稳定 ambiguous 错误，调用方应转为 retryable。
+// 路径比较仅做必要的 TrimSpace/TrimTrailingSeparator 归一化，保持大小写与分隔符语义，不使用 filepath.Clean。
+func ResolveTorrentBySavePath(torrents []Torrent, expectedSavePath string) (HashResolution, bool, error) {
+	expected := normalizeSavePath(expectedSavePath)
+	if expected == "" {
+		return HashResolution{}, false, nil
+	}
+	distinct := make(map[string]struct{})
+	for _, torrent := range torrents {
+		if normalizeSavePath(torrent.SavePath) != expected {
+			continue
+		}
+		hash := normalizeTorrentHash(torrent.Hash)
+		if hash == "" {
+			return HashResolution{}, false, fmt.Errorf("qBittorrent savePath correlation is ambiguous")
+		}
+		distinct[hash] = struct{}{}
+	}
+	if len(distinct) == 0 {
+		return HashResolution{}, false, nil
+	}
+	if len(distinct) != 1 {
+		return HashResolution{}, false, fmt.Errorf("qBittorrent savePath correlation is ambiguous")
+	}
+	for hash := range distinct {
+		return HashResolution{Hash: hash, Reason: HashResolutionExisting}, true, nil
+	}
+	return HashResolution{}, false, nil
+}
+
+func (client *Client) postMultipart(ctx context.Context, endpoint string, fields map[string]string, fileField, fileName string, fileBytes []byte) (*http.Response, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			return nil, fmt.Errorf("encode multipart field %s: %w", key, err)
+		}
+	}
+	if fileField != "" && len(fileBytes) > 0 {
+		h := make(textproto.MIMEHeader)
+		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, escapeQuotes(fileField), escapeQuotes(fileName)))
+		h.Set("Content-Type", "application/x-bittorrent")
+		part, err := writer.CreatePart(h)
+		if err != nil {
+			return nil, fmt.Errorf("create multipart file part: %w", err)
+		}
+		if _, err := part.Write(fileBytes); err != nil {
+			return nil, fmt.Errorf("write multipart file part: %w", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("close multipart writer: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.baseURL+endpoint, &body)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	return client.do(request)
+}
+
+func escapeQuotes(value string) string {
+	return strings.ReplaceAll(value, `"`, `\"`)
 }
 
 func (client *Client) get(ctx context.Context, endpoint string, query url.Values) (*http.Response, error) {

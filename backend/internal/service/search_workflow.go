@@ -377,7 +377,7 @@ func (workflow *SearchWorkflow) CreateAcquisition(
 			ResourceID:     downloadID,
 			IdempotencyKey: "download.enqueue:" + downloadID.String(),
 			MaxAttempts:    5,
-			Timeout:        2 * time.Minute,
+			Timeout:        DownloadEnqueueTimeout,
 			Payload: map[string]any{
 				"defaultSeason": defaultSeason, "defaultEpisode": defaultEpisode,
 				"singleEpisode": singleEpisode, "mediaType": input.MediaType,

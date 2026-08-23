@@ -1105,7 +1105,7 @@ func (workflow *RSSWorkflow) scheduleRSSDownload(
 			ResourceID:     repository.UUIDFromPG(download.ID),
 			IdempotencyKey: "download.enqueue:" + repository.UUIDFromPG(download.ID).String(),
 			MaxAttempts:    5,
-			Timeout:        2 * time.Minute,
+			Timeout:        DownloadEnqueueTimeout,
 			Payload: map[string]any{
 				"defaultSeason":  valueInt32(entry.SourceSeason),
 				"defaultEpisode": valueInt32(entry.SourceEpisode),
