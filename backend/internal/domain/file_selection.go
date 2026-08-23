@@ -28,7 +28,7 @@ var (
 
 	extraTokenPattern          = regexp.MustCompile(`(?i)(^|[^[:alnum:]])(?:ncop|nced|op[0-9]*|ed[0-9]*|pv[0-9]*|cm[0-9]*|sp[0-9]*|menu|scans?|sample|trailer|teaser|bonus|creditless)(?:$|[^[:alnum:]])`)
 	extraSingleTokenPattern    = regexp.MustCompile(`(?i)^(?:ncop|nced|op[0-9]*|ed[0-9]*|pv[0-9]*|cm[0-9]*|sp[0-9]*|menu|scans?|sample|trailer|teaser|bonus|creditless)$`)
-	extraDirectoryTokenPattern = regexp.MustCompile(`[A-Za-z0-9]+`)
+	extraDirectoryTokenPattern = regexp.MustCompile(`[\p{L}\p{N}]+`)
 	seasonEpisodePattern       = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])s([0-9]{1,2})[ ._-]*e([0-9]{1,3})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
 	seasonDirectoryPattern     = regexp.MustCompile(`(?i)(?:^|/)(?:season|s)[ ._-]*([0-9]{1,2})(?:/|$)`)
 	eastAsianEpisodePattern    = regexp.MustCompile(`(?:第[[:space:]]*)?([0-9]{1,3})[[:space:]]*[话話集]`)
@@ -225,14 +225,20 @@ func classifyDownloadPath(filePath string) MediaKind {
 	if extraTokenPattern.MatchString(path.Base(normalized)) {
 		return MediaExtra
 	}
-	// 目录段按独立 extra 目录判定：仅当目录名本身主要由 extra token 构成时才污染子文件。
-	// 顶层复合发布目录（如同时表达正片季度与附带 SP 的发布目录）因此不会使全部后代变 extra，
-	// 而真正的独立 extra 目录（如 SP、NCOP）仍保持 extra。
+	// 目录段：仅顶层允许复合发布标签不传播，判定是否独立 extra 目录；第二层及更深仍沿用现有 extraToken 匹配，
+	// 以保持 `Pack/NCOP 1080p/01.mkv`、`Pack/Bonus Features/01.mkv` 等真实嵌套 extra 语义。
 	dir := path.Dir(normalized)
 	if dir != "." {
-		for _, segment := range strings.Split(dir, "/") {
-			if isIndependentExtraDirectory(segment) {
-				return MediaExtra
+		segments := strings.Split(dir, "/")
+		for index, segment := range segments {
+			if index == 0 {
+				if isIndependentExtraDirectory(segment) {
+					return MediaExtra
+				}
+			} else {
+				if extraTokenPattern.MatchString(segment) {
+					return MediaExtra
+				}
 			}
 		}
 	}

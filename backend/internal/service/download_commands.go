@@ -93,51 +93,39 @@ func (workflow *DownloadCommandWorkflow) Retry(ctx context.Context, downloadID u
 			}
 		case "file_resolution":
 			errorCode := valueOrEmpty(current.ErrorCode)
-			hasHash := current.TorrentHash != nil && strings.TrimSpace(*current.TorrentHash) != ""
-			if errorCode == "download_no_main_video" && hasHash {
-				files, listErr := scope.Queries.ListDownloadFiles(ctx, current.ID)
-				if listErr != nil {
-					return fmt.Errorf("list download files for retry: %w", listErr)
+			files, listErr := scope.Queries.ListDownloadFiles(ctx, current.ID)
+			if listErr != nil {
+				return fmt.Errorf("list download files for retry: %w", listErr)
+			}
+			if shouldRetryViaEnqueueForNoMainVideo(errorCode, current.TorrentHash, len(files)) {
+				if err := scope.Queries.DeleteDownloadFilesByDownloadID(ctx, current.ID); err != nil {
+					return fmt.Errorf("delete stale download files: %w", err)
 				}
-				if len(files) > 0 {
-					if err := scope.Queries.DeleteDownloadFilesByDownloadID(ctx, current.ID); err != nil {
-						return fmt.Errorf("delete stale download files: %w", err)
+				if _, err := scope.Queries.RequeueDownloadNoMainVideoFromFileResolution(ctx, db.RequeueDownloadNoMainVideoFromFileResolutionParams{
+					ID: repository.UUIDToPG(downloadID), ExpectedVersion: expectedVersion,
+				}); err != nil {
+					if errors.Is(err, pgx.ErrNoRows) {
+						return NewError("state_conflict", "the download was modified by another request", ErrStateConflict, map[string]any{"expectedVersion": expectedVersion})
 					}
-					if _, err := scope.Queries.RequeueDownloadNoMainVideoFromFileResolution(ctx, db.RequeueDownloadNoMainVideoFromFileResolutionParams{
-						ID: repository.UUIDToPG(downloadID), ExpectedVersion: expectedVersion,
-					}); err != nil {
-						if errors.Is(err, pgx.ErrNoRows) {
-							return NewError("state_conflict", "the download was modified by another request", ErrStateConflict, map[string]any{"expectedVersion": expectedVersion})
-						}
-						return fmt.Errorf("requeue download for no main video: %w", err)
-					}
-					var payload struct {
-						SourceSeason  int  `json:"sourceSeason"`
-						SourceEpisode int  `json:"sourceEpisode"`
-						SingleEpisode bool `json:"singleEpisode"`
-					}
-					acquisition, err := scope.Queries.GetAcquisitionByID(ctx, current.AcquisitionID)
-					if err != nil {
-						return fmt.Errorf("load retry acquisition: %w", err)
-					}
-					if err := json.Unmarshal(acquisition.SourcePayload, &payload); err != nil {
-						return fmt.Errorf("decode retry acquisition: %w", err)
-					}
-					schedule.Kind = appqueue.KindDownloadEnqueue
-					schedule.MaxAttempts = 5
-					schedule.Timeout = DownloadEnqueueTimeout
-					schedule.Payload = map[string]any{
-						"command": "retry", "defaultSeason": payload.SourceSeason, "defaultEpisode": payload.SourceEpisode, "singleEpisode": payload.SingleEpisode,
-					}
-				} else {
-					if _, err := scope.Queries.RequeueDownloadFileResolutionStage(ctx, db.RequeueDownloadFileResolutionStageParams{
-						ID: repository.UUIDToPG(downloadID), ExpectedVersion: expectedVersion,
-					}); err != nil {
-						return fmt.Errorf("requeue download file resolution: %w", err)
-					}
-					schedule.Kind = appqueue.KindDownloadSelectionApply
-					schedule.MaxAttempts = 5
-					schedule.Timeout = time.Minute
+					return fmt.Errorf("requeue download for no main video: %w", err)
+				}
+				var payload struct {
+					SourceSeason  int  `json:"sourceSeason"`
+					SourceEpisode int  `json:"sourceEpisode"`
+					SingleEpisode bool `json:"singleEpisode"`
+				}
+				acquisition, err := scope.Queries.GetAcquisitionByID(ctx, current.AcquisitionID)
+				if err != nil {
+					return fmt.Errorf("load retry acquisition: %w", err)
+				}
+				if err := json.Unmarshal(acquisition.SourcePayload, &payload); err != nil {
+					return fmt.Errorf("decode retry acquisition: %w", err)
+				}
+				schedule.Kind = appqueue.KindDownloadEnqueue
+				schedule.MaxAttempts = 5
+				schedule.Timeout = DownloadEnqueueTimeout
+				schedule.Payload = map[string]any{
+					"command": "retry", "defaultSeason": payload.SourceSeason, "defaultEpisode": payload.SourceEpisode, "singleEpisode": payload.SingleEpisode,
 				}
 			} else {
 				if _, err := scope.Queries.RequeueDownloadFileResolutionStage(ctx, db.RequeueDownloadFileResolutionStageParams{

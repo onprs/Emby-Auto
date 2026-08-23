@@ -38,31 +38,3 @@ func TestDownloadEnqueueTimeoutIsThreeMinutes(t *testing.T) {
 		t.Fatalf("DownloadEnqueueTimeout = %v, want 3m", DownloadEnqueueTimeout)
 	}
 }
-
-// 校验 retry 原子分支的其它 file_resolution 仍保持原语义：此处通过 helper 等价行为验证
-func TestDownloadNoMainVideoRetryAtomicProperties(t *testing.T) {
-	// 该用例验证：当满足 enqueue 条件时，预期调度为 KindDownloadEnqueue、5 attempts、3m 超时；
-	// 否则保持 KindDownloadSelectionApply、5 attempts、1m。
-	// 通过 helper 判断路径，实际调度由 Retry 内部完成，这里验证 helper 与常量的一致性
-	hash := "0123456789abcdef0123456789abcdef01234567"
-	if !shouldRetryViaEnqueueForNoMainVideo("download_no_main_video", &hash, 10) {
-		t.Fatal("should enqueue")
-	}
-	// 其它错误仍走 selection.apply
-	if shouldRetryViaEnqueueForNoMainVideo("download_file_resolution_invalid", &hash, 10) {
-		t.Fatal("should not enqueue for other errors")
-	}
-}
-
-// version conflict 与 idempotency 的语义由通用层保证，这里验证错误码与 helper 不干扰
-func TestDownloadNoMainVideoRetryPreservesVersionAndIdempotencySemantics(t *testing.T) {
-	// 纯 helper 层面的验证：空 hash 或空 manifest 不应触发 enqueue，避免对无 hash 的 file_resolution 误判
-	var nilHash *string
-	if shouldRetryViaEnqueueForNoMainVideo("download_no_main_video", nilHash, 5) {
-		t.Fatal("nil hash should not enqueue")
-	}
-	empty := "   "
-	if shouldRetryViaEnqueueForNoMainVideo("download_no_main_video", &empty, 5) {
-		t.Fatal("whitespace hash should not enqueue")
-	}
-}

@@ -212,36 +212,70 @@ func TestClassifySingleEpisodeAndRssPathsNoRegression(t *testing.T) {
 	}
 }
 
-// 新 enqueue 在清单清理后重持久化同一资源不触发旧索引冲突
-func TestRePersistAfterManifestCleanupNoIndexConflict(t *testing.T) {
-	top := "Pack S01 SP Edition"
-	original := []DownloadFile{
-		{Index: 0, RelativePath: top + "/Show - 01.mkv", SizeBytes: 2000},
-		{Index: 1, RelativePath: top + "/Show - 02.mkv", SizeBytes: 2000},
-		{Index: 2, RelativePath: top + "/Show - 01.ass", SizeBytes: 80},
+// 第二层及更深的目录段继续使用 extraToken 严格匹配，即使复合标签也仍为 extra
+func TestClassifyNestedCompoundExtraDirectoriesAreStillExtra(t *testing.T) {
+	cases := []string{
+		"Pack/NCOP 1080p/Show - 01.mkv",
+		"Pack/Bonus Features/Show - 01.mkv",
+		"Pack/SP Specials/Show - 01.mkv",
+		"合成标题 S01 SP 1080p/NCOP/Show - 01.mkv",
+		"Seed/Extra Scans/Show - 01.mkv",
 	}
-	// 模拟旧清单已删除后重新分类同一资源（同一 file_index 复用）
-	// 这里验证修复后的分类器对同一相对路径仍能正确分类为 video/subtitle，而不是旧的 extra 污染
-	// 并验证 Classify 能在相同索引上重复调用而不报错（不依赖旧 DB 唯一约束，删除后可重建）
-	first, err := ClassifyDownloadFiles(original, FileSelectionOptions{DefaultSeason: 1})
-	if err != nil {
-		t.Fatalf("first classify error = %v", err)
-	}
-	second, err := ClassifyDownloadFiles(original, FileSelectionOptions{DefaultSeason: 1})
-	if err != nil {
-		t.Fatalf("second classify error = %v", err)
-	}
-	for i := range first {
-		if first[i].Kind != second[i].Kind {
-			t.Fatalf("re-persist kind mismatch at %d: %q vs %q", i, first[i].Kind, second[i].Kind)
+	for _, p := range cases {
+		if got := classifyDownloadPath(p); got != MediaExtra {
+			t.Fatalf("nested %q kind = %q, want extra", p, got)
 		}
 	}
-	// 进一步确认选择结果一致且不触发 extra
-	sel, err := SelectDownloadFiles(original, FileSelectionOptions{DefaultSeason: 1})
-	if err != nil {
-		t.Fatalf("select after cleanup error = %v", err)
+	// 嵌套非 extra 子目录不应误判
+	if got := classifyDownloadPath("Pack/Season 1/Show - 01.mkv"); got == MediaExtra {
+		t.Fatalf("nested Season 1 should not be extra, got %q", got)
 	}
-	if len(sel.Episodes) != 2 {
-		t.Fatalf("episodes after cleanup = %d, want 2", len(sel.Episodes))
+	// 顶层复合标签不应传播，到第二层 extra 仍生效
+	top := "SeriesTitle S01 SP Edition"
+	if got := classifyDownloadPath(top + "/NCOP 1080p/Show - 01.mkv"); got != MediaExtra {
+		t.Fatalf("top compound followed by nested NCOP kind = %q, want extra", got)
+	}
+}
+
+// Unicode 标题 + SP 的顶层复合目录不应被视为独立 extra 目录而污染后代
+func TestClassifyTopCompoundWithUnicodeTitleDoesNotPolluteChildren(t *testing.T) {
+	tops := []string{
+		"我的番剧 S01 SP 特典 1080p",
+		"番組タイトル S02 SP 限定版",
+		"Синтетика S01 Bonus Edition 1080p",
+		"MyTitle S01 SP 特典 1080p",
+	}
+	for _, top := range tops {
+		files := []DownloadFile{
+			{Index: 0, RelativePath: top + "/Show - 01.mkv", SizeBytes: 1500},
+			{Index: 1, RelativePath: top + "/Show - 02.mkv", SizeBytes: 1500},
+			{Index: 2, RelativePath: top + "/Show - 01.ass", SizeBytes: 80},
+		}
+		classified, err := ClassifyDownloadFiles(files, FileSelectionOptions{DefaultSeason: 1})
+		if err != nil {
+			t.Fatalf("Classify top %q error = %v", top, err)
+		}
+		for i, f := range classified {
+			if f.Kind == MediaExtra {
+				t.Fatalf("top unicode compound %q file %d %q wrongly extra", top, i, f.RelativePath)
+			}
+		}
+		result, err := SelectDownloadFiles(files, FileSelectionOptions{DefaultSeason: 1})
+		if err != nil {
+			t.Fatalf("Select top %q error = %v", top, err)
+		}
+		if len(result.Episodes) != 2 {
+			t.Fatalf("top %q episodes = %d, want 2", top, len(result.Episodes))
+		}
+		if isIndependentExtraDirectory(top) {
+			t.Fatalf("unicode compound top %q wrongly independent extra", top)
+		}
+	}
+	// 独立 extra 根仍为 extra，即使含 Unicode 标题的嵌套 extra
+	if !isIndependentExtraDirectory("SP") || !isIndependentExtraDirectory("[NCOP]") || !isIndependentExtraDirectory("SP 01") {
+		t.Fatalf("independent extra roots misclassified")
+	}
+	if isIndependentExtraDirectory("我的番剧 S01 SP 特典") {
+		t.Fatalf("unicode compound wrongly independent")
 	}
 }
