@@ -219,6 +219,126 @@ func TestValidateTorrentSourceURLRejectsZoneScopedIPv6(t *testing.T) {
 	}
 }
 
+func TestValidateTorrentSourceURLRejectsIPv4MappedIPv6(t *testing.T) {
+	// IPv4-mapped IPv6 字面量底层仍按 IPv4 语义阻断，需先 Unmap 再判定
+	invalid := []string{
+		"http://[::ffff:127.0.0.1]/file.torrent",
+		"http://[::ffff:127.0.0.1]:8080/file.torrent",
+		"http://[::ffff:10.0.0.1]/file.torrent",
+		"http://[::ffff:10.255.255.255]/file.torrent",
+		"http://[::ffff:192.168.1.1]/file.torrent",
+		"http://[::ffff:172.16.5.4]/file.torrent",
+		"http://[::ffff:172.31.255.255]/file.torrent",
+		"http://[::ffff:169.254.10.20]/file.torrent",
+		"http://[::ffff:0.0.0.0]/file.torrent",
+		"http://[::ffff:224.0.0.1]/file.torrent",
+		"http://[::ffff:10.0.0.1]/file.torrent?token=" + sensitiveTorrentQueryFixture,
+	}
+	for _, raw := range invalid {
+		t.Run(raw, func(t *testing.T) {
+			err := validateTorrentSourceURL(raw, torrentSourceOptions{allowPrivate: false})
+			var failure *Failure
+			if err == nil || !errorIsFailure(err, &failure) || failure.Code != "torrent_source_invalid" || failure.Retryable {
+				t.Fatalf("validateTorrentSourceURL(%q) = %#v, want permanent torrent_source_invalid", raw, err)
+			}
+			if strings.Contains(failure.Message, sensitiveTorrentQueryFixture) || (failure.Cause != nil && strings.Contains(failure.Cause.Error(), sensitiveTorrentQueryFixture)) {
+				t.Fatalf("错误泄露敏感信息")
+			}
+			if failure.Cause != nil && (strings.Contains(failure.Cause.Error(), raw) || strings.Contains(failure.Cause.Error(), "::ffff")) {
+				t.Fatalf("错误泄露原始地址")
+			}
+		})
+	}
+}
+
+func TestValidateTorrentSourceURLAllowsPublicIPv4MappedIPv6(t *testing.T) {
+	// 公共 IPv4 映射不应被误拒绝，验证 Unmap 后仅阻断私有/保留段
+	valid := []string{
+		"http://[::ffff:8.8.8.8]/file.torrent",
+		"https://[::ffff:1.1.1.1]/file.torrent",
+		"http://[::ffff:8.8.4.4]:8080/file.torrent?token=abc",
+		"http://[::ffff:9.9.9.9]/file.torrent",
+		"http://[::ffff:1.0.0.1]/file.torrent",
+	}
+	for _, raw := range valid {
+		t.Run(raw, func(t *testing.T) {
+			if err := validateTorrentSourceURL(raw, torrentSourceOptions{allowPrivate: false}); err != nil {
+				t.Fatalf("validateTorrentSourceURL(%q) unexpected error %v, want nil", raw, err)
+			}
+		})
+	}
+	// 普通公共 IPv6 仍放行，保持原有行为不变
+	if err := validateTorrentSourceURL("http://[2001:4860:4860::8888]/file.torrent", torrentSourceOptions{allowPrivate: false}); err != nil {
+		t.Fatalf("公共 IPv6 不应被拒绝, got %v", err)
+	}
+}
+
+func TestDefaultTorrentSourceFetcherRejectsMappedLoopbackRedirect(t *testing.T) {
+	// 重定向到 IPv4-mapped loopback 应在 CheckRedirect 阶段永久拒绝，且不实际拨号目标
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://[::ffff:127.0.0.1]/file.torrent", http.StatusFound)
+	}))
+	defer redirecting.Close()
+	u, _ := url.Parse(redirecting.URL)
+	mapping := map[string]string{"redirect.example.test": u.Host}
+	fetcher := fetcherWithMapping(mapping, false)
+	redirectURL := "http://redirect.example.test:" + u.Port() + "/file.torrent"
+	_, err := fetcher(context.Background(), redirectURL, domain.NetworkProxySettings{})
+	var failure *Failure
+	if !errorIsFailure(err, &failure) || failure.Code != "torrent_source_invalid" || failure.Retryable {
+		t.Fatalf("重定向到 mapped loopback 应为永久拒绝, got %#v", err)
+	}
+	if strings.Contains(err.Error(), "127.0.0.1") || strings.Contains(err.Error(), "::ffff") || (failure.Cause != nil && (strings.Contains(failure.Cause.Error(), "127.0.0.1") || strings.Contains(failure.Cause.Error(), "::ffff"))) {
+		t.Fatalf("重定向错误泄露原始地址: %v", err)
+	}
+}
+
+func TestDefaultTorrentSourceFetcherRejectsMappedPrivateRedirect(t *testing.T) {
+	// 重定向到 IPv4-mapped 私网/链路本地应同样永久拒绝，验证 dial 前阻断
+	cases := []string{
+		"http://[::ffff:10.0.0.1]/file.torrent",
+		"http://[::ffff:192.168.1.1]/file.torrent",
+		"http://[::ffff:172.16.5.4]/file.torrent",
+		"http://[::ffff:169.254.10.20]/file.torrent?token=" + sensitiveTorrentQueryFixture,
+	}
+	for _, target := range cases {
+		t.Run(target, func(t *testing.T) {
+			redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, target, http.StatusFound)
+			}))
+			defer redirecting.Close()
+			u, _ := url.Parse(redirecting.URL)
+			mapping := map[string]string{"redirect.example.test": u.Host}
+			fetcher := fetcherWithMapping(mapping, false)
+			redirectURL := "http://redirect.example.test:" + u.Port() + "/file.torrent"
+			_, err := fetcher(context.Background(), redirectURL, domain.NetworkProxySettings{})
+			var failure *Failure
+			if !errorIsFailure(err, &failure) || failure.Code != "torrent_source_invalid" || failure.Retryable {
+				t.Fatalf("重定向到 %q 应为永久拒绝, got %#v", target, err)
+			}
+			if strings.Contains(err.Error(), sensitiveTorrentQueryFixture) || (failure.Cause != nil && strings.Contains(failure.Cause.Error(), sensitiveTorrentQueryFixture)) {
+				t.Fatalf("重定向错误泄露敏感信息: %v", err)
+			}
+			if strings.Contains(err.Error(), "::ffff") || (failure.Cause != nil && strings.Contains(failure.Cause.Error(), "::ffff")) {
+				t.Fatalf("重定向错误泄露原始地址: %v", err)
+			}
+		})
+	}
+}
+
+func TestDefaultTorrentSourceFetcherRejectsMappedInitial(t *testing.T) {
+	// 初始 URL 为 IPv4-mapped 私网/回环，应在请求发出前永久拒绝且不泄露敏感信息
+	invalid := "http://[::ffff:10.0.0.1]/file.torrent?token=" + sensitiveTorrentQueryFixture
+	_, err := fetchTorrentSource(context.Background(), invalid, domain.NetworkProxySettings{}, torrentSourceOptions{allowPrivate: false})
+	var failure *Failure
+	if !errorIsFailure(err, &failure) || failure.Code != "torrent_source_invalid" || failure.Retryable {
+		t.Fatalf("mapped 初始 URL 应为永久拒绝, got %#v", err)
+	}
+	if strings.Contains(err.Error(), sensitiveTorrentQueryFixture) || (failure.Cause != nil && strings.Contains(failure.Cause.Error(), sensitiveTorrentQueryFixture)) {
+		t.Fatalf("初始错误泄露敏感信息: %v", err)
+	}
+}
+
 func errorIsFailure(err error, target **Failure) bool {
 	for err != nil {
 		if f, ok := err.(*Failure); ok {

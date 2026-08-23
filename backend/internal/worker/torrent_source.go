@@ -187,6 +187,7 @@ func isBlockedTorrentSourceHost(host string, allowPrivate bool) bool {
 }
 
 func isBlockedNetipAddr(addr netip.Addr) bool {
+	addr = addr.Unmap()
 	if addr.IsLoopback() || addr.IsUnspecified() || addr.IsMulticast() || addr.IsLinkLocalUnicast() {
 		return true
 	}
