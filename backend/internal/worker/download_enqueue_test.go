@@ -266,7 +266,7 @@ func TestDownloadEnqueueHandlerConfirmsHashSelectsFilesAndPersistsCompletion(t *
 	if len(client.addRequest.Torrent) == 0 || string(client.addRequest.Torrent) != string(validTorrentFixture) || client.addRequest.TorrentFilename != "source.torrent" || client.addRequest.Source != "" || client.addRequest.SavePath != "/downloads/30000000-0000-0000-0000-000000000001" || client.addRequest.Category != "emby-auto-30000000-0000-0000-0000-000000000001" {
 		t.Fatalf("add request = %#v", client.addRequest)
 	}
-	if !reflect.DeepEqual(client.calls, []string{"login", "ensure-category", "ensure-category", "add", "files"}) {
+	if !reflect.DeepEqual(client.calls, []string{"login", "ensure-category", "ensure-category", "list", "add", "files"}) {
 		t.Fatalf("client calls = %v", client.calls)
 	}
 	if len(client.priorityCalls) != 0 || len(client.rateLimitCalls) != 0 || len(client.categoryCalls) != 0 || len(client.deletedCategories) != 0 {

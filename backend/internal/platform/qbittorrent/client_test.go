@@ -676,3 +676,148 @@ func TestClientManagesFilesCategoriesAndExplicitDeletion(t *testing.T) {
 		t.Fatalf("delete forms = %v", deleteForms)
 	}
 }
+
+func TestNewClientProductionTransportIsIsolatedFromEnvProxy(t *testing.T) {
+	original := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = original })
+	proxyURL := mustParseURL(t, "http://proxy.example.test:8080")
+	http.DefaultTransport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+
+	client, err := NewClient(ClientOptions{BaseURL: "http://qb:8080", RequestTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	transport, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("client transport = %T, want *http.Transport", client.httpClient.Transport)
+	}
+	if transport.Proxy != nil {
+		req := &http.Request{URL: mustParseURL(t, "http://example.test/file.torrent")}
+		if got, _ := transport.Proxy(req); got != nil {
+			t.Fatalf("production qB transport should not use proxy, got %v", got)
+		}
+	}
+	// 确认未修改全局 DefaultTransport 的代理行为
+	originalTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok || originalTransport.Proxy == nil {
+		t.Fatalf("global DefaultTransport was modified")
+	}
+	req := &http.Request{URL: mustParseURL(t, "http://example.test/file.torrent")}
+	if got, _ := originalTransport.Proxy(req); got == nil || got.String() != proxyURL.String() {
+		t.Fatalf("global proxy should remain %v, got %v", proxyURL, got)
+	}
+	// 自定义 client 仍保留调用方显式传输语义
+	customTransport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	customClient := &http.Client{Transport: customTransport}
+	clientWithCustom, err := NewClient(ClientOptions{BaseURL: "http://qb:8080", RequestTimeout: time.Second, HTTPClient: customClient})
+	if err != nil {
+		t.Fatalf("NewClient(custom) error = %v", err)
+	}
+	if clientWithCustom.httpClient.Transport == transport {
+		t.Fatalf("custom client should not share production transport")
+	}
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("url.Parse(%q) error = %v", raw, err)
+	}
+	return parsed
+}
+
+type fakeDefaultRoundTripper struct{}
+
+func (f *fakeDefaultRoundTripper) RoundTrip(*http.Request) (*http.Response, error) { return nil, nil }
+
+func TestNewClientRejectsUnexpectedDefaultTransportType(t *testing.T) {
+	original := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = original })
+	http.DefaultTransport = &fakeDefaultRoundTripper{}
+	_, err := NewClient(ClientOptions{BaseURL: "http://qb:8080", RequestTimeout: time.Second})
+	if err == nil || !strings.Contains(err.Error(), "*http.Transport") {
+		t.Fatalf("NewClient() error = %v, want configuration error about *http.Transport", err)
+	}
+}
+
+func TestResolveTorrentBySavePathRequiresExactNormalizedMatch(t *testing.T) {
+	savePath := "/downloads/30000000-0000-0000-0000-000000000001"
+	tests := []struct {
+		name     string
+		torrents []Torrent
+		savePath string
+		wantHash string
+		wantOK   bool
+		wantErr  bool
+	}{
+		{
+			name:     "exact match in temporary category",
+			torrents: []Torrent{{Hash: torrentHashA, SavePath: savePath, Category: "emby-auto-30000000-0000-0000-0000-000000000001"}},
+			savePath: savePath,
+			wantHash: torrentHashA,
+			wantOK:   true,
+		},
+		{
+			name:     "exact match in managed category",
+			torrents: []Torrent{{Hash: torrentHashA, SavePath: savePath, Category: ManagedCategory}},
+			savePath: savePath,
+			wantHash: torrentHashA,
+			wantOK:   true,
+		},
+		{
+			name:     "trailing separator is normalized",
+			torrents: []Torrent{{Hash: torrentHashA, SavePath: savePath + "/", Category: ManagedCategory}},
+			savePath: savePath,
+			wantHash: torrentHashA,
+			wantOK:   true,
+		},
+		{
+			name:     "case sensitive mismatch",
+			torrents: []Torrent{{Hash: torrentHashA, SavePath: strings.ToUpper(savePath), Category: ManagedCategory}},
+			savePath: savePath,
+			wantOK:   false,
+		},
+		{
+			name:     "separator style preserved not cleaned",
+			torrents: []Torrent{{Hash: torrentHashA, SavePath: strings.ReplaceAll(savePath, "/", "\\"), Category: ManagedCategory}},
+			savePath: savePath,
+			wantOK:   false,
+		},
+		{
+			name:     "no match",
+			torrents: []Torrent{{Hash: torrentHashA, SavePath: "/downloads/other", Category: ManagedCategory}},
+			savePath: savePath,
+			wantOK:   false,
+		},
+		{
+			name:     "ambiguous multiple hashes",
+			torrents: []Torrent{{Hash: torrentHashA, SavePath: savePath}, {Hash: torrentHashB, SavePath: savePath}},
+			savePath: savePath,
+			wantErr:  true,
+		},
+		{
+			name:     "invalid hash is ambiguous",
+			torrents: []Torrent{{Hash: "invalid", SavePath: savePath}},
+			savePath: savePath,
+			wantErr:  true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok, err := ResolveTorrentBySavePath(test.torrents, test.savePath)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("ResolveTorrentBySavePath() error = nil, want ambiguous")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveTorrentBySavePath() error = %v", err)
+			}
+			if ok != test.wantOK || got.Hash != test.wantHash {
+				t.Fatalf("ResolveTorrentBySavePath() = %#v/%t, want hash %q ok %t", got, ok, test.wantHash, test.wantOK)
+			}
+		})
+	}
+}

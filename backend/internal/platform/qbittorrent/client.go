@@ -124,11 +124,17 @@ func NewClient(options ClientOptions) (*Client, error) {
 
 	var httpClient *http.Client
 	if options.HTTPClient == nil {
+		base, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			return nil, fmt.Errorf("qBittorrent default transport is not *http.Transport")
+		}
+		transport := base.Clone()
+		transport.Proxy = nil
 		jar, jarErr := cookiejar.New(nil)
 		if jarErr != nil {
 			return nil, fmt.Errorf("create qBittorrent cookie jar: %w", jarErr)
 		}
-		httpClient = &http.Client{Jar: jar, Timeout: options.RequestTimeout}
+		httpClient = &http.Client{Transport: transport, Jar: jar, Timeout: options.RequestTimeout}
 	} else {
 		clone := *options.HTTPClient
 		if clone.Jar == nil {
@@ -661,6 +667,42 @@ func torrentHashes(torrents []Torrent) map[string]struct{} {
 		}
 	}
 	return result
+}
+
+func normalizeSavePath(path string) string {
+	return strings.TrimRight(strings.TrimSpace(path), "/\\")
+}
+
+// ResolveTorrentBySavePath 按 qB SavePath 精确匹配寻找与本次 download 唯一关联的 existing torrent。
+// 仅当存在唯一有效 hash 且 SavePath 归一化后精确匹配时复用；零命中返回 not found；
+// 多个不同 hash 或匹配项 hash 无效时返回稳定 ambiguous 错误，调用方应转为 retryable。
+// 路径比较仅做必要的 TrimSpace/TrimTrailingSeparator 归一化，保持大小写与分隔符语义，不使用 filepath.Clean。
+func ResolveTorrentBySavePath(torrents []Torrent, expectedSavePath string) (HashResolution, bool, error) {
+	expected := normalizeSavePath(expectedSavePath)
+	if expected == "" {
+		return HashResolution{}, false, nil
+	}
+	distinct := make(map[string]struct{})
+	for _, torrent := range torrents {
+		if normalizeSavePath(torrent.SavePath) != expected {
+			continue
+		}
+		hash := normalizeTorrentHash(torrent.Hash)
+		if hash == "" {
+			return HashResolution{}, false, fmt.Errorf("qBittorrent savePath correlation is ambiguous")
+		}
+		distinct[hash] = struct{}{}
+	}
+	if len(distinct) == 0 {
+		return HashResolution{}, false, nil
+	}
+	if len(distinct) != 1 {
+		return HashResolution{}, false, fmt.Errorf("qBittorrent savePath correlation is ambiguous")
+	}
+	for hash := range distinct {
+		return HashResolution{Hash: hash, Reason: HashResolutionExisting}, true, nil
+	}
+	return HashResolution{}, false, nil
 }
 
 func (client *Client) postMultipart(ctx context.Context, endpoint string, fields map[string]string, fileField, fileName string, fileBytes []byte) (*http.Response, error) {
