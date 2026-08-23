@@ -124,12 +124,10 @@ func NewClient(options ClientOptions) (*Client, error) {
 
 	var httpClient *http.Client
 	if options.HTTPClient == nil {
-		base, ok := http.DefaultTransport.(*http.Transport)
-		if !ok {
-			return nil, fmt.Errorf("qBittorrent default transport is not *http.Transport")
+		transport, transportErr := newIsolatedQBTransport(http.DefaultTransport)
+		if transportErr != nil {
+			return nil, transportErr
 		}
-		transport := base.Clone()
-		transport.Proxy = nil
 		jar, jarErr := cookiejar.New(nil)
 		if jarErr != nil {
 			return nil, fmt.Errorf("create qBittorrent cookie jar: %w", jarErr)
@@ -156,6 +154,18 @@ func NewClient(options ClientOptions) (*Client, error) {
 		confirmTimeout: options.ConfirmTimeout,
 		httpClient:     httpClient,
 	}, nil
+}
+
+// newIsolatedQBTransport 基于给定的 RoundTripper 克隆隔离的传输层，移除代理设置。
+// 接收 http.RoundTripper 并返回已清除 Proxy 的 *http.Transport，调用方仍可传入 http.DefaultTransport。
+func newIsolatedQBTransport(base http.RoundTripper) (*http.Transport, error) {
+	transport, ok := base.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("qBittorrent default transport is not *http.Transport")
+	}
+	cloned := transport.Clone()
+	cloned.Proxy = nil
+	return cloned, nil
 }
 
 func (client *Client) Login(ctx context.Context) error {

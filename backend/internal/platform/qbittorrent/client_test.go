@@ -677,44 +677,47 @@ func TestClientManagesFilesCategoriesAndExplicitDeletion(t *testing.T) {
 	}
 }
 
-func TestNewClientProductionTransportIsIsolatedFromEnvProxy(t *testing.T) {
-	original := http.DefaultTransport
-	t.Cleanup(func() { http.DefaultTransport = original })
+func TestNewIsolatedQBTransportRemovesProxy(t *testing.T) {
 	proxyURL := mustParseURL(t, "http://proxy.example.test:8080")
-	http.DefaultTransport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	base := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	isolated, err := newIsolatedQBTransport(base)
+	if err != nil {
+		t.Fatalf("newIsolatedQBTransport() error = %v", err)
+	}
+	if isolated == base {
+		t.Fatalf("isolated transport should be a clone")
+	}
+	if isolated.Proxy != nil {
+		req := &http.Request{URL: mustParseURL(t, "http://example.test/file.torrent")}
+		if got, _ := isolated.Proxy(req); got != nil {
+			t.Fatalf("隔离后的 qB 传输不应使用代理， got %v", got)
+		}
+	}
+	// 验证未修改原始 base 的代理行为
+	if base.Proxy == nil {
+		t.Fatalf("base transport proxy should remain")
+	}
+	req := &http.Request{URL: mustParseURL(t, "http://example.test/file.torrent")}
+	if got, _ := base.Proxy(req); got == nil || got.String() != proxyURL.String() {
+		t.Fatalf("base proxy should remain %v, got %v", proxyURL, got)
+	}
+}
 
-	client, err := NewClient(ClientOptions{BaseURL: "http://qb:8080", RequestTimeout: time.Second})
+func TestNewClientPreservesExplicitTransportProxy(t *testing.T) {
+	proxyURL := mustParseURL(t, "http://proxy.example.test:8080")
+	explicit := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	explicitClient := &http.Client{Transport: explicit}
+	client, err := NewClient(ClientOptions{BaseURL: "http://qb:8080", RequestTimeout: time.Second, HTTPClient: explicitClient})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 	transport, ok := client.httpClient.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("client transport = %T, want *http.Transport", client.httpClient.Transport)
-	}
-	if transport.Proxy != nil {
-		req := &http.Request{URL: mustParseURL(t, "http://example.test/file.torrent")}
-		if got, _ := transport.Proxy(req); got != nil {
-			t.Fatalf("production qB transport should not use proxy, got %v", got)
-		}
-	}
-	// 确认未修改全局 DefaultTransport 的代理行为
-	originalTransport, ok := http.DefaultTransport.(*http.Transport)
-	if !ok || originalTransport.Proxy == nil {
-		t.Fatalf("global DefaultTransport was modified")
+	if !ok || transport != explicit {
+		t.Fatalf("显式传输应被保留， got %T %v", client.httpClient.Transport, client.httpClient.Transport)
 	}
 	req := &http.Request{URL: mustParseURL(t, "http://example.test/file.torrent")}
-	if got, _ := originalTransport.Proxy(req); got == nil || got.String() != proxyURL.String() {
-		t.Fatalf("global proxy should remain %v, got %v", proxyURL, got)
-	}
-	// 自定义 client 仍保留调用方显式传输语义
-	customTransport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
-	customClient := &http.Client{Transport: customTransport}
-	clientWithCustom, err := NewClient(ClientOptions{BaseURL: "http://qb:8080", RequestTimeout: time.Second, HTTPClient: customClient})
-	if err != nil {
-		t.Fatalf("NewClient(custom) error = %v", err)
-	}
-	if clientWithCustom.httpClient.Transport == transport {
-		t.Fatalf("custom client should not share production transport")
+	if got, _ := transport.Proxy(req); got == nil || got.String() != proxyURL.String() {
+		t.Fatalf("显式代理应保留 %v, got %v", proxyURL, got)
 	}
 }
 
@@ -731,13 +734,10 @@ type fakeDefaultRoundTripper struct{}
 
 func (f *fakeDefaultRoundTripper) RoundTrip(*http.Request) (*http.Response, error) { return nil, nil }
 
-func TestNewClientRejectsUnexpectedDefaultTransportType(t *testing.T) {
-	original := http.DefaultTransport
-	t.Cleanup(func() { http.DefaultTransport = original })
-	http.DefaultTransport = &fakeDefaultRoundTripper{}
-	_, err := NewClient(ClientOptions{BaseURL: "http://qb:8080", RequestTimeout: time.Second})
+func TestNewIsolatedQBTransportRejectsUnexpectedType(t *testing.T) {
+	_, err := newIsolatedQBTransport(&fakeDefaultRoundTripper{})
 	if err == nil || !strings.Contains(err.Error(), "*http.Transport") {
-		t.Fatalf("NewClient() error = %v, want configuration error about *http.Transport", err)
+		t.Fatalf("newIsolatedQBTransport() error = %v, want configuration error about *http.Transport", err)
 	}
 }
 
