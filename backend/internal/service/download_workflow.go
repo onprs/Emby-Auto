@@ -161,7 +161,7 @@ func (workflow *DownloadWorkflow) CompleteEnqueue(
 			}
 			if _, err := workflow.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
 				Kind: appqueue.KindDownloadCancel, ResourceType: "download", ResourceID: completion.DownloadID,
-				IdempotencyKey: "download.cancel:hard-rejected:" + completion.DownloadID.String() + ":" + torrentHash,
+				IdempotencyKey: "download.cancel:hard-rejected:" + completion.DownloadID.String() + ":" + torrentHash + ":" + completion.OperationID.String(),
 				MaxAttempts:    3, Timeout: 2 * time.Minute,
 				Payload: map[string]any{"command": "file_resolution_rejected", "deleteFiles": false},
 			}); err != nil {

@@ -98,17 +98,6 @@ func (workflow *DownloadCommandWorkflow) Retry(ctx context.Context, downloadID u
 				return fmt.Errorf("list download files for retry: %w", listErr)
 			}
 			if shouldRetryViaEnqueueForNoMainVideo(errorCode, current.TorrentHash, len(files)) {
-				if err := scope.Queries.DeleteDownloadFilesByDownloadID(ctx, current.ID); err != nil {
-					return fmt.Errorf("delete stale download files: %w", err)
-				}
-				if _, err := scope.Queries.RequeueDownloadNoMainVideoFromFileResolution(ctx, db.RequeueDownloadNoMainVideoFromFileResolutionParams{
-					ID: repository.UUIDToPG(downloadID), ExpectedVersion: expectedVersion,
-				}); err != nil {
-					if errors.Is(err, pgx.ErrNoRows) {
-						return NewError("state_conflict", "the download was modified by another request", ErrStateConflict, map[string]any{"expectedVersion": expectedVersion})
-					}
-					return fmt.Errorf("requeue download for no main video: %w", err)
-				}
 				var payload struct {
 					SourceSeason  int  `json:"sourceSeason"`
 					SourceEpisode int  `json:"sourceEpisode"`
@@ -121,11 +110,42 @@ func (workflow *DownloadCommandWorkflow) Retry(ctx context.Context, downloadID u
 				if err := json.Unmarshal(acquisition.SourcePayload, &payload); err != nil {
 					return fmt.Errorf("decode retry acquisition: %w", err)
 				}
-				schedule.Kind = appqueue.KindDownloadEnqueue
-				schedule.MaxAttempts = 5
-				schedule.Timeout = DownloadEnqueueTimeout
-				schedule.Payload = map[string]any{
-					"command": "retry", "defaultSeason": payload.SourceSeason, "defaultEpisode": payload.SourceEpisode, "singleEpisode": payload.SingleEpisode,
+				options := domain.FileSelectionOptions{
+					DefaultSeason:  payload.SourceSeason,
+					DefaultEpisode: payload.SourceEpisode,
+					SingleEpisode:  payload.SingleEpisode,
+				}
+				hasVideo, classifyErr := hasReclassifiableVideo(files, options)
+				if classifyErr != nil {
+					return NewError("download_file_manifest_invalid", "the download file manifest cannot be reclassified safely", ErrInvalidInput, map[string]any{"reason": classifyErr.Error()})
+				}
+				if hasVideo {
+					if err := scope.Queries.DeleteDownloadFilesByDownloadID(ctx, current.ID); err != nil {
+						return fmt.Errorf("delete stale download files: %w", err)
+					}
+					if _, err := scope.Queries.RequeueDownloadNoMainVideoFromFileResolution(ctx, db.RequeueDownloadNoMainVideoFromFileResolutionParams{
+						ID: repository.UUIDToPG(downloadID), ExpectedVersion: expectedVersion,
+					}); err != nil {
+						if errors.Is(err, pgx.ErrNoRows) {
+							return NewError("state_conflict", "the download was modified by another request", ErrStateConflict, map[string]any{"expectedVersion": expectedVersion})
+						}
+						return fmt.Errorf("requeue download for no main video: %w", err)
+					}
+					schedule.Kind = appqueue.KindDownloadEnqueue
+					schedule.MaxAttempts = 5
+					schedule.Timeout = DownloadEnqueueTimeout
+					schedule.Payload = map[string]any{
+						"command": "retry", "defaultSeason": payload.SourceSeason, "defaultEpisode": payload.SourceEpisode, "singleEpisode": payload.SingleEpisode,
+					}
+				} else {
+					if _, err := scope.Queries.RequeueDownloadFileResolutionStage(ctx, db.RequeueDownloadFileResolutionStageParams{
+						ID: repository.UUIDToPG(downloadID), ExpectedVersion: expectedVersion,
+					}); err != nil {
+						return fmt.Errorf("requeue download file resolution: %w", err)
+					}
+					schedule.Kind = appqueue.KindDownloadSelectionApply
+					schedule.MaxAttempts = 5
+					schedule.Timeout = time.Minute
 				}
 			} else {
 				if _, err := scope.Queries.RequeueDownloadFileResolutionStage(ctx, db.RequeueDownloadFileResolutionStageParams{
@@ -541,6 +561,30 @@ func shouldRetryViaEnqueueForNoMainVideo(errorCode string, torrentHash *string, 
 		return false
 	}
 	return fileCount > 0
+}
+
+// hasReclassifiableVideo 使用当前 domain.ClassifyDownloadFiles 对持久化文件的 index/path/size 做确定性重分类，
+// 使用 acquisition payload 的 DefaultSeason/DefaultEpisode/SingleEpisode 约束。
+// 仅当分类结果含至少一个 MediaVideo 时才允许重新 enqueue， genuine extra-only/other-only 不应重新 fetch。
+func hasReclassifiableVideo(files []db.DownloadFile, options domain.FileSelectionOptions) (bool, error) {
+	downloadFiles := make([]domain.DownloadFile, 0, len(files))
+	for _, file := range files {
+		downloadFiles = append(downloadFiles, domain.DownloadFile{
+			Index:        int(file.FileIndex),
+			RelativePath: file.RelativePath,
+			SizeBytes:    file.SizeBytes,
+		})
+	}
+	classified, err := domain.ClassifyDownloadFiles(downloadFiles, options)
+	if err != nil {
+		return false, err
+	}
+	for _, file := range classified {
+		if file.Kind == domain.MediaVideo {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func optionalResolutionInt32(value *int) *int32 {

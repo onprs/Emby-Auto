@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -676,5 +677,267 @@ VALUES ($1, $2, 0, 'Show.S01E01.mkv', 2048, 'video', true, 1, 1)
 	}
 	if fileCount != 1 {
 		t.Fatalf("other file count = %d, want 1", fileCount)
+	}
+}
+
+func TestDownloadRetryNoMainVideoExtraOnlyKeepsSelectionApplyIntegration(t *testing.T) {
+	fixture := newRecoveryFixture(t)
+	commands := NewDownloadCommandWorkflow(fixture.transactor, fixture.scheduler)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	acquisitionID := fixture.createAcquisition(t, `{"sourceSeason":1,"sourceEpisode":1,"singleEpisode":true}`)
+	downloadID := uuid.New()
+	torrentHash := "dddddddddddddddddddddddddddddddddddddddd"
+	savePath := "/downloads/extra-only"
+	if _, err := fixture.pool.Exec(ctx, `
+INSERT INTO downloads (id, acquisition_id, torrent_hash, status, failure_stage, error_code, error_message, version, save_path, client_state, last_synced_at, file_resolution_source)
+VALUES ($1, $2, $3, 'failed', 'file_resolution', 'download_no_main_video', 'the torrent contains no selectable main video', 1, $4, 'metadata_ready', now(), 'deterministic')
+`, downloadID, acquisitionID, torrentHash, savePath); err != nil {
+		t.Fatal(err)
+	}
+	// 真实 extra-only 清单：当前分类器仍为 extra/other，不应重新 enqueue
+	extraFiles := []struct {
+		id       uuid.UUID
+		idx      int
+		relative string
+		kind     string
+	}{
+		{id: uuid.New(), idx: 0, relative: "Show S01 Trailer.mkv", kind: "extra"},
+		{id: uuid.New(), idx: 1, relative: "Show S01 NCOP.mkv", kind: "extra"},
+		{id: uuid.New(), idx: 2, relative: "notes.txt", kind: "other"},
+	}
+	for _, file := range extraFiles {
+		if _, err := fixture.pool.Exec(ctx, `
+INSERT INTO download_files (id, download_id, file_index, relative_path, size_bytes, media_kind, selected, source_season, source_episode)
+VALUES ($1, $2, $3, $4, 2048, $5, false, NULL, NULL)
+`, file.id, downloadID, file.idx, file.relative, file.kind); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 校验当前分类器确实无 video
+	checkFiles := []domain.DownloadFile{
+		{Index: 0, RelativePath: "Show S01 Trailer.mkv", SizeBytes: 2048},
+		{Index: 1, RelativePath: "Show S01 NCOP.mkv", SizeBytes: 2048},
+		{Index: 2, RelativePath: "notes.txt", SizeBytes: 100},
+	}
+	classified, err := domain.ClassifyDownloadFiles(checkFiles, domain.FileSelectionOptions{DefaultSeason: 1, DefaultEpisode: 1, SingleEpisode: true})
+	if err != nil {
+		t.Fatalf("classify check error = %v", err)
+	}
+	for _, c := range classified {
+		if c.Kind == domain.MediaVideo {
+			t.Fatalf("extra-only check classified %q as video, want extra/other", c.RelativePath)
+		}
+	}
+
+	view, operation, err := commands.Retry(ctx, downloadID, 1, "extra-only-"+downloadID.String(), fixture.actorID)
+	if err != nil {
+		t.Fatalf("Retry extra-only error = %v", err)
+	}
+	if view.Status != string(domain.DownloadFileResolutionPending) || view.Version != 2 || view.TorrentHash != torrentHash || len(view.Files) != 3 {
+		t.Fatalf("extra-only retry view = status %q version %d hash %q files %d, want file_resolution_pending/2/%s/3", view.Status, view.Version, view.TorrentHash, len(view.Files), torrentHash)
+	}
+	if operation.Kind != appqueue.KindDownloadSelectionApply || operation.MaxAttempts != 5 || operation.Timeout != time.Minute {
+		t.Fatalf("extra-only operation = kind %q attempts %d timeout %v, want %q/5/1m", operation.Kind, operation.MaxAttempts, operation.Timeout, appqueue.KindDownloadSelectionApply)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(operation.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload["command"] != "retry" || len(payload) != 1 {
+		t.Fatalf("extra-only payload = %#v, want only command retry", payload)
+	}
+	var dbHash *string
+	var dbSavePath *string
+	if err := fixture.pool.QueryRow(ctx, `SELECT torrent_hash, save_path FROM downloads WHERE id = $1`, downloadID).Scan(&dbHash, &dbSavePath); err != nil {
+		t.Fatal(err)
+	}
+	if dbHash == nil || *dbHash != torrentHash || dbSavePath == nil || *dbSavePath != savePath {
+		t.Fatalf("extra-only db hash/save = %v/%v, want %s/%s", dbHash, dbSavePath, torrentHash, savePath)
+	}
+	var remaining int
+	if err := fixture.pool.QueryRow(ctx, `SELECT count(*) FROM download_files WHERE download_id = $1`, downloadID).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 3 {
+		t.Fatalf("extra-only remaining files = %d, want 3", remaining)
+	}
+	var enqueuedOps int
+	if err := fixture.pool.QueryRow(ctx, `SELECT count(*) FROM operations WHERE resource_id = $1 AND kind = $2`, downloadID, appqueue.KindDownloadEnqueue).Scan(&enqueuedOps); err != nil {
+		t.Fatal(err)
+	}
+	if enqueuedOps != 0 {
+		t.Fatalf("extra-only should not create enqueue operation, got %d", enqueuedOps)
+	}
+}
+
+func TestDownloadRetryNoMainVideoClassificationErrorDoesNotLeakDeleteIntegration(t *testing.T) {
+	fixture := newRecoveryFixture(t)
+	commands := NewDownloadCommandWorkflow(fixture.transactor, fixture.scheduler)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	acquisitionID := fixture.createAcquisition(t, `{"sourceSeason":1,"sourceEpisode":1,"singleEpisode":true}`)
+	downloadID := uuid.New()
+	torrentHash := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	savePath := "/downloads/classify-error"
+	if _, err := fixture.pool.Exec(ctx, `
+INSERT INTO downloads (id, acquisition_id, torrent_hash, status, failure_stage, error_code, error_message, version, save_path, client_state, last_synced_at, file_resolution_source)
+VALUES ($1, $2, $3, 'failed', 'file_resolution', 'download_no_main_video', 'the torrent contains no selectable main video', 1, $4, 'metadata_ready', now(), 'deterministic')
+`, downloadID, acquisitionID, torrentHash, savePath); err != nil {
+		t.Fatal(err)
+	}
+	// 使用非法路径触发 Classify 错误
+	fileID := uuid.New()
+	if _, err := fixture.pool.Exec(ctx, `
+INSERT INTO download_files (id, download_id, file_index, relative_path, size_bytes, media_kind, selected, source_season, source_episode)
+VALUES ($1, $2, 0, '../evil.mkv', 1024, 'video', false, NULL, NULL)
+`, fileID, downloadID); err != nil {
+		t.Fatal(err)
+	}
+	key := "classify-error-" + downloadID.String()
+	_, _, err := commands.Retry(ctx, downloadID, 1, key, fixture.actorID)
+	if err == nil {
+		t.Fatal("Retry with classify error succeeded, want error")
+	}
+	var serviceErr *Error
+	if !errors.As(err, &serviceErr) || serviceErr.Code != "download_file_manifest_invalid" {
+		t.Fatalf("classify error = %#v, want download_file_manifest_invalid", err)
+	}
+	var dbStatus string
+	var dbVersion int
+	var dbHash *string
+	var dbSavePath *string
+	var dbFailureStage *string
+	var dbErrorCode *string
+	if err := fixture.pool.QueryRow(ctx, `SELECT status, version, torrent_hash, save_path, failure_stage, error_code FROM downloads WHERE id = $1`, downloadID).Scan(&dbStatus, &dbVersion, &dbHash, &dbSavePath, &dbFailureStage, &dbErrorCode); err != nil {
+		t.Fatal(err)
+	}
+	if dbStatus != "failed" || dbVersion != 1 || dbHash == nil || *dbHash != torrentHash || dbSavePath == nil || *dbSavePath != savePath || dbFailureStage == nil || *dbFailureStage != "file_resolution" || dbErrorCode == nil || *dbErrorCode != "download_no_main_video" {
+		t.Fatalf("classify error leaked mutation: status %q version %d hash %v save %v failure %v code %v", dbStatus, dbVersion, dbHash, dbSavePath, dbFailureStage, dbErrorCode)
+	}
+	var fileCount int
+	if err := fixture.pool.QueryRow(ctx, `SELECT count(*) FROM download_files WHERE download_id = $1`, downloadID).Scan(&fileCount); err != nil {
+		t.Fatal(err)
+	}
+	if fileCount != 1 {
+		t.Fatalf("classify error file count = %d, want 1", fileCount)
+	}
+	var opCount int
+	if err := fixture.pool.QueryRow(ctx, `SELECT count(*) FROM operations WHERE idempotency_key = $1`, key).Scan(&opCount); err != nil {
+		t.Fatal(err)
+	}
+	if opCount != 0 {
+		t.Fatalf("classify error created operation, want 0")
+	}
+}
+
+func TestCompleteEnqueueHardRejectCancelPerEnqueueIdempotencyIntegration(t *testing.T) {
+	fixture := newRecoveryFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	queries := db.New(fixture.pool)
+	workflow := NewDownloadWorkflow(queries, fixture.transactor, fixture.scheduler)
+
+	acquisitionID := fixture.createAcquisition(t, `{"sourceSeason":1,"sourceEpisode":1,"singleEpisode":true}`)
+	downloadID := uuid.New()
+	if _, err := fixture.pool.Exec(ctx, `INSERT INTO downloads (id, acquisition_id, status, version) VALUES ($1, $2, 'enqueue_pending', 1)`, downloadID, acquisitionID); err != nil {
+		t.Fatal(err)
+	}
+	hash := strings.ToLower("EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE")
+	savePath := "/downloads/hard-reject-" + downloadID.String()
+	files := []domain.ClassifiedDownloadFile{
+		{DownloadFile: domain.DownloadFile{Index: 0, RelativePath: "Trailer.mkv", SizeBytes: 1024}, Kind: domain.MediaExtra},
+		{DownloadFile: domain.DownloadFile{Index: 1, RelativePath: "notes.txt", SizeBytes: 100}, Kind: domain.MediaOther},
+	}
+	op1 := uuid.New()
+	completion1 := domain.DownloadEnqueueCompletion{
+		OperationID: op1, DownloadID: downloadID, TorrentHash: hash, SavePath: savePath, Files: files, Outcome: domain.DownloadManifestHardRejected, ReasonCode: "download_no_main_video",
+	}
+	if err := workflow.CompleteEnqueue(ctx, completion1); err != nil {
+		t.Fatalf("first CompleteEnqueue error = %v", err)
+	}
+	var cancelKey1 string
+	var cancelID1 uuid.UUID
+	if err := fixture.pool.QueryRow(ctx, `SELECT id, idempotency_key FROM operations WHERE resource_id = $1 AND kind = $2 ORDER BY created_at LIMIT 1`, downloadID, appqueue.KindDownloadCancel).Scan(&cancelID1, &cancelKey1); err != nil {
+		t.Fatal(err)
+	}
+	expectedKey1 := "download.cancel:hard-rejected:" + downloadID.String() + ":" + hash + ":" + op1.String()
+	if cancelKey1 != expectedKey1 {
+		t.Fatalf("first cancel key = %q, want %q", cancelKey1, expectedKey1)
+	}
+	var payload1 []byte
+	if err := fixture.pool.QueryRow(ctx, `SELECT payload FROM operations WHERE id = $1`, cancelID1).Scan(&payload1); err != nil {
+		t.Fatal(err)
+	}
+	var decoded1 map[string]any
+	if err := json.Unmarshal(payload1, &decoded1); err != nil || decoded1["deleteFiles"] != false {
+		t.Fatalf("first cancel payload = %s, want deleteFiles false", payload1)
+	}
+	// 同 OperationID 重放：不应重复创建
+	if err := workflow.CompleteEnqueue(ctx, completion1); err != nil {
+		t.Fatalf("replayed same operation CompleteEnqueue error = %v", err)
+	}
+	var cancelCountAfterReplay int
+	if err := fixture.pool.QueryRow(ctx, `SELECT count(*) FROM operations WHERE kind = $1 AND resource_id = $2`, appqueue.KindDownloadCancel, downloadID).Scan(&cancelCountAfterReplay); err != nil {
+		t.Fatal(err)
+	}
+	if cancelCountAfterReplay != 1 {
+		t.Fatalf("replay created duplicate cancel, count = %d, want 1", cancelCountAfterReplay)
+	}
+	// 重置为 enqueue_pending 以模拟 Retry 后重新 enqueue 同 hash 不同 OperationID
+	if _, err := fixture.pool.Exec(ctx, `UPDATE downloads SET status='enqueue_pending', torrent_hash=NULL, save_path=NULL, progress=0, client_state=NULL, last_synced_at=NULL, file_resolution_source=NULL, agent_resolution_id=NULL, failure_stage=NULL, error_code=NULL, error_message=NULL, version=version+1 WHERE id=$1`, downloadID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(ctx, `DELETE FROM download_files WHERE download_id=$1`, downloadID); err != nil {
+		t.Fatal(err)
+	}
+	op2 := uuid.New()
+	if op2 == op1 {
+		t.Fatal("op2 equals op1")
+	}
+	completion2 := domain.DownloadEnqueueCompletion{
+		OperationID: op2, DownloadID: downloadID, TorrentHash: hash, SavePath: savePath + "-2", Files: files, Outcome: domain.DownloadManifestHardRejected, ReasonCode: "download_no_main_video",
+	}
+	if err := workflow.CompleteEnqueue(ctx, completion2); err != nil {
+		t.Fatalf("second CompleteEnqueue with different operation error = %v", err)
+	}
+	rows, err := fixture.pool.Query(ctx, `SELECT id, idempotency_key FROM operations WHERE kind=$1 AND resource_id=$2 ORDER BY created_at`, appqueue.KindDownloadCancel, downloadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var keys []string
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		var key string
+		if err := rows.Scan(&id, &key); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+		keys = append(keys, key)
+	}
+	if rows.Err() != nil {
+		t.Fatal(rows.Err())
+	}
+	if len(keys) != 2 {
+		t.Fatalf("cancel keys count = %d, want 2", len(keys))
+	}
+	expectedKey2 := "download.cancel:hard-rejected:" + downloadID.String() + ":" + hash + ":" + op2.String()
+	if keys[0] != expectedKey1 || keys[1] != expectedKey2 {
+		t.Fatalf("cancel keys = %v, want [%q %q]", keys, expectedKey1, expectedKey2)
+	}
+	if ids[0] == ids[1] {
+		t.Fatalf("second cancel reused same operation id")
+	}
+	var payload2 []byte
+	if err := fixture.pool.QueryRow(ctx, `SELECT payload FROM operations WHERE id = $1`, ids[1]).Scan(&payload2); err != nil {
+		t.Fatal(err)
+	}
+	var decoded2 map[string]any
+	if err := json.Unmarshal(payload2, &decoded2); err != nil || decoded2["deleteFiles"] != false {
+		t.Fatalf("second cancel payload = %s, want deleteFiles false", payload2)
 	}
 }
