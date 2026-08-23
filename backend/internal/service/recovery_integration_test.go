@@ -778,7 +778,8 @@ func TestDownloadRetryNoMainVideoClassificationErrorDoesNotLeakDeleteIntegration
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	acquisitionID := fixture.createAcquisition(t, `{"sourceSeason":1,"sourceEpisode":1,"singleEpisode":true}`)
+	// 使用 SingleEpisode=true 但缺失 sourceEpisode 的非法 payload，使 Classify 因 DefaultEpisode 非正而失败，DB 仍可正常插入文件
+	acquisitionID := fixture.createAcquisition(t, `{"sourceSeason":1,"singleEpisode":true}`)
 	downloadID := uuid.New()
 	torrentHash := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 	savePath := "/downloads/classify-error"
@@ -788,11 +789,10 @@ VALUES ($1, $2, $3, 'failed', 'file_resolution', 'download_no_main_video', 'the 
 `, downloadID, acquisitionID, torrentHash, savePath); err != nil {
 		t.Fatal(err)
 	}
-	// 使用非法路径触发 Classify 错误
 	fileID := uuid.New()
 	if _, err := fixture.pool.Exec(ctx, `
 INSERT INTO download_files (id, download_id, file_index, relative_path, size_bytes, media_kind, selected, source_season, source_episode)
-VALUES ($1, $2, 0, '../evil.mkv', 1024, 'video', false, NULL, NULL)
+VALUES ($1, $2, 0, 'Show.S01E01.mkv', 1024, 'video', false, NULL, NULL)
 `, fileID, downloadID); err != nil {
 		t.Fatal(err)
 	}
@@ -852,6 +852,9 @@ func TestCompleteEnqueueHardRejectCancelPerEnqueueIdempotencyIntegration(t *test
 		{DownloadFile: domain.DownloadFile{Index: 1, RelativePath: "notes.txt", SizeBytes: 100}, Kind: domain.MediaOther},
 	}
 	op1 := uuid.New()
+	if _, err := fixture.pool.Exec(ctx, `INSERT INTO operations (id, kind, resource_type, resource_id, idempotency_key, status, max_attempts, timeout_seconds) VALUES ($1, $2, $3, $4, $5, 'running', 5, 180)`, op1, appqueue.KindDownloadEnqueue, "download", downloadID, "test-enqueue-"+op1.String()); err != nil {
+		t.Fatal(err)
+	}
 	completion1 := domain.DownloadEnqueueCompletion{
 		OperationID: op1, DownloadID: downloadID, TorrentHash: hash, SavePath: savePath, Files: files, Outcome: domain.DownloadManifestHardRejected, ReasonCode: "download_no_main_video",
 	}
@@ -896,6 +899,9 @@ func TestCompleteEnqueueHardRejectCancelPerEnqueueIdempotencyIntegration(t *test
 	op2 := uuid.New()
 	if op2 == op1 {
 		t.Fatal("op2 equals op1")
+	}
+	if _, err := fixture.pool.Exec(ctx, `INSERT INTO operations (id, kind, resource_type, resource_id, idempotency_key, status, max_attempts, timeout_seconds) VALUES ($1, $2, $3, $4, $5, 'running', 5, 180)`, op2, appqueue.KindDownloadEnqueue, "download", downloadID, "test-enqueue-"+op2.String()); err != nil {
+		t.Fatal(err)
 	}
 	completion2 := domain.DownloadEnqueueCompletion{
 		OperationID: op2, DownloadID: downloadID, TorrentHash: hash, SavePath: savePath + "-2", Files: files, Outcome: domain.DownloadManifestHardRejected, ReasonCode: "download_no_main_video",
