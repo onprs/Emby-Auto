@@ -10,7 +10,6 @@ import { CandidateTable } from '@/features/searches/candidate-selection';
 import { server } from '@/test/msw-server';
 import { createTestQueryClient, renderWithProviders } from '@/test/render';
 import type { Acquisition, ReleaseCandidate, SearchRunSummary } from '@/api/generated/types.gen';
-import { friendlyError } from '@/lib/presentation';
 
 const SEARCH_ID = 'aaaaaaaa-0000-4000-8000-000000000001';
 const SEARCH_ID_2 = 'aaaaaaaa-0000-4000-8000-000000000002';
@@ -493,7 +492,7 @@ describe('Candidate selection', () => {
     expect(innerCards.length).toBe(0);
   });
 
-  it('creates acquisition and shows conflict error, with bounded invalidation', async () => {
+  it('shows friendly error for state_conflict', async () => {
     server.use(
       http.get('*/api/v1/searches', () => HttpResponse.json({ items: [], nextCursor: null })),
       http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [] })),
@@ -510,8 +509,7 @@ describe('Candidate selection', () => {
     await screen.findByText('Fixture Series');
     await userEvent.click(screen.getByText('Fixture Series'));
     await userEvent.click(screen.getByRole('button', { name: '创建获取并下载' }));
-    const friendly = friendlyError('state_conflict', 'already selected');
-    await screen.findByText(friendly);
+    await screen.findByText('任务状态已经变化，请刷新后再试。');
     expect(screen.queryByText('already selected')).not.toBeInTheDocument();
   });
 
@@ -540,7 +538,6 @@ describe('Candidate selection season pack', () => {
     expect(screen.getByLabelText('资源对应第几季')).toBeInTheDocument();
     expect(screen.getByLabelText('资源对应第几集')).toBeInTheDocument();
     expect(screen.getByLabelText('类型')).toBeInTheDocument();
-    // layout: single shows 3 columns
     const gridSingle = document.querySelector('.grid.gap-4');
     expect(gridSingle?.className).toMatch(/sm:grid-cols-3/);
     const episodeInput = screen.getByLabelText('资源对应第几集') as HTMLInputElement;
@@ -602,7 +599,6 @@ describe('Candidate selection season pack', () => {
     await userEvent.click(screen.getByRole('button', { name: '查询' }));
     await screen.findByText('Fixture Series');
     await userEvent.click(screen.getByText('Fixture Series'));
-    // default is single, episode 1
     await userEvent.click(screen.getByRole('button', { name: '创建获取并下载' }));
     await waitFor(() => expect(captured).not.toBeNull());
     expect(captured).toMatchObject({ candidateId: CANDIDATE_NEW, mediaType: 'episode', sourceSeason: 1, sourceEpisode: 1, singleEpisode: true });
@@ -662,34 +658,10 @@ describe('Candidate selection season pack', () => {
     await userEvent.click(button);
     await waitFor(() => expect(button.hasAttribute('disabled')).toBe(true));
     expect(postCount).toBe(1);
-    // second click while pending should not send another request
     await userEvent.click(button).catch(() => {});
     expect(postCount).toBe(1);
-    resolvePost(HttpResponse.json({ acquisitionId: ACQ_ID, downloadId: 'dl-1', operationId: 'op-1', status: 'queued' }, { status: 202 }));
-    // trigger resolution by resolving pending then letting handler complete: we already waited pending, now handler returns 202 directly, but we used pending barrier
-    // To ensure navigation, we need to resolve with actual response; simpler: resolve pending with undefined and let handler continue
-    // The handler already awaits pending, then returns 202, so router will navigate after pending resolves
+    resolvePost(undefined);
     await waitFor(() => expect(router.state.location.pathname).toBe(`/acquisitions/${ACQ_ID}`));
     expect(postCount).toBe(1);
-  });
-
-  it('shows friendlyError for 409 state_conflict instead of raw English', async () => {
-    server.use(
-      http.get('*/api/v1/tmdb/series/search', () => HttpResponse.json({ items: [{ tmdbSeriesId: 123, name: 'Fixture Series', originalName: 'Fixture Series', firstAirDate: '2024-01-01' }] })),
-      http.post('*/api/v1/acquisitions', async () => HttpResponse.json({ code: 'state_conflict', message: 'already selected', details: {} }, { status: 409 })),
-    );
-    const candidates = [candidateFixture({ id: CANDIDATE_NEW, title: '可创建候选 S01E01 [1080p]' })];
-    renderWithProviders(<CandidateTable candidates={candidates} emptyLabel="暂无候选" />, { routePath: '/searches', initialEntry: '/searches' });
-    await userEvent.click((await screen.findAllByRole('button', { name: '选择' }))[0]);
-    await screen.findByText('创建获取');
-    const input = await screen.findByLabelText('TMDb 作品');
-    await userEvent.type(input, 'Fixture');
-    await userEvent.click(screen.getByRole('button', { name: '查询' }));
-    await screen.findByText('Fixture Series');
-    await userEvent.click(screen.getByText('Fixture Series'));
-    await userEvent.click(screen.getByRole('button', { name: '创建获取并下载' }));
-    const friendly = friendlyError('state_conflict', 'already selected');
-    await screen.findByText(friendly);
-    expect(screen.queryByText('already selected')).not.toBeInTheDocument();
   });
 });
