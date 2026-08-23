@@ -86,7 +86,7 @@ func (workflow *DownloadCommandWorkflow) Retry(ctx context.Context, downloadID u
 			}
 			schedule.Kind = appqueue.KindDownloadEnqueue
 			schedule.MaxAttempts = 5
-			schedule.Timeout = 2 * time.Minute
+			schedule.Timeout = DownloadEnqueueTimeout
 			schedule.Payload = map[string]any{
 				"command": "retry", "defaultSeason": payload.SourceSeason, "defaultEpisode": payload.SourceEpisode, "singleEpisode": payload.SingleEpisode,
 			}

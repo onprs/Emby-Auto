@@ -1226,7 +1226,7 @@ func (service *AgentResolutionService) applyRSSReleaseAdjudication(
 			}
 			scheduled, err := service.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
 				Kind: appqueue.KindDownloadEnqueue, ResourceType: "download", ResourceID: repository.UUIDFromPG(download.ID),
-				IdempotencyKey: "download.enqueue:" + repository.UUIDFromPG(download.ID).String(), MaxAttempts: 5, Timeout: 2 * time.Minute,
+				IdempotencyKey: "download.enqueue:" + repository.UUIDFromPG(download.ID).String(), MaxAttempts: 5, Timeout: DownloadEnqueueTimeout,
 				Payload: map[string]any{"defaultSeason": *item.SourceSeason, "defaultEpisode": *item.SourceEpisode, "singleEpisode": true},
 			})
 			if err != nil {
@@ -1380,7 +1380,7 @@ func (service *AgentResolutionService) applyRSSCoordinate(
 			scheduled, err := service.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
 				Kind: appqueue.KindDownloadEnqueue, ResourceType: "download", ResourceID: repository.UUIDFromPG(download.ID),
 				IdempotencyKey: "download.enqueue:" + repository.UUIDFromPG(download.ID).String(),
-				MaxAttempts:    5, Timeout: 2 * time.Minute,
+				MaxAttempts:    5, Timeout: DownloadEnqueueTimeout,
 				Payload: map[string]any{"defaultSeason": proposal.SourceSeason, "defaultEpisode": proposal.SourceEpisode, "singleEpisode": true},
 			})
 			if err != nil {
