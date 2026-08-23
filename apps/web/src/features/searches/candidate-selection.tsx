@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from '@tanstack/react-router';
 
 import { ApiFailure } from '@/api/app-client';
 import type { ReleaseCandidate } from '@/api/generated/types.gen';
+import { friendlyError } from '@/lib/presentation';
 import { appNavigationState, currentAppLocation } from '@/app/navigation-context';
 import { selectCandidate } from '@/features/searches/api';
 import { TMDbMoviePicker, type MovieSelection } from '@/features/tmdb/movie-picker';
@@ -143,7 +144,7 @@ function CandidateForm({ candidate, onAcquired }: { candidate: ReleaseCandidate;
         tmdbSeriesId: series.tmdbSeriesId,
         seriesTitle: series.title,
         sourceSeason: Number(sourceSeason),
-        sourceEpisode: Number(sourceEpisode),
+        ...(singleEpisode ? { sourceEpisode: Number(sourceEpisode) } : {}),
         singleEpisode,
       });
     },
@@ -154,18 +155,20 @@ function CandidateForm({ candidate, onAcquired }: { candidate: ReleaseCandidate;
       if (onAcquired) {
         onAcquired();
       }
-      if (!onAcquired) {
-        void navigate({
-          to: '/acquisitions/$acquisitionId',
-          params: { acquisitionId: result.acquisitionId },
-          search: { from: source },
-          state: appNavigationState(source),
-        });
-      }
+      void navigate({
+        to: '/acquisitions/$acquisitionId',
+        params: { acquisitionId: result.acquisitionId },
+        search: { from: source },
+        state: appNavigationState(source),
+      });
     },
     onError: (cause) => {
       if (cause instanceof ApiFailure && cause.isConflict) {
         holder.reset();
+      }
+      if (cause instanceof ApiFailure) {
+        setError(friendlyError(cause.code, cause.message));
+        return;
       }
       setError(cause instanceof Error ? cause.message : '创建获取失败');
     },
@@ -194,15 +197,17 @@ function CandidateForm({ candidate, onAcquired }: { candidate: ReleaseCandidate;
       </div>
       {mediaType === 'movie' ? <TMDbMoviePicker value={movie} onChange={setMovie} /> : <TMDbSeriesPicker value={series} onChange={setSeries} />}
       {mediaType === 'episode' ? (
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className={`grid gap-4 ${singleEpisode ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
           <div className="space-y-2">
             <Label htmlFor={`season-${candidate.id}`}>资源对应第几季</Label>
             <Input id={`season-${candidate.id}`} type="number" min={1} value={sourceSeason} onChange={(event) => setSourceSeason(event.target.value)} />
           </div>
-          <div className="space-y-2">
-            <Label htmlFor={`episode-${candidate.id}`}>资源对应第几集</Label>
-            <Input id={`episode-${candidate.id}`} type="number" min={0} value={sourceEpisode} onChange={(event) => setSourceEpisode(event.target.value)} />
-          </div>
+          {singleEpisode ? (
+            <div className="space-y-2">
+              <Label htmlFor={`episode-${candidate.id}`}>资源对应第几集</Label>
+              <Input id={`episode-${candidate.id}`} type="number" min={1} value={sourceEpisode} onChange={(event) => setSourceEpisode(event.target.value)} />
+            </div>
+          ) : null}
           <div className="space-y-2">
             <Label htmlFor={`single-${candidate.id}`}>类型</Label>
             <Select
