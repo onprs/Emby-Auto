@@ -12,10 +12,33 @@ describe('canRetryTask', () => {
   it('allows failed tasks with a failure stage', () => {
     expect(canRetryTask({ state: 'failed', failureStage: 'video', cleanup: undefined })).toBe(true);
   });
-  it('allows imported tasks with failed cleanup', () => {
-    expect(canRetryTask({ state: 'imported', failureStage: undefined, cleanup: { status: 'failed' } as never })).toBe(true);
+  it('allows failed + video failed + no failureStage', () => {
+    expect(canRetryTask({ state: 'failed', failureStage: undefined, cleanup: undefined, videoState: 'failed', subtitleState: 'ass_ready' })).toBe(true);
   });
-  it('rejects running and plain failed tasks', () => {
+  it('allows failed + subtitle failed + no failureStage', () => {
+    expect(canRetryTask({ state: 'failed', failureStage: undefined, cleanup: undefined, videoState: 'video_ready', subtitleState: 'failed' })).toBe(true);
+  });
+  it('allows processing + one failed (video)', () => {
+    expect(canRetryTask({ state: 'processing', failureStage: undefined, cleanup: undefined, videoState: 'failed', subtitleState: 'ass_ready' })).toBe(true);
+  });
+  it('allows processing + one failed (subtitle)', () => {
+    expect(canRetryTask({ state: 'processing', failureStage: undefined, cleanup: undefined, videoState: 'video_ready', subtitleState: 'failed' })).toBe(true);
+  });
+  it('rejects processing + both ready/no failed', () => {
+    expect(canRetryTask({ state: 'processing', failureStage: undefined, cleanup: undefined, videoState: 'video_ready', subtitleState: 'ass_ready' })).toBe(false);
+    expect(canRetryTask({ state: 'processing', failureStage: undefined, cleanup: undefined, videoState: 'transcode_queued', subtitleState: 'subtitle_queued' })).toBe(false);
+  });
+  it('keeps legacy failed/finalize behavior', () => {
+    expect(canRetryTask({ state: 'failed', failureStage: 'finalize', cleanup: undefined, videoState: 'video_ready', subtitleState: 'ass_ready' })).toBe(true);
+    expect(canRetryTask({ state: 'failed', failureStage: 'import', cleanup: undefined, videoState: 'video_ready', subtitleState: 'ass_ready' })).toBe(true);
+    expect(canRetryTask({ state: 'failed', failureStage: undefined, cleanup: undefined, videoState: 'video_ready', subtitleState: 'ass_ready' })).toBe(false);
+  });
+  it('allows imported tasks with failed cleanup and rejects other imported', () => {
+    expect(canRetryTask({ state: 'imported', failureStage: undefined, cleanup: { status: 'failed' } as never })).toBe(true);
+    expect(canRetryTask({ state: 'imported', failureStage: undefined, cleanup: { status: 'completed' } as never })).toBe(false);
+    expect(canRetryTask({ state: 'imported', failureStage: undefined, cleanup: undefined })).toBe(false);
+  });
+  it('rejects plain failed without stage or branch', () => {
     expect(canRetryTask({ state: 'processing', failureStage: undefined, cleanup: undefined })).toBe(false);
     expect(canRetryTask({ state: 'failed', failureStage: undefined, cleanup: undefined })).toBe(false);
   });

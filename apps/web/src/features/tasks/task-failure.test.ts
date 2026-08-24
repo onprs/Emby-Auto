@@ -243,6 +243,112 @@ describe('acquisitionFailureInfo', () => {
   });
 });
 
+describe('taskFailureInfo dual branch', () => {
+  it('shows both video and subtitle failures together with distinct reasons', () => {
+    const info = taskFailureInfo(task({
+      state: 'failed',
+      videoState: 'failed',
+      subtitleState: 'failed',
+      failureStage: 'video',
+      errorCode: 'ffmpeg_transcode_failed',
+      errorMessage: 'video failed',
+      operations: [
+        {
+          id: 'aaaaaaa1-aaaa-aaaa-aaaa-aaaaaaaaaaa1',
+          kind: 'transcode.run',
+          status: 'failed',
+          maxAttempts: 3,
+          attemptCount: 1,
+          errorCode: 'ffmpeg_transcode_failed',
+          errorMessage: 'video encode error',
+          updatedAt: '2026-07-25T02:00:00Z',
+        },
+        {
+          id: 'bbbbbbb2-bbbb-bbbb-bbbb-bbbbbbbbbbb2',
+          kind: 'subtitle.prepare',
+          status: 'failed',
+          maxAttempts: 3,
+          attemptCount: 2,
+          errorCode: 'ffmpeg_subtitle_failed',
+          errorMessage: 'subtitle convert error',
+          updatedAt: '2026-07-25T02:30:00Z',
+        },
+      ],
+    }));
+    expect(info?.summary).toContain('视频和字幕处理失败');
+    expect(info?.stageLabel).toBe('视频和字幕');
+    expect(info?.branches).toHaveLength(2);
+    expect(info?.branches?.[0].stage).toBe('video');
+    expect(info?.branches?.[1].stage).toBe('subtitle');
+    expect(info?.branches?.[0].latestOperationKind).toBe('transcode.run');
+    expect(info?.branches?.[1].latestOperationKind).toBe('subtitle.prepare');
+    expect(info?.branches?.[0].detail).toContain('FFmpeg');
+    expect(info?.branches?.[1].detail).toContain('字幕');
+    expect(info?.branches?.[0].latestOperationId).toBe('aaaaaaa1-aaaa-aaaa-aaaa-aaaaaaaaaaa1');
+    expect(info?.branches?.[1].latestOperationId).toBe('bbbbbbb2-bbbb-bbbb-bbbb-bbbbbbbbbbb2');
+    expect(info?.canRetry).toBe(true);
+    expect(info?.retryLabel).toBe('重试任务');
+    // 技术详情仍需 sanitize，且包含两个分支
+    expect(info?.technicalDetails).not.toContain('C:\\media');
+    expect(info?.branches?.[0].technicalDetails).not.toContain('C:\\media');
+  });
+
+  it('keeps single video branch unchanged', () => {
+    const info = taskFailureInfo(task({
+      videoState: 'failed',
+      subtitleState: 'ass_ready',
+      failureStage: 'video',
+      operations: [{
+        id: 'ccccccc3-cccc-cccc-cccc-ccccccccccc3',
+        kind: 'transcode.run',
+        status: 'failed',
+        maxAttempts: 3,
+        attemptCount: 1,
+        errorCode: 'ffmpeg_transcode_failed',
+        errorMessage: 'video error',
+        updatedAt: '2026-07-25T02:00:00Z',
+      }],
+    }));
+    expect(info?.summary).toBe('视频转码失败：FFmpeg 未能完成视频转换');
+    expect(info?.branches).toBeUndefined();
+    expect(info?.stage).toBe('video');
+  });
+
+  it('handles processing stuck with dual failed via same dual path', () => {
+    const info = taskFailureInfo(task({
+      state: 'processing',
+      videoState: 'failed',
+      subtitleState: 'failed',
+      failureStage: undefined,
+      operations: [
+        {
+          id: 'ddddddd4-dddd-dddd-dddd-ddddddddddd4',
+          kind: 'transcode.run',
+          status: 'failed',
+          maxAttempts: 3,
+          attemptCount: 1,
+          errorCode: 'ffmpeg_transcode_failed',
+          errorMessage: 'video error',
+          updatedAt: '2026-07-25T02:00:00Z',
+        },
+        {
+          id: 'eeeeeee5-eeee-eeee-eeee-eeeeeeeeeee5',
+          kind: 'subtitle.prepare',
+          status: 'failed',
+          maxAttempts: 3,
+          attemptCount: 1,
+          errorCode: 'ffmpeg_subtitle_failed',
+          errorMessage: 'subtitle error',
+          updatedAt: '2026-07-25T02:00:00Z',
+        },
+      ],
+    }));
+    expect(info?.summary).toContain('视频和字幕处理失败');
+    expect(info?.branches).toHaveLength(2);
+    expect(info?.canRetry).toBe(true);
+  });
+});
+
 describe('sanitizeTechnicalDetails', () => {
   it('removes credentials, auth headers, cookies, and absolute server paths', () => {
     const raw = 'Authorization: Bearer abc.def.ghi password=hunter2 Cookie: sid=secret {"apiKey":"json-secret"} C:\\media\\downloads\\show\\episode01.mkv /srv/emby/work/subtitle.ass';
