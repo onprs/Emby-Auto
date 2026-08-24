@@ -16,7 +16,7 @@ const (
 	AgentCapabilityDownloadFileResolution   AgentCapability = "download_file_resolution"
 	AgentCapabilityCatalogCandidate         AgentCapability = "catalog_candidate"
 	AgentCapabilityEpisodeMapping           AgentCapability = "episode_mapping"
-	AgentCapabilitySubtitleVideoMatch       AgentCapability = "subtitle_video_match"
+	AgentCapabilitySubtitleVideoMatch      AgentCapability = "subtitle_video_match"
 )
 
 type AgentResolutionStatus string
@@ -128,10 +128,10 @@ type SubtitleCandidateSelection struct {
 }
 
 type AgentSubtitleVideoMatchProposal struct {
-	TaskID        uuid.UUID                  `json:"taskId"`
-	Selected      SubtitleCandidateSelection `json:"selected"`
-	EvidenceCodes []string                   `json:"evidenceCodes"`
-	Decision      string                     `json:"decision"`
+	TaskID          uuid.UUID                  `json:"taskId"`
+	Selected        SubtitleCandidateSelection `json:"selected"`
+	EvidenceCodes   []string                   `json:"evidenceCodes"`
+	Decision        string                     `json:"decision"`
 }
 
 type AgentResolution struct {

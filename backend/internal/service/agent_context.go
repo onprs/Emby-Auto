@@ -41,13 +41,13 @@ type agentContextSnapshot struct {
 }
 
 type scopedSubtitleVideoMatch struct {
-	TaskID        uuid.UUID                 `json:"taskId"`
-	SeriesTitle   string                    `json:"seriesTitle"`
-	TargetSeason  int                       `json:"targetSeason"`
-	TargetEpisode int                       `json:"targetEpisode"`
-	TargetTitle   string                    `json:"targetTitle"`
-	VideoPath     string                    `json:"videoPath"`
-	Candidates    []scopedSubtitleCandidate `json:"candidates"`
+	TaskID          uuid.UUID                 `json:"taskId"`
+	SeriesTitle     string                    `json:"seriesTitle"`
+	TargetSeason    int                       `json:"targetSeason"`
+	TargetEpisode   int                       `json:"targetEpisode"`
+	TargetTitle     string                    `json:"targetTitle"`
+	VideoPath       string                    `json:"videoPath"`
+	Candidates      []scopedSubtitleCandidate `json:"candidates"`
 }
 
 type scopedSubtitleCandidate struct {
@@ -826,16 +826,16 @@ func (service *AgentResolutionService) buildSubtitleVideoMatchAgentContext(ctx c
 		TaskID: repository.UUIDFromPG(row.TaskID), SeriesTitle: row.SeriesTitle,
 		TargetSeason:  intFromInt32(row.TargetSeasonNumber),
 		TargetEpisode: intFromInt32(row.TargetEpisodeNumber),
-		TargetTitle:   stringValue(row.TargetEpisodeTitle), VideoPath: videoPath, Candidates: candidates,
+		TargetTitle: stringValue(row.TargetEpisodeTitle), VideoPath: videoPath, Candidates: candidates,
 	}
 	resourceJSON, _ := json.Marshal(struct {
-		TaskID        uuid.UUID                 `json:"taskId"`
-		SeriesTitle   string                    `json:"seriesTitle"`
-		TargetSeason  int                       `json:"targetSeason"`
-		TargetEpisode int                       `json:"targetEpisode"`
-		TargetTitle   string                    `json:"targetTitle"`
-		VideoPath     string                    `json:"videoPath"`
-		Candidates    []scopedSubtitleCandidate `json:"candidates"`
+		TaskID        uuid.UUID                   `json:"taskId"`
+		SeriesTitle   string                      `json:"seriesTitle"`
+		TargetSeason  int                         `json:"targetSeason"`
+		TargetEpisode int                         `json:"targetEpisode"`
+		TargetTitle   string                      `json:"targetTitle"`
+		VideoPath     string                      `json:"videoPath"`
+		Candidates    []scopedSubtitleCandidate   `json:"candidates"`
 	}{match.TaskID, match.SeriesTitle, match.TargetSeason, match.TargetEpisode, match.TargetTitle, match.VideoPath, candidates})
 	fingerprintInput, _ := json.Marshal(struct {
 		Resource any `json:"resource"`

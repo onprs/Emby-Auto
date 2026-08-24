@@ -415,4 +415,74 @@ describe('AcquisitionsPage task retry actions', () => {
     expect(await screen.findByRole('menuitem', { name: '重试任务' })).toBeInTheDocument();
     expect(screen.queryByRole('menuitem', { name: '停止处理' })).not.toBeInTheDocument();
   });
+  it('shows merged summary for dual failed with empty failureStage and single retry', async () => {
+    const item = taskAcquisition({
+      tasks: [{
+        id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaab',
+        mediaType: 'episode',
+        downloadId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbc',
+        state: 'cancelled',
+        videoState: 'failed',
+        subtitleState: 'failed',
+        canRetry: true,
+        failureStage: undefined,
+        errorCode: 'ffmpeg_transcode_failed',
+        errorMessage: 'video failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      } as never],
+    });
+    server.use(http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })));
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    const summaries = await screen.findAllByText('视频和字幕处理失败');
+    expect(summaries.length).toBeGreaterThan(0);
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    const retryItems = await screen.findAllByRole('menuitem', { name: '重试任务' });
+    expect(retryItems).toHaveLength(1);
+    expect(screen.queryByRole('menuitem', { name: '停止处理' })).not.toBeInTheDocument();
+  });
+  it('keeps single video failed summary unchanged', async () => {
+    const item = taskAcquisition({
+      tasks: [{
+        id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaac',
+        mediaType: 'episode',
+        downloadId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbd',
+        state: 'failed',
+        videoState: 'failed',
+        subtitleState: 'ass_ready',
+        canRetry: true,
+        failureStage: undefined,
+        errorCode: 'ffmpeg_transcode_failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      } as never],
+    });
+    server.use(http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })));
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    const summaries = await screen.findAllByText(/视频转码失败/);
+    expect(summaries.length).toBeGreaterThan(0);
+    expect(screen.queryByText('视频和字幕处理失败')).not.toBeInTheDocument();
+  });
+  it('keeps single subtitle failed summary unchanged', async () => {
+    const item = taskAcquisition({
+      tasks: [{
+        id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaad',
+        mediaType: 'episode',
+        downloadId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbe',
+        state: 'failed',
+        videoState: 'video_ready',
+        subtitleState: 'failed',
+        canRetry: true,
+        failureStage: undefined,
+        errorCode: 'ffmpeg_subtitle_failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      } as never],
+    });
+    server.use(http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })));
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    const summaries = await screen.findAllByText(/字幕处理失败/);
+    expect(summaries.length).toBeGreaterThan(0);
+    expect(screen.queryByText('视频和字幕处理失败')).not.toBeInTheDocument();
+  });
 });

@@ -392,6 +392,110 @@ describe('taskFailureInfo cancelled', () => {
     }));
     expect(info).toBeNull();
   });
+  it('obeys backend canRetry for same cancelled branch', () => {
+    const withRetry = taskFailureInfo(task({
+      state: 'cancelled',
+      videoState: 'failed',
+      subtitleState: 'ass_ready',
+      failureStage: undefined,
+      actions: { canRetry: true, canCancel: false, canReview: false, canImport: false },
+      operations: [{
+        id: 'aaaaaaa6-aaaa-aaaa-aaaa-aaaaaaaaaaa6',
+        kind: 'transcode.run',
+        status: 'failed',
+        maxAttempts: 3,
+        attemptCount: 1,
+        errorCode: 'ffmpeg_transcode_failed',
+        errorMessage: 'video failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      }],
+    }));
+    const withoutRetry = taskFailureInfo(task({
+      state: 'cancelled',
+      videoState: 'failed',
+      subtitleState: 'ass_ready',
+      failureStage: undefined,
+      actions: { canRetry: false, canCancel: false, canReview: false, canImport: false },
+      operations: [{
+        id: 'aaaaaaa6-aaaa-aaaa-aaaa-aaaaaaaaaaa6',
+        kind: 'transcode.run',
+        status: 'failed',
+        maxAttempts: 3,
+        attemptCount: 1,
+        errorCode: 'ffmpeg_transcode_failed',
+        errorMessage: 'video failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      }],
+    }));
+    expect(withRetry).not.toBeNull();
+    expect(withRetry?.canRetry).toBe(true);
+    expect(withRetry?.retryLabel).toBe('重试任务');
+    expect(withoutRetry).toBeNull();
+  });
+  it('hides dual failed cancelled when backend denies retry', () => {
+    const denied = taskFailureInfo(task({
+      state: 'cancelled',
+      videoState: 'failed',
+      subtitleState: 'failed',
+      failureStage: undefined,
+      actions: { canRetry: false, canCancel: false, canReview: false, canImport: false },
+      operations: [
+        {
+          id: 'aaaaaaa1-aaaa-aaaa-aaaa-aaaaaaaaaaa1',
+          kind: 'transcode.run',
+          status: 'failed',
+          maxAttempts: 3,
+          attemptCount: 1,
+          errorCode: 'ffmpeg_transcode_failed',
+          errorMessage: 'video encode error',
+          updatedAt: '2026-07-25T02:00:00Z',
+        },
+        {
+          id: 'bbbbbbb2-bbbb-bbbb-bbbb-bbbbbbbbbbb2',
+          kind: 'subtitle.prepare',
+          status: 'failed',
+          maxAttempts: 3,
+          attemptCount: 1,
+          errorCode: 'ffmpeg_subtitle_failed',
+          errorMessage: 'subtitle error',
+          updatedAt: '2026-07-25T02:00:00Z',
+        },
+      ],
+    }));
+    const allowed = taskFailureInfo(task({
+      state: 'cancelled',
+      videoState: 'failed',
+      subtitleState: 'failed',
+      failureStage: undefined,
+      actions: { canRetry: true, canCancel: false, canReview: false, canImport: false },
+      operations: [
+        {
+          id: 'aaaaaaa1-aaaa-aaaa-aaaa-aaaaaaaaaaa1',
+          kind: 'transcode.run',
+          status: 'failed',
+          maxAttempts: 3,
+          attemptCount: 1,
+          errorCode: 'ffmpeg_transcode_failed',
+          errorMessage: 'video encode error',
+          updatedAt: '2026-07-25T02:00:00Z',
+        },
+        {
+          id: 'bbbbbbb2-bbbb-bbbb-bbbb-bbbbbbbbbbb2',
+          kind: 'subtitle.prepare',
+          status: 'failed',
+          maxAttempts: 3,
+          attemptCount: 1,
+          errorCode: 'ffmpeg_subtitle_failed',
+          errorMessage: 'subtitle error',
+          updatedAt: '2026-07-25T02:00:00Z',
+        },
+      ],
+    }));
+    expect(denied).toBeNull();
+    expect(allowed).not.toBeNull();
+    expect(allowed?.summary).toContain('视频和字幕处理失败');
+    expect(allowed?.stageLabel).toBe('视频和字幕');
+  });
 });
 
 describe('acquisitionFailureInfo with canRetry', () => {
@@ -449,6 +553,66 @@ describe('acquisitionFailureInfo with canRetry', () => {
     }));
     expect(info?.canRetry).toBe(true);
     expect(info?.stage).toBe('video');
+  });
+  it('shows merged video and subtitle failure for acquisition dual with empty failureStage', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      tasks: [{
+        id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+        mediaType: 'episode',
+        downloadId: '33333333-3333-3333-3333-333333333333',
+        state: 'cancelled',
+        videoState: 'failed',
+        subtitleState: 'failed',
+        canRetry: true,
+        failureStage: undefined,
+        errorCode: 'ffmpeg_transcode_failed',
+        errorMessage: 'video failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      } as never],
+    }));
+    expect(info?.summary).toBe('视频和字幕处理失败');
+    expect(info?.stageLabel).toBe('视频和字幕');
+    expect(info?.canRetry).toBe(true);
+    expect(info?.retryKind).toBe('task');
+    expect(info?.retryLabel).toBe('重试任务');
+    expect(info?.branches).toBeUndefined();
+    expect(info?.technicalDetails).not.toContain('ffmpeg_transcode_failed');
+  });
+  it('keeps single video failure unchanged for acquisition', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      tasks: [{
+        id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+        mediaType: 'episode',
+        downloadId: '33333333-3333-3333-3333-333333333333',
+        state: 'failed',
+        videoState: 'failed',
+        subtitleState: 'ass_ready',
+        canRetry: true,
+        failureStage: undefined,
+        errorCode: 'ffmpeg_transcode_failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      } as never],
+    }));
+    expect(info?.summary).toContain('视频转码失败');
+    expect(info?.stage).toBe('video');
+  });
+  it('keeps single subtitle failure unchanged for acquisition', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      tasks: [{
+        id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+        mediaType: 'episode',
+        downloadId: '33333333-3333-3333-3333-333333333333',
+        state: 'failed',
+        videoState: 'video_ready',
+        subtitleState: 'failed',
+        canRetry: true,
+        failureStage: undefined,
+        errorCode: 'ffmpeg_subtitle_failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      } as never],
+    }));
+    expect(info?.summary).toContain('字幕处理失败');
+    expect(info?.stage).toBe('subtitle');
   });
 });
 

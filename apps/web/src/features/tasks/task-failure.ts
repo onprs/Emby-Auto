@@ -561,11 +561,7 @@ export function taskFailureInfo(task: Task): TaskFailureInfo | null {
   }
   const isFailed = task.state === 'failed';
   const isProcessingStuck = task.state === 'processing' && (task.videoState === 'failed' || task.subtitleState === 'failed');
-  const isCancelledRecoverable =
-    task.state === 'cancelled' &&
-    (task.videoState === 'failed' || task.subtitleState === 'failed') &&
-    (task.videoState === 'failed' || task.videoState === 'video_ready') &&
-    (task.subtitleState === 'failed' || task.subtitleState === 'ass_ready');
+  const isCancelledRecoverable = task.state === 'cancelled' && task.actions.canRetry;
   if (!isFailed && !isProcessingStuck && !isCancelledRecoverable) {
     return null;
   }
@@ -672,15 +668,31 @@ export function acquisitionFailureInfo(item: Acquisition): TaskFailureInfo | nul
   // 优先使用后端计算的 canRetry 能力，覆盖 failed/processing/cancelled 的媒体任务；在 failureStage 为空时由分支状态推导阶段
   const retryableTask = item.tasks.find((task) => (task as unknown as { canRetry?: boolean }).canRetry === true);
   if (retryableTask) {
+    const videoFailed = retryableTask.videoState === 'failed';
+    const subtitleFailed = retryableTask.subtitleState === 'failed';
+    // 双分支同时失败且 failureStage 缺失时，展示合并摘要，避免隐藏字幕失败；不伪造分支错误原因与技术详情
+    if (videoFailed && subtitleFailed && !retryableTask.failureStage) {
+      const title = item.mediaType === 'movie' ? (item.movieTitle ?? '当前电影') : (item.seriesTitle ?? '当前剧集');
+      return {
+        stage: 'video',
+        stageLabel: '视频和字幕',
+        summary: '视频和字幕处理失败',
+        detail: '视频和字幕处理均失败，请查看任务详情中的分支信息后重试。',
+        occurredAt: retryableTask.updatedAt,
+        attemptLabel: '第 1 次执行',
+        canRetry: true,
+        retryKind: 'task',
+        retryLabel: '重试任务',
+        recommendation: '视频和字幕处理均失败，请分别检查下方分支详情后重试。',
+        relatedResource: `《${title}》的视频与字幕`,
+        technicalDetails: '后端没有记录额外技术信息。',
+      };
+    }
     let stage: FailureStage;
     if (retryableTask.failureStage) {
       stage = stageFromTask(retryableTask.failureStage);
     } else {
-      const videoFailed = retryableTask.videoState === 'failed';
-      const subtitleFailed = retryableTask.subtitleState === 'failed';
-      if (videoFailed && subtitleFailed) {
-        stage = 'video';
-      } else if (videoFailed) {
+      if (videoFailed) {
         stage = 'video';
       } else if (subtitleFailed) {
         stage = 'subtitle';

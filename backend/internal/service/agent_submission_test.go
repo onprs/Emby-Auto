@@ -152,8 +152,8 @@ func TestValidateSubtitleVideoMatchProposal(t *testing.T) {
 		{
 			name: "valid selection within scope",
 			proposal: domain.AgentSubtitleVideoMatchProposal{
-				TaskID:        uuid.MustParse("74000000-0000-4000-8000-000000000001"),
-				Selected:      domain.SubtitleCandidateSelection{CandidateID: "stream:3"},
+				TaskID: uuid.MustParse("74000000-0000-4000-8000-000000000001"),
+				Selected: domain.SubtitleCandidateSelection{CandidateID: "stream:3"},
 				EvidenceCodes: []string{"subtitle_title_alignment"}, Decision: "resolved",
 			},
 			want: domain.AgentValidationAutoApplicable,
@@ -161,8 +161,8 @@ func TestValidateSubtitleVideoMatchProposal(t *testing.T) {
 		{
 			name: "candidate outside scope is invalid",
 			proposal: domain.AgentSubtitleVideoMatchProposal{
-				TaskID:        uuid.MustParse("74000000-0000-4000-8000-000000000001"),
-				Selected:      domain.SubtitleCandidateSelection{CandidateID: "stream:9"},
+				TaskID: uuid.MustParse("74000000-0000-4000-8000-000000000001"),
+				Selected: domain.SubtitleCandidateSelection{CandidateID: "stream:9"},
 				EvidenceCodes: []string{"subtitle_title_alignment"}, Decision: "resolved",
 			},
 			want: domain.AgentValidationInvalid,
@@ -170,8 +170,8 @@ func TestValidateSubtitleVideoMatchProposal(t *testing.T) {
 		{
 			name: "task mismatch is invalid",
 			proposal: domain.AgentSubtitleVideoMatchProposal{
-				TaskID:        uuid.MustParse("74000000-0000-4000-8000-000000000099"),
-				Selected:      domain.SubtitleCandidateSelection{CandidateID: "stream:2"},
+				TaskID: uuid.MustParse("74000000-0000-4000-8000-000000000099"),
+				Selected: domain.SubtitleCandidateSelection{CandidateID: "stream:2"},
 				EvidenceCodes: []string{"subtitle_title_alignment"}, Decision: "resolved",
 			},
 			want: domain.AgentValidationInvalid,
@@ -179,8 +179,8 @@ func TestValidateSubtitleVideoMatchProposal(t *testing.T) {
 		{
 			name: "review requested",
 			proposal: domain.AgentSubtitleVideoMatchProposal{
-				TaskID:        uuid.MustParse("74000000-0000-4000-8000-000000000001"),
-				Selected:      domain.SubtitleCandidateSelection{CandidateID: "stream:2"},
+				TaskID: uuid.MustParse("74000000-0000-4000-8000-000000000001"),
+				Selected: domain.SubtitleCandidateSelection{CandidateID: "stream:2"},
 				EvidenceCodes: []string{"subtitle_title_alignment"}, Decision: "review_required",
 			},
 			want: domain.AgentValidationReviewRequired,
