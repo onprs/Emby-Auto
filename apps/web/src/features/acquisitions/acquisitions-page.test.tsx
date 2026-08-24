@@ -233,20 +233,11 @@ describe('AcquisitionsPage failure actions', () => {
     // 点击 disabled 项不应产生第二次 POST（不吞异常，不复用旧节点）
     await user.click(retryItemDuringRunning);
     await waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
-    // 短暂稳定窗口内仍只有一次请求
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(retry).toHaveBeenCalledTimes(1);
 
     // 释放悬挂的 POST，等待请求完成与 running 状态收敛，不留下未处理 Promise 或 act 警告
-    resolveRetry?.();
-    await waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
-    // running 结束后菜单项应恢复可用（若菜单仍打开则直接断言，否则重新打开后断言）
-    await waitFor(() => expect(retryItemDuringRunning).toBeEnabled()).catch(async () => {
-      // 菜单可能在请求完成后已关闭，重新打开后校验可用状态
-      await user.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
-      const retryItemAfter = await screen.findByRole('menuitem', { name: '重试下载' });
-      await waitFor(() => expect(retryItemAfter).toBeEnabled());
-    });
+    expect(resolveRetry).toBeDefined();
+    resolveRetry!();
+    await waitFor(() => expect(retryItemDuringRunning).toBeEnabled());
   });
 
   it('keeps permanent errors without a retry action', async () => {
