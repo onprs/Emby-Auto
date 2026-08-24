@@ -644,6 +644,7 @@ export function taskFailureInfo(task: Task): TaskFailureInfo | null {
 
 function acquisitionTaskResource(item: Acquisition, task: AcquisitionTaskSummary, stage: FailureStage): string {
   const title = item.mediaType === 'movie' ? (item.movieTitle ?? '当前电影') : (item.seriesTitle ?? '当前剧集');
+  if (stage === 'cleanup') return '关联下载、种子任务和转码临时文件';
   if (stage === 'import') return `Emby 服务及《${title}》的待入库文件`;
   if (stage === 'subtitle') return `《${title}》的中文字幕`;
   return `《${title}》的源视频`;
@@ -666,14 +667,34 @@ export function acquisitionFailureInfo(item: Acquisition): TaskFailureInfo | nul
     });
   }
   // 优先使用后端计算的 canRetry 能力，覆盖 failed/processing/cancelled 的媒体任务；在 failureStage 为空时由分支状态推导阶段
-  const retryableTask = item.tasks.find((task) => (task as unknown as { canRetry?: boolean }).canRetry === true);
+  const retryableTasks = item.tasks.filter((task) => (task as unknown as { canRetry?: boolean }).canRetry === true);
+  const retryableTask = retryableTasks[0];
   if (retryableTask) {
+    // 已导入但清理失败的任务需在媒体分支推导前显式识别，生成清理阶段摘要
+    if (retryableTask.state === 'imported' && retryableTask.cleanupStatus === 'failed') {
+      const stage: FailureStage = 'cleanup';
+      const effectiveCode = retryableTask.errorCode ?? (retryableTask.errorMessage ? undefined : 'cleanup_delete_failed');
+      const info = buildFailureInfo({
+        stage,
+        code: effectiveCode,
+        message: retryableTask.errorMessage,
+        occurredAt: retryableTask.updatedAt,
+        attemptLabel: '第 1 次执行',
+        baseCanRetry: true,
+        retryKind: 'cleanup',
+        relatedResource: '关联下载、种子任务和转码临时文件',
+      });
+      if (retryableTasks.length > 1) {
+        info.summary = `${info.summary}（共 ${retryableTasks.length} 个任务）`;
+      }
+      return info;
+    }
     const videoFailed = retryableTask.videoState === 'failed';
     const subtitleFailed = retryableTask.subtitleState === 'failed';
     // 双分支同时失败且 failureStage 缺失时，展示合并摘要，避免隐藏字幕失败；不伪造分支错误原因与技术详情
     if (videoFailed && subtitleFailed && !retryableTask.failureStage) {
       const title = item.mediaType === 'movie' ? (item.movieTitle ?? '当前电影') : (item.seriesTitle ?? '当前剧集');
-      return {
+      const info: TaskFailureInfo = {
         stage: 'video',
         stageLabel: '视频和字幕',
         summary: '视频和字幕处理失败',
@@ -687,6 +708,10 @@ export function acquisitionFailureInfo(item: Acquisition): TaskFailureInfo | nul
         relatedResource: `《${title}》的视频与字幕`,
         technicalDetails: '后端没有记录额外技术信息。',
       };
+      if (retryableTasks.length > 1) {
+        info.summary = `${info.summary}（共 ${retryableTasks.length} 个任务）`;
+      }
+      return info;
     }
     let stage: FailureStage;
     if (retryableTask.failureStage) {
@@ -700,7 +725,7 @@ export function acquisitionFailureInfo(item: Acquisition): TaskFailureInfo | nul
         stage = stageFromTask(retryableTask.failureStage);
       }
     }
-    return buildFailureInfo({
+    const info = buildFailureInfo({
       stage,
       code: retryableTask.errorCode,
       message: retryableTask.errorMessage,
@@ -710,6 +735,10 @@ export function acquisitionFailureInfo(item: Acquisition): TaskFailureInfo | nul
       retryKind: 'task',
       relatedResource: acquisitionTaskResource(item, retryableTask, stage),
     });
+    if (retryableTasks.length > 1) {
+      info.summary = `${info.summary}（共 ${retryableTasks.length} 个任务）`;
+    }
+    return info;
   }
   const failedTask = item.tasks.find((task) => task.state === 'failed');
   if (!failedTask) {

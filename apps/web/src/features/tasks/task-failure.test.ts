@@ -631,3 +631,232 @@ describe('sanitizeTechnicalDetails', () => {
     expect(sanitized).toContain('subtitle.ass');
   });
 });
+
+describe('acquisitionFailureInfo cleanup', () => {
+  it('shows cleanup failure for imported task with failed cleanup', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      tasks: [{
+        id: '99999999-9999-9999-9999-999999999991',
+        mediaType: 'episode',
+        downloadId: '33333333-3333-3333-3333-333333333333',
+        state: 'imported',
+        videoState: 'video_ready',
+        subtitleState: 'ass_ready',
+        cleanupStatus: 'failed',
+        canRetry: true,
+        errorCode: 'cleanup_delete_failed',
+        errorMessage: 'remove failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      } as never],
+    }));
+    expect(info?.stage).toBe('cleanup');
+    expect(info?.summary).toContain('清理失败');
+    expect(info?.canRetry).toBe(true);
+    expect(info?.retryKind).toBe('cleanup');
+    expect(info?.retryLabel).toBe('重试清理');
+    expect(info?.relatedResource).toBe('关联下载、种子任务和转码临时文件');
+  });
+
+  it('uses generic cleanup copy when no specific error', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      tasks: [{
+        id: '99999999-9999-9999-9999-999999999992',
+        mediaType: 'episode',
+        downloadId: '33333333-3333-3333-3333-333333333333',
+        state: 'imported',
+        videoState: 'video_ready',
+        subtitleState: 'ass_ready',
+        cleanupStatus: 'failed',
+        canRetry: true,
+        updatedAt: '2026-07-25T02:00:00Z',
+      } as never],
+    }));
+    expect(info?.stage).toBe('cleanup');
+    expect(info?.summary).toBe('清理失败：无法删除临时文件');
+    expect(info?.canRetry).toBe(true);
+    expect(info?.retryKind).toBe('cleanup');
+    expect(info?.retryLabel).toBe('重试清理');
+  });
+
+  it('hides retry for imported cleanup completed', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      tasks: [{
+        id: '99999999-9999-9999-9999-999999999993',
+        mediaType: 'episode',
+        downloadId: '33333333-3333-3333-3333-333333333333',
+        state: 'imported',
+        videoState: 'video_ready',
+        subtitleState: 'ass_ready',
+        cleanupStatus: 'completed',
+        canRetry: false,
+        updatedAt: '2026-07-25T02:00:00Z',
+      } as never],
+    }));
+    expect(info).toBeNull();
+  });
+});
+
+describe('acquisitionFailureInfo multiple retryable count', () => {
+  it('shows count when two tasks are retryable', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      tasks: [
+        {
+          id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1',
+          mediaType: 'episode',
+          downloadId: '33333333-3333-3333-3333-333333333333',
+          state: 'failed',
+          videoState: 'failed',
+          subtitleState: 'ass_ready',
+          canRetry: true,
+          failureStage: 'video',
+          errorCode: 'ffmpeg_transcode_failed',
+          updatedAt: '2026-07-25T02:00:00Z',
+        } as never,
+        {
+          id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1',
+          mediaType: 'episode',
+          downloadId: '33333333-3333-3333-3333-333333333333',
+          state: 'failed',
+          videoState: 'video_ready',
+          subtitleState: 'failed',
+          canRetry: true,
+          failureStage: 'subtitle',
+          errorCode: 'ffmpeg_subtitle_failed',
+          updatedAt: '2026-07-25T02:01:00Z',
+        } as never,
+      ],
+    }));
+    expect(info?.summary).toContain('（共 2 个任务）');
+    expect(info?.stage).toBe('video');
+    expect(info?.canRetry).toBe(true);
+  });
+
+  it('does not show count when only one retryable task', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      tasks: [{
+        id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2',
+        mediaType: 'episode',
+        downloadId: '33333333-3333-3333-3333-333333333333',
+        state: 'failed',
+        videoState: 'failed',
+        subtitleState: 'ass_ready',
+        canRetry: true,
+        failureStage: 'video',
+        errorCode: 'ffmpeg_transcode_failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      } as never],
+    }));
+    expect(info?.summary).not.toContain('（共');
+    expect(info?.summary).toContain('视频转码失败');
+  });
+
+  it('shows count for dual-branch merged summary', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      tasks: [
+        {
+          id: 'cccccccc-cccc-cccc-cccc-ccccccccccc1',
+          mediaType: 'episode',
+          downloadId: '33333333-3333-3333-3333-333333333333',
+          state: 'cancelled',
+          videoState: 'failed',
+          subtitleState: 'failed',
+          canRetry: true,
+          failureStage: undefined,
+          errorCode: 'ffmpeg_transcode_failed',
+          updatedAt: '2026-07-25T02:00:00Z',
+        } as never,
+        {
+          id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+          mediaType: 'episode',
+          downloadId: '33333333-3333-3333-3333-333333333333',
+          state: 'failed',
+          videoState: 'failed',
+          subtitleState: 'ass_ready',
+          canRetry: true,
+          failureStage: 'video',
+          updatedAt: '2026-07-25T02:01:00Z',
+        } as never,
+      ],
+    }));
+    // 首个为双分支合并，保持合并文案并追加数量
+    expect(info?.summary).toContain('视频和字幕处理失败');
+    expect(info?.summary).toContain('（共 2 个任务）');
+  });
+
+  it('shows count for cleanup followed by another retryable', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      tasks: [
+        {
+          id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1',
+          mediaType: 'episode',
+          downloadId: '33333333-3333-3333-3333-333333333333',
+          state: 'imported',
+          videoState: 'video_ready',
+          subtitleState: 'ass_ready',
+          cleanupStatus: 'failed',
+          canRetry: true,
+          errorCode: 'cleanup_delete_failed',
+          updatedAt: '2026-07-25T02:00:00Z',
+        } as never,
+        {
+          id: 'ffffffff-ffff-ffff-ffff-fffffffffff1',
+          mediaType: 'episode',
+          downloadId: '33333333-3333-3333-3333-333333333333',
+          state: 'failed',
+          videoState: 'failed',
+          subtitleState: 'ass_ready',
+          canRetry: true,
+          failureStage: 'video',
+          updatedAt: '2026-07-25T02:01:00Z',
+        } as never,
+      ],
+    }));
+    expect(info?.stage).toBe('cleanup');
+    expect(info?.summary).toContain('清理失败');
+    expect(info?.summary).toContain('（共 2 个任务）');
+    expect(info?.retryKind).toBe('cleanup');
+  });
+
+  it('keeps download priority and does not mix task count', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      downloadId: '88888888-8888-8888-8888-888888888888',
+      download: {
+        id: '88888888-8888-8888-8888-888888888888',
+        attempt: 1,
+        status: 'failed',
+        progress: 0,
+        failureStage: 'enqueue',
+        errorCode: 'qbittorrent_enqueue_failed',
+        errorMessage: 'torrent download returned HTTP 404 Not Found',
+        updatedAt: '2026-07-25T02:00:00Z',
+      },
+      tasks: [
+        {
+          id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3',
+          mediaType: 'episode',
+          downloadId: '33333333-3333-3333-3333-333333333333',
+          state: 'failed',
+          videoState: 'failed',
+          subtitleState: 'ass_ready',
+          canRetry: true,
+          failureStage: 'video',
+          updatedAt: '2026-07-25T02:00:00Z',
+        } as never,
+        {
+          id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2',
+          mediaType: 'episode',
+          downloadId: '33333333-3333-3333-3333-333333333333',
+          state: 'failed',
+          videoState: 'failed',
+          subtitleState: 'ass_ready',
+          canRetry: true,
+          failureStage: 'video',
+          updatedAt: '2026-07-25T02:01:00Z',
+        } as never,
+      ],
+    }));
+    expect(info?.summary).not.toContain('（共');
+    expect(info?.summary).toContain('下载失败');
+    expect(info?.stage).toBe('download');
+  });
+});

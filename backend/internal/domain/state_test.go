@@ -46,6 +46,7 @@ func TestStateMachinesRejectSkippedAndTerminalTransitions(t *testing.T) {
 		{name: "task skips review", validate: func() error { return ValidateTaskTransition(TaskFinalizing, TaskApproved) }, machine: "task", from: "finalizing", to: "approved"},
 		{name: "imported task cannot roll back", validate: func() error { return ValidateTaskTransition(TaskImported, TaskFailed) }, machine: "task", from: "imported", to: "failed"},
 		{name: "rejected task is terminal", validate: func() error { return ValidateTaskTransition(TaskRejected, TaskProcessing) }, machine: "task", from: "rejected", to: "processing"},
+		{name: "cancelled task cannot directly retry", validate: func() error { return ValidateTaskTransition(TaskCancelled, TaskProcessing) }, machine: "task", from: "cancelled", to: "processing"},
 		{name: "ready video cannot restart", validate: func() error { return ValidateVideoTransition(VideoReady, VideoTranscoding) }, machine: "video", from: "video_ready", to: "transcoding"},
 		{name: "ready subtitle cannot restart", validate: func() error { return ValidateSubtitleTransition(SubtitleASSReady, SubtitleExtractingConverting) }, machine: "subtitle", from: "ass_ready", to: "extracting_or_converting"},
 		{name: "cleanup failure is terminal per attempt", validate: func() error { return ValidateCleanupTransition(CleanupFailed, CleanupRunning) }, machine: "cleanup", from: "failed", to: "running"},
