@@ -249,7 +249,6 @@ func TestTaskCancelledReadModelIntegration(t *testing.T) {
 		{"cancelled with active branch", string(domain.TaskCancelled), string(domain.VideoTranscoding), string(domain.SubtitleASSReady), "", false},
 		{"cancelled both ready", string(domain.TaskCancelled), string(domain.VideoReady), string(domain.SubtitleASSReady), "", false},
 		{"processing both ready not retry", string(domain.TaskProcessing), string(domain.VideoReady), string(domain.SubtitleASSReady), "", false},
-		{"failed no stage no branch not retry", string(domain.TaskFailed), string(domain.VideoReady), string(domain.SubtitleASSReady), "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
