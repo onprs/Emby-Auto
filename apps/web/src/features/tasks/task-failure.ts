@@ -543,10 +543,32 @@ export function taskFailureInfo(task: Task): TaskFailureInfo | null {
       latestOperation: operation,
     });
   }
-  if (task.state !== 'failed') {
+  const isFailed = task.state === 'failed';
+  const isProcessingStuck = task.state === 'processing' && (task.videoState === 'failed' || task.subtitleState === 'failed');
+  if (!isFailed && !isProcessingStuck) {
     return null;
   }
-  const stage = stageFromTask(task.failureStage);
+  const videoFailed = task.videoState === 'failed';
+  const subtitleFailed = task.subtitleState === 'failed';
+  let stage: FailureStage;
+  if (isFailed && task.failureStage) {
+    stage = stageFromTask(task.failureStage);
+  } else if (videoFailed || subtitleFailed) {
+    if (videoFailed && subtitleFailed) {
+      const fromStage = stageFromTask(task.failureStage);
+      if (fromStage === 'video' || fromStage === 'subtitle') {
+        stage = fromStage;
+      } else {
+        stage = 'video';
+      }
+    } else if (videoFailed) {
+      stage = 'video';
+    } else {
+      stage = 'subtitle';
+    }
+  } else {
+    stage = stageFromTask(task.failureStage);
+  }
   const operation = latestOperation(task.operations, stage);
   const nestedImport = stage === 'import' && task.import?.status === 'failed' ? task.import : undefined;
   return buildFailureInfo({

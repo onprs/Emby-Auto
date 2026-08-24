@@ -1219,6 +1219,54 @@ func (q *Queries) MarkTaskVideoTerminalFailure(ctx context.Context, arg MarkTask
 	return i, err
 }
 
+const requeueTaskFailedMediaBranches = `-- name: RequeueTaskFailedMediaBranches :one
+UPDATE episode_tasks
+SET state = CASE WHEN state = 'failed' THEN 'processing' ELSE state END,
+    video_state = CASE WHEN video_state = 'failed' THEN 'transcode_queued' ELSE video_state END,
+    subtitle_state = CASE WHEN subtitle_state = 'failed' THEN 'subtitle_queued' ELSE subtitle_state END,
+    failure_stage = NULL,
+    error_code = NULL,
+    error_message = NULL,
+    version = version + 1,
+    updated_at = now()
+WHERE id = $1
+  AND version = $2
+  AND (
+      (state = 'failed' AND (video_state = 'failed' OR subtitle_state = 'failed'))
+      OR (state = 'processing' AND (video_state = 'failed' OR subtitle_state = 'failed'))
+  )
+RETURNING id, acquisition_id, source_video_file_id, mapping_id, transcode_profile_id, state, video_state, subtitle_state, version, error_code, error_message, legacy_id, created_at, updated_at, failure_stage, media_type
+`
+
+type RequeueTaskFailedMediaBranchesParams struct {
+	ID              pgtype.UUID `db:"id" json:"id"`
+	ExpectedVersion int32       `db:"expected_version" json:"expected_version"`
+}
+
+func (q *Queries) RequeueTaskFailedMediaBranches(ctx context.Context, arg RequeueTaskFailedMediaBranchesParams) (EpisodeTask, error) {
+	row := q.db.QueryRow(ctx, requeueTaskFailedMediaBranches, arg.ID, arg.ExpectedVersion)
+	var i EpisodeTask
+	err := row.Scan(
+		&i.ID,
+		&i.AcquisitionID,
+		&i.SourceVideoFileID,
+		&i.MappingID,
+		&i.TranscodeProfileID,
+		&i.State,
+		&i.VideoState,
+		&i.SubtitleState,
+		&i.Version,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.LegacyID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FailureStage,
+		&i.MediaType,
+	)
+	return i, err
+}
+
 const requeueTaskFinalizeBranch = `-- name: RequeueTaskFinalizeBranch :one
 UPDATE episode_tasks
 SET state = 'finalizing',

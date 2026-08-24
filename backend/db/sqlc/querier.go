@@ -355,6 +355,7 @@ type Querier interface {
 	RequeueLatestFailedTaskCleanup(ctx context.Context, taskID pgtype.UUID) (CleanupRun, error)
 	RequeueLatestFailedTaskImport(ctx context.Context, taskID pgtype.UUID) (Import, error)
 	RequeueMappingMaterialization(ctx context.Context, arg RequeueMappingMaterializationParams) (Download, error)
+	RequeueTaskFailedMediaBranches(ctx context.Context, arg RequeueTaskFailedMediaBranchesParams) (EpisodeTask, error)
 	RequeueTaskFinalizeBranch(ctx context.Context, id pgtype.UUID) (EpisodeTask, error)
 	RequeueTaskImportBranch(ctx context.Context, id pgtype.UUID) (EpisodeTask, error)
 	RequeueTaskSubtitleBranch(ctx context.Context, id pgtype.UUID) (EpisodeTask, error)
