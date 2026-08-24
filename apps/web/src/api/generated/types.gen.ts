@@ -984,6 +984,7 @@ export type AcquisitionTaskSummary = {
     failureStage?: 'video' | 'subtitle' | 'finalize' | 'import';
     errorCode?: string;
     errorMessage?: string;
+    canRetry: boolean;
     updatedAt: string;
 };
 

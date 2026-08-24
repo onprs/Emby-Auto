@@ -42,6 +42,18 @@ describe('canRetryTask', () => {
     expect(canRetryTask({ state: 'processing', failureStage: undefined, cleanup: undefined })).toBe(false);
     expect(canRetryTask({ state: 'failed', failureStage: undefined, cleanup: undefined })).toBe(false);
   });
+  it('allows cancelled safe media combinations', () => {
+    expect(canRetryTask({ state: 'cancelled', failureStage: undefined, cleanup: undefined, videoState: 'failed', subtitleState: 'ass_ready' })).toBe(true);
+    expect(canRetryTask({ state: 'cancelled', failureStage: undefined, cleanup: undefined, videoState: 'video_ready', subtitleState: 'failed' })).toBe(true);
+    expect(canRetryTask({ state: 'cancelled', failureStage: undefined, cleanup: undefined, videoState: 'failed', subtitleState: 'failed' })).toBe(true);
+  });
+  it('rejects cancelled with active or cancelled branches and both ready', () => {
+    expect(canRetryTask({ state: 'cancelled', failureStage: undefined, cleanup: undefined, videoState: 'transcode_queued', subtitleState: 'ass_ready' })).toBe(false);
+    expect(canRetryTask({ state: 'cancelled', failureStage: undefined, cleanup: undefined, videoState: 'failed', subtitleState: 'cancelled' })).toBe(false);
+    expect(canRetryTask({ state: 'cancelled', failureStage: undefined, cleanup: undefined, videoState: 'video_ready', subtitleState: 'ass_ready' })).toBe(false);
+    expect(canRetryTask({ state: 'cancelled', failureStage: undefined, cleanup: undefined, videoState: 'cancelled', subtitleState: 'cancelled' })).toBe(false);
+    expect(canRetryTask({ state: 'cancelled', failureStage: undefined, cleanup: undefined, videoState: 'transcoding', subtitleState: 'extracting_or_converting' })).toBe(false);
+  });
 });
 
 describe('canDeleteTask', () => {

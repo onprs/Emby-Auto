@@ -4265,7 +4265,7 @@ components:
     AcquisitionTaskSummary:
       type: object
       additionalProperties: false
-      required: [id, mediaType, downloadId, state, videoState, subtitleState, updatedAt]
+      required: [id, mediaType, downloadId, state, videoState, subtitleState, canRetry, updatedAt]
       properties:
         id:
           type: string
@@ -4329,6 +4329,8 @@ components:
           type: string
         errorMessage:
           type: string
+        canRetry:
+          type: boolean
         updatedAt:
           type: string
           format: date-time

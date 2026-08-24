@@ -349,6 +349,109 @@ describe('taskFailureInfo dual branch', () => {
   });
 });
 
+describe('taskFailureInfo cancelled', () => {
+  it('shows retry for cancelled + video failed + subtitle ready', () => {
+    const info = taskFailureInfo(task({
+      state: 'cancelled',
+      videoState: 'failed',
+      subtitleState: 'ass_ready',
+      failureStage: undefined,
+      actions: { canRetry: true, canCancel: false, canReview: false, canImport: false },
+      operations: [{
+        id: 'aaaaaaa6-aaaa-aaaa-aaaa-aaaaaaaaaaa6',
+        kind: 'transcode.run',
+        status: 'failed',
+        maxAttempts: 3,
+        attemptCount: 1,
+        errorCode: 'ffmpeg_transcode_failed',
+        errorMessage: 'video failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      }],
+    }));
+    expect(info?.summary).toContain('视频转码失败');
+    expect(info?.canRetry).toBe(true);
+    expect(info?.retryKind).toBe('task');
+  });
+  it('rejects ordinary cancelled with cancelled branches', () => {
+    const info = taskFailureInfo(task({
+      state: 'cancelled',
+      videoState: 'cancelled',
+      subtitleState: 'cancelled',
+      failureStage: undefined,
+      actions: { canRetry: false, canCancel: false, canReview: false, canImport: false },
+    }));
+    expect(info).toBeNull();
+  });
+  it('rejects cancelled with active branch', () => {
+    const info = taskFailureInfo(task({
+      state: 'cancelled',
+      videoState: 'transcoding',
+      subtitleState: 'ass_ready',
+      failureStage: undefined,
+      actions: { canRetry: false, canCancel: false, canReview: false, canImport: false },
+    }));
+    expect(info).toBeNull();
+  });
+});
+
+describe('acquisitionFailureInfo with canRetry', () => {
+  it('derives stage from failed branch when failureStage empty and canRetry true', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      tasks: [{
+        id: '99999999-9999-9999-9999-999999999999',
+        mediaType: 'episode',
+        downloadId: '33333333-3333-3333-3333-333333333333',
+        sourceSeason: 1,
+        sourceEpisode: 1,
+        targetSeason: 1,
+        targetEpisode: 1,
+        state: 'cancelled',
+        videoState: 'failed',
+        subtitleState: 'ass_ready',
+        canRetry: true,
+        failureStage: undefined,
+        errorCode: 'ffmpeg_transcode_failed',
+        errorMessage: 'video failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      } as never],
+    }));
+    expect(info?.summary).toContain('视频转码失败');
+    expect(info?.canRetry).toBe(true);
+    expect(info?.stage).toBe('video');
+  });
+  it('prefers canRetry true cancelled over failed without canRetry', () => {
+    const info = acquisitionFailureInfo(acquisition({
+      tasks: [
+        {
+          id: 'aaaaaaa7-aaaa-aaaa-aaaa-aaaaaaaaaaa7',
+          mediaType: 'episode',
+          downloadId: '33333333-3333-3333-3333-333333333333',
+          state: 'failed',
+          videoState: 'failed',
+          subtitleState: 'ass_ready',
+          canRetry: false,
+          failureStage: undefined,
+          updatedAt: '2026-07-25T02:00:00Z',
+        } as never,
+        {
+          id: 'bbbbbbb8-bbbb-bbbb-bbbb-bbbbbbbbbbb8',
+          mediaType: 'episode',
+          downloadId: '33333333-3333-3333-3333-333333333333',
+          state: 'cancelled',
+          videoState: 'failed',
+          subtitleState: 'ass_ready',
+          canRetry: true,
+          failureStage: undefined,
+          errorCode: 'ffmpeg_transcode_failed',
+          updatedAt: '2026-07-25T02:01:00Z',
+        } as never,
+      ],
+    }));
+    expect(info?.canRetry).toBe(true);
+    expect(info?.stage).toBe('video');
+  });
+});
+
 describe('sanitizeTechnicalDetails', () => {
   it('removes credentials, auth headers, cookies, and absolute server paths', () => {
     const raw = 'Authorization: Bearer abc.def.ghi password=hunter2 Cookie: sid=secret {"apiKey":"json-secret"} C:\\media\\downloads\\show\\episode01.mkv /srv/emby/work/subtitle.ass';

@@ -199,9 +199,9 @@ func TestDownloadSyncHandlerTreatsCompletedStateAsIdempotentSuccess(t *testing.T
 func TestDownloadSyncHandlerRetriesWhenTorrentIsTemporarilyMissing(t *testing.T) {
 	downloadID := uuid.MustParse("40000000-0000-0000-0000-000000000006")
 	store := &downloadSyncStoreStub{command: domain.DownloadSyncCommand{
-		DownloadID:  downloadID,
-		Status:      domain.DownloadDownloading,
-		TorrentHash: workerTorrentHash,
+		DownloadID:    downloadID,
+		Status:        domain.DownloadDownloading,
+		TorrentHash:   workerTorrentHash,
 		SelectedFiles: []domain.DownloadSyncFile{{FileIndex: 0, SizeBytes: 100}},
 	}}
 	client := &torrentClientStub{torrents: []qbittorrent.Torrent{}}

@@ -561,13 +561,18 @@ export function taskFailureInfo(task: Task): TaskFailureInfo | null {
   }
   const isFailed = task.state === 'failed';
   const isProcessingStuck = task.state === 'processing' && (task.videoState === 'failed' || task.subtitleState === 'failed');
-  if (!isFailed && !isProcessingStuck) {
+  const isCancelledRecoverable =
+    task.state === 'cancelled' &&
+    (task.videoState === 'failed' || task.subtitleState === 'failed') &&
+    (task.videoState === 'failed' || task.videoState === 'video_ready') &&
+    (task.subtitleState === 'failed' || task.subtitleState === 'ass_ready');
+  if (!isFailed && !isProcessingStuck && !isCancelledRecoverable) {
     return null;
   }
   const videoFailed = task.videoState === 'failed';
   const subtitleFailed = task.subtitleState === 'failed';
   // 双分支失败需同时展示两个分支的最新 operation/reason，且仍保持单次原子重试
-  if (videoFailed && subtitleFailed && (isFailed || isProcessingStuck)) {
+  if (videoFailed && subtitleFailed && (isFailed || isProcessingStuck || isCancelledRecoverable)) {
     const videoOp = latestOperation(task.operations, 'video');
     const subtitleOp = latestOperation(task.operations, 'subtitle');
     const videoBranch = buildBranchFailure(task, 'video', videoOp);
@@ -662,6 +667,36 @@ export function acquisitionFailureInfo(item: Acquisition): TaskFailureInfo | nul
       baseCanRetry: Boolean(item.download.failureStage),
       retryKind: 'download',
       relatedResource: stage === 'materialize' ? `《${title}》的已下载文件和媒体处理配置` : `${title}的种子文件和下载目录`,
+    });
+  }
+  // 优先使用后端计算的 canRetry 能力，覆盖 failed/processing/cancelled 的媒体任务；在 failureStage 为空时由分支状态推导阶段
+  const retryableTask = item.tasks.find((task) => (task as unknown as { canRetry?: boolean }).canRetry === true);
+  if (retryableTask) {
+    let stage: FailureStage;
+    if (retryableTask.failureStage) {
+      stage = stageFromTask(retryableTask.failureStage);
+    } else {
+      const videoFailed = retryableTask.videoState === 'failed';
+      const subtitleFailed = retryableTask.subtitleState === 'failed';
+      if (videoFailed && subtitleFailed) {
+        stage = 'video';
+      } else if (videoFailed) {
+        stage = 'video';
+      } else if (subtitleFailed) {
+        stage = 'subtitle';
+      } else {
+        stage = stageFromTask(retryableTask.failureStage);
+      }
+    }
+    return buildFailureInfo({
+      stage,
+      code: retryableTask.errorCode,
+      message: retryableTask.errorMessage,
+      occurredAt: retryableTask.updatedAt,
+      attemptLabel: '第 1 次执行',
+      baseCanRetry: true,
+      retryKind: 'task',
+      relatedResource: acquisitionTaskResource(item, retryableTask, stage),
     });
   }
   const failedTask = item.tasks.find((task) => task.state === 'failed');

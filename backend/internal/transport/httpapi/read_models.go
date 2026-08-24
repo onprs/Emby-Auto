@@ -459,7 +459,7 @@ func acquisitionResponse(view domain.AcquisitionView) Acquisition {
 		item := AcquisitionTaskSummary{
 			Id: task.ID, MediaType: TaskMediaType(task.MediaType), DownloadId: task.DownloadID,
 			State: TaskState(task.State), VideoState: AcquisitionTaskSummaryVideoState(task.VideoState),
-			SubtitleState: AcquisitionTaskSummarySubtitleState(task.SubtitleState), UpdatedAt: task.UpdatedAt,
+			SubtitleState: AcquisitionTaskSummarySubtitleState(task.SubtitleState), CanRetry: task.CanRetry, UpdatedAt: task.UpdatedAt,
 			TargetEpisodeTitle: stringPtr(task.TargetEpisodeTitle), ReviewedAt: task.ReviewedAt,
 		}
 		if task.SourceSeason > 0 {

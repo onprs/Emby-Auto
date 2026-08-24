@@ -286,8 +286,8 @@ func TestAcquisitionResponseMapsFileResolutionFailureStage(t *testing.T) {
 	response := acquisitionResponse(domain.AcquisitionView{
 		ID: uuid.New(), MediaType: domain.TaskMediaEpisode, SeriesID: uuid.New(), SourceKind: "rss",
 		AggregateStatus: "failed", CurrentStage: "download", OverallProgress: 0.15,
-		Stages:             []domain.AcquisitionStageView{},
-		Tasks:              []domain.AcquisitionTaskSummary{},
+		Stages: []domain.AcquisitionStageView{},
+		Tasks:  []domain.AcquisitionTaskSummary{},
 		Download: &domain.AcquisitionDownloadSummary{
 			ID: uuid.New(), Attempt: 1, Status: "failed", FailureStage: "file_resolution",
 			ErrorCode: "download_no_main_video", ErrorMessage: "the torrent contains no selectable main video", UpdatedAt: now,

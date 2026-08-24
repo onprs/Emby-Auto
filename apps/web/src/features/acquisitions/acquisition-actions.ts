@@ -27,11 +27,19 @@ export function acquisitionHasActiveWork(item: Acquisition): boolean {
   if (item.download && ACTIVE_DOWNLOAD_STATES.has(item.download.status)) {
     return true;
   }
-  return item.tasks.some((task) => ACTIVE_TASK_STATES.has(task.state));
+  return item.tasks.some((task) => {
+    if (!ACTIVE_TASK_STATES.has(task.state)) return false;
+    if (task.state === 'processing') {
+      const videoActive = task.videoState === 'transcode_queued' || task.videoState === 'transcoding';
+      const subtitleActive = task.subtitleState === 'subtitle_queued' || task.subtitleState === 'extracting_or_converting';
+      if (!videoActive && !subtitleActive) return false;
+    }
+    return true;
+  });
 }
 
 export function acquisitionRetryableTasks(item: Acquisition) {
-  return item.tasks.filter((task) => task.state === 'failed' && task.failureStage);
+  return item.tasks.filter((task) => (task as unknown as { canRetry?: boolean }).canRetry === true);
 }
 
 /** Workflow deletion never includes imported Emby destination paths. */

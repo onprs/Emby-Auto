@@ -284,3 +284,136 @@ describe('AcquisitionsPage failure actions', () => {
     expect(screen.queryByRole('menuitem', { name: '重试任务' })).not.toBeInTheDocument();
   });
 });
+
+describe('AcquisitionsPage task retry actions', () => {
+  function taskAcquisition(overrides: Partial<Acquisition> & { tasks: Acquisition['tasks'] }): Acquisition {
+    return {
+      id: '55555555-5555-5555-5555-555555555555',
+      mediaType: 'episode',
+      seriesId: '66666666-6666-6666-6666-666666666666',
+      seriesTitle: '任务重试示例',
+      sourceKind: 'rss',
+      tasks: overrides.tasks,
+      mapping: { selectedVideoCount: 1, mappedVideoCount: 1, complete: true },
+      aggregateStatus: 'failed',
+      currentStage: 'transcode',
+      overallProgress: 0.5,
+      stages: [
+        { key: 'source', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+        { key: 'download', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+        { key: 'mapping', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+        { key: 'transcode', status: 'failed', progress: 0, completedItems: 0, totalItems: 1 },
+        { key: 'subtitle', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+        { key: 'rename', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+        { key: 'organize', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+        { key: 'review', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+        { key: 'import', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+      ],
+      createdAt: '2026-07-25T01:00:00Z',
+      updatedAt: '2026-07-25T02:00:00Z',
+      ...overrides,
+    } as Acquisition;
+  }
+  it('shows retry for safe cancelled without stop and performs single GET and POST', async () => {
+    const taskId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const downloadId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    const item = taskAcquisition({
+      tasks: [{
+        id: taskId,
+        mediaType: 'episode',
+        downloadId,
+        sourceSeason: 1,
+        sourceEpisode: 1,
+        state: 'cancelled',
+        videoState: 'failed',
+        subtitleState: 'ass_ready',
+        canRetry: true,
+        updatedAt: '2026-07-25T02:00:00Z',
+      } as never],
+    });
+    const fullTask = {
+      id: taskId,
+      acquisitionId: item.id,
+      downloadId,
+      mediaType: 'episode',
+      state: 'cancelled',
+      videoState: 'failed',
+      subtitleState: 'ass_ready',
+      version: 13,
+      failureStage: undefined,
+      operations: [],
+      actions: { canRetry: true, canCancel: false, canReview: false, canImport: false },
+      createdAt: '2026-07-25T01:00:00Z',
+      updatedAt: '2026-07-25T02:00:00Z',
+    };
+    let getCount = 0;
+    let postCount = 0;
+    let postBody: unknown = null;
+    let postKey: string | null = null;
+    server.use(
+      http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })),
+      http.get(`*/api/v1/tasks/${taskId}`, () => {
+        getCount++;
+        return HttpResponse.json(fullTask);
+      }),
+      http.post(`*/api/v1/tasks/${taskId}/retry`, async ({ request }) => {
+        postCount++;
+        postBody = await request.json();
+        postKey = request.headers.get('Idempotency-Key');
+        return HttpResponse.json({ task: { ...fullTask, state: 'processing', version: 14 }, operationId: 'cccccccc-cccc-cccc-cccc-cccccccccccc', status: 'queued' }, { status: 202 });
+      }),
+    );
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    const retryItem = await screen.findByRole('menuitem', { name: '重试任务' });
+    expect(retryItem).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: '停止处理' })).not.toBeInTheDocument();
+    await userEvent.click(retryItem);
+    await waitFor(() => expect(postCount).toBe(1));
+    expect(getCount).toBe(1);
+    expect(postBody).toEqual({ expectedVersion: 13 });
+    expect(postKey).toBeTruthy();
+    expect(String(postKey).trim().length).toBeGreaterThan(0);
+  });
+  it('does not show retry for ordinary cancelled', async () => {
+    const item = taskAcquisition({
+      tasks: [{
+        id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+        mediaType: 'episode',
+        downloadId: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+        state: 'cancelled',
+        videoState: 'cancelled',
+        subtitleState: 'cancelled',
+        canRetry: false,
+        updatedAt: '2026-07-25T02:00:00Z',
+      } as never],
+    });
+    server.use(http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })));
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    expect(screen.queryByRole('menuitem', { name: '重试任务' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: '停止处理' })).not.toBeInTheDocument();
+  });
+  it('shows retry without stop for processing stuck', async () => {
+    const item = taskAcquisition({
+      tasks: [{
+        id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+        mediaType: 'episode',
+        downloadId: '00000000-0000-0000-0000-000000000000',
+        state: 'processing',
+        videoState: 'failed',
+        subtitleState: 'ass_ready',
+        canRetry: true,
+        updatedAt: '2026-07-25T02:00:00Z',
+      } as never],
+    });
+    server.use(http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })));
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    expect(await screen.findByRole('menuitem', { name: '重试任务' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: '停止处理' })).not.toBeInTheDocument();
+  });
+});

@@ -25,7 +25,7 @@ var promptVersions = map[domain.AgentCapability]string{
 	domain.AgentCapabilityDownloadFileResolution:   "download-file-resolution-v1",
 	domain.AgentCapabilityCatalogCandidate:         "catalog-candidate-v2",
 	domain.AgentCapabilityEpisodeMapping:           "episode-mapping-v1",
-	domain.AgentCapabilitySubtitleVideoMatch:     "subtitle-video-match-v1",
+	domain.AgentCapabilitySubtitleVideoMatch:       "subtitle-video-match-v1",
 }
 
 type Tool struct {

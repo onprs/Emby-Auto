@@ -30,9 +30,9 @@ type SubtitleMatchAgentResolutionCreator interface {
 }
 
 type SubtitlePrepareHandler struct {
-	configuration MediaConfiguration
-	tools         MediaTools
-	store         SubtitleStore
+	configuration    MediaConfiguration
+	tools            MediaTools
+	store            SubtitleStore
 	agentResolutions SubtitleMatchAgentResolutionCreator
 }
 
@@ -132,7 +132,7 @@ func (handler *SubtitlePrepareHandler) Handle(ctx context.Context, operation dom
 					}
 				} else {
 					// No selection yet: persist scope + candidates and ask the Agent.
-						scopeID, scopeErr := handler.store.CreateSubtitleVideoMatchScope(ctx, command.TaskID, subtitleMatchCandidates(plans, probe.SubtitleStreams(), external))
+					scopeID, scopeErr := handler.store.CreateSubtitleVideoMatchScope(ctx, command.TaskID, subtitleMatchCandidates(plans, probe.SubtitleStreams(), external))
 					if scopeErr != nil {
 						var mediaErr *domain.MediaWorkflowError
 						if errors.As(scopeErr, &mediaErr) && mediaErr.Code == "subtitle_scope_conflict" {

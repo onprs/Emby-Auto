@@ -1221,7 +1221,7 @@ func (q *Queries) MarkTaskVideoTerminalFailure(ctx context.Context, arg MarkTask
 
 const requeueTaskFailedMediaBranches = `-- name: RequeueTaskFailedMediaBranches :one
 UPDATE episode_tasks
-SET state = CASE WHEN state = 'failed' THEN 'processing' ELSE state END,
+SET state = CASE WHEN state IN ('failed', 'cancelled') THEN 'processing' ELSE state END,
     video_state = CASE WHEN video_state = 'failed' THEN 'transcode_queued' ELSE video_state END,
     subtitle_state = CASE WHEN subtitle_state = 'failed' THEN 'subtitle_queued' ELSE subtitle_state END,
     failure_stage = NULL,
@@ -1234,6 +1234,7 @@ WHERE id = $1
   AND (
       (state = 'failed' AND (video_state = 'failed' OR subtitle_state = 'failed'))
       OR (state = 'processing' AND (video_state = 'failed' OR subtitle_state = 'failed'))
+      OR (state = 'cancelled' AND (video_state = 'failed' OR subtitle_state = 'failed') AND video_state IN ('failed', 'video_ready') AND subtitle_state IN ('failed', 'ass_ready'))
   )
 RETURNING id, acquisition_id, source_video_file_id, mapping_id, transcode_profile_id, state, video_state, subtitle_state, version, error_code, error_message, legacy_id, created_at, updated_at, failure_stage, media_type
 `
