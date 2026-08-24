@@ -673,10 +673,9 @@ export function acquisitionFailureInfo(item: Acquisition): TaskFailureInfo | nul
     // 已导入但清理失败的任务需在媒体分支推导前显式识别，生成清理阶段摘要
     if (retryableTask.state === 'imported' && retryableTask.cleanupStatus === 'failed') {
       const stage: FailureStage = 'cleanup';
-      const effectiveCode = retryableTask.errorCode ?? (retryableTask.errorMessage ? undefined : 'cleanup_delete_failed');
       const info = buildFailureInfo({
         stage,
-        code: effectiveCode,
+        code: retryableTask.errorCode,
         message: retryableTask.errorMessage,
         occurredAt: retryableTask.updatedAt,
         attemptLabel: '第 1 次执行',

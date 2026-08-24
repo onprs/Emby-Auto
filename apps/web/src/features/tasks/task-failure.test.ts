@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Acquisition, Task } from '@/api/generated/types.gen';
+import type { Acquisition, AcquisitionTaskSummary, Task } from '@/api/generated/types.gen';
 import { acquisitionFailureInfo, sanitizeTechnicalDetails, taskFailureInfo } from '@/features/tasks/task-failure';
 
 function task(overrides: Partial<Task>): Task {
@@ -22,6 +22,20 @@ function task(overrides: Partial<Task>): Task {
     operations: [],
     actions: { canRetry: true, canCancel: false, canReview: false, canImport: false },
     createdAt: '2026-07-25T01:00:00Z',
+    updatedAt: '2026-07-25T02:00:00Z',
+    ...overrides,
+  };
+}
+
+function acquisitionTaskSummary(overrides: Partial<AcquisitionTaskSummary>): AcquisitionTaskSummary {
+  return {
+    id: '99999999-9999-9999-9999-999999999999',
+    mediaType: 'episode',
+    downloadId: '33333333-3333-3333-3333-333333333333',
+    state: 'failed',
+    videoState: 'failed',
+    subtitleState: 'ass_ready',
+    canRetry: true,
     updatedAt: '2026-07-25T02:00:00Z',
     ...overrides,
   };
@@ -517,7 +531,7 @@ describe('acquisitionFailureInfo with canRetry', () => {
         errorCode: 'ffmpeg_transcode_failed',
         errorMessage: 'video failed',
         updatedAt: '2026-07-25T02:00:00Z',
-      } as never],
+      } satisfies AcquisitionTaskSummary],
     }));
     expect(info?.summary).toContain('视频转码失败');
     expect(info?.canRetry).toBe(true);
@@ -536,7 +550,7 @@ describe('acquisitionFailureInfo with canRetry', () => {
           canRetry: false,
           failureStage: undefined,
           updatedAt: '2026-07-25T02:00:00Z',
-        } as never,
+        } satisfies AcquisitionTaskSummary,
         {
           id: 'bbbbbbb8-bbbb-bbbb-bbbb-bbbbbbbbbbb8',
           mediaType: 'episode',
@@ -548,7 +562,7 @@ describe('acquisitionFailureInfo with canRetry', () => {
           failureStage: undefined,
           errorCode: 'ffmpeg_transcode_failed',
           updatedAt: '2026-07-25T02:01:00Z',
-        } as never,
+        } satisfies AcquisitionTaskSummary,
       ],
     }));
     expect(info?.canRetry).toBe(true);
@@ -568,7 +582,7 @@ describe('acquisitionFailureInfo with canRetry', () => {
         errorCode: 'ffmpeg_transcode_failed',
         errorMessage: 'video failed',
         updatedAt: '2026-07-25T02:00:00Z',
-      } as never],
+      } satisfies AcquisitionTaskSummary],
     }));
     expect(info?.summary).toBe('视频和字幕处理失败');
     expect(info?.stageLabel).toBe('视频和字幕');
@@ -591,7 +605,7 @@ describe('acquisitionFailureInfo with canRetry', () => {
         failureStage: undefined,
         errorCode: 'ffmpeg_transcode_failed',
         updatedAt: '2026-07-25T02:00:00Z',
-      } as never],
+      } satisfies AcquisitionTaskSummary],
     }));
     expect(info?.summary).toContain('视频转码失败');
     expect(info?.stage).toBe('video');
@@ -609,7 +623,7 @@ describe('acquisitionFailureInfo with canRetry', () => {
         failureStage: undefined,
         errorCode: 'ffmpeg_subtitle_failed',
         updatedAt: '2026-07-25T02:00:00Z',
-      } as never],
+      } satisfies AcquisitionTaskSummary],
     }));
     expect(info?.summary).toContain('字幕处理失败');
     expect(info?.stage).toBe('subtitle');
@@ -647,7 +661,7 @@ describe('acquisitionFailureInfo cleanup', () => {
         errorCode: 'cleanup_delete_failed',
         errorMessage: 'remove failed',
         updatedAt: '2026-07-25T02:00:00Z',
-      } as never],
+      } satisfies AcquisitionTaskSummary],
     }));
     expect(info?.stage).toBe('cleanup');
     expect(info?.summary).toContain('清理失败');
@@ -659,20 +673,21 @@ describe('acquisitionFailureInfo cleanup', () => {
 
   it('uses generic cleanup copy when no specific error', () => {
     const info = acquisitionFailureInfo(acquisition({
-      tasks: [{
+      tasks: [acquisitionTaskSummary({
         id: '99999999-9999-9999-9999-999999999992',
-        mediaType: 'episode',
-        downloadId: '33333333-3333-3333-3333-333333333333',
         state: 'imported',
         videoState: 'video_ready',
         subtitleState: 'ass_ready',
         cleanupStatus: 'failed',
         canRetry: true,
         updatedAt: '2026-07-25T02:00:00Z',
-      } as never],
+      })],
     }));
     expect(info?.stage).toBe('cleanup');
-    expect(info?.summary).toBe('清理失败：无法删除临时文件');
+    expect(info?.summary).toBe('清理失败：未能识别具体失败原因，请查看技术详情或运行日志。');
+    expect(info?.summary).not.toContain('无法删除临时文件');
+    expect(info?.summary).not.toContain('权限');
+    expect(info?.summary).not.toContain('占用');
     expect(info?.canRetry).toBe(true);
     expect(info?.retryKind).toBe('cleanup');
     expect(info?.retryLabel).toBe('重试清理');
@@ -690,7 +705,7 @@ describe('acquisitionFailureInfo cleanup', () => {
         cleanupStatus: 'completed',
         canRetry: false,
         updatedAt: '2026-07-25T02:00:00Z',
-      } as never],
+      } satisfies AcquisitionTaskSummary],
     }));
     expect(info).toBeNull();
   });
@@ -711,7 +726,7 @@ describe('acquisitionFailureInfo multiple retryable count', () => {
           failureStage: 'video',
           errorCode: 'ffmpeg_transcode_failed',
           updatedAt: '2026-07-25T02:00:00Z',
-        } as never,
+        } satisfies AcquisitionTaskSummary,
         {
           id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1',
           mediaType: 'episode',
@@ -723,7 +738,7 @@ describe('acquisitionFailureInfo multiple retryable count', () => {
           failureStage: 'subtitle',
           errorCode: 'ffmpeg_subtitle_failed',
           updatedAt: '2026-07-25T02:01:00Z',
-        } as never,
+        } satisfies AcquisitionTaskSummary,
       ],
     }));
     expect(info?.summary).toContain('（共 2 个任务）');
@@ -744,7 +759,7 @@ describe('acquisitionFailureInfo multiple retryable count', () => {
         failureStage: 'video',
         errorCode: 'ffmpeg_transcode_failed',
         updatedAt: '2026-07-25T02:00:00Z',
-      } as never],
+      } satisfies AcquisitionTaskSummary],
     }));
     expect(info?.summary).not.toContain('（共');
     expect(info?.summary).toContain('视频转码失败');
@@ -764,7 +779,7 @@ describe('acquisitionFailureInfo multiple retryable count', () => {
           failureStage: undefined,
           errorCode: 'ffmpeg_transcode_failed',
           updatedAt: '2026-07-25T02:00:00Z',
-        } as never,
+        } satisfies AcquisitionTaskSummary,
         {
           id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
           mediaType: 'episode',
@@ -775,7 +790,7 @@ describe('acquisitionFailureInfo multiple retryable count', () => {
           canRetry: true,
           failureStage: 'video',
           updatedAt: '2026-07-25T02:01:00Z',
-        } as never,
+        } satisfies AcquisitionTaskSummary,
       ],
     }));
     // 首个为双分支合并，保持合并文案并追加数量
@@ -797,7 +812,7 @@ describe('acquisitionFailureInfo multiple retryable count', () => {
           canRetry: true,
           errorCode: 'cleanup_delete_failed',
           updatedAt: '2026-07-25T02:00:00Z',
-        } as never,
+        } satisfies AcquisitionTaskSummary,
         {
           id: 'ffffffff-ffff-ffff-ffff-fffffffffff1',
           mediaType: 'episode',
@@ -808,7 +823,7 @@ describe('acquisitionFailureInfo multiple retryable count', () => {
           canRetry: true,
           failureStage: 'video',
           updatedAt: '2026-07-25T02:01:00Z',
-        } as never,
+        } satisfies AcquisitionTaskSummary,
       ],
     }));
     expect(info?.stage).toBe('cleanup');
@@ -841,7 +856,7 @@ describe('acquisitionFailureInfo multiple retryable count', () => {
           canRetry: true,
           failureStage: 'video',
           updatedAt: '2026-07-25T02:00:00Z',
-        } as never,
+        } satisfies AcquisitionTaskSummary,
         {
           id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2',
           mediaType: 'episode',
@@ -852,7 +867,7 @@ describe('acquisitionFailureInfo multiple retryable count', () => {
           canRetry: true,
           failureStage: 'video',
           updatedAt: '2026-07-25T02:01:00Z',
-        } as never,
+        } satisfies AcquisitionTaskSummary,
       ],
     }));
     expect(info?.summary).not.toContain('（共');

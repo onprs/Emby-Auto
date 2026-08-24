@@ -128,7 +128,8 @@ export function AcquisitionsPage() {
         run: async () => {
           const result = await retryAcquisition(item, holder.get());
           holder.reset();
-          if (result.ok) { refresh(); return null; }
+          refresh();
+          if (result.ok) { return null; }
           return result.error ?? '重试失败';
         },
       });
