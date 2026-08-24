@@ -228,6 +228,39 @@ func (q *Queries) GetDownloadSyncCommand(ctx context.Context, id pgtype.UUID) (G
 	return i, err
 }
 
+const listDownloadSyncSelectedFiles = `-- name: ListDownloadSyncSelectedFiles :many
+SELECT file_index, size_bytes
+FROM download_files
+WHERE download_id = $1
+  AND selected = true
+ORDER BY file_index
+`
+
+type ListDownloadSyncSelectedFilesRow struct {
+	FileIndex int32 `db:"file_index" json:"file_index"`
+	SizeBytes int64 `db:"size_bytes" json:"size_bytes"`
+}
+
+func (q *Queries) ListDownloadSyncSelectedFiles(ctx context.Context, downloadID pgtype.UUID) ([]ListDownloadSyncSelectedFilesRow, error) {
+	rows, err := q.db.Query(ctx, listDownloadSyncSelectedFiles, downloadID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDownloadSyncSelectedFilesRow{}
+	for rows.Next() {
+		var i ListDownloadSyncSelectedFilesRow
+		if err := rows.Scan(&i.FileIndex, &i.SizeBytes); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockDownloadForEnqueue = `-- name: LockDownloadForEnqueue :one
 SELECT id, acquisition_id, attempt, client_name, torrent_hash, status, progress, save_path, error_code, error_message, started_at, completed_at, created_at, updated_at, version, failure_stage, client_state, last_synced_at, deletion_requested_at, deleted_at, file_resolution_source, agent_resolution_id
 FROM downloads

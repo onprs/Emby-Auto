@@ -220,6 +220,7 @@ type Querier interface {
 	ListCompatibleActiveMappingProfiles(ctx context.Context, arg ListCompatibleActiveMappingProfilesParams) ([]pgtype.UUID, error)
 	ListConnectivityTestResults(ctx context.Context) ([]ConnectivityTestResult, error)
 	ListDownloadFiles(ctx context.Context, downloadID pgtype.UUID) ([]DownloadFile, error)
+	ListDownloadSyncSelectedFiles(ctx context.Context, downloadID pgtype.UUID) ([]ListDownloadSyncSelectedFilesRow, error)
 	ListDownloads(ctx context.Context, arg ListDownloadsParams) ([]Download, error)
 	ListEligibleRSSEntries(ctx context.Context, subscriptionID pgtype.UUID) ([]ListEligibleRSSEntriesRow, error)
 	ListEmbyLibraries(ctx context.Context) ([]EmbyLibrary, error)

@@ -110,6 +110,13 @@ SELECT id, status, torrent_hash, client_state, last_synced_at
 FROM downloads
 WHERE id = sqlc.arg(id);
 
+-- name: ListDownloadSyncSelectedFiles :many
+SELECT file_index, size_bytes
+FROM download_files
+WHERE download_id = sqlc.arg(download_id)
+  AND selected = true
+ORDER BY file_index;
+
 -- name: UpdateDownloadProgress :one
 UPDATE downloads
 SET progress = GREATEST(

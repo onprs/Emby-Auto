@@ -51,14 +51,22 @@ func TestDownloadSyncHandlerRecordsProgressAndSnoozesWithoutRetry(t *testing.T) 
 		DownloadID:  downloadID,
 		Status:      domain.DownloadDownloading,
 		TorrentHash: workerTorrentHash,
+		SelectedFiles: []domain.DownloadSyncFile{
+			{FileIndex: 0, SizeBytes: 100},
+		},
 	}}
-	client := &torrentClientStub{torrents: []qbittorrent.Torrent{{
-		Hash:       workerTorrentHash,
-		Progress:   0.42,
-		AmountLeft: 58,
-		TotalSize:  100,
-		State:      "downloading",
-	}}}
+	client := &torrentClientStub{
+		torrents: []qbittorrent.Torrent{{
+			Hash:       workerTorrentHash,
+			Progress:   0.42,
+			AmountLeft: 58,
+			TotalSize:  100,
+			State:      "downloading",
+		}},
+		files: []qbittorrent.TorrentFile{
+			{Index: 0, Progress: 0.42, Priority: 1, Size: 100},
+		},
+	}
 	handler := NewDownloadSyncHandler(configuredDownloadTestStub(), store, func(qbittorrent.ClientOptions) (TorrentClient, error) {
 		return client, nil
 	}, 15*time.Second)
@@ -131,14 +139,22 @@ func TestDownloadSyncHandlerCompletesFinishedTorrent(t *testing.T) {
 		DownloadID:  downloadID,
 		Status:      domain.DownloadDownloading,
 		TorrentHash: workerTorrentHash,
+		SelectedFiles: []domain.DownloadSyncFile{
+			{FileIndex: 0, SizeBytes: 100},
+		},
 	}}
-	client := &torrentClientStub{torrents: []qbittorrent.Torrent{{
-		Hash:       workerTorrentHash,
-		Progress:   1,
-		AmountLeft: 0,
-		TotalSize:  100,
-		State:      "uploading",
-	}}}
+	client := &torrentClientStub{
+		torrents: []qbittorrent.Torrent{{
+			Hash:       workerTorrentHash,
+			Progress:   1,
+			AmountLeft: 0,
+			TotalSize:  100,
+			State:      "uploading",
+		}},
+		files: []qbittorrent.TorrentFile{
+			{Index: 0, Progress: 1, Priority: 1, Size: 100},
+		},
+	}
 	handler := NewDownloadSyncHandler(configuredDownloadTestStub(), store, func(qbittorrent.ClientOptions) (TorrentClient, error) {
 		return client, nil
 	}, time.Minute)
@@ -196,6 +212,33 @@ func TestDownloadSyncHandlerRetriesWhenTorrentIsTemporarilyMissing(t *testing.T)
 	}
 }
 
+func TestDownloadSyncHandlerFailsWhenSelectedFilesEmpty(t *testing.T) {
+	downloadID := uuid.MustParse("40000000-0000-0000-0000-000000000030")
+	operationID := uuid.MustParse("40000000-0000-0000-0000-000000000031")
+	store := &downloadSyncStoreStub{command: domain.DownloadSyncCommand{
+		DownloadID:  downloadID,
+		Status:      domain.DownloadDownloading,
+		TorrentHash: workerTorrentHash,
+	}}
+	client := &torrentClientStub{
+		torrents: []qbittorrent.Torrent{{Hash: workerTorrentHash, Progress: 1, AmountLeft: 0, TotalSize: 100, State: "stoppedUP"}},
+	}
+	handler := NewDownloadSyncHandler(configuredDownloadTestStub(), store, func(qbittorrent.ClientOptions) (TorrentClient, error) {
+		return client, nil
+	}, time.Minute)
+	err := handler.Handle(context.Background(), domain.Operation{ID: operationID, ResourceType: "download", ResourceID: downloadID})
+	var failure *Failure
+	if !errors.As(err, &failure) || failure.Code != "download_state_conflict" || failure.Retryable {
+		t.Fatalf("Handle() error = %#v, want permanent download_state_conflict for empty selected", err)
+	}
+	if store.completed {
+		t.Fatalf("empty selected must not complete")
+	}
+	if store.progressCalls != 0 {
+		t.Fatalf("empty selected must not persist progress, got %d calls", store.progressCalls)
+	}
+}
+
 func TestDownloadSyncHandlerSnoozesWhenTorrentCompleteButSelectedPriorityZero(t *testing.T) {
 	downloadID := uuid.MustParse("40000000-0000-0000-0000-000000000010")
 	operationID := uuid.MustParse("40000000-0000-0000-0000-000000000011")
@@ -229,12 +272,82 @@ func TestDownloadSyncHandlerSnoozesWhenTorrentCompleteButSelectedPriorityZero(t 
 	if store.progressCalls != 1 {
 		t.Fatalf("progress calls = %d, want 1", store.progressCalls)
 	}
-	wantProgress := (1000*1.0 + 2000*0.2) / 3000
+	// priority=0 文件按 0 进度处理，避免瞬态聚合污染
+	wantProgress := float64(1000) / float64(3000)
 	if store.progress < wantProgress-1e-9 || store.progress > wantProgress+1e-9 {
-		t.Fatalf("progress = %v, want %v", store.progress, wantProgress)
+		t.Fatalf("progress = %v, want %v (priority 0 contributes 0)", store.progress, wantProgress)
 	}
 	if store.progress >= 1-1e-9 {
 		t.Fatalf("progress polluted to 1, got %v", store.progress)
+	}
+}
+
+func TestDownloadSyncHandlerSnoozesWhenSingleSelectedPriorityZeroWithProgressOne(t *testing.T) {
+	downloadID := uuid.MustParse("40000000-0000-0000-0000-000000000040")
+	operationID := uuid.MustParse("40000000-0000-0000-0000-000000000041")
+	store := &downloadSyncStoreStub{command: domain.DownloadSyncCommand{
+		DownloadID:  downloadID,
+		Status:      domain.DownloadDownloading,
+		TorrentHash: workerTorrentHash,
+		SelectedFiles: []domain.DownloadSyncFile{
+			{FileIndex: 7, SizeBytes: 2000},
+		},
+	}}
+	client := &torrentClientStub{
+		torrents: []qbittorrent.Torrent{{Hash: workerTorrentHash, Progress: 1, AmountLeft: 0, TotalSize: 2000, State: "stoppedUP"}},
+		files: []qbittorrent.TorrentFile{
+			{Index: 7, Progress: 1, Priority: 0, Size: 2000},
+		},
+	}
+	handler := NewDownloadSyncHandler(configuredDownloadTestStub(), store, func(qbittorrent.ClientOptions) (TorrentClient, error) {
+		return client, nil
+	}, 15*time.Second)
+	err := handler.Handle(context.Background(), domain.Operation{ID: operationID, ResourceType: "download", ResourceID: downloadID})
+	var snoozeErr *river.JobSnoozeError
+	if !errors.As(err, &snoozeErr) {
+		t.Fatalf("Handle() error = %v, want snooze for priority 0 single file", err)
+	}
+	if store.completed {
+		t.Fatalf("single priority 0 file must not complete even though torrent progress is 1")
+	}
+	if store.progressCalls != 1 {
+		t.Fatalf("progress calls = %d, want 1", store.progressCalls)
+	}
+	if store.progress != 0 {
+		t.Fatalf("progress = %v, want 0 for priority 0 single file with progress 1", store.progress)
+	}
+}
+
+func TestDownloadSyncHandlerSnoozesWhenSingleSelectedPriorityZeroIsSeed(t *testing.T) {
+	downloadID := uuid.MustParse("40000000-0000-0000-0000-000000000042")
+	operationID := uuid.MustParse("40000000-0000-0000-0000-000000000043")
+	store := &downloadSyncStoreStub{command: domain.DownloadSyncCommand{
+		DownloadID:  downloadID,
+		Status:      domain.DownloadDownloading,
+		TorrentHash: workerTorrentHash,
+		SelectedFiles: []domain.DownloadSyncFile{
+			{FileIndex: 9, SizeBytes: 1500},
+		},
+	}}
+	client := &torrentClientStub{
+		torrents: []qbittorrent.Torrent{{Hash: workerTorrentHash, Progress: 1, AmountLeft: 0, TotalSize: 1500, State: "stoppedUP"}},
+		files: []qbittorrent.TorrentFile{
+			{Index: 9, Progress: 1, Priority: 0, Size: 1500, IsSeed: true},
+		},
+	}
+	handler := NewDownloadSyncHandler(configuredDownloadTestStub(), store, func(qbittorrent.ClientOptions) (TorrentClient, error) {
+		return client, nil
+	}, 15*time.Second)
+	err := handler.Handle(context.Background(), domain.Operation{ID: operationID, ResourceType: "download", ResourceID: downloadID})
+	var snoozeErr *river.JobSnoozeError
+	if !errors.As(err, &snoozeErr) {
+		t.Fatalf("Handle() error = %v, want snooze for priority 0 IsSeed file", err)
+	}
+	if store.completed {
+		t.Fatalf("priority 0 IsSeed file must not complete")
+	}
+	if store.progress != 0 {
+		t.Fatalf("progress = %v, want 0 for priority 0 IsSeed file", store.progress)
 	}
 }
 

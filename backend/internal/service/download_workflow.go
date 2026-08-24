@@ -323,18 +323,15 @@ func (workflow *DownloadWorkflow) LoadSyncCommand(
 		value := row.LastSyncedAt.Time
 		command.LastSyncedAt = &value
 	}
-	files, err := workflow.queries.ListDownloadFiles(ctx, row.ID)
+	rows, err := workflow.queries.ListDownloadSyncSelectedFiles(ctx, row.ID)
 	if err != nil {
-		return domain.DownloadSyncCommand{}, fmt.Errorf("list download sync files: %w", err)
+		return domain.DownloadSyncCommand{}, fmt.Errorf("list download sync selected files: %w", err)
 	}
-	selected := make([]domain.DownloadSyncFile, 0, len(files))
-	for _, file := range files {
-		if !file.Selected {
-			continue
-		}
+	selected := make([]domain.DownloadSyncFile, 0, len(rows))
+	for _, item := range rows {
 		selected = append(selected, domain.DownloadSyncFile{
-			FileIndex: int(file.FileIndex),
-			SizeBytes: file.SizeBytes,
+			FileIndex: int(item.FileIndex),
+			SizeBytes: item.SizeBytes,
 		})
 	}
 	command.SelectedFiles = selected
