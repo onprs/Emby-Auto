@@ -52,10 +52,16 @@ type DownloadSelectionApplyCommand struct {
 	AllFileIndexes      []int
 }
 
+type DownloadSyncFile struct {
+	FileIndex int
+	SizeBytes int64
+}
+
 type DownloadSyncCommand struct {
-	DownloadID   uuid.UUID
-	Status       DownloadState
-	TorrentHash  string
-	ClientState  string
-	LastSyncedAt *time.Time
+	DownloadID    uuid.UUID
+	Status        DownloadState
+	TorrentHash   string
+	ClientState   string
+	LastSyncedAt  *time.Time
+	SelectedFiles []DownloadSyncFile
 }
