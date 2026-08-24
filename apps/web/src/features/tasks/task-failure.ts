@@ -159,8 +159,7 @@ const codeReasons: Record<string, Reason> = {
   download_no_main_video: {
     reason: '没有可处理的正片视频',
     detail: '下载资源中没有识别出可处理的正片视频。',
-    recommendation: '更换下载资源，或在文件选择中明确指定正片。',
-    neverRetry: true,
+    recommendation: '可点击“重试下载”重新解析文件；若仍未识别，请更换包含正片视频的下载资源或在文件选择中明确指定正片。',
   },
   no_main_video: {
     reason: '没有可处理的正片视频',

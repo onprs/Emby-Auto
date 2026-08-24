@@ -954,7 +954,7 @@ export type AcquisitionDownloadSummary = {
     attempt: number;
     status: DownloadStatus;
     progress: number;
-    failureStage?: 'enqueue' | 'sync' | 'materialize';
+    failureStage?: 'enqueue' | 'file_resolution' | 'sync' | 'materialize';
     clientState?: string;
     errorCode?: string;
     errorMessage?: string;

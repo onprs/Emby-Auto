@@ -167,4 +167,120 @@ describe('AcquisitionsPage failure actions', () => {
     expect(retry.mock.calls[0][0].body).toEqual({ expectedVersion: 4 });
     expect(retry.mock.calls[0][0].key).toBeTruthy();
   });
+
+  it('allows retry for download_no_main_video with latest version and a single idempotent request', async () => {
+    const item: Acquisition = {
+      ...failedAcquisition(),
+      id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      downloadId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+      download: {
+        id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+        attempt: 1,
+        status: 'failed',
+        progress: 1,
+        failureStage: 'file_resolution',
+        errorCode: 'download_no_main_video',
+        errorMessage: 'the torrent contains no selectable main video',
+        updatedAt: '2026-07-25T02:00:00Z',
+      },
+    };
+    const latestDownload: Download = {
+      id: item.downloadId!,
+      acquisitionId: item.id,
+      attempt: 1,
+      clientName: 'qbittorrent',
+      status: 'failed',
+      progress: 1,
+      version: 9,
+      failureStage: 'file_resolution',
+      errorCode: 'download_no_main_video',
+      errorMessage: 'the torrent contains no selectable main video',
+      files: [],
+      actions: { canRetry: true, canCancel: false, canDelete: true, canEditFileSelection: false, canResolveFiles: false, canRequestAgent: false },
+      createdAt: '2026-07-25T01:00:00Z',
+      updatedAt: '2026-07-25T02:00:00Z',
+    };
+    const retry = vi.fn();
+    let resolveRetry: (() => void) | undefined;
+    server.use(
+      http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })),
+      http.get(`*/api/v1/downloads/${latestDownload.id}`, () => HttpResponse.json(latestDownload)),
+      http.post(`*/api/v1/downloads/${latestDownload.id}/retry`, async ({ request }) => {
+        retry({ body: await request.json(), key: request.headers.get('Idempotency-Key') });
+        await new Promise<void>((resolve) => { resolveRetry = resolve; });
+        return HttpResponse.json({ download: { ...latestDownload, status: 'enqueue_pending', version: 10 }, operationId: '44444444-4444-4444-4444-444444444444', status: 'queued' }, { status: 202 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<AcquisitionsPage />);
+
+    await screen.findAllByText('下载失败：没有可处理的正片视频');
+
+    // 第一次打开菜单并触发重试，POST 保持悬挂以模拟 running 期间
+    await user.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    const firstRetryItem = await screen.findByRole('menuitem', { name: '重试下载' });
+    await user.click(firstRetryItem);
+    await waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
+    expect(retry.mock.calls[0][0].body).toEqual({ expectedVersion: 9 });
+    const firstKey = String(retry.mock.calls[0][0].key ?? '');
+    expect(firstKey.trim().length).toBeGreaterThan(0);
+
+    // running 期间重新打开菜单，查询全新的 menuitem 并断言真实 disabled 状态（不复用已 detached 的旧节点）
+    await user.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    const retryItemDuringRunning = await screen.findByRole('menuitem', { name: '重试下载' });
+    expect(retryItemDuringRunning).toBeDisabled();
+
+    // 点击 disabled 项不应产生第二次 POST（不吞异常，不复用旧节点）
+    await user.click(retryItemDuringRunning);
+    await waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
+
+    // 释放悬挂的 POST，等待请求完成与 running 状态收敛，不留下未处理 Promise 或 act 警告
+    expect(resolveRetry).toBeDefined();
+    resolveRetry!();
+    await waitFor(() => expect(retryItemDuringRunning).toBeEnabled());
+  });
+
+  it('keeps permanent errors without a retry action', async () => {
+    const item: Acquisition = {
+      ...failedAcquisition(),
+      id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+      downloadId: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+      download: {
+        id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+        attempt: 1,
+        status: 'failed',
+        progress: 0,
+        failureStage: 'enqueue',
+        errorCode: 'duplicate_torrent',
+        errorMessage: 'torrent already exists',
+        updatedAt: '2026-07-25T02:00:00Z',
+      },
+    };
+    const downloadForItem: Download = {
+      id: item.downloadId!,
+      acquisitionId: item.id,
+      attempt: 1,
+      clientName: 'qbittorrent',
+      status: 'failed',
+      progress: 0,
+      version: 1,
+      failureStage: 'enqueue',
+      errorCode: 'duplicate_torrent',
+      errorMessage: 'torrent already exists',
+      files: [],
+      actions: { canRetry: true, canCancel: false, canDelete: true, canEditFileSelection: false, canResolveFiles: false, canRequestAgent: false },
+      createdAt: '2026-07-25T01:00:00Z',
+      updatedAt: '2026-07-25T02:00:00Z',
+    };
+    server.use(
+      http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })),
+      http.get(`*/api/v1/downloads/${downloadForItem.id}`, () => HttpResponse.json(downloadForItem)),
+    );
+    renderWithProviders(<AcquisitionsPage />);
+
+    await screen.findAllByText('下载失败：下载资源已存在');
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    expect(screen.queryByRole('menuitem', { name: '重试下载' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: '重试任务' })).not.toBeInTheDocument();
+  });
 });
