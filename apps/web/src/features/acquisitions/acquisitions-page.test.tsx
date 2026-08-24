@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Acquisition, Download } from '@/api/generated/types.gen';
+import type { Acquisition, AcquisitionTaskSummary, Download } from '@/api/generated/types.gen';
 import { AcquisitionsPage } from '@/features/acquisitions/acquisitions-page';
 import { server } from '@/test/msw-server';
 import { renderWithProviders } from '@/test/render';
@@ -44,6 +44,20 @@ function failedAcquisition(): Acquisition {
     ],
     createdAt: '2026-07-25T01:00:00Z',
     updatedAt: '2026-07-25T02:00:00Z',
+  };
+}
+
+function acquisitionTaskSummary(overrides: Partial<AcquisitionTaskSummary>): AcquisitionTaskSummary {
+  return {
+    id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    mediaType: 'episode',
+    downloadId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+    state: 'failed',
+    videoState: 'failed',
+    subtitleState: 'ass_ready',
+    canRetry: true,
+    updatedAt: '2026-07-25T02:00:00Z',
+    ...overrides,
   };
 }
 
@@ -282,5 +296,632 @@ describe('AcquisitionsPage failure actions', () => {
     await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
     expect(screen.queryByRole('menuitem', { name: '重试下载' })).not.toBeInTheDocument();
     expect(screen.queryByRole('menuitem', { name: '重试任务' })).not.toBeInTheDocument();
+  });
+});
+
+describe('AcquisitionsPage task retry actions', () => {
+  function taskAcquisition(overrides: Partial<Acquisition> & { tasks: Acquisition['tasks'] }): Acquisition {
+    return {
+      id: '55555555-5555-5555-5555-555555555555',
+      mediaType: 'episode',
+      seriesId: '66666666-6666-6666-6666-666666666666',
+      seriesTitle: '任务重试示例',
+      sourceKind: 'rss',
+      mapping: { selectedVideoCount: 1, mappedVideoCount: 1, complete: true },
+      aggregateStatus: 'failed',
+      currentStage: 'transcode',
+      overallProgress: 0.5,
+      stages: [
+        { key: 'source', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+        { key: 'download', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+        { key: 'mapping', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+        { key: 'transcode', status: 'failed', progress: 0, completedItems: 0, totalItems: 1 },
+        { key: 'subtitle', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+        { key: 'rename', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+        { key: 'organize', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+        { key: 'review', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+        { key: 'import', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+      ],
+      createdAt: '2026-07-25T01:00:00Z',
+      updatedAt: '2026-07-25T02:00:00Z',
+      ...overrides,
+    } as Acquisition;
+  }
+  it('shows retry for safe cancelled without stop and performs single GET and POST', async () => {
+    const taskId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const downloadId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    const item = taskAcquisition({
+      tasks: [acquisitionTaskSummary({
+        id: taskId,
+        downloadId,
+        sourceSeason: 1,
+        sourceEpisode: 1,
+        state: 'cancelled',
+        videoState: 'failed',
+        subtitleState: 'ass_ready',
+        canRetry: true,
+        updatedAt: '2026-07-25T02:00:00Z',
+      })],
+    });
+    const fullTask = {
+      id: taskId,
+      acquisitionId: item.id,
+      downloadId,
+      mediaType: 'episode',
+      state: 'cancelled',
+      videoState: 'failed',
+      subtitleState: 'ass_ready',
+      version: 13,
+      failureStage: undefined,
+      operations: [],
+      actions: { canRetry: true, canCancel: false, canReview: false, canImport: false },
+      createdAt: '2026-07-25T01:00:00Z',
+      updatedAt: '2026-07-25T02:00:00Z',
+    };
+    let getCount = 0;
+    let postCount = 0;
+    let postBody: unknown = null;
+    let postKey: string | null = null;
+    server.use(
+      http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })),
+      http.get(`*/api/v1/tasks/${taskId}`, () => {
+        getCount++;
+        return HttpResponse.json(fullTask);
+      }),
+      http.post(`*/api/v1/tasks/${taskId}/retry`, async ({ request }) => {
+        postCount++;
+        postBody = await request.json();
+        postKey = request.headers.get('Idempotency-Key');
+        return HttpResponse.json({ task: { ...fullTask, state: 'processing', version: 14 }, operationId: 'cccccccc-cccc-cccc-cccc-cccccccccccc', status: 'queued' }, { status: 202 });
+      }),
+    );
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    const retryItem = await screen.findByRole('menuitem', { name: '重试任务' });
+    expect(retryItem).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: '停止处理' })).not.toBeInTheDocument();
+    await userEvent.click(retryItem);
+    await waitFor(() => expect(postCount).toBe(1));
+    expect(getCount).toBe(1);
+    expect(postBody).toEqual({ expectedVersion: 13 });
+    expect(postKey).toBeTruthy();
+    expect(String(postKey).trim().length).toBeGreaterThan(0);
+  });
+  it('does not show retry for ordinary cancelled', async () => {
+    const item = taskAcquisition({
+      tasks: [{
+        id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+        mediaType: 'episode',
+        downloadId: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+        state: 'cancelled',
+        videoState: 'cancelled',
+        subtitleState: 'cancelled',
+        canRetry: false,
+        updatedAt: '2026-07-25T02:00:00Z',
+      } satisfies AcquisitionTaskSummary],
+    });
+    server.use(http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })));
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    expect(screen.queryByRole('menuitem', { name: '重试任务' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: '停止处理' })).not.toBeInTheDocument();
+  });
+  it('shows retry without stop for processing stuck', async () => {
+    const item = taskAcquisition({
+      tasks: [{
+        id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+        mediaType: 'episode',
+        downloadId: '00000000-0000-0000-0000-000000000000',
+        state: 'processing',
+        videoState: 'failed',
+        subtitleState: 'ass_ready',
+        canRetry: true,
+        updatedAt: '2026-07-25T02:00:00Z',
+      } satisfies AcquisitionTaskSummary],
+    });
+    server.use(http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })));
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    expect(await screen.findByRole('menuitem', { name: '重试任务' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: '停止处理' })).not.toBeInTheDocument();
+  });
+  it('shows merged summary for dual failed with empty failureStage and single retry', async () => {
+    const item = taskAcquisition({
+      tasks: [{
+        id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaab',
+        mediaType: 'episode',
+        downloadId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbc',
+        state: 'cancelled',
+        videoState: 'failed',
+        subtitleState: 'failed',
+        canRetry: true,
+        failureStage: undefined,
+        errorCode: 'ffmpeg_transcode_failed',
+        errorMessage: 'video failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      } satisfies AcquisitionTaskSummary],
+    });
+    server.use(http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })));
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    const summaries = await screen.findAllByText('视频和字幕处理失败');
+    expect(summaries.length).toBeGreaterThan(0);
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    const retryItems = await screen.findAllByRole('menuitem', { name: '重试任务' });
+    expect(retryItems).toHaveLength(1);
+    expect(screen.queryByRole('menuitem', { name: '停止处理' })).not.toBeInTheDocument();
+  });
+  it('keeps single video failed summary unchanged', async () => {
+    const item = taskAcquisition({
+      tasks: [{
+        id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaac',
+        mediaType: 'episode',
+        downloadId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbd',
+        state: 'failed',
+        videoState: 'failed',
+        subtitleState: 'ass_ready',
+        canRetry: true,
+        failureStage: undefined,
+        errorCode: 'ffmpeg_transcode_failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      } satisfies AcquisitionTaskSummary],
+    });
+    server.use(http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })));
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    const summaries = await screen.findAllByText(/视频转码失败/);
+    expect(summaries.length).toBeGreaterThan(0);
+    expect(screen.queryByText('视频和字幕处理失败')).not.toBeInTheDocument();
+  });
+  it('keeps single subtitle failed summary unchanged', async () => {
+    const item = taskAcquisition({
+      tasks: [{
+        id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaad',
+        mediaType: 'episode',
+        downloadId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbe',
+        state: 'failed',
+        videoState: 'video_ready',
+        subtitleState: 'failed',
+        canRetry: true,
+        failureStage: undefined,
+        errorCode: 'ffmpeg_subtitle_failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      } satisfies AcquisitionTaskSummary],
+    });
+    server.use(http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })));
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    const summaries = await screen.findAllByText(/字幕处理失败/);
+    expect(summaries.length).toBeGreaterThan(0);
+    expect(screen.queryByText('视频和字幕处理失败')).not.toBeInTheDocument();
+  });
+  it('shows cleanup failure with retry cleanup and single GET+POST', async () => {
+    const taskId = 'cccccccc-cccc-cccc-cccc-ccccccccccc1';
+    const downloadId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+    const item = taskAcquisition({
+      tasks: [{
+        id: taskId,
+        mediaType: 'episode',
+        downloadId,
+        state: 'imported',
+        videoState: 'video_ready',
+        subtitleState: 'ass_ready',
+        cleanupStatus: 'failed',
+        canRetry: true,
+        errorCode: 'cleanup_delete_failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      } satisfies AcquisitionTaskSummary],
+    });
+    const fullTask = {
+      id: taskId,
+      acquisitionId: item.id,
+      downloadId,
+      mediaType: 'episode',
+      state: 'imported',
+      videoState: 'video_ready',
+      subtitleState: 'ass_ready',
+      version: 7,
+      cleanup: {
+        id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+        attempt: 1,
+        status: 'failed',
+        torrentRemoved: false,
+        stagedFilesRemoved: false,
+        errorCode: 'cleanup_delete_failed',
+        errorMessage: 'remove failed',
+        createdAt: '2026-07-25T01:00:00Z',
+        updatedAt: '2026-07-25T02:00:00Z',
+      },
+      operations: [],
+      actions: { canRetry: true, canCancel: false, canReview: false, canImport: false },
+      createdAt: '2026-07-25T01:00:00Z',
+      updatedAt: '2026-07-25T02:00:00Z',
+    };
+    let getCount = 0;
+    let postCount = 0;
+    server.use(
+      http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })),
+      http.get(`*/api/v1/tasks/${taskId}`, () => {
+        getCount++;
+        return HttpResponse.json(fullTask);
+      }),
+      http.post(`*/api/v1/tasks/${taskId}/retry`, async ({ request }) => {
+        postCount++;
+        return HttpResponse.json({ task: { ...fullTask, version: 8 }, operationId: 'ffffffff-ffff-ffff-ffff-ffffffffffff', status: 'queued' }, { status: 202 });
+      }),
+    );
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    const summaries = await screen.findAllByText(/清理失败/);
+    expect(summaries.length).toBeGreaterThan(0);
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    const retryItem = await screen.findByRole('menuitem', { name: '重试清理' });
+    expect(retryItem).toBeInTheDocument();
+    await userEvent.click(retryItem);
+    await waitFor(() => expect(postCount).toBe(1));
+    expect(getCount).toBe(1);
+  });
+  it('does not show retry for imported cleanup completed', async () => {
+    const item = taskAcquisition({
+      tasks: [{
+        id: 'cccccccc-cccc-cccc-cccc-ccccccccccc2',
+        mediaType: 'episode',
+        downloadId: 'dddddddd-dddd-dddd-dddd-ddddddddddde',
+        state: 'imported',
+        videoState: 'video_ready',
+        subtitleState: 'ass_ready',
+        cleanupStatus: 'completed',
+        canRetry: false,
+        updatedAt: '2026-07-25T02:00:00Z',
+      } satisfies AcquisitionTaskSummary],
+    });
+    server.use(http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })));
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    expect(screen.queryByRole('menuitem', { name: '重试清理' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: '重试任务' })).not.toBeInTheDocument();
+  });
+});
+
+describe('AcquisitionsPage multiple retryable count', () => {
+  function taskAcquisition(overrides: Partial<Acquisition> & { tasks: Acquisition['tasks'] }): Acquisition {
+    return {
+      id: '55555555-5555-5555-5555-555555555555',
+      mediaType: 'episode',
+      seriesId: '66666666-6666-6666-6666-666666666666',
+      seriesTitle: '任务重试示例',
+      sourceKind: 'rss',
+      mapping: { selectedVideoCount: 1, mappedVideoCount: 1, complete: true },
+      aggregateStatus: 'failed',
+      currentStage: 'transcode',
+      overallProgress: 0.5,
+      stages: [
+        { key: 'source', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+        { key: 'download', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+        { key: 'mapping', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+        { key: 'transcode', status: 'failed', progress: 0, completedItems: 0, totalItems: 1 },
+        { key: 'subtitle', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+        { key: 'rename', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+        { key: 'organize', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+        { key: 'review', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+        { key: 'import', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+      ],
+      createdAt: '2026-07-25T01:00:00Z',
+      updatedAt: '2026-07-25T02:00:00Z',
+      ...overrides,
+    } as Acquisition;
+  }
+  it('shows count for N=2 and retries both tasks with single menu item', async () => {
+    const taskId1 = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa11';
+    const taskId2 = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbb22';
+    const downloadId = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+    const item = taskAcquisition({
+      tasks: [
+        {
+          id: taskId1,
+          mediaType: 'episode',
+          downloadId,
+          state: 'failed',
+          videoState: 'failed',
+          subtitleState: 'ass_ready',
+          canRetry: true,
+          failureStage: 'video',
+          errorCode: 'ffmpeg_transcode_failed',
+          updatedAt: '2026-07-25T02:00:00Z',
+        } satisfies AcquisitionTaskSummary,
+        {
+          id: taskId2,
+          mediaType: 'episode',
+          downloadId,
+          state: 'failed',
+          videoState: 'video_ready',
+          subtitleState: 'failed',
+          canRetry: true,
+          failureStage: 'subtitle',
+          errorCode: 'ffmpeg_subtitle_failed',
+          updatedAt: '2026-07-25T02:01:00Z',
+        } satisfies AcquisitionTaskSummary,
+      ],
+    });
+    const fullTask1 = {
+      id: taskId1,
+      acquisitionId: item.id,
+      downloadId,
+      mediaType: 'episode',
+      state: 'failed',
+      videoState: 'failed',
+      subtitleState: 'ass_ready',
+      version: 5,
+      failureStage: 'video',
+      operations: [],
+      actions: { canRetry: true, canCancel: false, canReview: false, canImport: false },
+      createdAt: '2026-07-25T01:00:00Z',
+      updatedAt: '2026-07-25T02:00:00Z',
+    };
+    const fullTask2 = {
+      id: taskId2,
+      acquisitionId: item.id,
+      downloadId,
+      mediaType: 'episode',
+      state: 'failed',
+      videoState: 'video_ready',
+      subtitleState: 'failed',
+      version: 6,
+      failureStage: 'subtitle',
+      operations: [],
+      actions: { canRetry: true, canCancel: false, canReview: false, canImport: false },
+      createdAt: '2026-07-25T01:00:00Z',
+      updatedAt: '2026-07-25T02:01:00Z',
+    };
+    let getCount1 = 0;
+    let getCount2 = 0;
+    let postCount = 0;
+    server.use(
+      http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })),
+      http.get(`*/api/v1/tasks/${taskId1}`, () => { getCount1++; return HttpResponse.json(fullTask1); }),
+      http.get(`*/api/v1/tasks/${taskId2}`, () => { getCount2++; return HttpResponse.json(fullTask2); }),
+      http.post(`*/api/v1/tasks/${taskId1}/retry`, async () => { postCount++; return HttpResponse.json({ task: { ...fullTask1, version: 6 }, operationId: 'dddddddd-dddd-dddd-dddd-dddddddddddd', status: 'queued' }, { status: 202 }); }),
+      http.post(`*/api/v1/tasks/${taskId2}/retry`, async () => { postCount++; return HttpResponse.json({ task: { ...fullTask2, version: 7 }, operationId: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee', status: 'queued' }, { status: 202 }); }),
+    );
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    const summaries = await screen.findAllByText(/（共 2 个任务）/);
+    expect(summaries.length).toBeGreaterThan(0);
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    const retryItems = await screen.findAllByRole('menuitem', { name: '重试任务' });
+    expect(retryItems).toHaveLength(1);
+    await userEvent.click(retryItems[0]);
+    await waitFor(() => expect(postCount).toBe(2));
+    expect(getCount1).toBe(1);
+    expect(getCount2).toBe(1);
+  });
+  it('does not show count for N=1', async () => {
+    const item = taskAcquisition({
+      tasks: [{
+        id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa33',
+        mediaType: 'episode',
+        downloadId: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+        state: 'failed',
+        videoState: 'failed',
+        subtitleState: 'ass_ready',
+        canRetry: true,
+        failureStage: 'video',
+        errorCode: 'ffmpeg_transcode_failed',
+        updatedAt: '2026-07-25T02:00:00Z',
+      } satisfies AcquisitionTaskSummary],
+    });
+    server.use(http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [item] })));
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    const summaries = await screen.findAllByText(/视频转码失败/);
+    expect(summaries.length).toBeGreaterThan(0);
+    expect(screen.queryByText(/（共/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    expect(await screen.findByRole('menuitem', { name: '重试任务' })).toBeInTheDocument();
+  });
+});
+
+describe('AcquisitionsPage partial retry refresh', () => {
+  function taskAcquisition(overrides: Partial<Acquisition> & { tasks: Acquisition['tasks'] }): Acquisition {
+    return {
+      id: '55555555-5555-5555-5555-555555555555',
+      mediaType: 'episode',
+      seriesId: '66666666-6666-6666-6666-666666666666',
+      seriesTitle: '任务重试示例',
+      sourceKind: 'rss',
+      mapping: { selectedVideoCount: 1, mappedVideoCount: 1, complete: true },
+      aggregateStatus: 'failed',
+      currentStage: 'transcode',
+      overallProgress: 0.5,
+      stages: [
+        { key: 'source', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+        { key: 'download', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+        { key: 'mapping', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+        { key: 'transcode', status: 'failed', progress: 0, completedItems: 0, totalItems: 1 },
+        { key: 'subtitle', status: 'completed', progress: 1, completedItems: 1, totalItems: 1 },
+        { key: 'rename', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+        { key: 'organize', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+        { key: 'review', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+        { key: 'import', status: 'blocked', progress: 0, completedItems: 0, totalItems: 0 },
+      ],
+      createdAt: '2026-07-25T01:00:00Z',
+      updatedAt: '2026-07-25T02:00:00Z',
+      ...overrides,
+    } as Acquisition;
+  }
+
+  it('refreshes list after first task succeeds and second fails, keeps error and shows converged count', async () => {
+    const taskId1 = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa11';
+    const taskId2 = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbb22';
+    const downloadId = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+    const itemInitial = taskAcquisition({
+      tasks: [
+        acquisitionTaskSummary({
+          id: taskId1,
+          downloadId,
+          state: 'failed',
+          videoState: 'failed',
+          subtitleState: 'ass_ready',
+          canRetry: true,
+          failureStage: 'video',
+          errorCode: 'ffmpeg_transcode_failed',
+          updatedAt: '2026-07-25T02:00:00Z',
+        }),
+        acquisitionTaskSummary({
+          id: taskId2,
+          downloadId,
+          state: 'failed',
+          videoState: 'video_ready',
+          subtitleState: 'failed',
+          canRetry: true,
+          failureStage: 'subtitle',
+          errorCode: 'ffmpeg_subtitle_failed',
+          updatedAt: '2026-07-25T02:01:00Z',
+        }),
+      ],
+    });
+    const itemAfter = taskAcquisition({
+      tasks: [
+        acquisitionTaskSummary({
+          id: taskId2,
+          downloadId,
+          state: 'failed',
+          videoState: 'video_ready',
+          subtitleState: 'failed',
+          canRetry: true,
+          failureStage: 'subtitle',
+          errorCode: 'ffmpeg_subtitle_failed',
+          updatedAt: '2026-07-25T02:01:00Z',
+        }),
+      ],
+    });
+    const fullTask1 = {
+      id: taskId1,
+      acquisitionId: itemInitial.id,
+      downloadId,
+      mediaType: 'episode',
+      state: 'failed',
+      videoState: 'failed',
+      subtitleState: 'ass_ready',
+      version: 5,
+      failureStage: 'video',
+      operations: [],
+      actions: { canRetry: true, canCancel: false, canReview: false, canImport: false },
+      createdAt: '2026-07-25T01:00:00Z',
+      updatedAt: '2026-07-25T02:00:00Z',
+    };
+    const fullTask2 = {
+      id: taskId2,
+      acquisitionId: itemInitial.id,
+      downloadId,
+      mediaType: 'episode',
+      state: 'failed',
+      videoState: 'video_ready',
+      subtitleState: 'failed',
+      version: 6,
+      failureStage: 'subtitle',
+      operations: [],
+      actions: { canRetry: true, canCancel: false, canReview: false, canImport: false },
+      createdAt: '2026-07-25T01:00:00Z',
+      updatedAt: '2026-07-25T02:01:00Z',
+    };
+    let getAcquisitionsCount = 0;
+    let postCount1 = 0;
+    let postCount2 = 0;
+    server.use(
+      http.get('*/api/v1/acquisitions', () => {
+        getAcquisitionsCount++;
+        if (getAcquisitionsCount === 1) return HttpResponse.json({ items: [itemInitial] });
+        return HttpResponse.json({ items: [itemAfter] });
+      }),
+      http.get(`*/api/v1/tasks/${taskId1}`, () => HttpResponse.json(fullTask1)),
+      http.get(`*/api/v1/tasks/${taskId2}`, () => HttpResponse.json(fullTask2)),
+      http.post(`*/api/v1/tasks/${taskId1}/retry`, async () => {
+        postCount1++;
+        return HttpResponse.json({ task: { ...fullTask1, version: 6 }, operationId: 'dddddddd-dddd-dddd-dddd-dddddddddddd', status: 'queued' }, { status: 202 });
+      }),
+      http.post(`*/api/v1/tasks/${taskId2}/retry`, async () => {
+        postCount2++;
+        return HttpResponse.json({ code: 'state_conflict', message: 'task version changed', details: {}, requestId: 'req-1' }, { status: 409 });
+      }),
+    );
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    expect((await screen.findAllByText(/（共 2 个任务）/)).length).toBeGreaterThan(0);
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    await userEvent.click(await screen.findByRole('menuitem', { name: '重试任务' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    expect(postCount1).toBe(1);
+    expect(postCount2).toBe(1);
+    expect(screen.getByRole('alert').textContent).toContain('task version changed');
+    await waitFor(() => expect(getAcquisitionsCount).toBeGreaterThan(1));
+    // 列表已刷新：不再显示“共 2 个任务”，仅剩第二个任务的失败摘要
+    expect(screen.queryByText(/（共 2 个任务）/)).not.toBeInTheDocument();
+    expect((await screen.findAllByText(/字幕处理失败/)).length).toBeGreaterThan(0);
+    // 首个任务未被重复重试
+    expect(postCount1).toBe(1);
+    expect(postCount2).toBe(1);
+  });
+
+  it('refreshes even when single task retry fails immediately without duplicate POST', async () => {
+    const taskId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa99';
+    const downloadId = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+    const item = taskAcquisition({
+      tasks: [
+        acquisitionTaskSummary({
+          id: taskId,
+          downloadId,
+          state: 'failed',
+          videoState: 'failed',
+          subtitleState: 'ass_ready',
+          canRetry: true,
+          failureStage: 'video',
+          errorCode: 'ffmpeg_transcode_failed',
+          updatedAt: '2026-07-25T02:00:00Z',
+        }),
+      ],
+    });
+    const fullTask = {
+      id: taskId,
+      acquisitionId: item.id,
+      downloadId,
+      mediaType: 'episode',
+      state: 'failed',
+      videoState: 'failed',
+      subtitleState: 'ass_ready',
+      version: 5,
+      failureStage: 'video',
+      operations: [],
+      actions: { canRetry: true, canCancel: false, canReview: false, canImport: false },
+      createdAt: '2026-07-25T01:00:00Z',
+      updatedAt: '2026-07-25T02:00:00Z',
+    };
+    let getAcquisitionsCount = 0;
+    let postCount = 0;
+    server.use(
+      http.get('*/api/v1/acquisitions', () => {
+        getAcquisitionsCount++;
+        return HttpResponse.json({ items: [item] });
+      }),
+      http.get(`*/api/v1/tasks/${taskId}`, () => HttpResponse.json(fullTask)),
+      http.post(`*/api/v1/tasks/${taskId}/retry`, async () => {
+        postCount++;
+        return HttpResponse.json({ code: 'state_conflict', message: 'task version changed', details: {}, requestId: 'req-1' }, { status: 409 });
+      }),
+    );
+    renderWithProviders(<AcquisitionsPage />);
+    await screen.findAllByText('任务重试示例');
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    await userEvent.click(await screen.findByRole('menuitem', { name: '重试任务' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    expect(postCount).toBe(1);
+    await waitFor(() => expect(getAcquisitionsCount).toBeGreaterThan(1));
+    // 失败后仍刷新，但不重复提交
+    expect(postCount).toBe(1);
+    expect(screen.getByRole('alert').textContent).toContain('task version changed');
   });
 });

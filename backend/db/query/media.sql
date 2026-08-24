@@ -475,7 +475,7 @@ RETURNING episode_tasks.*;
 
 -- name: RequeueTaskFailedMediaBranches :one
 UPDATE episode_tasks
-SET state = CASE WHEN state = 'failed' THEN 'processing' ELSE state END,
+SET state = CASE WHEN state IN ('failed', 'cancelled') THEN 'processing' ELSE state END,
     video_state = CASE WHEN video_state = 'failed' THEN 'transcode_queued' ELSE video_state END,
     subtitle_state = CASE WHEN subtitle_state = 'failed' THEN 'subtitle_queued' ELSE subtitle_state END,
     failure_stage = NULL,
@@ -488,6 +488,7 @@ WHERE id = sqlc.arg(id)
   AND (
       (state = 'failed' AND (video_state = 'failed' OR subtitle_state = 'failed'))
       OR (state = 'processing' AND (video_state = 'failed' OR subtitle_state = 'failed'))
+      OR (state = 'cancelled' AND (video_state = 'failed' OR subtitle_state = 'failed') AND video_state IN ('failed', 'video_ready') AND subtitle_state IN ('failed', 'ass_ready'))
   )
 RETURNING *;
 

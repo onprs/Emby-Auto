@@ -23,18 +23,6 @@ export interface TaskActionResult {
   error?: string;
 }
 
-export function canRetryTask(task: Pick<Task, 'state' | 'cleanup' | 'failureStage'> & Partial<Pick<Task, 'videoState' | 'subtitleState'>>): boolean {
-  const videoFailed = (task as { videoState?: string }).videoState === 'failed';
-  const subtitleFailed = (task as { subtitleState?: string }).subtitleState === 'failed';
-  if (task.state === 'failed' && (task.failureStage || videoFailed || subtitleFailed)) {
-    return true;
-  }
-  if (task.state === 'processing' && (videoFailed || subtitleFailed)) {
-    return true;
-  }
-  return task.state === 'imported' && task.cleanup?.status === 'failed';
-}
-
 export function canDeleteTask(_task: Pick<Task, 'state' | 'cleanup'>): boolean {
   return true;
 }

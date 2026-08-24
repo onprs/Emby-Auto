@@ -51,6 +51,7 @@ function acquisition(overrides: Partial<Acquisition> = {}): Acquisition {
       videoState: 'video_ready',
       subtitleState: 'ass_ready',
       artifactBasename: '生命周期测试番剧 - S01E01 - 第一集',
+      canRetry: false,
       updatedAt: now,
     }],
     mapping: { selectedVideoCount: 1, mappedVideoCount: 1, complete: true },

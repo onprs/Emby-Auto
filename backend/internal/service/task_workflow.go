@@ -861,10 +861,12 @@ func buildTaskView(value taskViewValues) domain.EpisodeTask {
 		libraryID := repository.UUIDFromPG(value.embyLibraryID)
 		task.EmbyLibraryID = &libraryID
 	}
+	cleanupStatus := ""
+	if task.Cleanup != nil {
+		cleanupStatus = string(task.Cleanup.Status)
+	}
 	task.Actions = domain.TaskActions{
-		CanRetry: (task.State == domain.TaskFailed && (task.FailureStage != "" || task.VideoState == domain.VideoFailed || task.SubtitleState == domain.SubtitleFailed)) ||
-			(task.State == domain.TaskProcessing && (task.VideoState == domain.VideoFailed || task.SubtitleState == domain.SubtitleFailed)) ||
-			(task.State == domain.TaskImported && task.Cleanup != nil && task.Cleanup.Status == domain.CleanupFailed),
+		CanRetry:  isTaskRetryable(string(task.State), string(task.VideoState), string(task.SubtitleState), task.FailureStage, cleanupStatus),
 		CanCancel: task.State != domain.TaskImported && task.State != domain.TaskFailed && task.State != domain.TaskCancelled && task.State != domain.TaskRejected,
 		CanReview: task.State == domain.TaskAwaitingReview && task.Artifacts != nil,
 		CanImport: task.State == domain.TaskApproved && task.Artifacts != nil && task.Review != nil && task.Review.Decision == domain.TaskApproved,

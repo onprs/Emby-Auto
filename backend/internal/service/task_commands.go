@@ -98,7 +98,8 @@ func (workflow *TaskCommandWorkflow) Retry(ctx context.Context, taskID uuid.UUID
 		}
 		isFailedState := task.State == string(domain.TaskFailed)
 		isProcessingStuck := task.State == string(domain.TaskProcessing) && hasMediaFailed
-		if isFailedState || isProcessingStuck {
+		isCancelledRecoverable := isCancelledMediaRecoverable(task.State, task.VideoState, task.SubtitleState)
+		if isFailedState || isProcessingStuck || isCancelledRecoverable {
 			if hasMediaFailed {
 				var primaryBranch, secondaryBranch string
 				if videoFailed && subtitleFailed {

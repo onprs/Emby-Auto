@@ -145,6 +145,7 @@ type AcquisitionTaskSummary struct {
 	FailureStage            string
 	ErrorCode               string
 	ErrorMessage            string
+	CanRetry                bool
 	UpdatedAt               time.Time
 }
 

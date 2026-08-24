@@ -644,6 +644,7 @@ func (service *ReadService) acquisitionViews(ctx context.Context, rows []db.Acqu
 				DestinationSubtitlePath: valueOrEmpty(task.DestinationSubtitlePath), EmbyRefreshStatus: task.EmbyRefreshStatus,
 				CleanupStatus: task.CleanupStatus, FailureStage: valueOrEmpty(task.FailureStage), ErrorCode: valueOrEmpty(task.ErrorCode),
 				ErrorMessage: valueOrEmpty(task.ErrorMessage), TargetEpisodeTitle: valueOrEmpty(task.TargetEpisodeTitle),
+				CanRetry:  isTaskRetryable(task.State, task.VideoState, task.SubtitleState, valueOrEmpty(task.FailureStage), task.CleanupStatus),
 				UpdatedAt: task.UpdatedAt.Time,
 			}
 			if task.SourceSeason != nil {
