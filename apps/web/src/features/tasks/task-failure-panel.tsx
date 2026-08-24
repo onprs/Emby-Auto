@@ -80,6 +80,36 @@ export function TaskFailurePanel({ task, onChanged }: { task: Task; onChanged: (
           ...(info.displayCode ? [{ label: '排查标识', value: <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs">{info.displayCode}</code> }] : []),
         ]} />
 
+        {info.branches && info.branches.length === 2 ? (
+          <div className="space-y-3 border-t border-zinc-200 pt-4" data-testid="task-failure-branches">
+            <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">分支详情</p>
+            <DetailGrid
+              items={info.branches.flatMap((branch) => {
+                const op = task.operations.find((o) => o.id === branch.latestOperationId);
+                return [
+                  { label: `${branch.stageLabel}失败原因`, value: branch.detail },
+                  { label: `${branch.stageLabel}建议`, value: branch.recommendation },
+                  { label: `${branch.stageLabel}最近执行`, value: branch.attemptLabel },
+                  ...(op ? [{ label: `${branch.stageLabel}运行记录`, value: `${operationLabel(op.kind)} · ${op.status}` }] : []),
+                ];
+              })}
+            />
+            <div className="flex flex-wrap gap-2">
+              {info.branches.map((branch) => {
+                const op = task.operations.find((o) => o.id === branch.latestOperationId);
+                if (!op) return null;
+                return (
+                  <Button key={branch.stage} type="button" variant="ghost" size="sm" asChild>
+                    <ContextLink to="/operations/$operationId" params={{ operationId: op.id }}>
+                      查看{branch.stageLabel}运行记录
+                    </ContextLink>
+                  </Button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+
         <div className="border-l-2 border-amber-400 bg-amber-50 px-3 py-2.5">
           <p className="text-xs font-medium text-amber-900">建议处理方式</p>
           <p className="mt-1 text-sm leading-relaxed text-amber-950">{info.recommendation}</p>

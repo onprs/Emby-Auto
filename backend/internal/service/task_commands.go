@@ -2,10 +2,14 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -33,6 +37,12 @@ func (workflow *TaskCommandWorkflow) Retry(ctx context.Context, taskID uuid.UUID
 	trimmedKey := strings.TrimSpace(idempotencyKey)
 	if trimmedKey == "" {
 		return domain.EpisodeTask{}, domain.Operation{}, NewError("invalid_task_command", "the task command is invalid", ErrInvalidInput, map[string]any{"field": "idempotencyKey", "reason": "must not be blank"})
+	}
+	if !utf8.ValidString(trimmedKey) {
+		return domain.EpisodeTask{}, domain.Operation{}, NewError("invalid_task_command", "the task command is invalid", ErrInvalidInput, map[string]any{"field": "idempotencyKey", "reason": "must be valid utf8"})
+	}
+	if utf8.RuneCountInString(trimmedKey) > 256 {
+		return domain.EpisodeTask{}, domain.Operation{}, NewError("invalid_task_command", "the task command is invalid", ErrInvalidInput, map[string]any{"field": "idempotencyKey", "reason": "must not exceed 256 characters"})
 	}
 	err := workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
 		existing, replayed, err := findIdempotentResourceCommand(
@@ -128,23 +138,58 @@ func (workflow *TaskCommandWorkflow) Retry(ctx context.Context, taskID uuid.UUID
 					return fmt.Errorf("schedule task retry %s: %w", primaryBranch, err)
 				}
 				operation = scheduledPrimary.Operation
+				var secondaryOperation domain.Operation
+				var secondaryKind string
 				if secondaryBranch != "" {
-					secondaryKind, secondaryTimeout, secondaryAttempts := mediaBranchSchedule(secondaryBranch)
-					derivedKey := deriveSecondaryIdempotencyKey(trimmedKey, secondaryKind)
+					var secondaryTimeout time.Duration
+					var secondaryAttempts int
+					secondaryKind, secondaryTimeout, secondaryAttempts = mediaBranchSchedule(secondaryBranch)
+					derivedKey := deriveSecondaryIdempotencyKey(trimmedKey, secondaryKind, taskID)
 					scheduleSecondary := ScheduleOperationRequest{
 						ResourceType: "episode_task", ResourceID: taskID, IdempotencyKey: derivedKey,
 						Kind: secondaryKind, MaxAttempts: secondaryAttempts, Timeout: secondaryTimeout,
 						Payload: map[string]any{"command": "retry"}, ActorUserID: actorUserID,
 					}
-					if _, err := workflow.operations.ScheduleInTx(ctx, scope, scheduleSecondary); err != nil {
+					secondaryScheduled, err := workflow.operations.ScheduleInTx(ctx, scope, scheduleSecondary)
+					if err != nil {
 						return fmt.Errorf("schedule task retry %s: %w", secondaryBranch, err)
 					}
+					secondaryOperation = secondaryScheduled.Operation
 				}
 				eventFailureStage := failureStage
 				if eventFailureStage == "" {
 					eventFailureStage = primaryBranch
 				}
-				return appendResourceEvent(ctx, scope.Queries, "episode_task", taskID, operation.ID, actorUserID, "task.retry_requested", map[string]any{"failureStage": eventFailureStage})
+				// 构建兼容且确定顺序的审计事件：保留 failureStage，新增有序的 failureStages 与分支 operation 关联（不含敏感值）
+				eventData := map[string]any{"failureStage": eventFailureStage}
+				if secondaryBranch != "" {
+					stageToOp := map[string]struct {
+						kind string
+						opID uuid.UUID
+					}{
+						primaryBranch:   {kind: primaryKind, opID: operation.ID},
+						secondaryBranch: {kind: secondaryKind, opID: secondaryOperation.ID},
+					}
+					stages := []string{primaryBranch, secondaryBranch}
+					sort.Strings(stages)
+					eventData["failureStages"] = stages
+					branches := make([]map[string]any, 0, 2)
+					for _, stage := range stages {
+						entry := stageToOp[stage]
+						branches = append(branches, map[string]any{
+							"stage":       stage,
+							"kind":        entry.kind,
+							"operationId": entry.opID.String(),
+						})
+					}
+					eventData["branches"] = branches
+				} else {
+					eventData["failureStages"] = []string{primaryBranch}
+					eventData["branches"] = []map[string]any{
+						{"stage": primaryBranch, "kind": primaryKind, "operationId": operation.ID.String()},
+					}
+				}
+				return appendResourceEvent(ctx, scope.Queries, "episode_task", taskID, operation.ID, actorUserID, "task.retry_requested", eventData)
 			}
 			// No media branch failed, handle finalize/import for failed tasks only.
 			if !isFailedState {
@@ -218,8 +263,10 @@ func mediaBranchSchedule(branch string) (string, time.Duration, int) {
 	}
 }
 
-func deriveSecondaryIdempotencyKey(primaryKey, secondaryKind string) string {
-	return primaryKey + ":branch:" + secondaryKind
+func deriveSecondaryIdempotencyKey(primaryKey, secondaryKind string, taskID uuid.UUID) string {
+	digest := sha256.Sum256([]byte(primaryKey))
+	hexDigest := hex.EncodeToString(digest[:])
+	return "task-retry:" + taskID.String() + ":" + secondaryKind + ":" + hexDigest
 }
 
 func (workflow *TaskCommandWorkflow) Cancel(ctx context.Context, taskID uuid.UUID, expectedVersion int32, idempotencyKey string, actorUserID uuid.UUID) (domain.EpisodeTask, domain.Operation, error) {

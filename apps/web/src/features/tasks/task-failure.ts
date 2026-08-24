@@ -9,6 +9,21 @@ export const unknownFailureReason = '未能识别具体失败原因，请查看�
 export type FailureStage = 'download' | 'materialize' | 'video' | 'subtitle' | 'finalize' | 'import' | 'cleanup' | 'unknown';
 export type FailureRetryKind = 'download' | 'task' | 'cleanup' | 'none';
 
+export interface TaskBranchFailure {
+  stage: FailureStage;
+  stageLabel: string;
+  summary: string;
+  detail: string;
+  occurredAt: string;
+  attemptLabel: string;
+  recommendation: string;
+  relatedResource: string;
+  displayCode?: string;
+  latestOperationId?: string;
+  latestOperationKind?: string;
+  technicalDetails: string;
+}
+
 export interface TaskFailureInfo {
   stage: FailureStage;
   stageLabel: string;
@@ -25,6 +40,7 @@ export interface TaskFailureInfo {
   latestOperationId?: string;
   latestOperationKind?: string;
   technicalDetails: string;
+  branches?: TaskBranchFailure[];
 }
 
 type Reason = {
@@ -550,6 +566,45 @@ export function taskFailureInfo(task: Task): TaskFailureInfo | null {
   }
   const videoFailed = task.videoState === 'failed';
   const subtitleFailed = task.subtitleState === 'failed';
+  // 双分支失败需同时展示两个分支的最新 operation/reason，且仍保持单次原子重试
+  if (videoFailed && subtitleFailed && (isFailed || isProcessingStuck)) {
+    const videoOp = latestOperation(task.operations, 'video');
+    const subtitleOp = latestOperation(task.operations, 'subtitle');
+    const videoBranch = buildBranchFailure(task, 'video', videoOp);
+    const subtitleBranch = buildBranchFailure(task, 'subtitle', subtitleOp);
+    // 确定顺序：视频在前、字幕在后，保持稳定
+    const branches: TaskBranchFailure[] = [videoBranch, subtitleBranch];
+    // 整体 summary 明确“视频和字幕处理失败”
+    const summary = `视频和字幕处理失败：${videoBranch.summary.split('：')[1] ?? videoBranch.summary}；${subtitleBranch.summary.split('：')[1] ?? subtitleBranch.summary}`;
+    // 若分支 reason 无法解析则回退到通用文案
+    const finalSummary = summary.includes('未能识别') ? '视频和字幕处理失败' : summary;
+    const detail = `视频：${videoBranch.detail} 字幕：${subtitleBranch.detail}`;
+    const recommendation = '视频和字幕处理均失败，请分别检查下方分支详情后重试。';
+    const technicalDetails = sanitizeTechnicalDetails([videoBranch.technicalDetails, subtitleBranch.technicalDetails].join('\n---\n'));
+    // 整体 latestOperation 指向主分支（与后端主 operation 一致）：优先与 failureStage 一致，否则视频
+    let primaryBranch: TaskBranchFailure = videoBranch;
+    if (isFailed && task.failureStage === 'subtitle') {
+      primaryBranch = subtitleBranch;
+    }
+    return {
+      stage: primaryBranch.stage,
+      stageLabel: '视频和字幕',
+      summary: finalSummary,
+      detail,
+      occurredAt: primaryBranch.occurredAt,
+      attemptLabel: primaryBranch.attemptLabel,
+      canRetry: task.actions.canRetry,
+      retryKind: 'task',
+      retryLabel: task.actions.canRetry ? '重试任务' : undefined,
+      recommendation,
+      relatedResource: primaryBranch.relatedResource,
+      displayCode: primaryBranch.displayCode,
+      latestOperationId: primaryBranch.latestOperationId,
+      latestOperationKind: primaryBranch.latestOperationKind,
+      technicalDetails,
+      branches,
+    };
+  }
   let stage: FailureStage;
   if (isFailed && task.failureStage) {
     stage = stageFromTask(task.failureStage);
@@ -624,6 +679,35 @@ export function acquisitionFailureInfo(item: Acquisition): TaskFailureInfo | nul
     retryKind: 'task',
     relatedResource: acquisitionTaskResource(item, failedTask, stage),
   });
+}
+
+function buildBranchFailure(task: Task, stage: FailureStage, operation?: OperationSummary): TaskBranchFailure {
+  const source: FailureSource = {
+    stage,
+    code: operation?.errorCode ?? task.errorCode,
+    message: operation?.errorMessage ?? task.errorMessage,
+    occurredAt: operation?.finishedAt ?? operation?.updatedAt ?? task.updatedAt,
+    attemptLabel: operationAttemptLabel(task.operations, stage, operation),
+    baseCanRetry: task.actions.canRetry,
+    retryKind: 'task',
+    relatedResource: relatedTaskResource(task, stage),
+    latestOperation: operation,
+  };
+  const info = buildFailureInfo(source);
+  return {
+    stage: info.stage,
+    stageLabel: info.stageLabel,
+    summary: info.summary,
+    detail: info.detail,
+    occurredAt: info.occurredAt,
+    attemptLabel: info.attemptLabel,
+    recommendation: info.recommendation,
+    relatedResource: info.relatedResource,
+    displayCode: info.displayCode,
+    latestOperationId: info.latestOperationId,
+    latestOperationKind: info.latestOperationKind,
+    technicalDetails: info.technicalDetails,
+  };
 }
 
 function technicalText(code?: string, message?: string, operation?: OperationSummary): string {
