@@ -4252,7 +4252,7 @@ components:
           maximum: 1
         failureStage:
           type: string
-          enum: [enqueue, sync, materialize]
+          enum: [enqueue, file_resolution, sync, materialize]
         clientState:
           type: string
         errorCode:

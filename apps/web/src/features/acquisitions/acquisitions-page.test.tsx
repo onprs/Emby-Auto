@@ -178,8 +178,7 @@ describe('AcquisitionsPage failure actions', () => {
         attempt: 1,
         status: 'failed',
         progress: 1,
-        // file_resolution 通过 any 绕过 AcquisitionDownloadSummary 的枚举限制，贴近真实后端错误阶段
-        failureStage: 'file_resolution' as unknown as Acquisition['download'] extends { failureStage?: infer T } ? T : never,
+        failureStage: 'file_resolution',
         errorCode: 'download_no_main_video',
         errorMessage: 'the torrent contains no selectable main video',
         updatedAt: '2026-07-25T02:00:00Z',

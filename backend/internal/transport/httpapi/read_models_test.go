@@ -281,6 +281,75 @@ func TestAcquisitionResponseIncludesDownloadFailureDetails(t *testing.T) {
 	}
 }
 
+func TestAcquisitionResponseMapsFileResolutionFailureStage(t *testing.T) {
+	now := time.Date(2026, time.July, 25, 9, 45, 0, 0, time.UTC)
+	response := acquisitionResponse(domain.AcquisitionView{
+		ID: uuid.New(), MediaType: domain.TaskMediaEpisode, SeriesID: uuid.New(), SourceKind: "rss",
+		AggregateStatus: "failed", CurrentStage: "download", OverallProgress: 0.15,
+		Stages:             []domain.AcquisitionStageView{},
+		Tasks:              []domain.AcquisitionTaskSummary{},
+		Download: &domain.AcquisitionDownloadSummary{
+			ID: uuid.New(), Attempt: 1, Status: "failed", FailureStage: "file_resolution",
+			ErrorCode: "download_no_main_video", ErrorMessage: "the torrent contains no selectable main video", UpdatedAt: now,
+		},
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
+	})
+	if response.Download == nil || response.Download.FailureStage == nil {
+		t.Fatalf("download failureStage = %#v, want file_resolution", response.Download)
+	}
+	if string(*response.Download.FailureStage) != "file_resolution" {
+		t.Fatalf("download failureStage = %q, want %q", string(*response.Download.FailureStage), "file_resolution")
+	}
+	if *response.Download.FailureStage != AcquisitionDownloadSummaryFailureStageFileResolution {
+		t.Fatalf("download failureStage enum = %#v, want file_resolution", *response.Download.FailureStage)
+	}
+	if !response.Download.FailureStage.Valid() {
+		t.Fatalf("file_resolution should be valid, got Valid()=false")
+	}
+	// 完整 Download 模型也必须接受同一持久值，保持双模型契约一致
+	downloadView := downloadResponse(domain.DownloadView{
+		ID: uuid.New(), AcquisitionID: uuid.New(), Attempt: 1, ClientName: "qbittorrent",
+		Status: "failed", Progress: 1, Version: 1, FailureStage: "file_resolution",
+		ErrorCode: "download_no_main_video", CreatedAt: now, UpdatedAt: now,
+	})
+	if downloadView.FailureStage == nil || string(*downloadView.FailureStage) != "file_resolution" || !downloadView.FailureStage.Valid() {
+		t.Fatalf("download view failureStage = %#v", downloadView.FailureStage)
+	}
+	// 通过 HTTP 序列化验证契约响应合法且包含正确枚举值
+	stub := &readModelStub{acquisition: domain.AcquisitionView{
+		ID: uuid.New(), MediaType: domain.TaskMediaEpisode, SeriesID: uuid.New(), SourceKind: "rss",
+		AggregateStatus: "failed", CurrentStage: "download", OverallProgress: 0.15,
+		Stages: []domain.AcquisitionStageView{},
+		Tasks:  []domain.AcquisitionTaskSummary{},
+		Download: &domain.AcquisitionDownloadSummary{
+			ID: uuid.New(), Attempt: 1, Status: "failed", FailureStage: "file_resolution",
+			ErrorCode: "download_no_main_video", UpdatedAt: now,
+		},
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
+	}}
+	handler := NewHandler(NewServer(readinessStub{}, WithReadModels(stub)))
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/acquisitions/"+stub.acquisition.ID.String(), nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var body Acquisition
+	if err := json.NewDecoder(recorder.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Download == nil || body.Download.FailureStage == nil || string(*body.Download.FailureStage) != "file_resolution" || !body.Download.FailureStage.Valid() {
+		t.Fatalf("HTTP acquisition download failureStage = %#v", body.Download)
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"file_resolution"`) {
+		t.Fatalf("JSON should contain file_resolution, got %s", string(encoded))
+	}
+}
+
 func TestGetMovieAcquisitionMapsMovieMetadataAndNoEpisodeFields(t *testing.T) {
 	acquisitionID := uuid.MustParse("88000000-0000-0000-0000-000000000020")
 	now := time.Date(2026, time.July, 24, 2, 15, 0, 0, time.UTC)
