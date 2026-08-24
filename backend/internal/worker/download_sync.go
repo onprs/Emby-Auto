@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -67,6 +68,9 @@ func (handler *DownloadSyncHandler) Handle(ctx context.Context, operation domain
 	if command.TorrentHash == "" {
 		return permanentFailure("download_hash_missing", "the downloading torrent has no confirmed hash", nil)
 	}
+	if len(command.SelectedFiles) == 0 {
+		return permanentFailure("download_state_conflict", "download has no selected files while synchronizing", nil)
+	}
 
 	settings, client, err := loadConfiguredTorrentClient(ctx, handler.configuration, handler.newClient)
 	if err != nil {
@@ -98,9 +102,6 @@ func (handler *DownloadSyncHandler) Handle(ctx context.Context, operation domain
 		if err := client.SetTorrentRateLimits(ctx, matched.Hash, downloadRateLimit, uploadRateLimit); err != nil {
 			return retryableFailure("qbittorrent_rate_limit_failed", "qBittorrent torrent rate limits could not be applied", err)
 		}
-	}
-	if len(command.SelectedFiles) == 0 {
-		return permanentFailure("download_state_conflict", "download has no selected files while synchronizing", nil)
 	}
 	qbFiles, err := client.TorrentFiles(ctx, command.TorrentHash)
 	if err != nil {
@@ -134,16 +135,21 @@ func evaluateSelectedFilesCompletion(selected []domain.DownloadSyncFile, qbFiles
 			firstByIndex[file.Index] = file
 		}
 	}
-	var totalSize int64
-	hasZero := false
+	var totalSize float64
+	hasZeroOrNegative := false
 	for _, item := range selected {
-		if item.SizeBytes == 0 {
-			hasZero = true
-		} else {
-			totalSize += item.SizeBytes
+		if item.SizeBytes <= 0 {
+			hasZeroOrNegative = true
+			continue
+		}
+		totalSize += float64(item.SizeBytes)
+		if math.IsInf(totalSize, 0) || math.IsNaN(totalSize) {
+			hasZeroOrNegative = true
+			totalSize = 0
+			break
 		}
 	}
-	useWeighted := totalSize > 0 && !hasZero
+	useWeighted := totalSize > 0 && !hasZeroOrNegative && !math.IsInf(totalSize, 0) && !math.IsNaN(totalSize)
 	var sum float64
 	var weighted float64
 	allComplete := true
@@ -159,6 +165,9 @@ func evaluateSelectedFilesCompletion(selected []domain.DownloadSyncFile, qbFiles
 			continue
 		}
 		eff := qb.Progress
+		if math.IsNaN(eff) {
+			eff = 0
+		}
 		if qb.IsSeed {
 			eff = 1
 		}
@@ -167,20 +176,56 @@ func evaluateSelectedFilesCompletion(selected []domain.DownloadSyncFile, qbFiles
 		} else if eff > 1 {
 			eff = 1
 		}
-		if !(qb.Progress >= 1 || qb.IsSeed) {
+		if math.IsNaN(qb.Progress) || !(qb.Progress >= 1 || qb.IsSeed) {
 			allComplete = false
 		}
 		if useWeighted {
-			weighted += float64(item.SizeBytes) * eff
+			if item.SizeBytes > 0 {
+				weighted += float64(item.SizeBytes) * eff
+				if math.IsInf(weighted, 0) || math.IsNaN(weighted) {
+					weighted = 0
+					hasZeroOrNegative = true
+				}
+			}
 		} else {
+			sum += eff
+			if math.IsInf(sum, 0) || math.IsNaN(sum) {
+				sum = 0
+			}
+		}
+	}
+	if hasZeroOrNegative && useWeighted {
+		useWeighted = false
+		sum = 0
+		for _, item := range selected {
+			qb, ok := firstByIndex[item.FileIndex]
+			count := countByIndex[item.FileIndex]
+			if !ok || count != 1 || qb.Priority == 0 {
+				continue
+			}
+			eff := qb.Progress
+			if math.IsNaN(eff) {
+				eff = 0
+			}
+			if qb.IsSeed {
+				eff = 1
+			}
+			if eff < 0 {
+				eff = 0
+			} else if eff > 1 {
+				eff = 1
+			}
 			sum += eff
 		}
 	}
 	var progress float64
 	if useWeighted {
-		progress = weighted / float64(totalSize)
+		progress = weighted / totalSize
 	} else if len(selected) > 0 {
 		progress = sum / float64(len(selected))
+	}
+	if math.IsNaN(progress) || math.IsInf(progress, 0) {
+		progress = 0
 	}
 	if progress < 0 {
 		progress = 0

@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -92,6 +93,7 @@ func TestDownloadSyncHandlerRejectsUnrepresentableRateLimits(t *testing.T) {
 	downloadID := uuid.MustParse("40000000-0000-0000-0000-000000000009")
 	store := &downloadSyncStoreStub{command: domain.DownloadSyncCommand{
 		DownloadID: downloadID, Status: domain.DownloadDownloading, TorrentHash: workerTorrentHash,
+		SelectedFiles: []domain.DownloadSyncFile{{FileIndex: 0, SizeBytes: 100}},
 	}}
 	client := &torrentClientStub{}
 	configuration := configuredDownloadTestStub()
@@ -114,6 +116,7 @@ func TestDownloadSyncHandlerRetriesWhenUpdatedRateLimitsAreRejected(t *testing.T
 	downloadID := uuid.MustParse("40000000-0000-0000-0000-000000000008")
 	store := &downloadSyncStoreStub{command: domain.DownloadSyncCommand{
 		DownloadID: downloadID, Status: domain.DownloadDownloading, TorrentHash: workerTorrentHash,
+		SelectedFiles: []domain.DownloadSyncFile{{FileIndex: 0, SizeBytes: 100}},
 	}}
 	client := &torrentClientStub{
 		torrents:     []qbittorrent.Torrent{{Hash: workerTorrentHash, Progress: 0.5, State: "downloading"}},
@@ -199,6 +202,7 @@ func TestDownloadSyncHandlerRetriesWhenTorrentIsTemporarilyMissing(t *testing.T)
 		DownloadID:  downloadID,
 		Status:      domain.DownloadDownloading,
 		TorrentHash: workerTorrentHash,
+		SelectedFiles: []domain.DownloadSyncFile{{FileIndex: 0, SizeBytes: 100}},
 	}}
 	client := &torrentClientStub{torrents: []qbittorrent.Torrent{}}
 	handler := NewDownloadSyncHandler(configuredDownloadTestStub(), store, func(qbittorrent.ClientOptions) (TorrentClient, error) {
@@ -223,9 +227,12 @@ func TestDownloadSyncHandlerFailsWhenSelectedFilesEmpty(t *testing.T) {
 	client := &torrentClientStub{
 		torrents: []qbittorrent.Torrent{{Hash: workerTorrentHash, Progress: 1, AmountLeft: 0, TotalSize: 100, State: "stoppedUP"}},
 	}
-	handler := NewDownloadSyncHandler(configuredDownloadTestStub(), store, func(qbittorrent.ClientOptions) (TorrentClient, error) {
+	factoryCalled := false
+	factory := func(qbittorrent.ClientOptions) (TorrentClient, error) {
+		factoryCalled = true
 		return client, nil
-	}, time.Minute)
+	}
+	handler := NewDownloadSyncHandler(configuredDownloadTestStub(), store, factory, time.Minute)
 	err := handler.Handle(context.Background(), domain.Operation{ID: operationID, ResourceType: "download", ResourceID: downloadID})
 	var failure *Failure
 	if !errors.As(err, &failure) || failure.Code != "download_state_conflict" || failure.Retryable {
@@ -236,6 +243,20 @@ func TestDownloadSyncHandlerFailsWhenSelectedFilesEmpty(t *testing.T) {
 	}
 	if store.progressCalls != 0 {
 		t.Fatalf("empty selected must not persist progress, got %d calls", store.progressCalls)
+	}
+	if factoryCalled {
+		t.Fatalf("empty selected must not create qB client")
+	}
+	if len(client.calls) != 0 {
+		t.Fatalf("empty selected must not call qB login/list, got %v", client.calls)
+	}
+	if len(client.rateLimitCalls) != 0 {
+		t.Fatalf("empty selected must not call qB rate-limit, got %v", client.rateLimitCalls)
+	}
+	for _, call := range client.calls {
+		if call == "files" {
+			t.Fatalf("empty selected must not call qB files")
+		}
 	}
 }
 
@@ -602,6 +623,214 @@ func TestDownloadSyncHandlerHandlesZeroSizeSelectedFiles(t *testing.T) {
 	want := 0.65
 	if store2.progress < want-1e-9 || store2.progress > want+1e-9 {
 		t.Fatalf("progress = %v, want %v", store2.progress, want)
+	}
+}
+
+func TestDownloadSyncHandlerSnoozesWhenSelectedFileProgressIsNaN(t *testing.T) {
+	downloadID := uuid.MustParse("40000000-0000-0000-0000-000000000050")
+	operationID := uuid.MustParse("40000000-0000-0000-0000-000000000051")
+	store := &downloadSyncStoreStub{command: domain.DownloadSyncCommand{
+		DownloadID:  downloadID,
+		Status:      domain.DownloadDownloading,
+		TorrentHash: workerTorrentHash,
+		SelectedFiles: []domain.DownloadSyncFile{
+			{FileIndex: 0, SizeBytes: 1000},
+		},
+	}}
+	nan := math.NaN()
+	client := &torrentClientStub{
+		torrents: []qbittorrent.Torrent{{Hash: workerTorrentHash, Progress: 1, AmountLeft: 0, TotalSize: 1000, State: "uploading"}},
+		files: []qbittorrent.TorrentFile{
+			{Index: 0, Progress: nan, Priority: 1, Size: 1000},
+		},
+	}
+	handler := NewDownloadSyncHandler(configuredDownloadTestStub(), store, func(qbittorrent.ClientOptions) (TorrentClient, error) {
+		return client, nil
+	}, 15*time.Second)
+	err := handler.Handle(context.Background(), domain.Operation{ID: operationID, ResourceType: "download", ResourceID: downloadID})
+	var snoozeErr *river.JobSnoozeError
+	if !errors.As(err, &snoozeErr) {
+		t.Fatalf("Handle() error = %v, want snooze for NaN progress", err)
+	}
+	if store.completed {
+		t.Fatalf("NaN progress must not complete")
+	}
+	if store.progressCalls != 1 {
+		t.Fatalf("progress calls = %d, want 1", store.progressCalls)
+	}
+	if store.progress != 0 {
+		t.Fatalf("progress = %v, want 0 for NaN progress treated as 0", store.progress)
+	}
+	if math.IsNaN(store.progress) || math.IsInf(store.progress, 0) {
+		t.Fatalf("progress must be finite, got %v", store.progress)
+	}
+}
+
+func TestEvaluateSelectedFilesCompletionHandlesNaN(t *testing.T) {
+	nan := math.NaN()
+	selected := []domain.DownloadSyncFile{{FileIndex: 0, SizeBytes: 1000}}
+	qbFiles := []qbittorrent.TorrentFile{{Index: 0, Progress: nan, Priority: 1, Size: 1000}}
+	progress, allComplete := evaluateSelectedFilesCompletion(selected, qbFiles)
+	if math.IsNaN(progress) || math.IsInf(progress, 0) {
+		t.Fatalf("progress must be finite, got %v", progress)
+	}
+	if progress != 0 {
+		t.Fatalf("progress = %v, want 0 for NaN", progress)
+	}
+	if allComplete {
+		t.Fatalf("allComplete = true, want false for NaN")
+	}
+	if progress < 0 || progress > 1 {
+		t.Fatalf("progress out of bounds: %v", progress)
+	}
+}
+
+func TestEvaluateSelectedFilesCompletionHugeWeightedProgressPartial(t *testing.T) {
+	huge := int64(4611686018427387903) // 约 MaxInt64/2
+	selected := []domain.DownloadSyncFile{
+		{FileIndex: 0, SizeBytes: huge},
+		{FileIndex: 1, SizeBytes: huge},
+	}
+	qbFiles := []qbittorrent.TorrentFile{
+		{Index: 0, Progress: 1, Priority: 1, Size: huge},
+		{Index: 1, Progress: 0.5, Priority: 1, Size: huge},
+	}
+	progress, allComplete := evaluateSelectedFilesCompletion(selected, qbFiles)
+	if math.IsNaN(progress) || math.IsInf(progress, 0) {
+		t.Fatalf("progress must be finite, got %v", progress)
+	}
+	if progress < 0 || progress > 1 {
+		t.Fatalf("progress out of bounds: %v", progress)
+	}
+	// 加权期望：(huge*1 + huge*0.5) / (2*huge) = 0.75
+	want := 0.75
+	if progress < want-1e-9 || progress > want+1e-9 {
+		t.Fatalf("progress = %v, want %v for huge weighted partial", progress, want)
+	}
+	if allComplete {
+		t.Fatalf("allComplete = true, want false for partial huge weighted")
+	}
+}
+
+func TestEvaluateSelectedFilesCompletionHugeWeightedProgressComplete(t *testing.T) {
+	huge := int64(9223372036854775807) // MaxInt64
+	selected := []domain.DownloadSyncFile{
+		{FileIndex: 0, SizeBytes: huge},
+		{FileIndex: 1, SizeBytes: huge},
+	}
+	qbFiles := []qbittorrent.TorrentFile{
+		{Index: 0, Progress: 1, Priority: 1, Size: huge},
+		{Index: 1, Progress: 1, Priority: 1, Size: huge},
+	}
+	progress, allComplete := evaluateSelectedFilesCompletion(selected, qbFiles)
+	if math.IsNaN(progress) || math.IsInf(progress, 0) {
+		t.Fatalf("progress must be finite, got %v", progress)
+	}
+	if progress != 1 {
+		t.Fatalf("progress = %v, want 1 for huge weighted complete", progress)
+	}
+	if !allComplete {
+		t.Fatalf("allComplete = false, want true for huge weighted complete")
+	}
+}
+
+func TestDownloadSyncHandlerHugeWeightedPartialSnoozes(t *testing.T) {
+	downloadID := uuid.MustParse("40000000-0000-0000-0000-000000000060")
+	operationID := uuid.MustParse("40000000-0000-0000-0000-000000000061")
+	huge := int64(4611686018427387903)
+	store := &downloadSyncStoreStub{command: domain.DownloadSyncCommand{
+		DownloadID:  downloadID,
+		Status:      domain.DownloadDownloading,
+		TorrentHash: workerTorrentHash,
+		SelectedFiles: []domain.DownloadSyncFile{
+			{FileIndex: 0, SizeBytes: huge},
+			{FileIndex: 1, SizeBytes: huge},
+		},
+	}}
+	client := &torrentClientStub{
+		torrents: []qbittorrent.Torrent{{Hash: workerTorrentHash, Progress: 1, State: "uploading"}},
+		files: []qbittorrent.TorrentFile{
+			{Index: 0, Progress: 1, Priority: 1, Size: huge},
+			{Index: 1, Progress: 0.5, Priority: 1, Size: huge},
+		},
+	}
+	handler := NewDownloadSyncHandler(configuredDownloadTestStub(), store, func(qbittorrent.ClientOptions) (TorrentClient, error) {
+		return client, nil
+	}, 15*time.Second)
+	err := handler.Handle(context.Background(), domain.Operation{ID: operationID, ResourceType: "download", ResourceID: downloadID})
+	var snoozeErr *river.JobSnoozeError
+	if !errors.As(err, &snoozeErr) {
+		t.Fatalf("Handle() error = %v, want snooze for huge weighted partial", err)
+	}
+	if store.completed {
+		t.Fatalf("huge weighted partial must not complete")
+	}
+	if math.IsNaN(store.progress) || math.IsInf(store.progress, 0) {
+		t.Fatalf("progress must be finite, got %v", store.progress)
+	}
+	want := 0.75
+	if store.progress < want-1e-9 || store.progress > want+1e-9 {
+		t.Fatalf("progress = %v, want %v", store.progress, want)
+	}
+}
+
+func TestDownloadSyncHandlerHugeWeightedCompleteSucceeds(t *testing.T) {
+	downloadID := uuid.MustParse("40000000-0000-0000-0000-000000000062")
+	operationID := uuid.MustParse("40000000-0000-0000-0000-000000000063")
+	huge := int64(9223372036854775807)
+	store := &downloadSyncStoreStub{command: domain.DownloadSyncCommand{
+		DownloadID:  downloadID,
+		Status:      domain.DownloadDownloading,
+		TorrentHash: workerTorrentHash,
+		SelectedFiles: []domain.DownloadSyncFile{
+			{FileIndex: 0, SizeBytes: huge},
+			{FileIndex: 1, SizeBytes: huge},
+		},
+	}}
+	client := &torrentClientStub{
+		torrents: []qbittorrent.Torrent{{Hash: workerTorrentHash, Progress: 1, State: "uploading"}},
+		files: []qbittorrent.TorrentFile{
+			{Index: 0, Progress: 1, Priority: 1, Size: huge},
+			{Index: 1, Progress: 1, Priority: 1, Size: huge},
+		},
+	}
+	handler := NewDownloadSyncHandler(configuredDownloadTestStub(), store, func(qbittorrent.ClientOptions) (TorrentClient, error) {
+		return client, nil
+	}, 15*time.Second)
+	if err := handler.Handle(context.Background(), domain.Operation{ID: operationID, ResourceType: "download", ResourceID: downloadID}); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if !store.completed {
+		t.Fatalf("huge weighted complete must complete")
+	}
+	if store.progress != 1 {
+		t.Fatalf("progress = %v, want 1", store.progress)
+	}
+	if math.IsNaN(store.progress) || math.IsInf(store.progress, 0) {
+		t.Fatalf("progress must be finite, got %v", store.progress)
+	}
+}
+
+func TestEvaluateSelectedFilesCompletionNegativeSizeSafe(t *testing.T) {
+	selected := []domain.DownloadSyncFile{
+		{FileIndex: 0, SizeBytes: -100},
+		{FileIndex: 1, SizeBytes: 1000},
+	}
+	qbFiles := []qbittorrent.TorrentFile{
+		{Index: 0, Progress: 1, Priority: 1, Size: 100},
+		{Index: 1, Progress: 0.5, Priority: 1, Size: 1000},
+	}
+	progress, _ := evaluateSelectedFilesCompletion(selected, qbFiles)
+	if math.IsNaN(progress) || math.IsInf(progress, 0) {
+		t.Fatalf("progress must be finite for negative size, got %v", progress)
+	}
+	if progress < 0 || progress > 1 {
+		t.Fatalf("progress out of bounds for negative size: %v", progress)
+	}
+	// 负值按安全边界回退为均值：(1 + 0.5)/2 = 0.75
+	want := 0.75
+	if progress < want-1e-9 || progress > want+1e-9 {
+		t.Fatalf("progress = %v, want %v for negative size fallback", progress, want)
 	}
 }
 
