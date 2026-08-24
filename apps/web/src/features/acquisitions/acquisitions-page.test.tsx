@@ -293,7 +293,6 @@ describe('AcquisitionsPage task retry actions', () => {
       seriesId: '66666666-6666-6666-6666-666666666666',
       seriesTitle: '任务重试示例',
       sourceKind: 'rss',
-      tasks: overrides.tasks,
       mapping: { selectedVideoCount: 1, mappedVideoCount: 1, complete: true },
       aggregateStatus: 'failed',
       currentStage: 'transcode',
