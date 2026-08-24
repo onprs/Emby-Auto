@@ -216,19 +216,37 @@ describe('AcquisitionsPage failure actions', () => {
 
     await screen.findAllByText('下载失败：没有可处理的正片视频');
 
+    // 第一次打开菜单并触发重试，POST 保持悬挂以模拟 running 期间
     await user.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
-    const retryItem = await screen.findByRole('menuitem', { name: '重试下载' });
-    await user.click(retryItem);
-    // 尝试在 pending 期间再次触发，应被禁用而仅产生一次请求
+    const firstRetryItem = await screen.findByRole('menuitem', { name: '重试下载' });
+    await user.click(firstRetryItem);
     await waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
+    expect(retry.mock.calls[0][0].body).toEqual({ expectedVersion: 9 });
     const firstKey = String(retry.mock.calls[0][0].key ?? '');
     expect(firstKey.trim().length).toBeGreaterThan(0);
-    expect(retry.mock.calls[0][0].body).toEqual({ expectedVersion: 9 });
-    // 再次点击不应产生第二次请求（按钮在 running 期间 disabled）
-    await user.click(retryItem).catch(() => {});
+
+    // running 期间重新打开菜单，查询全新的 menuitem 并断言真实 disabled 状态（不复用已 detached 的旧节点）
+    await user.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    const retryItemDuringRunning = await screen.findByRole('menuitem', { name: '重试下载' });
+    expect(retryItemDuringRunning).toBeDisabled();
+
+    // 点击 disabled 项不应产生第二次 POST（不吞异常，不复用旧节点）
+    await user.click(retryItemDuringRunning);
+    await waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
+    // 短暂稳定窗口内仍只有一次请求
+    await new Promise((resolve) => setTimeout(resolve, 100));
     expect(retry).toHaveBeenCalledTimes(1);
+
+    // 释放悬挂的 POST，等待请求完成与 running 状态收敛，不留下未处理 Promise 或 act 警告
     resolveRetry?.();
     await waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
+    // running 结束后菜单项应恢复可用（若菜单仍打开则直接断言，否则重新打开后断言）
+    await waitFor(() => expect(retryItemDuringRunning).toBeEnabled()).catch(async () => {
+      // 菜单可能在请求完成后已关闭，重新打开后校验可用状态
+      await user.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+      const retryItemAfter = await screen.findByRole('menuitem', { name: '重试下载' });
+      await waitFor(() => expect(retryItemAfter).toBeEnabled());
+    });
   });
 
   it('keeps permanent errors without a retry action', async () => {
