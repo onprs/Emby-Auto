@@ -423,7 +423,7 @@ INSERT INTO episode_mapping_profiles (
     id, series_id, name, version, source_season_lengths, active,
     anchor_source_season, anchor_source_episode, anchor_target_episode_id, target_episode_offset,
     created_by, decision_source
-) VALUES ($1, $2, 'rss-target-reservation', 1, ARRAY[1], true, 1, 1, $3, 0, $4, 'deterministic')`, profileID, seriesID, targetEpisodeID, actorID); err != nil {
+) VALUES ($1, $2, 'rss-target-reservation', 1, ARRAY[1], true, 1, 1, $3, 0, $4, 'user')`, profileID, seriesID, targetEpisodeID, actorID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `

@@ -420,9 +420,9 @@ func TestRSSEnqueueSerializesSubscriptionMappingUpdateIntegration(t *testing.T) 
 INSERT INTO episode_mapping_profiles (
     id, series_id, name, version, source_season_lengths, active,
     anchor_source_season, anchor_source_episode, anchor_target_episode_id, target_episode_offset,
-    decision_source
-) VALUES ($1, $2, 'target-occupancy-updated', 1, ARRAY[2], true, 1, 1, $3, 0, 'manual')`,
-		newProfileID, fixture.seriesID, fixture.targetEpisodeIDs[0]); err != nil {
+    created_by, decision_source
+) VALUES ($1, $2, 'target-occupancy-updated', 1, ARRAY[2], true, 1, 1, $3, 0, $4, 'user')`,
+		newProfileID, fixture.seriesID, fixture.targetEpisodeIDs[0], fixture.actorID); err != nil {
 		t.Fatal(err)
 	}
 	for index, targetID := range fixture.targetEpisodeIDs {
