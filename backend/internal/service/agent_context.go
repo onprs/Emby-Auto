@@ -457,9 +457,10 @@ func (service *AgentResolutionService) buildMappingAgentContext(ctx context.Cont
 	resource := struct {
 		AcquisitionID uuid.UUID `json:"acquisitionId"`
 		SeriesTitle   string    `json:"seriesTitle"`
+		SourceTitle   string    `json:"sourceTitle,omitempty"`
 		FileCount     int       `json:"fileCount"`
-		EpisodeCount  int       `json:"regularEpisodeCount"`
-	}{acquisitionID, row.Title, len(files), len(episodes)}
+		EpisodeCount  int       `json:"episodeCount"`
+	}{acquisitionID, row.Title, boundedAgentText(row.SourceTitle, 2048), len(files), len(episodes)}
 	resourceJSON, _ := json.Marshal(resource)
 	fingerprintInput, _ := json.Marshal(struct {
 		Resource any             `json:"resource"`
@@ -469,7 +470,7 @@ func (service *AgentResolutionService) buildMappingAgentContext(ctx context.Cont
 	}{resource, files, episodes, row.UpdatedAt.Time.UTC()})
 	tools := []agentharness.Tool{
 		staticAgentTool("analyze_download_manifest", "Return selected video filenames and source coordinates in this acquisition.", map[string]any{}, files),
-		staticAgentTool("list_tmdb_regular_episodes", "Return synchronized regular TMDb episodes for this acquisition.", map[string]any{}, episodes),
+		staticAgentTool("list_tmdb_episodes", "Return synchronized regular and Season 0 TMDb episodes for this acquisition.", map[string]any{}, episodes),
 		parseFileCoordinateTool(filesByID, 1),
 		service.previewMappingTool(acquisitionID, filesByID),
 	}
@@ -626,52 +627,83 @@ func (service *AgentResolutionService) previewRSSPreacquisitionMappingTool(
 }
 
 func (service *AgentResolutionService) previewMappingTool(acquisitionID uuid.UUID, files map[uuid.UUID]scopedFile) agentharness.Tool {
+	uuidField := map[string]any{"type": "string", "format": "uuid"}
+	positive := map[string]any{"type": "integer", "minimum": 1, "maximum": math.MaxInt32}
+	anchor := strictObject(map[string]any{
+		"sourceFileId": uuidField, "targetSeason": positive, "targetEpisode": positive,
+	}, "sourceFileId", "targetSeason", "targetEpisode")
+	assignment := strictObject(map[string]any{
+		"sourceFileId":  uuidField,
+		"action":        map[string]any{"type": "string", "enum": []string{"map", "exclude"}},
+		"targetSeason":  map[string]any{"type": "integer", "minimum": 0, "maximum": math.MaxInt32},
+		"targetEpisode": positive,
+	}, "sourceFileId", "action")
+	parameters := map[string]any{"oneOf": []any{
+		strictObject(map[string]any{"mode": map[string]any{"const": "anchor"}, "anchor": anchor}, "mode", "anchor"),
+		strictObject(map[string]any{
+			"mode":        map[string]any{"const": "explicit"},
+			"assignments": map[string]any{"type": "array", "minItems": 1, "maxItems": 128, "items": assignment},
+		}, "mode", "assignments"),
+	}}
 	return agentharness.Tool{
 		Definition: agentapi.ToolDefinition{
-			Name: "preview_episode_mapping", Description: "Preview the full backend-authoritative Mapping for one scoped anchor.",
-			Parameters: strictObject(map[string]any{
-				"sourceFileId":  map[string]any{"type": "string", "format": "uuid"},
-				"targetSeason":  map[string]any{"type": "integer", "minimum": 1, "maximum": math.MaxInt32},
-				"targetEpisode": map[string]any{"type": "integer", "minimum": 1, "maximum": math.MaxInt32},
-			}, "sourceFileId", "targetSeason", "targetEpisode"),
+			Name: "preview_episode_mapping", Description: "Preview one complete backend-authoritative anchor or explicit Mapping plan.", Parameters: parameters,
 		},
 		Execute: func(callCtx context.Context, _ string, raw json.RawMessage) (json.RawMessage, error) {
 			var arguments struct {
-				SourceFileID  uuid.UUID `json:"sourceFileId"`
-				TargetSeason  int       `json:"targetSeason"`
-				TargetEpisode int       `json:"targetEpisode"`
+				Mode        domain.EpisodeMappingMode               `json:"mode"`
+				Anchor      *domain.AgentEpisodeMappingAnchor       `json:"anchor,omitempty"`
+				Assignments []domain.AgentEpisodeMappingDisposition `json:"assignments,omitempty"`
 			}
 			if err := strictJSON(raw, &arguments); err != nil {
 				return nil, err
 			}
-			if _, ok := files[arguments.SourceFileID]; !ok {
-				return nil, fmt.Errorf("source file is outside this acquisition")
+			proposal := domain.AgentEpisodeMappingProposal{
+				AcquisitionID: acquisitionID, Mode: arguments.Mode, Anchor: arguments.Anchor, Assignments: arguments.Assignments,
+			}
+			if err := validateAgentEpisodeMappingProposalShape(proposal); err != nil {
+				return nil, err
+			}
+			input := episodeMappingPlanFromAgentProposal(proposal)
+			if err := validateMappingInput(input, false); err != nil {
+				return nil, err
+			}
+			if input.Mode == domain.EpisodeMappingModeAnchor {
+				if _, ok := files[input.Anchor.SourceFileID]; !ok {
+					return nil, fmt.Errorf("source file is outside this acquisition")
+				}
+			} else {
+				for _, item := range input.Assignments {
+					if _, ok := files[item.SourceFileID]; !ok {
+						return nil, fmt.Errorf("source file is outside this acquisition")
+					}
+				}
 			}
 			if service.catalog == nil {
 				return nil, fmt.Errorf("mapping preview is unavailable")
 			}
-			preview, err := service.catalog.PreviewEpisodeMapping(callCtx, domain.EpisodeMappingPlanInput{
-				AcquisitionID: acquisitionID,
-				Anchor: domain.EpisodeMappingAnchorInput{
-					SourceFileID: arguments.SourceFileID,
-					Target:       domain.EpisodeCoordinate{Season: arguments.TargetSeason, Episode: arguments.TargetEpisode},
-				},
-			})
+			preview, err := service.catalog.PreviewEpisodeMapping(callCtx, input)
 			if err != nil {
 				return nil, err
 			}
 			type row struct {
 				SourceFileID  uuid.UUID `json:"sourceFileId"`
 				Status        string    `json:"status"`
-				TargetSeason  int       `json:"targetSeason,omitempty"`
-				TargetEpisode int       `json:"targetEpisode,omitempty"`
+				TargetSeason  *int      `json:"targetSeason,omitempty"`
+				TargetEpisode *int      `json:"targetEpisode,omitempty"`
 				ErrorCode     string    `json:"errorCode,omitempty"`
 			}
 			rows := make([]row, 0, len(preview.Rows))
 			for _, item := range preview.Rows {
-				rows = append(rows, row{item.SourceFileID, string(item.Status), item.TargetSeason, item.TargetEpisode, item.ErrorCode})
+				value := row{SourceFileID: item.SourceFileID, Status: string(item.Status), ErrorCode: item.ErrorCode}
+				if item.Status == domain.MappingMapped {
+					targetSeason, targetEpisode := item.TargetSeason, item.TargetEpisode
+					value.TargetSeason = &targetSeason
+					value.TargetEpisode = &targetEpisode
+				}
+				rows = append(rows, value)
 			}
-			return json.Marshal(map[string]any{"rows": rows})
+			return json.Marshal(map[string]any{"mode": preview.Mode, "rows": rows})
 		},
 	}
 }

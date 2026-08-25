@@ -466,6 +466,7 @@ SELECT
     subscription.series_id,
     series.tmdb_series_id,
     series.title AS series_title,
+    entry.title AS source_title,
     subscription.mapping_profile_id,
     history.task_id,
     history.download_id,
@@ -503,6 +504,7 @@ type GetArchivedRSSAcquisitionByIDRow struct {
 	SeriesID             pgtype.UUID        `db:"series_id" json:"series_id"`
 	TmdbSeriesID         *int64             `db:"tmdb_series_id" json:"tmdb_series_id"`
 	SeriesTitle          string             `db:"series_title" json:"series_title"`
+	SourceTitle          string             `db:"source_title" json:"source_title"`
 	MappingProfileID     pgtype.UUID        `db:"mapping_profile_id" json:"mapping_profile_id"`
 	TaskID               pgtype.UUID        `db:"task_id" json:"task_id"`
 	DownloadID           pgtype.UUID        `db:"download_id" json:"download_id"`
@@ -531,6 +533,7 @@ func (q *Queries) GetArchivedRSSAcquisitionByID(ctx context.Context, id pgtype.U
 		&i.SeriesID,
 		&i.TmdbSeriesID,
 		&i.SeriesTitle,
+		&i.SourceTitle,
 		&i.MappingProfileID,
 		&i.TaskID,
 		&i.DownloadID,
@@ -723,6 +726,42 @@ func (q *Queries) GetRSSEntryRelations(ctx context.Context, rssEntryID pgtype.UU
 	var i GetRSSEntryRelationsRow
 	err := row.Scan(&i.AcquisitionID, &i.DownloadID)
 	return i, err
+}
+
+const listAcquisitionSourceTitles = `-- name: ListAcquisitionSourceTitles :many
+SELECT
+    acquisition.id AS acquisition_id,
+    COALESCE(candidate.title, entry.title, '')::text AS source_title
+FROM acquisitions AS acquisition
+LEFT JOIN release_candidates AS candidate ON candidate.id = acquisition.release_candidate_id
+LEFT JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
+WHERE acquisition.id = ANY($1::uuid[])
+ORDER BY acquisition.id
+`
+
+type ListAcquisitionSourceTitlesRow struct {
+	AcquisitionID pgtype.UUID `db:"acquisition_id" json:"acquisition_id"`
+	SourceTitle   string      `db:"source_title" json:"source_title"`
+}
+
+func (q *Queries) ListAcquisitionSourceTitles(ctx context.Context, acquisitionIds []pgtype.UUID) ([]ListAcquisitionSourceTitlesRow, error) {
+	rows, err := q.db.Query(ctx, listAcquisitionSourceTitles, acquisitionIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAcquisitionSourceTitlesRow{}
+	for rows.Next() {
+		var i ListAcquisitionSourceTitlesRow
+		if err := rows.Scan(&i.AcquisitionID, &i.SourceTitle); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAcquisitionTaskSummaries = `-- name: ListAcquisitionTaskSummaries :many

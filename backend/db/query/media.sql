@@ -1,3 +1,10 @@
+-- name: LockMaterializeAcquisitionForDownload :one
+SELECT acquisition.id
+FROM downloads AS download
+JOIN acquisitions AS acquisition ON acquisition.id = download.acquisition_id
+WHERE download.id = sqlc.arg(download_id)
+FOR UPDATE OF acquisition;
+
 -- name: LockDownloadForMaterialize :one
 SELECT
     download.*,

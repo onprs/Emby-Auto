@@ -67,19 +67,8 @@ ORDER BY entry.discovered_at, entry.id
 LIMIT 100;
 
 -- name: LockRSSEntryForAgentCoordinate :one
-SELECT
-    entry.*,
-    subscription.series_id,
-    subscription.mapping_profile_id,
-    subscription.source_season AS default_source_season,
-    subscription.include_keywords,
-    subscription.exclude_keywords,
-    subscription.enabled AS subscription_enabled,
-    subscription.version AS subscription_version,
-    subscription.completed_at AS subscription_completed_at,
-    subscription.deleted_at AS subscription_deleted_at
+SELECT entry.*
 FROM rss_entries AS entry
-JOIN rss_subscriptions AS subscription ON subscription.id = entry.subscription_id
 WHERE entry.id = sqlc.arg(id)
 FOR UPDATE OF entry;
 
@@ -160,11 +149,18 @@ WHERE entry.subscription_id = sqlc.arg(subscription_id)
 ORDER BY entry.discovered_at DESC, entry.id DESC
 LIMIT 50;
 
+-- name: LockRSSSubscriptionForAdjudicationBatch :one
+SELECT subscription.*
+FROM rss_adjudication_batches AS batch
+JOIN rss_subscriptions AS subscription ON subscription.id = batch.subscription_id
+WHERE batch.id = sqlc.arg(id)
+FOR UPDATE OF subscription;
+
 -- name: LockRSSAdjudicationBatch :one
-SELECT *
-FROM rss_adjudication_batches
-WHERE id = sqlc.arg(id)
-FOR UPDATE;
+SELECT batch.*
+FROM rss_adjudication_batches AS batch
+WHERE batch.id = sqlc.arg(id)
+FOR UPDATE OF batch;
 
 -- name: LockRSSAdjudicationEntries :many
 SELECT
@@ -292,26 +288,85 @@ WHERE entry.subscription_id = sqlc.arg(subscription_id)
 ORDER BY acquisition.created_at, acquisition.id
 LIMIT 1;
 
--- name: ListAutomaticRSSMappingAcquisitions :many
-SELECT DISTINCT ON (subscription.id) acquisition.id
-FROM rss_subscriptions AS subscription
-JOIN rss_entries AS entry ON entry.subscription_id = subscription.id
-JOIN acquisitions AS acquisition ON acquisition.rss_entry_id = entry.id
-WHERE subscription.auto_episode_mapping
-  AND subscription.deleted_at IS NULL
-  AND acquisition.mapping_profile_id IS NULL
-  AND acquisition.deletion_requested_at IS NULL
-  AND EXISTS (
-      SELECT 1
-      FROM downloads AS download
-      JOIN download_files AS file ON file.download_id = download.id
-      WHERE download.acquisition_id = acquisition.id
-        AND download.deleted_at IS NULL
-        AND file.selected
-        AND file.media_kind = 'video'
+-- name: ListAutomaticEpisodeMappingAcquisitions :many
+WITH reconciliation_window AS (
+    SELECT COALESCE(
+        sqlc.narg(window_created_before)::timestamptz,
+        statement_timestamp()
+    )::timestamptz AS created_before
+),
+canonical AS (
+    SELECT DISTINCT ON (COALESCE(subscription.id, acquisition.id))
+        acquisition.id AS acquisition_id,
+        COALESCE(subscription.id, acquisition.id) AS group_key,
+        acquisition.created_at
+    FROM acquisitions AS acquisition
+    JOIN media_series AS series ON series.id = acquisition.series_id
+    LEFT JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
+    LEFT JOIN rss_subscriptions AS subscription ON subscription.id = entry.subscription_id
+    CROSS JOIN reconciliation_window
+    WHERE acquisition.created_at < reconciliation_window.created_before
+      AND series.media_type = 'tv'
+      AND acquisition.mapping_profile_id IS NULL
+      AND acquisition.deletion_requested_at IS NULL
+      AND (
+          acquisition.source_kind <> 'rss'
+          OR (
+              subscription.auto_episode_mapping
+              AND subscription.deleted_at IS NULL
+          )
+      )
+      AND EXISTS (
+          SELECT 1
+          FROM downloads AS download
+          JOIN download_files AS file ON file.download_id = download.id
+          WHERE download.acquisition_id = acquisition.id
+            AND download.deleted_at IS NULL
+            AND file.selected
+            AND file.media_kind = 'video'
+      )
+    ORDER BY COALESCE(subscription.id, acquisition.id), acquisition.created_at, acquisition.id
+),
+window_bounds AS (
+    SELECT
+        reconciliation_window.created_before,
+        COALESCE(sqlc.narg(window_high_group_key)::uuid, initial_high.group_key)::uuid AS high_group_key,
+        COALESCE(sqlc.narg(window_high_created_at)::timestamptz, initial_high.created_at)::timestamptz AS high_created_at,
+        COALESCE(sqlc.narg(window_high_acquisition_id)::uuid, initial_high.acquisition_id)::uuid AS high_acquisition_id
+    FROM reconciliation_window
+    LEFT JOIN LATERAL (
+        SELECT group_key, created_at, acquisition_id
+        FROM canonical
+        ORDER BY group_key DESC, created_at DESC, acquisition_id DESC
+        LIMIT 1
+    ) AS initial_high ON true
+)
+SELECT
+    canonical.acquisition_id,
+    canonical.group_key,
+    canonical.created_at,
+    window_bounds.created_before AS window_created_before,
+    window_bounds.high_group_key AS window_high_group_key,
+    window_bounds.high_created_at AS window_high_created_at,
+    window_bounds.high_acquisition_id AS window_high_acquisition_id
+FROM canonical
+CROSS JOIN window_bounds
+WHERE window_bounds.high_group_key IS NOT NULL
+  AND (
+      sqlc.narg(cursor_group_key)::uuid IS NULL
+      OR (canonical.group_key, canonical.created_at, canonical.acquisition_id) > (
+          sqlc.narg(cursor_group_key)::uuid,
+          sqlc.narg(cursor_created_at)::timestamptz,
+          sqlc.narg(cursor_acquisition_id)::uuid
+      )
   )
-ORDER BY subscription.id, acquisition.created_at, acquisition.id
-LIMIT 100;
+  AND (canonical.group_key, canonical.created_at, canonical.acquisition_id) <= (
+      window_bounds.high_group_key,
+      window_bounds.high_created_at,
+      window_bounds.high_acquisition_id
+  )
+ORDER BY canonical.group_key, canonical.created_at, canonical.acquisition_id
+LIMIT sqlc.arg(page_size);
 
 -- name: IsAutomaticEpisodeMappingEnabled :one
 SELECT CASE
@@ -362,25 +417,28 @@ SELECT
     acquisition.mapping_profile_id,
     acquisition.updated_at,
     series.title,
-    series.tmdb_series_id
+    series.tmdb_series_id,
+    COALESCE(candidate.title, entry.title, '')::text AS source_title
 FROM acquisitions AS acquisition
 JOIN media_series AS series ON series.id = acquisition.series_id
+LEFT JOIN release_candidates AS candidate ON candidate.id = acquisition.release_candidate_id
+LEFT JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
 WHERE acquisition.id = sqlc.arg(id);
 
 -- name: ListAgentMappingFiles :many
 SELECT file.id, file.relative_path, file.source_season, file.source_episode
 FROM download_files AS file
 JOIN downloads AS download ON download.id = file.download_id
-WHERE download.acquisition_id = sqlc.arg(acquisition_id)
-  AND download.deleted_at IS NULL
+WHERE download.id = (
+    SELECT candidate.id
+    FROM downloads AS candidate
+    WHERE candidate.acquisition_id = sqlc.arg(acquisition_id)
+      AND candidate.deleted_at IS NULL
+    ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
+    LIMIT 1
+)
   AND file.selected
   AND file.media_kind = 'video'
-  AND download.attempt = (
-      SELECT max(candidate.attempt)
-      FROM downloads AS candidate
-      WHERE candidate.acquisition_id = sqlc.arg(acquisition_id)
-        AND candidate.deleted_at IS NULL
-  )
 ORDER BY file.file_index;
 
 -- name: ListAgentTMDbEpisodes :many
@@ -393,7 +451,6 @@ FROM acquisitions AS acquisition
 JOIN tmdb_seasons AS season ON season.series_id = acquisition.series_id
 JOIN media_episodes AS episode ON episode.season_id = season.id
 WHERE acquisition.id = sqlc.arg(acquisition_id)
-  AND season.season_number > 0
 ORDER BY season.season_number, episode.episode_number;
 
 -- name: GetAgentCatalogContext :one

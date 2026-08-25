@@ -34,6 +34,7 @@ function acquisition(overrides: Partial<Acquisition> = {}): Acquisition {
     seriesId: '44444444-4444-4444-8444-444444444444',
     seriesTitle: '生命周期测试番剧',
     sourceKind: 'rss',
+    sourceTitle: '原始季度包标题',
     sourceSeason: 1,
     sourceEpisode: 1,
     downloadId,
@@ -131,6 +132,8 @@ describe('AcquisitionDetailPage lifecycle', () => {
     renderWithProviders(<AcquisitionDetailPage acquisitionId={acquisitionId} />);
 
     expect(await screen.findByRole('heading', { name: '生命周期测试番剧' })).toBeInTheDocument();
+    expect(screen.getByText('原始资源标题')).toBeInTheDocument();
+    expect(screen.getByText('原始季度包标题')).toBeInTheDocument();
     expect(screen.queryByText('Agent 建议')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '请求建议' })).not.toBeInTheDocument();
     expect(agentResolutionRequests).toBe(0);

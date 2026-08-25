@@ -26,11 +26,11 @@ func TestRSSSubscriptionMappingProfilePropagatesOnlyBeforeMaterializationIntegra
 	workflow := NewRSSWorkflow(db.New(pool), transactor, nil)
 
 	actorID, seriesID, seasonID := uuid.New(), uuid.New(), uuid.New()
-	oldProfileID, newProfileID := uuid.New(), uuid.New()
+	oldProfileID, newProfileID, localProfileID := uuid.New(), uuid.New(), uuid.New()
 	episodeIDs := []uuid.UUID{uuid.New(), uuid.New()}
 	subscriptionID := uuid.New()
-	pendingEntryID, protectedEntryID := uuid.New(), uuid.New()
-	pendingAcquisitionID, protectedAcquisitionID := uuid.New(), uuid.New()
+	pendingEntryID, protectedEntryID, localEntryID := uuid.New(), uuid.New(), uuid.New()
+	pendingAcquisitionID, protectedAcquisitionID, localAcquisitionID := uuid.New(), uuid.New(), uuid.New()
 	downloadID, fileID, transcodeProfileID, taskID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	if _, err := pool.Exec(ctx, `INSERT INTO admin_users (id, username, password_hash) VALUES ($1, $2, 'fixture-hash')`, actorID, "rss-profile-"+actorID.String()); err != nil {
 		t.Fatal(err)
@@ -48,8 +48,9 @@ VALUES ($1, $3, 1, 'Episode 1'), ($2, $3, 2, 'Episode 2')`, episodeIDs[0], episo
 	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO episode_mapping_profiles (id, series_id, name, version, source_season_lengths, active, created_by, decision_source)
-VALUES ($1, $3, 'old', 1, ARRAY[2], true, $4, 'user'),
-       ($2, $3, 'new', 1, ARRAY[2], true, $4, 'user')`, oldProfileID, newProfileID, seriesID, actorID); err != nil {
+VALUES ($1, $4, 'old', 1, ARRAY[2], true, $5, 'user'),
+       ($2, $4, 'new', 1, ARRAY[2], true, $5, 'user'),
+       ($3, $4, 'acquisition:' || $6::text, 1, ARRAY[2], true, $5, 'user')`, oldProfileID, newProfileID, localProfileID, seriesID, actorID, localAcquisitionID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `
@@ -67,13 +68,16 @@ VALUES ($1, $2, $3, 'RSS Profile Integration', 'https://example.test/profile.xml
 	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO rss_entries (id, subscription_id, identity_key, title, download_uri, downloadable, rejection_reasons, source_season, source_episode, status)
-VALUES ($1, $3, 'guid:pending', 'Pending E01', 'https://example.test/1.torrent', true, ARRAY[]::text[], 1, 1, 'enqueued'),
-       ($2, $3, 'guid:protected', 'Protected E02', 'https://example.test/2.torrent', true, ARRAY[]::text[], 1, 2, 'enqueued')`, pendingEntryID, protectedEntryID, subscriptionID); err != nil {
+VALUES ($1, $4, 'guid:pending', 'Pending E01', 'https://example.test/1.torrent', true, ARRAY[]::text[], 1, 1, 'enqueued'),
+       ($2, $4, 'guid:protected', 'Protected E02', 'https://example.test/2.torrent', true, ARRAY[]::text[], 1, 2, 'enqueued'),
+       ($3, $4, 'guid:local', 'Local E01', 'https://example.test/local.torrent', true, ARRAY[]::text[], 1, 1, 'enqueued')`, pendingEntryID, protectedEntryID, localEntryID, subscriptionID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO acquisitions (id, series_id, mapping_profile_id, source_kind, rss_entry_id)
-VALUES ($1, $3, $4, 'rss', $5), ($2, $3, $4, 'rss', $6)`, pendingAcquisitionID, protectedAcquisitionID, seriesID, oldProfileID, pendingEntryID, protectedEntryID); err != nil {
+VALUES ($1, $4, $5, 'rss', $7),
+       ($2, $4, $5, 'rss', $8),
+       ($3, $4, $6, 'rss', $9)`, pendingAcquisitionID, protectedAcquisitionID, localAcquisitionID, seriesID, oldProfileID, localProfileID, pendingEntryID, protectedEntryID, localEntryID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO downloads (id, acquisition_id, status) VALUES ($1, $2, 'materialized')`, downloadID, protectedAcquisitionID); err != nil {
@@ -108,15 +112,26 @@ VALUES ($1, $2, $3, $4)`, taskID, protectedAcquisitionID, fileID, transcodeProfi
 	if updated.MappingProfileID != newProfileID || !updated.AutoReview {
 		t.Fatalf("updated subscription profile/auto-review = %s/%t, want %s/true", updated.MappingProfileID, updated.AutoReview, newProfileID)
 	}
-	var pendingProfileID, protectedProfileID uuid.UUID
+	var pendingProfileID, protectedProfileID, localPersistedProfileID uuid.UUID
 	if err := pool.QueryRow(ctx, `SELECT mapping_profile_id FROM acquisitions WHERE id = $1`, pendingAcquisitionID).Scan(&pendingProfileID); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT mapping_profile_id FROM acquisitions WHERE id = $1`, protectedAcquisitionID).Scan(&protectedProfileID); err != nil {
 		t.Fatal(err)
 	}
-	if pendingProfileID != newProfileID || protectedProfileID != oldProfileID {
-		t.Fatalf("acquisition profiles = pending %s protected %s, want %s/%s", pendingProfileID, protectedProfileID, newProfileID, oldProfileID)
+	if err := pool.QueryRow(ctx, `SELECT mapping_profile_id FROM acquisitions WHERE id = $1`, localAcquisitionID).Scan(&localPersistedProfileID); err != nil {
+		t.Fatal(err)
+	}
+	if pendingProfileID != newProfileID || protectedProfileID != oldProfileID || localPersistedProfileID != localProfileID {
+		t.Fatalf(
+			"acquisition profiles = pending %s protected %s local %s, want %s/%s/%s",
+			pendingProfileID,
+			protectedProfileID,
+			localPersistedProfileID,
+			newProfileID,
+			oldProfileID,
+			localProfileID,
+		)
 	}
 }
 

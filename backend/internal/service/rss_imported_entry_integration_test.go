@@ -108,26 +108,24 @@ VALUES ($9, $6, 'failed', 'library_destination_conflict', 'fixture conflict', no
 		t.Fatal(err)
 	}
 
-	// 同一目标的另一个 release 成功导入。
-	owner, err := fixture.workflow.PersistPoll(fixture.ctx, fixture.pollOperationID, fixture.subscriptionID, domain.RSSFeed{
-		Title: "Target Occupancy", Entries: []domain.RSSFeedEntry{targetFeedEntry(0, "owner")},
-	}, domain.RSSPollPersistOptions{})
-	if err != nil || len(owner.Candidates) != 1 {
-		t.Fatalf("owner PersistPoll() = %#v, %v", owner, err)
-	}
-	if err := fixture.workflow.ScheduleRSSDownload(fixture.ctx, owner.Candidates[0]); err != nil {
-		t.Fatal(err)
-	}
-	ownerEntryID := owner.Candidates[0].EntryID
-	var ownerAcquisitionID, ownerDownloadID, ownerMappingID uuid.UUID
-	if err := fixture.pool.QueryRow(fixture.ctx, `
-SELECT acquisition.id, download.id
-FROM acquisitions AS acquisition
-JOIN downloads AS download ON download.acquisition_id = acquisition.id
-WHERE acquisition.rss_entry_id = $1`, ownerEntryID).Scan(&ownerAcquisitionID, &ownerDownloadID); err != nil {
-		t.Fatal(err)
-	}
+	// 失败任务现在会继续保留目标 reservation，当前写入路径不会再创建第二个 owner。
+	// 这里直接构造升级前可能已经并存的历史成功导入，以验证 reconciliation 仍能收敛该状态。
+	ownerEntryID, ownerAcquisitionID, ownerDownloadID := uuid.New(), uuid.New(), uuid.New()
+	var ownerMappingID uuid.UUID
 	if err := fixture.pool.QueryRow(fixture.ctx, `SELECT id FROM episode_mappings WHERE profile_id = $1 AND source_season = 1 AND source_episode = 1`, fixture.profileID).Scan(&ownerMappingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testutil.ExecFixture(fixture.ctx, fixture.pool, `
+INSERT INTO rss_entries (
+    id, subscription_id, identity_key, title, download_uri, downloadable,
+    rejection_reasons, source_season, source_episode, status
+) VALUES ($1, $2, 'guid:historical-owner', 'Historical Owner S01E01', 'https://example.test/historical-owner.torrent', true, ARRAY[]::text[], 1, 1, 'enqueued');
+INSERT INTO acquisitions (
+    id, series_id, mapping_profile_id, source_kind, rss_entry_id, source_payload
+) VALUES ($3, $4, $5, 'rss', $1, '{"sourceSeason":1,"sourceEpisode":1,"singleEpisode":true}');
+INSERT INTO downloads (id, acquisition_id, status, progress)
+VALUES ($6, $3, 'enqueue_pending', 0)`,
+		ownerEntryID, fixture.subscriptionID, ownerAcquisitionID, fixture.seriesID, fixture.profileID, ownerDownloadID); err != nil {
 		t.Fatal(err)
 	}
 	ownerFileID, ownerTranscodeID, ownerTaskID := uuid.New(), uuid.New(), uuid.New()

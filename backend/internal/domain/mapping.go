@@ -26,8 +26,9 @@ type EpisodeMappingRequest struct {
 type MappingStatus string
 
 const (
-	MappingMapped  MappingStatus = "mapped"
-	MappingPending MappingStatus = "pending"
+	MappingMapped   MappingStatus = "mapped"
+	MappingPending  MappingStatus = "pending"
+	MappingExcluded MappingStatus = "excluded"
 )
 
 type MappingMatchSource string
@@ -37,6 +38,13 @@ const (
 	MappingMatchExplicit MappingMatchSource = "explicit"
 	MappingMatchAbsolute MappingMatchSource = "absolute"
 	MappingMatchPending  MappingMatchSource = "pending"
+)
+
+type EpisodeMappingMode string
+
+const (
+	EpisodeMappingModeAnchor   EpisodeMappingMode = "anchor"
+	EpisodeMappingModeExplicit EpisodeMappingMode = "explicit"
 )
 
 type EpisodeMappingResult struct {
@@ -51,7 +59,7 @@ type EpisodeMappingResult struct {
 // ResolveEpisodeMapping applies one source-to-TMDb anchor to every episode in
 // the same source season. TMDb regular seasons provide the canonical sequence.
 func ResolveEpisodeMapping(request EpisodeMappingRequest) EpisodeMappingResult {
-	if !validCoordinate(request.Source) || !validCoordinate(request.AnchorSource) {
+	if !validSourceCoordinate(request.Source) || !validSourceCoordinate(request.AnchorSource) {
 		return pendingMapping(0, EpisodeCoordinate{}, "mapping_source_invalid")
 	}
 	if request.Source.Season != request.AnchorSource.Season {
@@ -83,8 +91,37 @@ func ResolveEpisodeMapping(request EpisodeMappingRequest) EpisodeMappingResult {
 	}
 }
 
+// ResolveExplicitEpisodeMapping 只校验一个后端目录目标，不使用锚点模式的常规季累计序列。
+func ResolveExplicitEpisodeMapping(source, target EpisodeCoordinate, seasons []TMDbSeason) EpisodeMappingResult {
+	if !validSourceCoordinate(source) {
+		return pendingMapping(0, EpisodeCoordinate{}, "mapping_source_invalid")
+	}
+	if target.Season < 0 || target.Episode <= 0 {
+		return pendingMapping(0, target, "mapping_target_out_of_range")
+	}
+	title, errorCode := resolveTargetTitle(seasons, target)
+	if errorCode != "" {
+		return pendingMapping(0, target, errorCode)
+	}
+	absolute := 0
+	if target.Season > 0 {
+		var ok bool
+		absolute, ok = AbsoluteEpisodeForTarget(target, seasons)
+		if !ok {
+			return pendingMapping(0, target, "mapping_target_out_of_range")
+		}
+	}
+	return EpisodeMappingResult{
+		Status:          MappingMapped,
+		AbsoluteEpisode: absolute,
+		Target:          target,
+		TargetTitle:     title,
+		MatchSource:     MappingMatchExplicit,
+	}
+}
+
 func AbsoluteEpisodeForTarget(target EpisodeCoordinate, seasons []TMDbSeason) (int, bool) {
-	if !validCoordinate(target) {
+	if !validSourceCoordinate(target) {
 		return 0, false
 	}
 	absolute := 0
@@ -152,7 +189,7 @@ func resolveTargetTitle(seasons []TMDbSeason, target EpisodeCoordinate) (string,
 	return "", "mapping_target_out_of_range"
 }
 
-func validCoordinate(coordinate EpisodeCoordinate) bool {
+func validSourceCoordinate(coordinate EpisodeCoordinate) bool {
 	return coordinate.Season > 0 && coordinate.Episode > 0
 }
 

@@ -232,11 +232,14 @@ func TestAcquisitionResponseIncludesArchivedLifecycleMetadata(t *testing.T) {
 	archivedAt := time.Date(2026, 7, 29, 6, 10, 0, 0, time.UTC)
 	response := acquisitionResponse(domain.AcquisitionView{
 		ID: uuid.New(), Archived: true, ArchivedAt: &archivedAt, MediaType: domain.TaskMediaEpisode,
-		SeriesID: uuid.New(), SourceKind: "rss", AggregateStatus: "completed", CurrentStage: "import", OverallProgress: 1,
+		SeriesID: uuid.New(), SourceKind: "rss", SourceTitle: "Original selected release", AggregateStatus: "completed", CurrentStage: "import", OverallProgress: 1,
 		Stages: []domain.AcquisitionStageView{}, Tasks: []domain.AcquisitionTaskSummary{}, CreatedAt: archivedAt.Add(-time.Hour), UpdatedAt: archivedAt,
 	})
 	if response.Archived == nil || !*response.Archived || response.ArchivedAt == nil || !response.ArchivedAt.Equal(archivedAt) {
 		t.Fatalf("archived acquisition response = %#v", response)
+	}
+	if response.SourceTitle == nil || *response.SourceTitle != "Original selected release" {
+		t.Fatalf("source title = %#v", response.SourceTitle)
 	}
 }
 

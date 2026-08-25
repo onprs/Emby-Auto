@@ -711,9 +711,12 @@ SELECT
     acquisition.mapping_profile_id,
     acquisition.updated_at,
     series.title,
-    series.tmdb_series_id
+    series.tmdb_series_id,
+    COALESCE(candidate.title, entry.title, '')::text AS source_title
 FROM acquisitions AS acquisition
 JOIN media_series AS series ON series.id = acquisition.series_id
+LEFT JOIN release_candidates AS candidate ON candidate.id = acquisition.release_candidate_id
+LEFT JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
 WHERE acquisition.id = $1
 `
 
@@ -724,6 +727,7 @@ type GetAgentMappingContextRow struct {
 	UpdatedAt        pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 	Title            string             `db:"title" json:"title"`
 	TmdbSeriesID     *int64             `db:"tmdb_series_id" json:"tmdb_series_id"`
+	SourceTitle      string             `db:"source_title" json:"source_title"`
 }
 
 func (q *Queries) GetAgentMappingContext(ctx context.Context, id pgtype.UUID) (GetAgentMappingContextRow, error) {
@@ -736,6 +740,7 @@ func (q *Queries) GetAgentMappingContext(ctx context.Context, id pgtype.UUID) (G
 		&i.UpdatedAt,
 		&i.Title,
 		&i.TmdbSeriesID,
+		&i.SourceTitle,
 	)
 	return i, err
 }
@@ -1282,16 +1287,16 @@ const listAgentMappingFiles = `-- name: ListAgentMappingFiles :many
 SELECT file.id, file.relative_path, file.source_season, file.source_episode
 FROM download_files AS file
 JOIN downloads AS download ON download.id = file.download_id
-WHERE download.acquisition_id = $1
-  AND download.deleted_at IS NULL
+WHERE download.id = (
+    SELECT candidate.id
+    FROM downloads AS candidate
+    WHERE candidate.acquisition_id = $1
+      AND candidate.deleted_at IS NULL
+    ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
+    LIMIT 1
+)
   AND file.selected
   AND file.media_kind = 'video'
-  AND download.attempt = (
-      SELECT max(candidate.attempt)
-      FROM downloads AS candidate
-      WHERE candidate.acquisition_id = $1
-        AND candidate.deleted_at IS NULL
-  )
 ORDER BY file.file_index
 `
 
@@ -1779,7 +1784,6 @@ FROM acquisitions AS acquisition
 JOIN tmdb_seasons AS season ON season.series_id = acquisition.series_id
 JOIN media_episodes AS episode ON episode.season_id = season.id
 WHERE acquisition.id = $1
-  AND season.season_number > 0
 ORDER BY season.season_number, episode.episode_number
 `
 
@@ -1815,41 +1819,138 @@ func (q *Queries) ListAgentTMDbEpisodes(ctx context.Context, acquisitionID pgtyp
 	return items, nil
 }
 
-const listAutomaticRSSMappingAcquisitions = `-- name: ListAutomaticRSSMappingAcquisitions :many
-SELECT DISTINCT ON (subscription.id) acquisition.id
-FROM rss_subscriptions AS subscription
-JOIN rss_entries AS entry ON entry.subscription_id = subscription.id
-JOIN acquisitions AS acquisition ON acquisition.rss_entry_id = entry.id
-WHERE subscription.auto_episode_mapping
-  AND subscription.deleted_at IS NULL
-  AND acquisition.mapping_profile_id IS NULL
-  AND acquisition.deletion_requested_at IS NULL
-  AND EXISTS (
-      SELECT 1
-      FROM downloads AS download
-      JOIN download_files AS file ON file.download_id = download.id
-      WHERE download.acquisition_id = acquisition.id
-        AND download.deleted_at IS NULL
-        AND file.selected
-        AND file.media_kind = 'video'
+const listAutomaticEpisodeMappingAcquisitions = `-- name: ListAutomaticEpisodeMappingAcquisitions :many
+WITH reconciliation_window AS (
+    SELECT COALESCE(
+        $5::timestamptz,
+        statement_timestamp()
+    )::timestamptz AS created_before
+),
+canonical AS (
+    SELECT DISTINCT ON (COALESCE(subscription.id, acquisition.id))
+        acquisition.id AS acquisition_id,
+        COALESCE(subscription.id, acquisition.id) AS group_key,
+        acquisition.created_at
+    FROM acquisitions AS acquisition
+    JOIN media_series AS series ON series.id = acquisition.series_id
+    LEFT JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
+    LEFT JOIN rss_subscriptions AS subscription ON subscription.id = entry.subscription_id
+    CROSS JOIN reconciliation_window
+    WHERE acquisition.created_at < reconciliation_window.created_before
+      AND series.media_type = 'tv'
+      AND acquisition.mapping_profile_id IS NULL
+      AND acquisition.deletion_requested_at IS NULL
+      AND (
+          acquisition.source_kind <> 'rss'
+          OR (
+              subscription.auto_episode_mapping
+              AND subscription.deleted_at IS NULL
+          )
+      )
+      AND EXISTS (
+          SELECT 1
+          FROM downloads AS download
+          JOIN download_files AS file ON file.download_id = download.id
+          WHERE download.acquisition_id = acquisition.id
+            AND download.deleted_at IS NULL
+            AND file.selected
+            AND file.media_kind = 'video'
+      )
+    ORDER BY COALESCE(subscription.id, acquisition.id), acquisition.created_at, acquisition.id
+),
+window_bounds AS (
+    SELECT
+        reconciliation_window.created_before,
+        COALESCE($6::uuid, initial_high.group_key)::uuid AS high_group_key,
+        COALESCE($7::timestamptz, initial_high.created_at)::timestamptz AS high_created_at,
+        COALESCE($8::uuid, initial_high.acquisition_id)::uuid AS high_acquisition_id
+    FROM reconciliation_window
+    LEFT JOIN LATERAL (
+        SELECT group_key, created_at, acquisition_id
+        FROM canonical
+        ORDER BY group_key DESC, created_at DESC, acquisition_id DESC
+        LIMIT 1
+    ) AS initial_high ON true
+)
+SELECT
+    canonical.acquisition_id,
+    canonical.group_key,
+    canonical.created_at,
+    window_bounds.created_before AS window_created_before,
+    window_bounds.high_group_key AS window_high_group_key,
+    window_bounds.high_created_at AS window_high_created_at,
+    window_bounds.high_acquisition_id AS window_high_acquisition_id
+FROM canonical
+CROSS JOIN window_bounds
+WHERE window_bounds.high_group_key IS NOT NULL
+  AND (
+      $1::uuid IS NULL
+      OR (canonical.group_key, canonical.created_at, canonical.acquisition_id) > (
+          $1::uuid,
+          $2::timestamptz,
+          $3::uuid
+      )
   )
-ORDER BY subscription.id, acquisition.created_at, acquisition.id
-LIMIT 100
+  AND (canonical.group_key, canonical.created_at, canonical.acquisition_id) <= (
+      window_bounds.high_group_key,
+      window_bounds.high_created_at,
+      window_bounds.high_acquisition_id
+  )
+ORDER BY canonical.group_key, canonical.created_at, canonical.acquisition_id
+LIMIT $4
 `
 
-func (q *Queries) ListAutomaticRSSMappingAcquisitions(ctx context.Context) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listAutomaticRSSMappingAcquisitions)
+type ListAutomaticEpisodeMappingAcquisitionsParams struct {
+	CursorGroupKey          pgtype.UUID        `db:"cursor_group_key" json:"cursor_group_key"`
+	CursorCreatedAt         pgtype.Timestamptz `db:"cursor_created_at" json:"cursor_created_at"`
+	CursorAcquisitionID     pgtype.UUID        `db:"cursor_acquisition_id" json:"cursor_acquisition_id"`
+	PageSize                int32              `db:"page_size" json:"page_size"`
+	WindowCreatedBefore     pgtype.Timestamptz `db:"window_created_before" json:"window_created_before"`
+	WindowHighGroupKey      pgtype.UUID        `db:"window_high_group_key" json:"window_high_group_key"`
+	WindowHighCreatedAt     pgtype.Timestamptz `db:"window_high_created_at" json:"window_high_created_at"`
+	WindowHighAcquisitionID pgtype.UUID        `db:"window_high_acquisition_id" json:"window_high_acquisition_id"`
+}
+
+type ListAutomaticEpisodeMappingAcquisitionsRow struct {
+	AcquisitionID           pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
+	GroupKey                pgtype.UUID        `db:"group_key" json:"group_key"`
+	CreatedAt               pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	WindowCreatedBefore     pgtype.Timestamptz `db:"window_created_before" json:"window_created_before"`
+	WindowHighGroupKey      pgtype.UUID        `db:"window_high_group_key" json:"window_high_group_key"`
+	WindowHighCreatedAt     pgtype.Timestamptz `db:"window_high_created_at" json:"window_high_created_at"`
+	WindowHighAcquisitionID pgtype.UUID        `db:"window_high_acquisition_id" json:"window_high_acquisition_id"`
+}
+
+func (q *Queries) ListAutomaticEpisodeMappingAcquisitions(ctx context.Context, arg ListAutomaticEpisodeMappingAcquisitionsParams) ([]ListAutomaticEpisodeMappingAcquisitionsRow, error) {
+	rows, err := q.db.Query(ctx, listAutomaticEpisodeMappingAcquisitions,
+		arg.CursorGroupKey,
+		arg.CursorCreatedAt,
+		arg.CursorAcquisitionID,
+		arg.PageSize,
+		arg.WindowCreatedBefore,
+		arg.WindowHighGroupKey,
+		arg.WindowHighCreatedAt,
+		arg.WindowHighAcquisitionID,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []pgtype.UUID{}
+	items := []ListAutomaticEpisodeMappingAcquisitionsRow{}
 	for rows.Next() {
-		var id pgtype.UUID
-		if err := rows.Scan(&id); err != nil {
+		var i ListAutomaticEpisodeMappingAcquisitionsRow
+		if err := rows.Scan(
+			&i.AcquisitionID,
+			&i.GroupKey,
+			&i.CreatedAt,
+			&i.WindowCreatedBefore,
+			&i.WindowHighGroupKey,
+			&i.WindowHighCreatedAt,
+			&i.WindowHighAcquisitionID,
+		); err != nil {
 			return nil, err
 		}
-		items = append(items, id)
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1906,10 +2007,10 @@ func (q *Queries) LockAgentResolution(ctx context.Context, id pgtype.UUID) (Agen
 }
 
 const lockRSSAdjudicationBatch = `-- name: LockRSSAdjudicationBatch :one
-SELECT id, subscription_id, status, entry_count, created_at, updated_at
-FROM rss_adjudication_batches
-WHERE id = $1
-FOR UPDATE
+SELECT batch.id, batch.subscription_id, batch.status, batch.entry_count, batch.created_at, batch.updated_at
+FROM rss_adjudication_batches AS batch
+WHERE batch.id = $1
+FOR UPDATE OF batch
 `
 
 func (q *Queries) LockRSSAdjudicationBatch(ctx context.Context, id pgtype.UUID) (RssAdjudicationBatch, error) {
@@ -2029,66 +2130,15 @@ func (q *Queries) LockRSSAdjudicationEntries(ctx context.Context, batchID pgtype
 }
 
 const lockRSSEntryForAgentCoordinate = `-- name: LockRSSEntryForAgentCoordinate :one
-SELECT
-    entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source,
-    subscription.series_id,
-    subscription.mapping_profile_id,
-    subscription.source_season AS default_source_season,
-    subscription.include_keywords,
-    subscription.exclude_keywords,
-    subscription.enabled AS subscription_enabled,
-    subscription.version AS subscription_version,
-    subscription.completed_at AS subscription_completed_at,
-    subscription.deleted_at AS subscription_deleted_at
+SELECT entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source
 FROM rss_entries AS entry
-JOIN rss_subscriptions AS subscription ON subscription.id = entry.subscription_id
 WHERE entry.id = $1
 FOR UPDATE OF entry
 `
 
-type LockRSSEntryForAgentCoordinateRow struct {
-	ID                      pgtype.UUID        `db:"id" json:"id"`
-	SubscriptionID          pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
-	ReleaseCandidateID      pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
-	IdentityKey             string             `db:"identity_key" json:"identity_key"`
-	Guid                    *string            `db:"guid" json:"guid"`
-	Btih                    *string            `db:"btih" json:"btih"`
-	CanonicalUrl            *string            `db:"canonical_url" json:"canonical_url"`
-	Title                   string             `db:"title" json:"title"`
-	PublishedAt             pgtype.Timestamptz `db:"published_at" json:"published_at"`
-	Status                  string             `db:"status" json:"status"`
-	EnqueueAttempts         int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
-	LastErrorCode           *string            `db:"last_error_code" json:"last_error_code"`
-	LastErrorMessage        *string            `db:"last_error_message" json:"last_error_message"`
-	UpstreamPayload         []byte             `db:"upstream_payload" json:"upstream_payload"`
-	DiscoveredAt            pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
-	EnqueuedAt              pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
-	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-	DownloadUri             *string            `db:"download_uri" json:"download_uri"`
-	Downloadable            bool               `db:"downloadable" json:"downloadable"`
-	RejectionReasons        []string           `db:"rejection_reasons" json:"rejection_reasons"`
-	SourceSeason            *int32             `db:"source_season" json:"source_season"`
-	SourceEpisode           *int32             `db:"source_episode" json:"source_episode"`
-	DuplicateCount          int32              `db:"duplicate_count" json:"duplicate_count"`
-	LastErrorRetryable      bool               `db:"last_error_retryable" json:"last_error_retryable"`
-	ImportedAt              pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
-	CoordinateSource        *string            `db:"coordinate_source" json:"coordinate_source"`
-	AgentResolutionID       pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
-	FulfillmentSource       *string            `db:"fulfillment_source" json:"fulfillment_source"`
-	SeriesID                pgtype.UUID        `db:"series_id" json:"series_id"`
-	MappingProfileID        pgtype.UUID        `db:"mapping_profile_id" json:"mapping_profile_id"`
-	DefaultSourceSeason     int32              `db:"default_source_season" json:"default_source_season"`
-	IncludeKeywords         []string           `db:"include_keywords" json:"include_keywords"`
-	ExcludeKeywords         []string           `db:"exclude_keywords" json:"exclude_keywords"`
-	SubscriptionEnabled     bool               `db:"subscription_enabled" json:"subscription_enabled"`
-	SubscriptionVersion     int32              `db:"subscription_version" json:"subscription_version"`
-	SubscriptionCompletedAt pgtype.Timestamptz `db:"subscription_completed_at" json:"subscription_completed_at"`
-	SubscriptionDeletedAt   pgtype.Timestamptz `db:"subscription_deleted_at" json:"subscription_deleted_at"`
-}
-
-func (q *Queries) LockRSSEntryForAgentCoordinate(ctx context.Context, id pgtype.UUID) (LockRSSEntryForAgentCoordinateRow, error) {
+func (q *Queries) LockRSSEntryForAgentCoordinate(ctx context.Context, id pgtype.UUID) (RssEntry, error) {
 	row := q.db.QueryRow(ctx, lockRSSEntryForAgentCoordinate, id)
-	var i LockRSSEntryForAgentCoordinateRow
+	var i RssEntry
 	err := row.Scan(
 		&i.ID,
 		&i.SubscriptionID,
@@ -2118,15 +2168,42 @@ func (q *Queries) LockRSSEntryForAgentCoordinate(ctx context.Context, id pgtype.
 		&i.CoordinateSource,
 		&i.AgentResolutionID,
 		&i.FulfillmentSource,
+	)
+	return i, err
+}
+
+const lockRSSSubscriptionForAdjudicationBatch = `-- name: LockRSSSubscriptionForAdjudicationBatch :one
+SELECT subscription.id, subscription.series_id, subscription.mapping_profile_id, subscription.name, subscription.feed_url, subscription.enabled, subscription.poll_interval_seconds, subscription.last_polled_at, subscription.next_poll_at, subscription.version, subscription.created_at, subscription.updated_at, subscription.source_season, subscription.deleted_at, subscription.auto_review, subscription.cleanup_source_on_completion, subscription.completed_at, subscription.include_keywords, subscription.exclude_keywords, subscription.auto_episode_mapping
+FROM rss_adjudication_batches AS batch
+JOIN rss_subscriptions AS subscription ON subscription.id = batch.subscription_id
+WHERE batch.id = $1
+FOR UPDATE OF subscription
+`
+
+func (q *Queries) LockRSSSubscriptionForAdjudicationBatch(ctx context.Context, id pgtype.UUID) (RssSubscription, error) {
+	row := q.db.QueryRow(ctx, lockRSSSubscriptionForAdjudicationBatch, id)
+	var i RssSubscription
+	err := row.Scan(
+		&i.ID,
 		&i.SeriesID,
 		&i.MappingProfileID,
-		&i.DefaultSourceSeason,
+		&i.Name,
+		&i.FeedUrl,
+		&i.Enabled,
+		&i.PollIntervalSeconds,
+		&i.LastPolledAt,
+		&i.NextPollAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SourceSeason,
+		&i.DeletedAt,
+		&i.AutoReview,
+		&i.CleanupSourceOnCompletion,
+		&i.CompletedAt,
 		&i.IncludeKeywords,
 		&i.ExcludeKeywords,
-		&i.SubscriptionEnabled,
-		&i.SubscriptionVersion,
-		&i.SubscriptionCompletedAt,
-		&i.SubscriptionDeletedAt,
+		&i.AutoEpisodeMapping,
 	)
 	return i, err
 }

@@ -266,13 +266,13 @@ INSERT INTO agent_resolutions (
 	if _, err := service.RetryAutomatic(ctx, resolutionID, 3); !errors.Is(err, ErrStateConflict) {
 		t.Fatalf("duplicate RetryAutomatic() error = %#v, want state conflict", err)
 	}
-	if err := service.persistAgentResolutionSteps(ctx, resolutionID, 1, []agentharness.Step{{
+	if err := service.persistAgentResolutionSteps(ctx, resolutionID, 2, []agentharness.Step{{
 		Sequence: 1, ToolName: "submit_rss_release_adjudication", Status: "rejected",
 		ErrorCode: "rss_adjudication_coordinate_duplicate", ArgumentsDigest: make([]byte, 32), ResultDigest: make([]byte, 32),
 	}}); err != nil {
 		t.Fatalf("persist first partial step: %v", err)
 	}
-	if err := service.persistAgentResolutionSteps(ctx, resolutionID, 2, []agentharness.Step{{
+	if err := service.persistAgentResolutionSteps(ctx, resolutionID, 5, []agentharness.Step{{
 		Sequence: 1, ToolName: "submit_rss_release_adjudication", Status: "rejected",
 		ErrorCode: "rss_adjudication_scope_incomplete", ArgumentsDigest: make([]byte, 32), ResultDigest: make([]byte, 32),
 	}}); err != nil {
@@ -286,7 +286,7 @@ FROM agent_resolution_steps
 WHERE resolution_id = $1`, resolutionID).Scan(&firstSequence, &secondSequence, &firstCode, &secondCode); err != nil {
 		t.Fatal(err)
 	}
-	if firstSequence != 1 || secondSequence != 65 || firstCode != "rss_adjudication_coordinate_duplicate" || secondCode != "rss_adjudication_scope_incomplete" {
+	if firstSequence != 65 || secondSequence != 257 || firstCode != "rss_adjudication_coordinate_duplicate" || secondCode != "rss_adjudication_scope_incomplete" {
 		t.Fatalf("partial step audit = %d/%d %s/%s", firstSequence, secondSequence, firstCode, secondCode)
 	}
 }

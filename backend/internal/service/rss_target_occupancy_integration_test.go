@@ -14,6 +14,7 @@ import (
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/domain"
 	"github.com/onprs/emby-auto/backend/internal/platform/database"
+	"github.com/onprs/emby-auto/backend/internal/repository"
 	"github.com/onprs/emby-auto/backend/internal/testutil"
 )
 
@@ -311,6 +312,66 @@ WHERE entry.subscription_id = $1`, fixture.subscriptionID).Scan(&downloadable, &
 	}
 	if stillFulfilled || fulfillmentSource != nil {
 		t.Fatalf("stale catalog fulfillment remained: fulfilled %t source %v", stillFulfilled, fulfillmentSource)
+	}
+}
+
+func TestRSSPollFiltersSearchTargetReservationBeforeManifestIntegration(t *testing.T) {
+	fixture := newRSSTargetFixture(t)
+	searchID, candidateID := uuid.New(), uuid.New()
+	acquisitionID, downloadID := uuid.New(), uuid.New()
+	if _, err := fixture.pool.Exec(fixture.ctx, `INSERT INTO search_runs (id, query, status) VALUES ($1, 'target reservation', 'completed')`, searchID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(fixture.ctx, `
+INSERT INTO release_candidates (id, search_run_id, provider, identity_key, title, download_uri)
+VALUES ($1, $2, 'fixture', $3, 'Search target reservation', 'https://example.test/search-target-reservation.torrent')`, candidateID, searchID, candidateID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(fixture.ctx, `
+INSERT INTO acquisitions (
+    id, series_id, mapping_profile_id, source_kind, release_candidate_id,
+    source_payload, created_by
+) VALUES ($1, $2, $3, 'search', $4, '{"sourceSeason":1,"sourceEpisode":2,"singleEpisode":true}', $5)`, acquisitionID, fixture.seriesID, fixture.profileID, candidateID, fixture.actorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(fixture.ctx, `
+INSERT INTO downloads (id, acquisition_id, status)
+VALUES ($1, $2, 'enqueue_pending')`, downloadID, acquisitionID); err != nil {
+		t.Fatal(err)
+	}
+
+	occupancy, err := fixture.queries.GetEpisodeMappingTargetOccupancy(fixture.ctx, db.GetEpisodeMappingTargetOccupancyParams{
+		ExcludedAcquisitionID: repository.UUIDToPG(uuid.New()),
+		TargetEpisodeID:       repository.UUIDToPG(fixture.targetEpisodeIDs[1]),
+		SeriesID:              repository.UUIDToPG(fixture.seriesID),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !occupancy.ProcessingPresent {
+		t.Fatalf("search pre-manifest occupancy = %#v, want processing", occupancy)
+	}
+
+	blocked, err := fixture.workflow.PersistPoll(fixture.ctx, fixture.pollOperationID, fixture.subscriptionID, domain.RSSFeed{
+		Title: "Target Occupancy", Entries: []domain.RSSFeedEntry{targetFeedEntry(1, "search-pending")},
+	}, domain.RSSPollPersistOptions{})
+	if err != nil {
+		t.Fatalf("search target reservation PersistPoll() error = %v", err)
+	}
+	if len(blocked.Candidates) != 0 {
+		t.Fatalf("search target reservation candidates = %v, want none", blocked.Candidates)
+	}
+	var reason string
+	if err := fixture.pool.QueryRow(fixture.ctx, `
+SELECT rejection_reasons[1]
+FROM rss_entries
+WHERE subscription_id = $1
+ORDER BY discovered_at DESC, id DESC
+LIMIT 1`, fixture.subscriptionID).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if reason != rssTargetProcessingReason {
+		t.Fatalf("search target reservation reason = %q, want %q", reason, rssTargetProcessingReason)
 	}
 }
 

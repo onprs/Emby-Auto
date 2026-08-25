@@ -11,6 +11,21 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const acquisitionHasEpisodeTasks = `-- name: AcquisitionHasEpisodeTasks :one
+SELECT EXISTS (
+    SELECT 1
+    FROM episode_tasks AS task
+    WHERE task.acquisition_id = $1
+) AS episode_task_exists
+`
+
+func (q *Queries) AcquisitionHasEpisodeTasks(ctx context.Context, acquisitionID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, acquisitionHasEpisodeTasks, acquisitionID)
+	var episode_task_exists bool
+	err := row.Scan(&episode_task_exists)
+	return episode_task_exists, err
+}
+
 const applyMappingProfileToRSSSubscription = `-- name: ApplyMappingProfileToRSSSubscription :one
 UPDATE rss_subscriptions AS subscription
 SET mapping_profile_id = $1,
@@ -413,6 +428,28 @@ func (q *Queries) DeleteStaleTMDbSeasons(ctx context.Context, arg DeleteStaleTMD
 	return result.RowsAffected(), nil
 }
 
+const excludeExplicitMappingFile = `-- name: ExcludeExplicitMappingFile :execrows
+UPDATE download_files
+SET selected = false,
+    updated_at = now()
+WHERE id = $1
+  AND download_id = $2
+  AND selected
+`
+
+type ExcludeExplicitMappingFileParams struct {
+	ID         pgtype.UUID `db:"id" json:"id"`
+	DownloadID pgtype.UUID `db:"download_id" json:"download_id"`
+}
+
+func (q *Queries) ExcludeExplicitMappingFile(ctx context.Context, arg ExcludeExplicitMappingFileParams) (int64, error) {
+	result, err := q.db.Exec(ctx, excludeExplicitMappingFile, arg.ID, arg.DownloadID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const failEmbyScanRun = `-- name: FailEmbyScanRun :one
 UPDATE emby_scan_runs
 SET status = $1,
@@ -661,6 +698,177 @@ func (q *Queries) GetEmbyScanRunByOperation(ctx context.Context, operationID pgt
 	return i, err
 }
 
+const getEpisodeMappingTargetOccupancy = `-- name: GetEpisodeMappingTargetOccupancy :one
+WITH target AS (
+    SELECT
+        episode.id AS target_episode_id,
+        episode.tmdb_episode_id,
+        episode.episode_number AS target_episode,
+        season.season_number AS target_season,
+        series.tmdb_series_id
+    FROM media_episodes AS episode
+    JOIN tmdb_seasons AS season ON season.id = episode.season_id
+    JOIN media_series AS series ON series.id = season.series_id
+    WHERE episode.id = $2
+      AND series.id = $3
+)
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM target
+        JOIN emby_library_items AS item
+          ON item.present
+         AND item.item_type = 'Episode'
+         AND item.file_path IS NOT NULL
+         AND (
+             (
+                 target.tmdb_episode_id IS NOT NULL
+                 AND EXISTS (
+                     SELECT 1
+                     FROM jsonb_each_text(item.provider_ids) AS provider
+                     WHERE lower(provider.key) IN ('tmdb', 'themoviedb')
+                       AND provider.value = target.tmdb_episode_id::text
+                 )
+             )
+             OR (
+                 item.season_number = target.target_season
+                 AND item.episode_number = target.target_episode
+                 AND EXISTS (
+                     SELECT 1
+                     FROM emby_library_items AS series_item
+                     WHERE series_item.present
+                       AND series_item.item_type = 'Series'
+                       AND EXISTS (
+                           SELECT 1
+                           FROM jsonb_each_text(series_item.provider_ids) AS provider
+                           WHERE lower(provider.key) IN ('tmdb', 'themoviedb')
+                             AND provider.value = target.tmdb_series_id::text
+                       )
+                       AND (
+                           item.parent_emby_id = series_item.emby_id
+                           OR EXISTS (
+                               SELECT 1
+                               FROM emby_library_items AS season_item
+                               WHERE season_item.present
+                                 AND season_item.item_type = 'Season'
+                                 AND season_item.emby_id = item.parent_emby_id
+                                 AND season_item.parent_emby_id = series_item.emby_id
+                           )
+                       )
+                 )
+             )
+         )
+    ) AS catalog_present,
+    EXISTS (
+        SELECT 1
+        FROM target
+        JOIN episode_mappings AS mapping ON mapping.target_episode_id = target.target_episode_id
+        JOIN episode_tasks AS task ON task.mapping_id = mapping.id
+        JOIN imports AS imported ON imported.task_id = task.id AND imported.status = 'succeeded'
+        WHERE task.acquisition_id <> $1
+    ) AS managed_import_present,
+    EXISTS (
+        SELECT 1
+        FROM target
+        JOIN episode_mappings AS mapping ON mapping.target_episode_id = target.target_episode_id
+        JOIN episode_tasks AS task ON task.mapping_id = mapping.id
+        WHERE task.acquisition_id <> $1
+          AND (
+              task.state NOT IN ('imported', 'rejected', 'cancelled')
+              OR (
+                  task.state = 'cancelled'
+                  AND (task.video_state = 'failed' OR task.subtitle_state = 'failed')
+                  AND task.video_state IN ('failed', 'video_ready')
+                  AND task.subtitle_state IN ('failed', 'ass_ready')
+              )
+          )
+        UNION ALL
+        SELECT 1
+        FROM target
+        JOIN episode_mappings AS mapping ON mapping.target_episode_id = target.target_episode_id
+        JOIN acquisitions AS acquisition ON acquisition.mapping_profile_id = mapping.profile_id
+        LEFT JOIN rss_entries AS owner_entry ON owner_entry.id = acquisition.rss_entry_id
+        JOIN LATERAL (
+            SELECT candidate.id, candidate.status
+            FROM downloads AS candidate
+            WHERE candidate.acquisition_id = acquisition.id
+              AND candidate.deleted_at IS NULL
+            ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
+            LIMIT 1
+        ) AS download ON true
+        WHERE acquisition.id <> $1
+          AND acquisition.deletion_requested_at IS NULL
+          AND mapping.mapping_status = 'mapped'
+          AND mapping.source_season::bigint = COALESCE(
+              owner_entry.source_season::bigint,
+              CASE
+                  WHEN acquisition.rss_entry_id IS NULL
+                   AND acquisition.source_payload->'singleEpisode' = 'true'::jsonb
+                   AND COALESCE(acquisition.source_payload->>'sourceSeason', '') ~ '^[1-9][0-9]{0,9}$'
+                  THEN (acquisition.source_payload->>'sourceSeason')::bigint
+              END
+          )
+          AND mapping.source_episode::bigint = COALESCE(
+              owner_entry.source_episode::bigint,
+              CASE
+                  WHEN acquisition.rss_entry_id IS NULL
+                   AND acquisition.source_payload->'singleEpisode' = 'true'::jsonb
+                   AND COALESCE(acquisition.source_payload->>'sourceEpisode', '') ~ '^[1-9][0-9]{0,9}$'
+                  THEN (acquisition.source_payload->>'sourceEpisode')::bigint
+              END
+          )
+          AND download.status <> 'cancelled'
+          AND NOT EXISTS (
+              SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id
+          )
+        UNION ALL
+        SELECT 1
+        FROM target
+        JOIN episode_mappings AS mapping ON mapping.target_episode_id = target.target_episode_id
+        JOIN acquisitions AS acquisition ON acquisition.mapping_profile_id = mapping.profile_id
+        JOIN LATERAL (
+            SELECT candidate.id, candidate.status
+            FROM downloads AS candidate
+            WHERE candidate.acquisition_id = acquisition.id
+              AND candidate.deleted_at IS NULL
+            ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
+            LIMIT 1
+        ) AS download ON true
+        JOIN download_files AS source_file
+          ON source_file.download_id = download.id
+         AND source_file.selected
+         AND source_file.media_kind = 'video'
+         AND source_file.source_season = mapping.source_season
+         AND source_file.source_episode = mapping.source_episode
+        WHERE acquisition.id <> $1
+          AND acquisition.deletion_requested_at IS NULL
+          AND mapping.mapping_status = 'mapped'
+          AND download.status <> 'cancelled'
+          AND NOT EXISTS (
+              SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id
+          )
+    ) AS processing_present
+`
+
+type GetEpisodeMappingTargetOccupancyParams struct {
+	ExcludedAcquisitionID pgtype.UUID `db:"excluded_acquisition_id" json:"excluded_acquisition_id"`
+	TargetEpisodeID       pgtype.UUID `db:"target_episode_id" json:"target_episode_id"`
+	SeriesID              pgtype.UUID `db:"series_id" json:"series_id"`
+}
+
+type GetEpisodeMappingTargetOccupancyRow struct {
+	CatalogPresent       bool `db:"catalog_present" json:"catalog_present"`
+	ManagedImportPresent bool `db:"managed_import_present" json:"managed_import_present"`
+	ProcessingPresent    bool `db:"processing_present" json:"processing_present"`
+}
+
+func (q *Queries) GetEpisodeMappingTargetOccupancy(ctx context.Context, arg GetEpisodeMappingTargetOccupancyParams) (GetEpisodeMappingTargetOccupancyRow, error) {
+	row := q.db.QueryRow(ctx, getEpisodeMappingTargetOccupancy, arg.ExcludedAcquisitionID, arg.TargetEpisodeID, arg.SeriesID)
+	var i GetEpisodeMappingTargetOccupancyRow
+	err := row.Scan(&i.CatalogPresent, &i.ManagedImportPresent, &i.ProcessingPresent)
+	return i, err
+}
+
 const getFirstAdminUser = `-- name: GetFirstAdminUser :one
 SELECT id, username, password_hash, disabled, created_at, updated_at
 FROM admin_users
@@ -730,6 +938,47 @@ func (q *Queries) GetLatestDownloadForAcquisition(ctx context.Context, acquisiti
 		&i.FileResolutionSource,
 		&i.AgentResolutionID,
 	)
+	return i, err
+}
+
+const getMappedTargetEpisodeForSource = `-- name: GetMappedTargetEpisodeForSource :one
+SELECT profile.series_id, mapping.target_episode_id
+FROM episode_mapping_profiles AS profile
+JOIN media_series AS series ON series.id = profile.series_id
+JOIN episode_mappings AS mapping ON mapping.profile_id = profile.id
+JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
+JOIN tmdb_seasons AS season ON season.id = episode.season_id
+WHERE profile.id = $1
+  AND series.tmdb_series_id = $2
+  AND profile.active
+  AND mapping.source_season = $3
+  AND mapping.source_episode = $4
+  AND mapping.mapping_status = 'mapped'
+  AND mapping.target_episode_id IS NOT NULL
+  AND season.series_id = profile.series_id
+`
+
+type GetMappedTargetEpisodeForSourceParams struct {
+	ProfileID     pgtype.UUID `db:"profile_id" json:"profile_id"`
+	TmdbSeriesID  *int64      `db:"tmdb_series_id" json:"tmdb_series_id"`
+	SourceSeason  int32       `db:"source_season" json:"source_season"`
+	SourceEpisode int32       `db:"source_episode" json:"source_episode"`
+}
+
+type GetMappedTargetEpisodeForSourceRow struct {
+	SeriesID        pgtype.UUID `db:"series_id" json:"series_id"`
+	TargetEpisodeID pgtype.UUID `db:"target_episode_id" json:"target_episode_id"`
+}
+
+func (q *Queries) GetMappedTargetEpisodeForSource(ctx context.Context, arg GetMappedTargetEpisodeForSourceParams) (GetMappedTargetEpisodeForSourceRow, error) {
+	row := q.db.QueryRow(ctx, getMappedTargetEpisodeForSource,
+		arg.ProfileID,
+		arg.TmdbSeriesID,
+		arg.SourceSeason,
+		arg.SourceEpisode,
+	)
+	var i GetMappedTargetEpisodeForSourceRow
+	err := row.Scan(&i.SeriesID, &i.TargetEpisodeID)
 	return i, err
 }
 
@@ -862,22 +1111,18 @@ SELECT
     file.source_episode
 FROM download_files AS file
 JOIN downloads AS download ON download.id = file.download_id
-WHERE download.acquisition_id = $1
-  AND download.attempt = (
-      SELECT max(candidate.attempt)
+WHERE download.id = (
+      SELECT candidate.id
       FROM downloads AS candidate
       WHERE candidate.acquisition_id = $1
-        AND EXISTS (
-            SELECT 1
-            FROM download_files AS candidate_file
-            WHERE candidate_file.download_id = candidate.id
-              AND candidate_file.selected
-              AND candidate_file.media_kind = 'video'
-        )
+        AND candidate.deleted_at IS NULL
+      ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
+      LIMIT 1
   )
   AND file.selected
   AND file.media_kind = 'video'
 ORDER BY file.source_season, file.source_episode, file.file_index
+FOR UPDATE OF file
 `
 
 type ListAcquisitionSelectedVideosRow struct {
@@ -1216,6 +1461,55 @@ func (q *Queries) ListEmbyScanRuns(ctx context.Context, arg ListEmbyScanRunsPara
 	return items, nil
 }
 
+const listExplicitMappingFilesForDownload = `-- name: ListExplicitMappingFilesForDownload :many
+SELECT
+    file.id,
+    file.relative_path,
+    file.media_kind,
+    file.source_season,
+    file.source_episode
+FROM download_files AS file
+WHERE file.download_id = $1
+  AND file.selected
+  AND file.media_kind IN ('video', 'subtitle')
+ORDER BY file.file_index, file.id
+FOR UPDATE OF file
+`
+
+type ListExplicitMappingFilesForDownloadRow struct {
+	ID            pgtype.UUID `db:"id" json:"id"`
+	RelativePath  string      `db:"relative_path" json:"relative_path"`
+	MediaKind     string      `db:"media_kind" json:"media_kind"`
+	SourceSeason  *int32      `db:"source_season" json:"source_season"`
+	SourceEpisode *int32      `db:"source_episode" json:"source_episode"`
+}
+
+func (q *Queries) ListExplicitMappingFilesForDownload(ctx context.Context, downloadID pgtype.UUID) ([]ListExplicitMappingFilesForDownloadRow, error) {
+	rows, err := q.db.Query(ctx, listExplicitMappingFilesForDownload, downloadID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListExplicitMappingFilesForDownloadRow{}
+	for rows.Next() {
+		var i ListExplicitMappingFilesForDownloadRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RelativePath,
+			&i.MediaKind,
+			&i.SourceSeason,
+			&i.SourceEpisode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMappingMaterializationCandidates = `-- name: ListMappingMaterializationCandidates :many
 WITH source_subscription AS (
     SELECT entry.subscription_id
@@ -1228,7 +1522,14 @@ WITH source_subscription AS (
 SELECT download.id, download.status, download.version, download.failure_stage, download.error_code
 FROM acquisitions AS acquisition
 LEFT JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
-JOIN downloads AS download ON download.acquisition_id = acquisition.id
+JOIN LATERAL (
+    SELECT candidate.id, candidate.acquisition_id, candidate.attempt, candidate.client_name, candidate.torrent_hash, candidate.status, candidate.progress, candidate.save_path, candidate.error_code, candidate.error_message, candidate.started_at, candidate.completed_at, candidate.created_at, candidate.updated_at, candidate.version, candidate.failure_stage, candidate.client_state, candidate.last_synced_at, candidate.deletion_requested_at, candidate.deleted_at, candidate.file_resolution_source, candidate.agent_resolution_id
+    FROM downloads AS candidate
+    WHERE candidate.acquisition_id = acquisition.id
+      AND candidate.deleted_at IS NULL
+    ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
+    LIMIT 1
+) AS download ON true
 WHERE (
       acquisition.id = $1
       OR entry.subscription_id = (SELECT subscription_id FROM source_subscription)
@@ -1239,18 +1540,6 @@ WHERE (
       SELECT 1
       FROM episode_tasks AS task
       WHERE task.acquisition_id = acquisition.id
-  )
-  AND download.attempt = (
-      SELECT max(candidate.attempt)
-      FROM downloads AS candidate
-      WHERE candidate.acquisition_id = acquisition.id
-        AND EXISTS (
-            SELECT 1
-            FROM download_files AS candidate_file
-            WHERE candidate_file.download_id = candidate.id
-              AND candidate_file.selected
-              AND candidate_file.media_kind = 'video'
-        )
   )
   AND (
       download.status = 'completed'
@@ -1341,7 +1630,14 @@ WITH source_subscription AS (
 SELECT file.id, file.relative_path, file.source_season, file.source_episode
 FROM acquisitions AS acquisition
 LEFT JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
-JOIN downloads AS download ON download.acquisition_id = acquisition.id
+JOIN LATERAL (
+    SELECT candidate.id, candidate.acquisition_id, candidate.attempt, candidate.client_name, candidate.torrent_hash, candidate.status, candidate.progress, candidate.save_path, candidate.error_code, candidate.error_message, candidate.started_at, candidate.completed_at, candidate.created_at, candidate.updated_at, candidate.version, candidate.failure_stage, candidate.client_state, candidate.last_synced_at, candidate.deletion_requested_at, candidate.deleted_at, candidate.file_resolution_source, candidate.agent_resolution_id
+    FROM downloads AS candidate
+    WHERE candidate.acquisition_id = acquisition.id
+      AND candidate.deleted_at IS NULL
+    ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
+    LIMIT 1
+) AS download ON true
 JOIN download_files AS file ON file.download_id = download.id
 WHERE (
       acquisition.id = $1
@@ -1352,18 +1648,6 @@ WHERE (
       SELECT 1
       FROM episode_tasks AS task
       WHERE task.acquisition_id = acquisition.id
-  )
-  AND download.attempt = (
-      SELECT max(candidate.attempt)
-      FROM downloads AS candidate
-      WHERE candidate.acquisition_id = acquisition.id
-        AND EXISTS (
-            SELECT 1
-            FROM download_files AS candidate_file
-            WHERE candidate_file.download_id = candidate.id
-              AND candidate_file.selected
-              AND candidate_file.media_kind = 'video'
-        )
   )
   AND file.selected
   AND file.media_kind = 'video'
@@ -1612,6 +1896,46 @@ func (q *Queries) LockAcquisitionForMapping(ctx context.Context, id pgtype.UUID)
 	return i, err
 }
 
+const lockLatestDownloadForMapping = `-- name: LockLatestDownloadForMapping :one
+SELECT download.id, download.acquisition_id, download.attempt, download.client_name, download.torrent_hash, download.status, download.progress, download.save_path, download.error_code, download.error_message, download.started_at, download.completed_at, download.created_at, download.updated_at, download.version, download.failure_stage, download.client_state, download.last_synced_at, download.deletion_requested_at, download.deleted_at, download.file_resolution_source, download.agent_resolution_id
+FROM downloads AS download
+WHERE download.acquisition_id = $1
+  AND download.deleted_at IS NULL
+ORDER BY (download.status = 'cancelled'), download.attempt DESC
+LIMIT 1
+FOR UPDATE OF download
+`
+
+func (q *Queries) LockLatestDownloadForMapping(ctx context.Context, acquisitionID pgtype.UUID) (Download, error) {
+	row := q.db.QueryRow(ctx, lockLatestDownloadForMapping, acquisitionID)
+	var i Download
+	err := row.Scan(
+		&i.ID,
+		&i.AcquisitionID,
+		&i.Attempt,
+		&i.ClientName,
+		&i.TorrentHash,
+		&i.Status,
+		&i.Progress,
+		&i.SavePath,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Version,
+		&i.FailureStage,
+		&i.ClientState,
+		&i.LastSyncedAt,
+		&i.DeletionRequestedAt,
+		&i.DeletedAt,
+		&i.FileResolutionSource,
+		&i.AgentResolutionID,
+	)
+	return i, err
+}
+
 const lockMediaSeries = `-- name: LockMediaSeries :one
 SELECT id, tmdb_series_id, title, original_title, media_type, metadata, legacy_id, created_at, updated_at, tmdb_movie_id, release_year
 FROM media_series
@@ -1636,6 +1960,22 @@ func (q *Queries) LockMediaSeries(ctx context.Context, id pgtype.UUID) (MediaSer
 		&i.ReleaseYear,
 	)
 	return i, err
+}
+
+const lockRSSSubscriptionForMappingAcquisition = `-- name: LockRSSSubscriptionForMappingAcquisition :one
+SELECT subscription.id
+FROM acquisitions AS acquisition
+JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
+JOIN rss_subscriptions AS subscription ON subscription.id = entry.subscription_id
+WHERE acquisition.id = $1
+FOR UPDATE OF subscription
+`
+
+func (q *Queries) LockRSSSubscriptionForMappingAcquisition(ctx context.Context, acquisitionID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockRSSSubscriptionForMappingAcquisition, acquisitionID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const markEmbyLibrariesAbsent = `-- name: MarkEmbyLibrariesAbsent :execrows
@@ -1797,7 +2137,14 @@ source_facts AS (
         min(file.source_episode)::integer AS source_episode
     FROM acquisitions AS acquisition
     LEFT JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
-    JOIN downloads AS download ON download.acquisition_id = acquisition.id
+    JOIN LATERAL (
+        SELECT candidate.id, candidate.acquisition_id, candidate.attempt, candidate.client_name, candidate.torrent_hash, candidate.status, candidate.progress, candidate.save_path, candidate.error_code, candidate.error_message, candidate.started_at, candidate.completed_at, candidate.created_at, candidate.updated_at, candidate.version, candidate.failure_stage, candidate.client_state, candidate.last_synced_at, candidate.deletion_requested_at, candidate.deleted_at, candidate.file_resolution_source, candidate.agent_resolution_id
+        FROM downloads AS candidate
+        WHERE candidate.acquisition_id = acquisition.id
+          AND candidate.deleted_at IS NULL
+        ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
+        LIMIT 1
+    ) AS download ON true
     JOIN download_files AS file
       ON file.download_id = download.id
      AND file.selected
@@ -1807,18 +2154,6 @@ source_facts AS (
           OR entry.subscription_id = (SELECT subscription_id FROM source_subscription)
       )
       AND acquisition.deletion_requested_at IS NULL
-      AND download.attempt = (
-          SELECT max(candidate.attempt)
-          FROM downloads AS candidate
-          WHERE candidate.acquisition_id = acquisition.id
-            AND EXISTS (
-                SELECT 1
-                FROM download_files AS candidate_file
-                WHERE candidate_file.download_id = candidate.id
-                  AND candidate_file.selected
-                  AND candidate_file.media_kind = 'video'
-            )
-      )
     GROUP BY acquisition.id, acquisition.rss_entry_id
     HAVING count(*) = 1
        AND min(file.source_season) IS NOT NULL
@@ -1883,6 +2218,40 @@ func (q *Queries) UpdateAcquisitionMappingProfile(ctx context.Context, arg Updat
 		&i.DeletionRequestedAt,
 	)
 	return i, err
+}
+
+const updateExplicitMappingFileCoordinate = `-- name: UpdateExplicitMappingFileCoordinate :execrows
+UPDATE download_files
+SET source_season = $1,
+    source_episode = $2,
+    updated_at = now()
+WHERE id = $3
+  AND download_id = $4
+  AND selected
+  AND (
+      source_season IS DISTINCT FROM $1
+      OR source_episode IS DISTINCT FROM $2
+  )
+`
+
+type UpdateExplicitMappingFileCoordinateParams struct {
+	SourceSeason  *int32      `db:"source_season" json:"source_season"`
+	SourceEpisode *int32      `db:"source_episode" json:"source_episode"`
+	ID            pgtype.UUID `db:"id" json:"id"`
+	DownloadID    pgtype.UUID `db:"download_id" json:"download_id"`
+}
+
+func (q *Queries) UpdateExplicitMappingFileCoordinate(ctx context.Context, arg UpdateExplicitMappingFileCoordinateParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateExplicitMappingFileCoordinate,
+		arg.SourceSeason,
+		arg.SourceEpisode,
+		arg.ID,
+		arg.DownloadID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateSelectedFileCoordinateFamily = `-- name: UpdateSelectedFileCoordinateFamily :execrows

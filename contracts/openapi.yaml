@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Emby Auto API
-  version: 0.22.0
+  version: 0.23.0
   description: Contract for the Emby Auto API and generated clients.
 servers:
   - url: /
@@ -2850,21 +2850,71 @@ components:
           maxItems: 16
           items: { type: string, maxLength: 128 }
         decision: { type: string, enum: [resolved, review_required] }
-    AgentEpisodeMappingProposal:
+    AgentEpisodeMappingLegacyAnchorProposal:
       type: object
       additionalProperties: false
       required: [capability, acquisitionId, sourceFileId, targetSeason, targetEpisode, evidenceCodes, decision]
       properties:
         capability: { type: string, const: episode_mapping }
         acquisitionId: { type: string, format: uuid }
-        sourceFileId: { type: string, format: uuid }
-        targetSeason: { type: integer, format: int32, minimum: 1 }
-        targetEpisode: { type: integer, format: int32, minimum: 1 }
+        sourceFileId:
+          type: string
+          format: uuid
+          deprecated: true
+        targetSeason:
+          type: integer
+          format: int32
+          minimum: 1
+          deprecated: true
+        targetEpisode:
+          type: integer
+          format: int32
+          minimum: 1
+          deprecated: true
         evidenceCodes:
           type: array
           maxItems: 16
           items: { type: string, maxLength: 128 }
         decision: { type: string, enum: [resolved, review_required] }
+    AgentEpisodeMappingAnchorProposal:
+      type: object
+      additionalProperties: false
+      required: [capability, acquisitionId, mode, anchor, evidenceCodes, decision]
+      properties:
+        capability: { type: string, const: episode_mapping }
+        acquisitionId: { type: string, format: uuid }
+        mode: { type: string, const: anchor }
+        anchor:
+          $ref: "#/components/schemas/EpisodeMappingAnchor"
+        evidenceCodes:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 128 }
+        decision: { type: string, enum: [resolved, review_required] }
+    AgentEpisodeMappingExplicitProposal:
+      type: object
+      additionalProperties: false
+      required: [capability, acquisitionId, mode, assignments, evidenceCodes, decision]
+      properties:
+        capability: { type: string, const: episode_mapping }
+        acquisitionId: { type: string, format: uuid }
+        mode: { type: string, const: explicit }
+        assignments:
+          type: array
+          minItems: 1
+          maxItems: 128
+          items:
+            $ref: "#/components/schemas/EpisodeMappingExplicitDisposition"
+        evidenceCodes:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 128 }
+        decision: { type: string, enum: [resolved, review_required] }
+    AgentEpisodeMappingProposal:
+      oneOf:
+        - $ref: "#/components/schemas/AgentEpisodeMappingLegacyAnchorProposal"
+        - $ref: "#/components/schemas/AgentEpisodeMappingAnchorProposal"
+        - $ref: "#/components/schemas/AgentEpisodeMappingExplicitProposal"
     AgentProposal:
       oneOf:
         - $ref: "#/components/schemas/AgentRSSCoordinateProposal"
@@ -3159,6 +3209,9 @@ components:
         status:
           type: string
           enum: [queued, running, succeeded, failed, cancelled]
+    EpisodeMappingMode:
+      type: string
+      enum: [anchor, explicit]
     EpisodeMappingAnchor:
       type: object
       additionalProperties: false
@@ -3175,20 +3228,72 @@ components:
           type: integer
           format: int32
           minimum: 1
+    EpisodeMappingExplicitMapDisposition:
+      type: object
+      additionalProperties: false
+      required: [sourceFileId, action, targetSeason, targetEpisode]
+      properties:
+        sourceFileId:
+          type: string
+          format: uuid
+        action: { type: string, const: map }
+        targetSeason:
+          type: integer
+          format: int32
+          minimum: 0
+        targetEpisode:
+          type: integer
+          format: int32
+          minimum: 1
+    EpisodeMappingExplicitExcludeDisposition:
+      type: object
+      additionalProperties: false
+      required: [sourceFileId, action]
+      properties:
+        sourceFileId:
+          type: string
+          format: uuid
+        action: { type: string, const: exclude }
+    EpisodeMappingExplicitDisposition:
+      oneOf:
+        - $ref: "#/components/schemas/EpisodeMappingExplicitMapDisposition"
+        - $ref: "#/components/schemas/EpisodeMappingExplicitExcludeDisposition"
+      discriminator:
+        propertyName: action
+        mapping:
+          map: "#/components/schemas/EpisodeMappingExplicitMapDisposition"
+          exclude: "#/components/schemas/EpisodeMappingExplicitExcludeDisposition"
+    EpisodeMappingAnchorPlan:
+      type: object
+      additionalProperties: false
+      required: [anchor]
+      properties:
+        mode:
+          type: string
+          const: anchor
+          description: Optional for compatibility with legacy anchor requests.
+        anchor:
+          $ref: "#/components/schemas/EpisodeMappingAnchor"
+    EpisodeMappingExplicitPlan:
+      type: object
+      additionalProperties: false
+      required: [mode, assignments]
+      properties:
+        mode:
+          type: string
+          const: explicit
+        assignments:
+          type: array
+          minItems: 1
+          maxItems: 128
+          items:
+            $ref: "#/components/schemas/EpisodeMappingExplicitDisposition"
     EpisodeMappingPlanRequest:
-      type: object
-      additionalProperties: false
-      required: [anchor]
-      properties:
-        anchor:
-          $ref: "#/components/schemas/EpisodeMappingAnchor"
+      oneOf:
+        - $ref: "#/components/schemas/EpisodeMappingAnchorPlan"
+        - $ref: "#/components/schemas/EpisodeMappingExplicitPlan"
     SaveEpisodeMappingRequest:
-      type: object
-      additionalProperties: false
-      required: [anchor]
-      properties:
-        anchor:
-          $ref: "#/components/schemas/EpisodeMappingAnchor"
+      $ref: "#/components/schemas/EpisodeMappingPlanRequest"
     EpisodeMappingRow:
       type: object
       additionalProperties: false
@@ -3213,7 +3318,7 @@ components:
           minimum: 1
         status:
           type: string
-          enum: [mapped, pending]
+          enum: [mapped, pending, excluded]
         targetSeason:
           type: integer
           format: int32
@@ -3232,7 +3337,7 @@ components:
     EpisodeMappingPreview:
       type: object
       additionalProperties: false
-      required: [acquisitionId, seriesId, anchor, rows]
+      required: [acquisitionId, seriesId, mode, rows]
       properties:
         acquisitionId:
           type: string
@@ -3240,6 +3345,8 @@ components:
         seriesId:
           type: string
           format: uuid
+        mode:
+          $ref: "#/components/schemas/EpisodeMappingMode"
         anchor:
           $ref: "#/components/schemas/EpisodeMappingAnchor"
         rows:
@@ -4125,6 +4232,9 @@ components:
         sourceKind:
           type: string
           enum: [search, rss, manual]
+        sourceTitle:
+          type: string
+          description: Original selected search candidate or RSS release title.
         sourceSeason:
           type: integer
           format: int32

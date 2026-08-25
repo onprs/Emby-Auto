@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -104,6 +105,102 @@ func loadRSSMappedTargetOccupancyWithRealtimeCheck(
 	return occupancy, nil
 }
 
+type rssTargetOccupancyRequest struct {
+	subscriptionID  uuid.UUID
+	sourceSeason    int
+	sourceEpisode   int
+	excludedEntryID uuid.UUID
+	realtimeCheckID uuid.UUID
+}
+
+func lockEpisodeMappingTargets(
+	ctx context.Context,
+	scope database.TxScope,
+	targetEpisodeIDs []uuid.UUID,
+) error {
+	unique := make(map[uuid.UUID]struct{}, len(targetEpisodeIDs))
+	ordered := make([]uuid.UUID, 0, len(targetEpisodeIDs))
+	for _, targetEpisodeID := range targetEpisodeIDs {
+		if targetEpisodeID == uuid.Nil {
+			continue
+		}
+		if _, exists := unique[targetEpisodeID]; exists {
+			continue
+		}
+		unique[targetEpisodeID] = struct{}{}
+		ordered = append(ordered, targetEpisodeID)
+	}
+	sort.Slice(ordered, func(left, right int) bool {
+		return ordered[left].String() < ordered[right].String()
+	})
+	for _, targetEpisodeID := range ordered {
+		if _, err := scope.Tx.Exec(
+			ctx,
+			"SELECT pg_advisory_xact_lock(hashtextextended('rss-target:' || $1::text, 0))",
+			targetEpisodeID,
+		); err != nil {
+			return fmt.Errorf("lock episode Mapping target: %w", err)
+		}
+	}
+	return nil
+}
+
+func prepareRSSMappedTargetLocks(
+	ctx context.Context,
+	scope database.TxScope,
+	requests []rssTargetOccupancyRequest,
+) ([]uuid.UUID, error) {
+	expectedTargets := make([]uuid.UUID, len(requests))
+	for index, request := range requests {
+		occupancy, err := loadRSSMappedTargetOccupancyWithRealtimeCheck(
+			ctx,
+			scope.Queries,
+			request.subscriptionID,
+			request.sourceSeason,
+			request.sourceEpisode,
+			request.excludedEntryID,
+			request.realtimeCheckID,
+		)
+		if err != nil {
+			return nil, err
+		}
+		expectedTargets[index] = occupancy.TargetEpisodeID
+	}
+	if err := lockEpisodeMappingTargets(ctx, scope, expectedTargets); err != nil {
+		return nil, err
+	}
+	return expectedTargets, nil
+}
+
+func loadRSSMappedTargetOccupancyAfterLock(
+	ctx context.Context,
+	scope database.TxScope,
+	request rssTargetOccupancyRequest,
+	expectedTarget uuid.UUID,
+) (rssTargetOccupancy, error) {
+	occupancy, err := loadRSSMappedTargetOccupancyWithRealtimeCheck(
+		ctx,
+		scope.Queries,
+		request.subscriptionID,
+		request.sourceSeason,
+		request.sourceEpisode,
+		request.excludedEntryID,
+		request.realtimeCheckID,
+	)
+	if err != nil {
+		return rssTargetOccupancy{}, err
+	}
+	if occupancy.TargetEpisodeID != expectedTarget {
+		return rssTargetOccupancy{}, NewError(
+			"rss_target_mapping_changed",
+			"the RSS target Mapping changed while target occupancy was locked",
+			ErrStateConflict,
+			nil,
+		)
+	}
+	return occupancy, nil
+}
+
 func lockRSSMappedTargetOccupancyWithRealtimeCheck(
 	ctx context.Context,
 	scope database.TxScope,
@@ -113,22 +210,18 @@ func lockRSSMappedTargetOccupancyWithRealtimeCheck(
 	excludedEntryID uuid.UUID,
 	realtimeCheckID uuid.UUID,
 ) (rssTargetOccupancy, error) {
-	occupancy, err := loadRSSMappedTargetOccupancyWithRealtimeCheck(
-		ctx, scope.Queries, subscriptionID, sourceSeason, sourceEpisode, excludedEntryID, realtimeCheckID,
-	)
-	if err != nil || occupancy.TargetEpisodeID == uuid.Nil {
-		return occupancy, err
+	request := rssTargetOccupancyRequest{
+		subscriptionID:  subscriptionID,
+		sourceSeason:    sourceSeason,
+		sourceEpisode:   sourceEpisode,
+		excludedEntryID: excludedEntryID,
+		realtimeCheckID: realtimeCheckID,
 	}
-	if _, err := scope.Tx.Exec(
-		ctx,
-		"SELECT pg_advisory_xact_lock(hashtextextended('rss-target:' || $1::text, 0))",
-		occupancy.TargetEpisodeID,
-	); err != nil {
-		return rssTargetOccupancy{}, fmt.Errorf("lock RSS target episode: %w", err)
+	expectedTargets, err := prepareRSSMappedTargetLocks(ctx, scope, []rssTargetOccupancyRequest{request})
+	if err != nil {
+		return rssTargetOccupancy{}, err
 	}
-	return loadRSSMappedTargetOccupancyWithRealtimeCheck(
-		ctx, scope.Queries, subscriptionID, sourceSeason, sourceEpisode, excludedEntryID, realtimeCheckID,
-	)
+	return loadRSSMappedTargetOccupancyAfterLock(ctx, scope, request, expectedTargets[0])
 }
 
 func markRSSEntryTargetOccupiedInTx(

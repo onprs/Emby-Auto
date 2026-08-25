@@ -825,13 +825,19 @@ SELECT
         JOIN episode_mappings AS task_mapping ON task_mapping.id = task.mapping_id
         JOIN imports AS imported ON imported.task_id = task.id AND imported.status = 'succeeded'
         WHERE task_mapping.target_episode_id = target.target_episode_id
-          AND acquisition.rss_entry_id IS DISTINCT FROM $2::uuid
+          AND (
+              $2::uuid IS NULL
+              OR acquisition.rss_entry_id IS DISTINCT FROM $2::uuid
+          )
     ) AS managed_import_present,
     EXISTS (
         SELECT 1
         FROM acquisitions AS acquisition
         WHERE acquisition.deletion_requested_at IS NULL
-          AND acquisition.rss_entry_id IS DISTINCT FROM $2::uuid
+          AND (
+              $2::uuid IS NULL
+              OR acquisition.rss_entry_id IS DISTINCT FROM $2::uuid
+          )
           AND (
               EXISTS (
                   SELECT 1
@@ -839,21 +845,75 @@ SELECT
                   JOIN episode_mappings AS task_mapping ON task_mapping.id = task.mapping_id
                   WHERE task.acquisition_id = acquisition.id
                     AND task_mapping.target_episode_id = target.target_episode_id
-                    AND task.state NOT IN ('imported', 'rejected', 'cancelled', 'failed')
+                    AND (
+                        task.state NOT IN ('imported', 'rejected', 'cancelled')
+                        OR (
+                            task.state = 'cancelled'
+                            AND (task.video_state = 'failed' OR task.subtitle_state = 'failed')
+                            AND task.video_state IN ('failed', 'video_ready')
+                            AND task.subtitle_state IN ('failed', 'ass_ready')
+                        )
+                    )
               )
               OR EXISTS (
                   SELECT 1
-                  FROM rss_entries AS owner_entry
-                  JOIN episode_mappings AS owner_mapping
-                    ON owner_mapping.profile_id = acquisition.mapping_profile_id
-                   AND owner_mapping.source_season = owner_entry.source_season
-                   AND owner_mapping.source_episode = owner_entry.source_episode
-                   AND owner_mapping.mapping_status = 'mapped'
-                  JOIN downloads AS download ON download.acquisition_id = acquisition.id
-                  WHERE owner_entry.id = acquisition.rss_entry_id
+                  FROM episode_mappings AS owner_mapping
+                  LEFT JOIN rss_entries AS owner_entry ON owner_entry.id = acquisition.rss_entry_id
+                  JOIN LATERAL (
+                      SELECT candidate.id, candidate.status
+                      FROM downloads AS candidate
+                      WHERE candidate.acquisition_id = acquisition.id
+                        AND candidate.deleted_at IS NULL
+                      ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
+                      LIMIT 1
+                  ) AS download ON true
+                  WHERE owner_mapping.profile_id = acquisition.mapping_profile_id
                     AND owner_mapping.target_episode_id = target.target_episode_id
-                    AND download.deleted_at IS NULL
-                    AND download.status NOT IN ('failed', 'cancelled')
+                    AND owner_mapping.mapping_status = 'mapped'
+                    AND owner_mapping.source_season::bigint = COALESCE(
+                        owner_entry.source_season::bigint,
+                        CASE
+                            WHEN acquisition.rss_entry_id IS NULL
+                             AND acquisition.source_payload->'singleEpisode' = 'true'::jsonb
+                             AND COALESCE(acquisition.source_payload->>'sourceSeason', '') ~ '^[1-9][0-9]{0,9}$'
+                            THEN (acquisition.source_payload->>'sourceSeason')::bigint
+                        END
+                    )
+                    AND owner_mapping.source_episode::bigint = COALESCE(
+                        owner_entry.source_episode::bigint,
+                        CASE
+                            WHEN acquisition.rss_entry_id IS NULL
+                             AND acquisition.source_payload->'singleEpisode' = 'true'::jsonb
+                             AND COALESCE(acquisition.source_payload->>'sourceEpisode', '') ~ '^[1-9][0-9]{0,9}$'
+                            THEN (acquisition.source_payload->>'sourceEpisode')::bigint
+                        END
+                    )
+                    AND download.status <> 'cancelled'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id
+                    )
+              )
+              OR EXISTS (
+                  SELECT 1
+                  FROM episode_mappings AS owner_mapping
+                  JOIN LATERAL (
+                      SELECT candidate.id, candidate.status
+                      FROM downloads AS candidate
+                      WHERE candidate.acquisition_id = acquisition.id
+                        AND candidate.deleted_at IS NULL
+                      ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
+                      LIMIT 1
+                  ) AS download ON true
+                  JOIN download_files AS source_file
+                    ON source_file.download_id = download.id
+                   AND source_file.selected
+                   AND source_file.media_kind = 'video'
+                   AND source_file.source_season = owner_mapping.source_season
+                   AND source_file.source_episode = owner_mapping.source_episode
+                  WHERE owner_mapping.profile_id = acquisition.mapping_profile_id
+                    AND owner_mapping.target_episode_id = target.target_episode_id
+                    AND owner_mapping.mapping_status = 'mapped'
+                    AND download.status <> 'cancelled'
                     AND NOT EXISTS (
                         SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id
                     )
@@ -2630,60 +2690,15 @@ func (q *Queries) ListUnresolvedRSSAdjudicationBatches(ctx context.Context, subs
 }
 
 const lockRSSEntryForEnqueue = `-- name: LockRSSEntryForEnqueue :one
-SELECT
-    entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source,
-    subscription.series_id,
-    subscription.mapping_profile_id
+SELECT entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source
 FROM rss_entries AS entry
-JOIN rss_subscriptions AS subscription ON subscription.id = entry.subscription_id
 WHERE entry.id = $1
-  AND subscription.enabled = NOT $2::boolean
-  AND subscription.deleted_at IS NULL
-  AND subscription.completed_at IS NULL
 FOR UPDATE OF entry
 `
 
-type LockRSSEntryForEnqueueParams struct {
-	ID       pgtype.UUID `db:"id" json:"id"`
-	Recovery bool        `db:"recovery" json:"recovery"`
-}
-
-type LockRSSEntryForEnqueueRow struct {
-	ID                 pgtype.UUID        `db:"id" json:"id"`
-	SubscriptionID     pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
-	ReleaseCandidateID pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
-	IdentityKey        string             `db:"identity_key" json:"identity_key"`
-	Guid               *string            `db:"guid" json:"guid"`
-	Btih               *string            `db:"btih" json:"btih"`
-	CanonicalUrl       *string            `db:"canonical_url" json:"canonical_url"`
-	Title              string             `db:"title" json:"title"`
-	PublishedAt        pgtype.Timestamptz `db:"published_at" json:"published_at"`
-	Status             string             `db:"status" json:"status"`
-	EnqueueAttempts    int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
-	LastErrorCode      *string            `db:"last_error_code" json:"last_error_code"`
-	LastErrorMessage   *string            `db:"last_error_message" json:"last_error_message"`
-	UpstreamPayload    []byte             `db:"upstream_payload" json:"upstream_payload"`
-	DiscoveredAt       pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
-	EnqueuedAt         pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
-	UpdatedAt          pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-	DownloadUri        *string            `db:"download_uri" json:"download_uri"`
-	Downloadable       bool               `db:"downloadable" json:"downloadable"`
-	RejectionReasons   []string           `db:"rejection_reasons" json:"rejection_reasons"`
-	SourceSeason       *int32             `db:"source_season" json:"source_season"`
-	SourceEpisode      *int32             `db:"source_episode" json:"source_episode"`
-	DuplicateCount     int32              `db:"duplicate_count" json:"duplicate_count"`
-	LastErrorRetryable bool               `db:"last_error_retryable" json:"last_error_retryable"`
-	ImportedAt         pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
-	CoordinateSource   *string            `db:"coordinate_source" json:"coordinate_source"`
-	AgentResolutionID  pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
-	FulfillmentSource  *string            `db:"fulfillment_source" json:"fulfillment_source"`
-	SeriesID           pgtype.UUID        `db:"series_id" json:"series_id"`
-	MappingProfileID   pgtype.UUID        `db:"mapping_profile_id" json:"mapping_profile_id"`
-}
-
-func (q *Queries) LockRSSEntryForEnqueue(ctx context.Context, arg LockRSSEntryForEnqueueParams) (LockRSSEntryForEnqueueRow, error) {
-	row := q.db.QueryRow(ctx, lockRSSEntryForEnqueue, arg.ID, arg.Recovery)
-	var i LockRSSEntryForEnqueueRow
+func (q *Queries) LockRSSEntryForEnqueue(ctx context.Context, id pgtype.UUID) (RssEntry, error) {
+	row := q.db.QueryRow(ctx, lockRSSEntryForEnqueue, id)
+	var i RssEntry
 	err := row.Scan(
 		&i.ID,
 		&i.SubscriptionID,
@@ -2713,8 +2728,6 @@ func (q *Queries) LockRSSEntryForEnqueue(ctx context.Context, arg LockRSSEntryFo
 		&i.CoordinateSource,
 		&i.AgentResolutionID,
 		&i.FulfillmentSource,
-		&i.SeriesID,
-		&i.MappingProfileID,
 	)
 	return i, err
 }
@@ -3066,6 +3079,42 @@ func (q *Queries) LockRSSSubscriptionAtFulfillment(ctx context.Context, subscrip
 		&i.CleanupSourceOnCompletion,
 		&i.SourceSeason,
 		&i.SourceEpisode,
+	)
+	return i, err
+}
+
+const lockRSSSubscriptionForEntryReservation = `-- name: LockRSSSubscriptionForEntryReservation :one
+SELECT subscription.id, subscription.series_id, subscription.mapping_profile_id, subscription.name, subscription.feed_url, subscription.enabled, subscription.poll_interval_seconds, subscription.last_polled_at, subscription.next_poll_at, subscription.version, subscription.created_at, subscription.updated_at, subscription.source_season, subscription.deleted_at, subscription.auto_review, subscription.cleanup_source_on_completion, subscription.completed_at, subscription.include_keywords, subscription.exclude_keywords, subscription.auto_episode_mapping
+FROM rss_entries AS entry
+JOIN rss_subscriptions AS subscription ON subscription.id = entry.subscription_id
+WHERE entry.id = $1
+FOR UPDATE OF subscription
+`
+
+func (q *Queries) LockRSSSubscriptionForEntryReservation(ctx context.Context, id pgtype.UUID) (RssSubscription, error) {
+	row := q.db.QueryRow(ctx, lockRSSSubscriptionForEntryReservation, id)
+	var i RssSubscription
+	err := row.Scan(
+		&i.ID,
+		&i.SeriesID,
+		&i.MappingProfileID,
+		&i.Name,
+		&i.FeedUrl,
+		&i.Enabled,
+		&i.PollIntervalSeconds,
+		&i.LastPolledAt,
+		&i.NextPollAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SourceSeason,
+		&i.DeletedAt,
+		&i.AutoReview,
+		&i.CleanupSourceOnCompletion,
+		&i.CompletedAt,
+		&i.IncludeKeywords,
+		&i.ExcludeKeywords,
+		&i.AutoEpisodeMapping,
 	)
 	return i, err
 }
@@ -3458,6 +3507,12 @@ FROM rss_entries AS entry
 WHERE acquisition.rss_entry_id = entry.id
   AND entry.subscription_id = $2
   AND acquisition.deletion_requested_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM episode_mapping_profiles AS profile
+      WHERE profile.id = acquisition.mapping_profile_id
+        AND profile.name = 'acquisition:' || acquisition.id::text
+  )
   AND NOT EXISTS (
       SELECT 1
       FROM episode_tasks AS task

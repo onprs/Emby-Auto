@@ -554,14 +554,30 @@ func (service *ReadService) GetAcquisition(ctx context.Context, id uuid.UUID) (d
 }
 
 func (service *ReadService) acquisitionViews(ctx context.Context, rows []db.Acquisition) ([]domain.AcquisitionView, error) {
+	acquisitionIDs := make([]pgtype.UUID, 0, len(rows))
+	for _, row := range rows {
+		acquisitionIDs = append(acquisitionIDs, row.ID)
+	}
+	sourceTitles := make(map[uuid.UUID]string, len(rows))
+	if len(acquisitionIDs) > 0 {
+		titleRows, err := service.queries.ListAcquisitionSourceTitles(ctx, acquisitionIDs)
+		if err != nil {
+			return nil, fmt.Errorf("load acquisition source titles: %w", err)
+		}
+		for _, title := range titleRows {
+			sourceTitles[repository.UUIDFromPG(title.AcquisitionID)] = strings.TrimSpace(title.SourceTitle)
+		}
+	}
+
 	views := make([]domain.AcquisitionView, 0, len(rows))
 	for _, row := range rows {
 		view := domain.AcquisitionView{
-			ID:         repository.UUIDFromPG(row.ID),
-			SeriesID:   repository.UUIDFromPG(row.SeriesID),
-			SourceKind: row.SourceKind,
-			CreatedAt:  row.CreatedAt.Time,
-			UpdatedAt:  row.UpdatedAt.Time,
+			ID:          repository.UUIDFromPG(row.ID),
+			SeriesID:    repository.UUIDFromPG(row.SeriesID),
+			SourceKind:  row.SourceKind,
+			SourceTitle: sourceTitles[repository.UUIDFromPG(row.ID)],
+			CreatedAt:   row.CreatedAt.Time,
+			UpdatedAt:   row.UpdatedAt.Time,
 		}
 		if row.MappingProfileID.Valid {
 			value := repository.UUIDFromPG(row.MappingProfileID)
@@ -697,6 +713,7 @@ func archivedRSSAcquisitionView(row db.GetArchivedRSSAcquisitionByIDRow) domain.
 		SeriesID:         repository.UUIDFromPG(row.SeriesID),
 		SeriesTitle:      row.SeriesTitle,
 		SourceKind:       "rss",
+		SourceTitle:      row.SourceTitle,
 		MappingProfileID: &mappingProfileID,
 		RSSEntryID:       &entryID,
 		Tasks:            []domain.AcquisitionTaskSummary{},

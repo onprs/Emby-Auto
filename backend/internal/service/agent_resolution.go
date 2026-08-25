@@ -25,7 +25,14 @@ import (
 	"github.com/onprs/emby-auto/backend/internal/repository"
 )
 
-const agentResolutionPageLimit = 100
+const (
+	agentResolutionPageLimit                      = 100
+	agentResolutionStepSequenceStride             = 64
+	automaticEpisodeMappingReconciliationPageSize = int32(100)
+)
+
+type automaticEpisodeMappingPageLoader func(context.Context, db.ListAutomaticEpisodeMappingAcquisitionsParams) ([]db.ListAutomaticEpisodeMappingAcquisitionsRow, error)
+type automaticEpisodeMappingCandidateVisitor func(context.Context, uuid.UUID) error
 
 type AgentResolutionConfiguration interface {
 	Load(context.Context) (domain.Configuration, error)
@@ -163,27 +170,79 @@ func (service *AgentResolutionService) ReconcileAutomaticEpisodeMappings(ctx con
 	if service.queries == nil {
 		return 0, errors.New("automatic episode Mapping reconciliation storage is unavailable")
 	}
-	rows, err := service.queries.ListAutomaticRSSMappingAcquisitions(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("list automatic episode Mapping reconciliation candidates: %w", err)
+	return reconcileAutomaticEpisodeMappingPages(
+		ctx,
+		automaticEpisodeMappingReconciliationPageSize,
+		service.queries.ListAutomaticEpisodeMappingAcquisitions,
+		service.reconcileAutomaticEpisodeMappingCandidate,
+	)
+}
+
+func reconcileAutomaticEpisodeMappingPages(
+	ctx context.Context,
+	pageSize int32,
+	load automaticEpisodeMappingPageLoader,
+	visit automaticEpisodeMappingCandidateVisitor,
+) (int, error) {
+	if pageSize <= 0 {
+		return 0, errors.New("automatic episode Mapping reconciliation page size must be positive")
 	}
+	params := db.ListAutomaticEpisodeMappingAcquisitionsParams{PageSize: pageSize}
 	attempted := 0
-	for _, row := range rows {
-		result, createErr := service.CreateAutomatic(ctx, AutomaticAgentResolutionRequest{
-			Capability: domain.AgentCapabilityEpisodeMapping,
-			ResourceID: repository.UUIDFromPG(row),
-		})
-		if createErr != nil && !errors.Is(createErr, ErrStateConflict) {
-			return attempted, fmt.Errorf("reconcile automatic episode Mapping: %w", createErr)
+	seenGroupKeys := make(map[uuid.UUID]struct{})
+	for {
+		rows, err := load(ctx, params)
+		if err != nil {
+			return attempted, fmt.Errorf("list automatic episode Mapping reconciliation candidates: %w", err)
 		}
-		if createErr == nil && AutomaticAgentResolutionRetryable(result.Resolution) {
-			if _, retryErr := service.RetryAutomatic(ctx, result.Resolution.ID, result.Resolution.Version); retryErr != nil && !errors.Is(retryErr, ErrStateConflict) {
-				return attempted, fmt.Errorf("resume automatic episode Mapping: %w", retryErr)
+		if len(rows) == 0 {
+			return attempted, nil
+		}
+		if !params.WindowCreatedBefore.Valid {
+			window := rows[0]
+			if !window.WindowCreatedBefore.Valid || !window.WindowHighGroupKey.Valid || !window.WindowHighCreatedAt.Valid || !window.WindowHighAcquisitionID.Valid {
+				return attempted, errors.New("automatic episode Mapping reconciliation window is incomplete")
 			}
+			params.WindowCreatedBefore = window.WindowCreatedBefore
+			params.WindowHighGroupKey = window.WindowHighGroupKey
+			params.WindowHighCreatedAt = window.WindowHighCreatedAt
+			params.WindowHighAcquisitionID = window.WindowHighAcquisitionID
 		}
-		attempted++
+		for _, row := range rows {
+			groupKey := repository.UUIDFromPG(row.GroupKey)
+			if _, seen := seenGroupKeys[groupKey]; seen {
+				continue
+			}
+			if err := visit(ctx, repository.UUIDFromPG(row.AcquisitionID)); err != nil {
+				return attempted, err
+			}
+			attempted++
+			seenGroupKeys[groupKey] = struct{}{}
+		}
+		last := rows[len(rows)-1]
+		params.CursorGroupKey = last.GroupKey
+		params.CursorCreatedAt = last.CreatedAt
+		params.CursorAcquisitionID = last.AcquisitionID
+		if len(rows) < int(pageSize) {
+			return attempted, nil
+		}
 	}
-	return attempted, nil
+}
+
+func (service *AgentResolutionService) reconcileAutomaticEpisodeMappingCandidate(ctx context.Context, acquisitionID uuid.UUID) error {
+	result, createErr := service.CreateAutomatic(ctx, AutomaticAgentResolutionRequest{
+		Capability: domain.AgentCapabilityEpisodeMapping,
+		ResourceID: acquisitionID,
+	})
+	if createErr != nil && !errors.Is(createErr, ErrStateConflict) {
+		return fmt.Errorf("reconcile automatic episode Mapping: %w", createErr)
+	}
+	if createErr == nil && AutomaticAgentResolutionRetryable(result.Resolution) {
+		if _, retryErr := service.RetryAutomatic(ctx, result.Resolution.ID, result.Resolution.Version); retryErr != nil && !errors.Is(retryErr, ErrStateConflict) {
+			return fmt.Errorf("resume automatic episode Mapping: %w", retryErr)
+		}
+	}
+	return nil
 }
 
 func (service *AgentResolutionService) ReconcileAutomaticRSSPreacquisitionMappings(ctx context.Context) (int, error) {
@@ -487,7 +546,7 @@ func (service *AgentResolutionService) Run(ctx context.Context, operation domain
 			Capability: resolution.Capability, Resource: snapshot.Resource, Tools: snapshot.Tools,
 			MaxSteps: agentToolStepBudget(resolution.Capability, snapshot), ValidateSubmission: validateSubmission,
 		})
-		if err := service.persistAgentResolutionSteps(ctx, resolution.ID, operation.AttemptCount, harnessResult.Steps); err != nil {
+		if err := service.persistAgentResolutionSteps(ctx, resolution.ID, resolution.Version, harnessResult.Steps); err != nil {
 			return err
 		}
 		if runErr != nil {
@@ -613,10 +672,19 @@ func AutomaticAgentResolutionRetryable(resolution domain.AgentResolution) bool {
 	if resolution.Status != domain.AgentResolutionFailed || resolution.Trigger != "automatic" {
 		return false
 	}
+	if resolution.Version >= 10 {
+		return false
+	}
 	if len(bytes.TrimSpace(resolution.Proposal)) > 2 {
 		return true
 	}
-	return resolution.ErrorCode == "agent_submission_invalid"
+	switch resolution.ErrorCode {
+	case "agent_provider_unavailable", "agent_rate_limited", "agent_request_failed", "agent_request_timeout",
+		"agent_response_invalid", "agent_response_too_large", "agent_submission_invalid":
+		return true
+	default:
+		return false
+	}
 }
 
 func (service *AgentResolutionService) validateAndApply(
@@ -748,17 +816,29 @@ func (service *AgentResolutionService) validateProposal(
 		}
 		return auto(), proposal, nil
 	case domain.AgentCapabilityEpisodeMapping:
-		var proposal domain.AgentEpisodeMappingProposal
-		if err := strictJSON(resolution.Proposal, &proposal); err != nil {
+		proposal, err := domain.DecodeAgentEpisodeMappingProposal(resolution.Proposal)
+		if err != nil {
 			return invalid("agent_submission_invalid"), proposal, nil
 		}
-		if proposal.AcquisitionID != resolution.ResourceID || proposal.SourceFileID == uuid.Nil || proposal.TargetSeason <= 0 || proposal.TargetEpisode <= 0 {
+		if proposal.AcquisitionID != resolution.ResourceID {
 			return invalid("agent_tool_scope_violation"), proposal, nil
 		}
-		preview, err := service.catalog.PreviewEpisodeMapping(ctx, domain.EpisodeMappingPlanInput{
-			AcquisitionID: proposal.AcquisitionID,
-			Anchor:        domain.EpisodeMappingAnchorInput{SourceFileID: proposal.SourceFileID, Target: domain.EpisodeCoordinate{Season: proposal.TargetSeason, Episode: proposal.TargetEpisode}},
-		})
+		if err := validateAgentEpisodeMappingProposalShape(proposal); err != nil {
+			return invalid("agent_submission_invalid"), proposal, nil
+		}
+		input := episodeMappingPlanFromAgentProposal(proposal)
+		if err := validateMappingInput(input, false); err != nil {
+			return invalid(serviceCode(err, "agent_tool_scope_violation")), proposal, nil
+		}
+		if len(proposal.EvidenceCodes) == 0 || len(proposal.EvidenceCodes) > 16 {
+			return invalid("agent_mapping_evidence_invalid"), proposal, nil
+		}
+		for _, code := range proposal.EvidenceCodes {
+			if strings.TrimSpace(code) == "" || len(code) > 128 {
+				return invalid("agent_mapping_evidence_invalid"), proposal, nil
+			}
+		}
+		preview, err := service.catalog.PreviewEpisodeMapping(ctx, input)
 		if err != nil {
 			return invalid(serviceCode(err, "agent_mapping_preview_incomplete")), proposal, nil
 		}
@@ -766,7 +846,16 @@ func (service *AgentResolutionService) validateProposal(
 			return invalid("agent_mapping_preview_incomplete"), proposal, nil
 		}
 		for _, row := range preview.Rows {
-			if row.Status != domain.MappingMapped || row.TargetEpisodeID == uuid.Nil || row.TargetSeason <= 0 {
+			switch row.Status {
+			case domain.MappingMapped:
+				if row.TargetEpisodeID == uuid.Nil || row.TargetSeason < 0 {
+					return review("agent_mapping_preview_incomplete"), proposal, nil
+				}
+			case domain.MappingExcluded:
+				if preview.Mode != domain.EpisodeMappingModeExplicit {
+					return invalid("agent_mapping_preview_incomplete"), proposal, nil
+				}
+			default:
 				return review("agent_mapping_preview_incomplete"), proposal, nil
 			}
 		}
@@ -1106,6 +1195,13 @@ func (service *AgentResolutionService) applyRSSReleaseAdjudication(
 		if lockedResolution.Version != int32(resolution.Version) || (lockedResolution.Status != string(domain.AgentResolutionProposed) && lockedResolution.Status != string(domain.AgentResolutionReviewRequired)) {
 			return NewError("state_conflict", "the Agent resolution changed before RSS adjudication was applied", ErrStateConflict, nil)
 		}
+		subscription, err := scope.Queries.LockRSSSubscriptionForAdjudicationBatch(ctx, repository.UUIDToPG(proposal.BatchID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock RSS subscription for adjudication: %w", err)
+		}
 		batch, err := scope.Queries.LockRSSAdjudicationBatch(ctx, repository.UUIDToPG(proposal.BatchID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrNotFound
@@ -1113,14 +1209,13 @@ func (service *AgentResolutionService) applyRSSReleaseAdjudication(
 		if err != nil {
 			return fmt.Errorf("lock RSS adjudication batch: %w", err)
 		}
+		if batch.SubscriptionID != subscription.ID {
+			return NewError("state_conflict", "the RSS adjudication subscription changed before apply", ErrStateConflict, nil)
+		}
 		if batch.Status != "pending" {
 			return NewError("agent_resolution_stale", "the RSS adjudication batch is no longer pending", ErrStateConflict, nil)
 		}
-		batchContext, err := scope.Queries.GetAgentRSSAdjudicationBatch(ctx, repository.UUIDToPG(proposal.BatchID))
-		if err != nil {
-			return fmt.Errorf("reload RSS adjudication batch: %w", err)
-		}
-		if !batchContext.SubscriptionEnabled || batchContext.SubscriptionCompletedAt.Valid || batchContext.SubscriptionDeletedAt.Valid {
+		if !subscription.Enabled || subscription.CompletedAt.Valid || subscription.DeletedAt.Valid {
 			return NewError("agent_resolution_stale", "the RSS subscription is no longer active", ErrStateConflict, nil)
 		}
 		entries, err := scope.Queries.LockRSSAdjudicationEntries(ctx, repository.UUIDToPG(proposal.BatchID))
@@ -1133,6 +1228,34 @@ func (service *AgentResolutionService) applyRSSReleaseAdjudication(
 		proposalByID := make(map[uuid.UUID]domain.AgentRSSReleaseDisposition, len(proposal.Entries))
 		for _, item := range proposal.Entries {
 			proposalByID[item.EntryID] = item
+		}
+		occupancyRequests := make([]rssTargetOccupancyRequest, 0, len(entries))
+		occupancyRequestByEntryID := make(map[uuid.UUID]int, len(entries))
+		for _, entry := range entries {
+			entryID := repository.UUIDFromPG(entry.ID)
+			item, ok := proposalByID[entryID]
+			if !ok || entry.AdjudicationState != "pending" || (entry.Status != string(domain.RSSDiscovered) && entry.Status != string(domain.RSSEnqueueFailed)) {
+				return NewError("agent_resolution_stale", "an RSS adjudication entry changed before apply", ErrStateConflict, map[string]any{"entryId": entryID})
+			}
+			if item.Disposition == "select" {
+				if item.SourceSeason == nil || item.SourceEpisode == nil {
+					return NewError("agent_proposal_invalid", "a selected RSS adjudication entry has no source coordinate", ErrStateConflict, nil)
+				}
+				occupancyRequestByEntryID[entryID] = len(occupancyRequests)
+				occupancyRequests = append(occupancyRequests, rssTargetOccupancyRequest{
+					subscriptionID:  repository.UUIDFromPG(subscription.ID),
+					sourceSeason:    *item.SourceSeason,
+					sourceEpisode:   *item.SourceEpisode,
+					excludedEntryID: entryID,
+					realtimeCheckID: realtimeCheckID,
+				})
+			} else if item.Disposition != "ignore" {
+				return NewError("agent_proposal_invalid", "the RSS adjudication still contains unresolved entries", ErrStateConflict, nil)
+			}
+		}
+		expectedOccupancyTargets, err := prepareRSSMappedTargetLocks(ctx, scope, occupancyRequests)
+		if err != nil {
+			return err
 		}
 		source := string(domain.DecisionSourceAgentAuto)
 		selectedCount := 0
@@ -1150,14 +1273,9 @@ func (service *AgentResolutionService) applyRSSReleaseAdjudication(
 			relatedEntryID := optionalUUID(item.RelatedEntryID)
 			occupancy := rssTargetOccupancy{}
 			if item.Disposition == "select" {
-				occupancy, err = lockRSSMappedTargetOccupancyWithRealtimeCheck(
-					ctx,
-					scope,
-					repository.UUIDFromPG(batchContext.SubscriptionID),
-					*item.SourceSeason,
-					*item.SourceEpisode,
-					entryID,
-					realtimeCheckID,
+				requestIndex := occupancyRequestByEntryID[entryID]
+				occupancy, err = loadRSSMappedTargetOccupancyAfterLock(
+					ctx, scope, occupancyRequests[requestIndex], expectedOccupancyTargets[requestIndex],
 				)
 				if err != nil {
 					return err
@@ -1212,7 +1330,7 @@ func (service *AgentResolutionService) applyRSSReleaseAdjudication(
 				return fmt.Errorf("encode adjudicated RSS acquisition payload: %w", err)
 			}
 			acquisition, err := scope.Queries.UpsertRSSAcquisition(ctx, db.UpsertRSSAcquisitionParams{
-				ID: repository.UUIDToPG(uuid.New()), SeriesID: batchContext.SeriesID, MappingProfileID: batchContext.MappingProfileID,
+				ID: repository.UUIDToPG(uuid.New()), SeriesID: subscription.SeriesID, MappingProfileID: subscription.MappingProfileID,
 				RssEntryID: entry.ID, SourcePayload: sourcePayload,
 			})
 			if err != nil {
@@ -1246,7 +1364,7 @@ func (service *AgentResolutionService) applyRSSReleaseAdjudication(
 		if err := NewRSSWorkflow(service.queries, service.transactor, service.operations).completeRSSSubscriptionAtFulfillmentInTx(
 			ctx,
 			scope,
-			repository.UUIDFromPG(batchContext.SubscriptionID),
+			repository.UUIDFromPG(subscription.ID),
 			uuid.Nil,
 			"agent_adjudication",
 		); err != nil {
@@ -1283,6 +1401,13 @@ func (service *AgentResolutionService) applyRSSCoordinate(
 		if lockedResolution.Version != int32(resolution.Version) || (lockedResolution.Status != string(domain.AgentResolutionProposed) && lockedResolution.Status != string(domain.AgentResolutionReviewRequired)) {
 			return NewError("state_conflict", "the Agent resolution changed before RSS coordinate was applied", ErrStateConflict, nil)
 		}
+		subscription, err := scope.Queries.LockRSSSubscriptionForEntryReservation(ctx, repository.UUIDToPG(resolution.ResourceID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock RSS subscription for Agent coordinate: %w", err)
+		}
 		entry, err := scope.Queries.LockRSSEntryForAgentCoordinate(ctx, repository.UUIDToPG(resolution.ResourceID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrNotFound
@@ -1290,7 +1415,10 @@ func (service *AgentResolutionService) applyRSSCoordinate(
 		if err != nil {
 			return fmt.Errorf("lock Agent RSS entry: %w", err)
 		}
-		analysis := domain.AnalyzeRSSRelease(entry.Title, stringValue(entry.DownloadUri), int(entry.DefaultSourceSeason), entry.IncludeKeywords, entry.ExcludeKeywords)
+		if entry.SubscriptionID != subscription.ID {
+			return NewError("state_conflict", "the RSS entry subscription changed before Agent apply", ErrStateConflict, nil)
+		}
+		analysis := domain.AnalyzeRSSRelease(entry.Title, stringValue(entry.DownloadUri), int(subscription.SourceSeason), subscription.IncludeKeywords, subscription.ExcludeKeywords)
 		softReason := false
 		for _, reason := range analysis.RejectionReasons {
 			switch reason {
@@ -1311,14 +1439,14 @@ func (service *AgentResolutionService) applyRSSCoordinate(
 		}); err != nil {
 			return fmt.Errorf("apply Agent RSS coordinate: %w", err)
 		}
-		if !entry.MappingProfileID.Valid {
+		if !subscription.MappingProfileID.Valid {
 			if service.operations == nil {
 				return fmt.Errorf("schedule RSS mapping continuation: operation scheduler is unavailable")
 			}
 			scheduled, err := service.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
 				Kind: appqueue.KindRSSPoll, ResourceType: "rss_subscription", ResourceID: repository.UUIDFromPG(entry.SubscriptionID),
 				IdempotencyKey: "rss.poll:mapping-coordinate:" + resolution.ID.String(), MaxAttempts: 5, Timeout: 30 * time.Second,
-				Payload: map[string]any{"continuous": false, "subscriptionVersion": entry.SubscriptionVersion},
+				Payload: map[string]any{"continuous": false, "subscriptionVersion": subscription.Version},
 			})
 			if err != nil {
 				return fmt.Errorf("schedule RSS mapping continuation: %w", err)
@@ -1336,7 +1464,7 @@ func (service *AgentResolutionService) applyRSSCoordinate(
 		occupancy, err := lockRSSMappedTargetOccupancyWithRealtimeCheck(
 			ctx,
 			scope,
-			repository.UUIDFromPG(entry.SubscriptionID),
+			repository.UUIDFromPG(subscription.ID),
 			proposal.SourceSeason,
 			proposal.SourceEpisode,
 			resolution.ResourceID,
@@ -1352,7 +1480,7 @@ func (service *AgentResolutionService) applyRSSCoordinate(
 		}
 
 		var downstreamOperationID uuid.UUID
-		if occupancy.Reason == "" && entry.SubscriptionEnabled && !entry.SubscriptionCompletedAt.Valid && !entry.SubscriptionDeletedAt.Valid {
+		if occupancy.Reason == "" && subscription.Enabled && !subscription.CompletedAt.Valid && !subscription.DeletedAt.Valid {
 			updated, err := scope.Queries.MarkRSSEntryEnqueueing(ctx, entry.ID)
 			if err != nil {
 				return fmt.Errorf("mark Agent-resolved RSS entry enqueueing: %w", err)
@@ -1365,7 +1493,7 @@ func (service *AgentResolutionService) applyRSSCoordinate(
 				return fmt.Errorf("encode Agent RSS acquisition payload: %w", err)
 			}
 			acquisition, err := scope.Queries.UpsertRSSAcquisition(ctx, db.UpsertRSSAcquisitionParams{
-				ID: repository.UUIDToPG(uuid.New()), SeriesID: entry.SeriesID, MappingProfileID: entry.MappingProfileID,
+				ID: repository.UUIDToPG(uuid.New()), SeriesID: subscription.SeriesID, MappingProfileID: subscription.MappingProfileID,
 				RssEntryID: entry.ID, SourcePayload: sourcePayload,
 			})
 			if err != nil {
@@ -1399,7 +1527,7 @@ func (service *AgentResolutionService) applyRSSCoordinate(
 			if err := NewRSSWorkflow(service.queries, service.transactor, service.operations).completeRSSSubscriptionAtFulfillmentInTx(
 				ctx,
 				scope,
-				repository.UUIDFromPG(entry.SubscriptionID),
+				repository.UUIDFromPG(subscription.ID),
 				uuid.Nil,
 				"agent_coordinate",
 			); err != nil {
@@ -1713,21 +1841,20 @@ func agentResolutionFromDB(row db.AgentResolution) domain.AgentResolution {
 func (service *AgentResolutionService) persistAgentResolutionSteps(
 	ctx context.Context,
 	resolutionID uuid.UUID,
-	attempt int,
+	resolutionVersion int,
 	steps []agentharness.Step,
 ) error {
-	const sequenceStride = 64
-	if attempt < 1 {
-		attempt = 1
+	sequences, err := agentResolutionStepSequences(resolutionVersion, steps)
+	if err != nil {
+		return fmt.Errorf("persist Agent resolution steps: %w", err)
 	}
-	for _, step := range steps {
-		sequence := (attempt-1)*sequenceStride + step.Sequence
+	for index, step := range steps {
 		status := step.Status
 		if status == "" {
 			status = "succeeded"
 		}
 		if _, err := service.queries.CreateAgentResolutionStep(ctx, db.CreateAgentResolutionStepParams{
-			ID: repository.UUIDToPG(uuid.New()), ResolutionID: repository.UUIDToPG(resolutionID), Sequence: int32(sequence),
+			ID: repository.UUIDToPG(uuid.New()), ResolutionID: repository.UUIDToPG(resolutionID), Sequence: sequences[index],
 			ToolName: step.ToolName, Status: status, ArgumentsDigest: step.ArgumentsDigest, ResultDigest: step.ResultDigest,
 			ErrorCode: optionalString(step.ErrorCode),
 		}); err != nil {
@@ -1735,6 +1862,41 @@ func (service *AgentResolutionService) persistAgentResolutionSteps(
 		}
 	}
 	return nil
+}
+
+func agentResolutionStepSequences(resolutionVersion int, steps []agentharness.Step) ([]int32, error) {
+	if resolutionVersion < 1 {
+		return nil, errors.New("agent resolution version must be positive")
+	}
+	sequences := make([]int32, len(steps))
+	seen := make(map[int32]struct{}, len(steps))
+	for index, step := range steps {
+		sequence, err := agentResolutionStepSequence(resolutionVersion, step.Sequence)
+		if err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[sequence]; duplicate {
+			return nil, fmt.Errorf("agent resolution step sequence %d is duplicated", step.Sequence)
+		}
+		seen[sequence] = struct{}{}
+		sequences[index] = sequence
+	}
+	return sequences, nil
+}
+
+func agentResolutionStepSequence(resolutionVersion, stepSequence int) (int32, error) {
+	if resolutionVersion < 1 {
+		return 0, errors.New("agent resolution version must be positive")
+	}
+	if stepSequence < 1 || stepSequence > agentResolutionStepSequenceStride {
+		return 0, fmt.Errorf("agent resolution step sequence must be between 1 and %d", agentResolutionStepSequenceStride)
+	}
+	maximumVersion := int((int64(math.MaxInt32)-int64(stepSequence))/agentResolutionStepSequenceStride) + 1
+	if resolutionVersion > maximumVersion {
+		return 0, errors.New("agent resolution step sequence exceeds the storage range")
+	}
+	sequence := int64(resolutionVersion-1)*agentResolutionStepSequenceStride + int64(stepSequence)
+	return int32(sequence), nil
 }
 
 func agentToolStepBudget(capability domain.AgentCapability, snapshot agentContextSnapshot) int {
