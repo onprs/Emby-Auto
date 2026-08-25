@@ -79,6 +79,7 @@ export function AcquisitionDetailPage({ acquisitionId }: { acquisitionId: string
         <div className="mt-5">
           <DetailGrid items={[
             { label: '任务来源', value: sourceKindLabel(task.sourceKind) },
+            ...(task.sourceTitle ? [{ label: '原始资源标题', value: task.sourceTitle }] : []),
             { label: '内容类型', value: isMovie ? '电影' : '番剧' },
             ...(!isMovie ? [{ label: '源集数', value: episodeLabel(task.sourceSeason, task.sourceEpisode) }] : []),
             ...(task.mappingDecisionSource ? [{ label: '剧集映射来源', value: decisionSourceLabel(task.mappingDecisionSource) }] : []),

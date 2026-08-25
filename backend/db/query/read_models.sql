@@ -116,6 +116,16 @@ WHERE acquisition_id = ANY(sqlc.arg(acquisition_ids)::uuid[])
   AND deleted_at IS NULL
 ORDER BY acquisition_id, (status = 'cancelled'), attempt DESC;
 
+-- name: ListAcquisitionSourceTitles :many
+SELECT
+    acquisition.id AS acquisition_id,
+    COALESCE(candidate.title, entry.title, '')::text AS source_title
+FROM acquisitions AS acquisition
+LEFT JOIN release_candidates AS candidate ON candidate.id = acquisition.release_candidate_id
+LEFT JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
+WHERE acquisition.id = ANY(sqlc.arg(acquisition_ids)::uuid[])
+ORDER BY acquisition.id;
+
 -- name: ListAcquisitions :many
 SELECT *
 FROM acquisitions
@@ -263,6 +273,7 @@ SELECT
     subscription.series_id,
     series.tmdb_series_id,
     series.title AS series_title,
+    entry.title AS source_title,
     subscription.mapping_profile_id,
     history.task_id,
     history.download_id,

@@ -44,13 +44,28 @@ type TMDbEpisodeCatalog struct {
 }
 
 type EpisodeMappingAnchorInput struct {
-	SourceFileID uuid.UUID
-	Target       EpisodeCoordinate
+	SourceFileID uuid.UUID         `json:"sourceFileId"`
+	Target       EpisodeCoordinate `json:"target"`
+}
+
+type EpisodeMappingExplicitAction string
+
+const (
+	EpisodeMappingExplicitMap     EpisodeMappingExplicitAction = "map"
+	EpisodeMappingExplicitExclude EpisodeMappingExplicitAction = "exclude"
+)
+
+type EpisodeMappingExplicitInput struct {
+	SourceFileID uuid.UUID                    `json:"sourceFileId"`
+	Action       EpisodeMappingExplicitAction `json:"action"`
+	Target       EpisodeCoordinate            `json:"target,omitempty"`
 }
 
 type EpisodeMappingPlanInput struct {
 	AcquisitionID  uuid.UUID
+	Mode           EpisodeMappingMode
 	Anchor         EpisodeMappingAnchorInput
+	Assignments    []EpisodeMappingExplicitInput
 	IdempotencyKey string
 	ActorUserID    uuid.UUID
 }
@@ -73,6 +88,7 @@ type EpisodeMappingRow struct {
 type EpisodeMappingPreview struct {
 	AcquisitionID uuid.UUID
 	SeriesID      uuid.UUID
+	Mode          EpisodeMappingMode
 	Anchor        EpisodeMappingAnchorInput
 	Rows          []EpisodeMappingRow
 }

@@ -23,10 +23,36 @@ func TestAutomaticAgentResolutionRetryableIsBounded(t *testing.T) {
 	if !AutomaticAgentResolutionRetryable(proposed) {
 		t.Fatal("failed automatic proposal is not retryable")
 	}
-	newExhausted := legacy
-	newExhausted.ErrorCode = "agent_submission_exhausted"
-	if AutomaticAgentResolutionRetryable(newExhausted) {
-		t.Fatal("new exhausted failure would create an unbounded reconciliation loop")
+	proposed.Version = 10
+	if AutomaticAgentResolutionRetryable(proposed) {
+		t.Fatal("failed automatic proposal exceeded the resolution version bound")
+	}
+	outputFailure := legacy
+	outputFailure.ErrorCode = "agent_submission_exhausted"
+	outputFailure.Version = 9
+	if AutomaticAgentResolutionRetryable(outputFailure) {
+		t.Fatal("exhausted output failure would be rebuilt outside its River operation")
+	}
+	timeoutFailure := legacy
+	timeoutFailure.ErrorCode = "agent_request_timeout"
+	timeoutFailure.Version = 9
+	if !AutomaticAgentResolutionRetryable(timeoutFailure) {
+		t.Fatal("bounded request timeout is not retryable")
+	}
+	providerFailure := legacy
+	providerFailure.ErrorCode = "agent_provider_unavailable"
+	providerFailure.Version = 9
+	if !AutomaticAgentResolutionRetryable(providerFailure) {
+		t.Fatal("bounded transient Provider failure is not retryable")
+	}
+	providerFailure.Version = 10
+	if AutomaticAgentResolutionRetryable(providerFailure) {
+		t.Fatal("transient Provider failure exceeded the resolution version bound")
+	}
+	authenticationFailure := legacy
+	authenticationFailure.ErrorCode = "agent_authentication_failed"
+	if AutomaticAgentResolutionRetryable(authenticationFailure) {
+		t.Fatal("deterministic authentication failure is retryable")
 	}
 	manual := legacy
 	manual.Trigger = "user"

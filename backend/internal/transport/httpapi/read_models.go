@@ -425,6 +425,7 @@ func acquisitionResponse(view domain.AcquisitionView) Acquisition {
 		response.SourceEpisode = &value
 	}
 	response.SingleEpisode = view.SingleEpisode
+	optionalString(&response.SourceTitle, view.SourceTitle)
 	response.ArchivedAt = view.ArchivedAt
 	response.MappingProfileId = view.MappingProfileID
 	if view.MappingDecisionSource != "" {

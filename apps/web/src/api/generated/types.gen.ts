@@ -343,29 +343,46 @@ export type AgentCatalogCandidateProposal = {
     decision: 'resolved' | 'review_required';
 };
 
-export type AgentEpisodeMappingProposal = {
+export type AgentEpisodeMappingLegacyAnchorProposal = {
     capability: 'episode_mapping';
     acquisitionId: string;
+    /**
+     * @deprecated
+     */
     sourceFileId: string;
+    /**
+     * @deprecated
+     */
     targetSeason: number;
+    /**
+     * @deprecated
+     */
     targetEpisode: number;
     evidenceCodes: Array<string>;
     decision: 'resolved' | 'review_required';
 };
 
-export type AgentProposal = ({
-    capability: 'rss_coordinate';
-} & AgentRssCoordinateProposal) | ({
-    capability: 'rss_release_adjudication';
-} & AgentRssReleaseAdjudicationProposal) | ({
-    capability: 'rss_preacquisition_mapping';
-} & AgentRssPreacquisitionMappingProposal) | ({
-    capability: 'download_file_resolution';
-} & AgentDownloadFileResolutionProposal) | ({
-    capability: 'catalog_candidate';
-} & AgentCatalogCandidateProposal) | ({
+export type AgentEpisodeMappingAnchorProposal = {
     capability: 'episode_mapping';
-} & AgentEpisodeMappingProposal);
+    acquisitionId: string;
+    mode: 'anchor';
+    anchor: EpisodeMappingAnchor;
+    evidenceCodes: Array<string>;
+    decision: 'resolved' | 'review_required';
+};
+
+export type AgentEpisodeMappingExplicitProposal = {
+    capability: 'episode_mapping';
+    acquisitionId: string;
+    mode: 'explicit';
+    assignments: Array<EpisodeMappingExplicitDisposition>;
+    evidenceCodes: Array<string>;
+    decision: 'resolved' | 'review_required';
+};
+
+export type AgentEpisodeMappingProposal = AgentEpisodeMappingLegacyAnchorProposal | AgentEpisodeMappingAnchorProposal | AgentEpisodeMappingExplicitProposal;
+
+export type AgentProposal = AgentRssCoordinateProposal | AgentRssReleaseAdjudicationProposal | AgentRssPreacquisitionMappingProposal | AgentDownloadFileResolutionProposal | AgentCatalogCandidateProposal | AgentEpisodeMappingProposal;
 
 export type AgentResolution = {
     id: string;
@@ -495,19 +512,48 @@ export type CatalogCommandAccepted = {
     status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 };
 
+export type EpisodeMappingMode = 'anchor' | 'explicit';
+
 export type EpisodeMappingAnchor = {
     sourceFileId: string;
     targetSeason: number;
     targetEpisode: number;
 };
 
-export type EpisodeMappingPlanRequest = {
+export type EpisodeMappingExplicitMapDisposition = {
+    sourceFileId: string;
+    action: 'map';
+    targetSeason: number;
+    targetEpisode: number;
+};
+
+export type EpisodeMappingExplicitExcludeDisposition = {
+    sourceFileId: string;
+    action: 'exclude';
+};
+
+export type EpisodeMappingExplicitDisposition = ({
+    action: 'map';
+} & EpisodeMappingExplicitMapDisposition) | ({
+    action: 'exclude';
+} & EpisodeMappingExplicitExcludeDisposition);
+
+export type EpisodeMappingAnchorPlan = {
+    /**
+     * Optional for compatibility with legacy anchor requests.
+     */
+    mode?: 'anchor';
     anchor: EpisodeMappingAnchor;
 };
 
-export type SaveEpisodeMappingRequest = {
-    anchor: EpisodeMappingAnchor;
+export type EpisodeMappingExplicitPlan = {
+    mode: 'explicit';
+    assignments: Array<EpisodeMappingExplicitDisposition>;
 };
+
+export type EpisodeMappingPlanRequest = EpisodeMappingAnchorPlan | EpisodeMappingExplicitPlan;
+
+export type SaveEpisodeMappingRequest = EpisodeMappingPlanRequest;
 
 export type EpisodeMappingRow = {
     sourceFileId: string;
@@ -515,7 +561,7 @@ export type EpisodeMappingRow = {
     sourceSeason: number;
     sourceEpisode: number;
     absoluteEpisode?: number;
-    status: 'mapped' | 'pending';
+    status: 'mapped' | 'pending' | 'excluded';
     targetSeason?: number;
     targetEpisode?: number;
     targetTitle?: string;
@@ -526,7 +572,8 @@ export type EpisodeMappingRow = {
 export type EpisodeMappingPreview = {
     acquisitionId: string;
     seriesId: string;
-    anchor: EpisodeMappingAnchor;
+    mode: EpisodeMappingMode;
+    anchor?: EpisodeMappingAnchor;
     rows: Array<EpisodeMappingRow>;
 };
 
@@ -895,6 +942,10 @@ export type Acquisition = {
     movieTitle?: string;
     releaseYear?: number;
     sourceKind: 'search' | 'rss' | 'manual';
+    /**
+     * Original selected search candidate or RSS release title.
+     */
+    sourceTitle?: string;
     sourceSeason?: number;
     sourceEpisode?: number;
     singleEpisode?: boolean;
@@ -2071,7 +2122,7 @@ export type PreviewAcquisitionEpisodeMappingResponses = {
 export type PreviewAcquisitionEpisodeMappingResponse = PreviewAcquisitionEpisodeMappingResponses[keyof PreviewAcquisitionEpisodeMappingResponses];
 
 export type SaveAcquisitionEpisodeMappingData = {
-    body: SaveEpisodeMappingRequest;
+    body: EpisodeMappingPlanRequest;
     headers: {
         'Idempotency-Key': string;
     };

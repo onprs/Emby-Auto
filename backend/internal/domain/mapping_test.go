@@ -129,6 +129,51 @@ func TestResolveEpisodeMappingRejectsUnsafeAnchorInference(t *testing.T) {
 	}
 }
 
+func TestResolveExplicitEpisodeMappingSupportsRegularAndSeasonZeroTargets(t *testing.T) {
+	seasons := []TMDbSeason{
+		{Season: 0, EpisodeCount: 2, Titles: map[int]string{1: "特别篇一", 2: "特别篇二"}},
+		{Season: 1, EpisodeCount: 2, Titles: map[int]string{1: "第一集", 2: "第二集"}},
+	}
+	tests := []struct {
+		name   string
+		target EpisodeCoordinate
+		want   EpisodeMappingResult
+	}{
+		{
+			name:   "regular episode keeps absolute coordinate",
+			target: EpisodeCoordinate{Season: 1, Episode: 2},
+			want: EpisodeMappingResult{
+				Status: MappingMapped, AbsoluteEpisode: 2, Target: EpisodeCoordinate{Season: 1, Episode: 2},
+				TargetTitle: "第二集", MatchSource: MappingMatchExplicit,
+			},
+		},
+		{
+			name:   "special episode has no regular absolute coordinate",
+			target: EpisodeCoordinate{Season: 0, Episode: 2},
+			want: EpisodeMappingResult{
+				Status: MappingMapped, Target: EpisodeCoordinate{Season: 0, Episode: 2},
+				TargetTitle: "特别篇二", MatchSource: MappingMatchExplicit,
+			},
+		},
+		{
+			name:   "unknown target stays pending",
+			target: EpisodeCoordinate{Season: 0, Episode: 3},
+			want: EpisodeMappingResult{
+				Status: MappingPending, Target: EpisodeCoordinate{Season: 0, Episode: 3},
+				MatchSource: MappingMatchPending, ErrorCode: "mapping_target_out_of_range",
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := ResolveExplicitEpisodeMapping(EpisodeCoordinate{Season: 1, Episode: 13}, test.target, seasons)
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("ResolveExplicitEpisodeMapping() = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestTMDbAbsoluteEpisodeHelpersIgnoreSpecialsAndCrossSeasons(t *testing.T) {
 	seasons := []TMDbSeason{
 		{Season: 2, EpisodeCount: 2},

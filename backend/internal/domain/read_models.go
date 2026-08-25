@@ -72,6 +72,7 @@ type AcquisitionView struct {
 	MovieTitle               string
 	ReleaseYear              int
 	SourceKind               string
+	SourceTitle              string
 	SourceSeason             *int
 	SourceEpisode            *int
 	SingleEpisode            *bool

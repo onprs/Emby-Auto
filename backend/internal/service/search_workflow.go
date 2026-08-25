@@ -300,6 +300,51 @@ func (workflow *SearchWorkflow) CreateAcquisition(
 			)
 		}
 
+		payloadJSON, err := json.Marshal(map[string]any{
+			"candidateId": input.CandidateID, "searchRunId": repository.UUIDFromPG(candidate.SearchRunID),
+			"mediaType": input.MediaType, "sourceSeason": input.SourceSeason,
+			"sourceEpisode": input.SourceEpisode, "singleEpisode": input.SingleEpisode,
+		})
+		if err != nil {
+			return fmt.Errorf("encode search acquisition payload: %w", err)
+		}
+
+		var existing db.Acquisition
+		existingLoaded := false
+		existing, err = scope.Queries.GetSearchAcquisitionByCandidate(ctx, candidate.ID)
+		if err == nil {
+			existingLoaded = true
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("load existing search acquisition before target reservation: %w", err)
+		}
+		existingSettingsMatch := existingLoaded &&
+			existing.MappingProfileID == nullableUUID(input.MappingProfileID) &&
+			jsonValuesEqual(existing.SourcePayload, payloadJSON)
+		mappingReservationNeeded := input.MediaType == domain.TaskMediaEpisode &&
+			input.MappingProfileID != uuid.Nil && input.SingleEpisode && !existingSettingsMatch
+
+		var mappingTargetParams db.GetMappedTargetEpisodeForSourceParams
+		var expectedMappingTarget db.GetMappedTargetEpisodeForSourceRow
+		if mappingReservationNeeded {
+			tmdbSeriesID := input.TMDbSeriesID
+			mappingTargetParams = db.GetMappedTargetEpisodeForSourceParams{
+				ProfileID:     repository.UUIDToPG(input.MappingProfileID),
+				TmdbSeriesID:  &tmdbSeriesID,
+				SourceSeason:  int32(input.SourceSeason),
+				SourceEpisode: int32(input.SourceEpisode),
+			}
+			expectedMappingTarget, err = scope.Queries.GetMappedTargetEpisodeForSource(ctx, mappingTargetParams)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return invalidSearchAcquisition("mappingProfileId", "must reference an active profile for the same series with a mapped source coordinate")
+			}
+			if err != nil {
+				return fmt.Errorf("resolve search acquisition mapping target: %w", err)
+			}
+			if err := lockEpisodeMappingTargets(ctx, scope, []uuid.UUID{repository.UUIDFromPG(expectedMappingTarget.TargetEpisodeID)}); err != nil {
+				return err
+			}
+		}
+
 		var media db.MediaSeries
 		switch input.MediaType {
 		case domain.TaskMediaMovie:
@@ -319,13 +364,58 @@ func (workflow *SearchWorkflow) CreateAcquisition(
 		if err != nil {
 			return fmt.Errorf("upsert search media metadata: %w", err)
 		}
-		payloadJSON, err := json.Marshal(map[string]any{
-			"candidateId": input.CandidateID, "searchRunId": repository.UUIDFromPG(candidate.SearchRunID),
-			"mediaType": input.MediaType, "sourceSeason": input.SourceSeason,
-			"sourceEpisode": input.SourceEpisode, "singleEpisode": input.SingleEpisode,
-		})
-		if err != nil {
-			return fmt.Errorf("encode search acquisition payload: %w", err)
+
+		existingMatches := existingSettingsMatch && existing.SeriesID == media.ID
+		if mappingReservationNeeded {
+			lockedMappingTarget, err := scope.Queries.GetMappedTargetEpisodeForSource(ctx, mappingTargetParams)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return NewError(
+					"mapping_target_changed",
+					"the search acquisition mapping changed while target occupancy was locked",
+					ErrStateConflict,
+					nil,
+				)
+			}
+			if err != nil {
+				return fmt.Errorf("recheck search acquisition mapping target: %w", err)
+			}
+			if lockedMappingTarget.SeriesID != expectedMappingTarget.SeriesID ||
+				lockedMappingTarget.TargetEpisodeID != expectedMappingTarget.TargetEpisodeID ||
+				lockedMappingTarget.SeriesID != media.ID {
+				return NewError(
+					"mapping_target_changed",
+					"the search acquisition mapping changed while target occupancy was locked",
+					ErrStateConflict,
+					nil,
+				)
+			}
+
+			existing, err = scope.Queries.GetSearchAcquisitionByCandidate(ctx, candidate.ID)
+			if err == nil {
+				existingMatches = existing.SeriesID == media.ID &&
+					existing.MappingProfileID == nullableUUID(input.MappingProfileID) &&
+					jsonValuesEqual(existing.SourcePayload, payloadJSON)
+			} else if !errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("reload existing search acquisition under target lock: %w", err)
+			}
+			if !existingMatches {
+				occupancy, err := scope.Queries.GetEpisodeMappingTargetOccupancy(ctx, db.GetEpisodeMappingTargetOccupancyParams{
+					ExcludedAcquisitionID: repository.UUIDToPG(requestedAcquisitionID),
+					TargetEpisodeID:       expectedMappingTarget.TargetEpisodeID,
+					SeriesID:              media.ID,
+				})
+				if err != nil {
+					return fmt.Errorf("check search acquisition target occupancy: %w", err)
+				}
+				if occupancy.CatalogPresent || occupancy.ManagedImportPresent || occupancy.ProcessingPresent {
+					return NewError(
+						"mapping_target_occupied",
+						"the mapped target episode is already fulfilled or in progress",
+						ErrStateConflict,
+						map[string]any{"targetEpisodeId": repository.UUIDFromPG(expectedMappingTarget.TargetEpisodeID)},
+					)
+				}
+			}
 		}
 
 		created := true

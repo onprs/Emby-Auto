@@ -114,13 +114,29 @@ type AgentCatalogCandidateProposal struct {
 	Decision      string   `json:"decision"`
 }
 
-type AgentEpisodeMappingProposal struct {
-	AcquisitionID uuid.UUID `json:"acquisitionId"`
+type AgentEpisodeMappingAnchor struct {
 	SourceFileID  uuid.UUID `json:"sourceFileId"`
 	TargetSeason  int       `json:"targetSeason"`
 	TargetEpisode int       `json:"targetEpisode"`
-	EvidenceCodes []string  `json:"evidenceCodes"`
-	Decision      string    `json:"decision"`
+}
+
+type AgentEpisodeMappingDisposition struct {
+	SourceFileID  uuid.UUID                    `json:"sourceFileId"`
+	Action        EpisodeMappingExplicitAction `json:"action"`
+	TargetSeason  *int                         `json:"targetSeason,omitempty"`
+	TargetEpisode *int                         `json:"targetEpisode,omitempty"`
+}
+
+type AgentEpisodeMappingProposal struct {
+	AcquisitionID uuid.UUID                        `json:"acquisitionId"`
+	Mode          EpisodeMappingMode               `json:"mode,omitempty"`
+	Anchor        *AgentEpisodeMappingAnchor       `json:"anchor,omitempty"`
+	Assignments   []AgentEpisodeMappingDisposition `json:"assignments,omitempty"`
+	SourceFileID  *uuid.UUID                       `json:"sourceFileId,omitempty"`
+	TargetSeason  *int                             `json:"targetSeason,omitempty"`
+	TargetEpisode *int                             `json:"targetEpisode,omitempty"`
+	EvidenceCodes []string                         `json:"evidenceCodes"`
+	Decision      string                           `json:"decision"`
 }
 
 type SubtitleCandidateSelection struct {

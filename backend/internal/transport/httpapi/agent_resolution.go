@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/onprs/emby-auto/backend/internal/domain"
+	"github.com/onprs/emby-auto/backend/internal/service"
 )
 
 func (server *Server) ListAgentResolutions(ctx context.Context, request ListAgentResolutionsRequestObject) (ListAgentResolutionsResponseObject, error) {
@@ -176,18 +177,74 @@ func agentProposalResponse(capability domain.AgentCapability, raw json.RawMessag
 		})
 		return proposal, err
 	case domain.AgentCapabilityEpisodeMapping:
-		var value domain.AgentEpisodeMappingProposal
-		if err := json.Unmarshal(raw, &value); err != nil {
+		value, err := domain.DecodeAgentEpisodeMappingProposal(raw)
+		if err != nil {
 			return proposal, err
 		}
-		err := proposal.FromAgentEpisodeMappingProposal(AgentEpisodeMappingProposal{
-			Capability: AgentEpisodeMappingProposalCapabilityEpisodeMapping, AcquisitionId: value.AcquisitionID,
-			SourceFileId: value.SourceFileID, TargetSeason: int32(value.TargetSeason), TargetEpisode: int32(value.TargetEpisode),
-			EvidenceCodes: value.EvidenceCodes, Decision: AgentEpisodeMappingProposalDecision(value.Decision),
-		})
+		converted, err := agentEpisodeMappingProposalResponse(value)
+		if err != nil {
+			return proposal, err
+		}
+		err = proposal.FromAgentEpisodeMappingProposal(converted)
 		return proposal, err
 	default:
 		return proposal, errors.New("unsupported Agent proposal capability")
+	}
+}
+
+func agentEpisodeMappingProposalResponse(value domain.AgentEpisodeMappingProposal) (AgentEpisodeMappingProposal, error) {
+	var proposal AgentEpisodeMappingProposal
+	if err := service.ValidateAgentEpisodeMappingProposalShape(value); err != nil {
+		return proposal, err
+	}
+	switch value.Mode {
+	case "":
+		err := proposal.FromAgentEpisodeMappingLegacyAnchorProposal(AgentEpisodeMappingLegacyAnchorProposal{
+			Capability:    AgentEpisodeMappingLegacyAnchorProposalCapabilityEpisodeMapping,
+			AcquisitionId: value.AcquisitionID, SourceFileId: *value.SourceFileID,
+			TargetSeason: int32(*value.TargetSeason), TargetEpisode: int32(*value.TargetEpisode),
+			EvidenceCodes: value.EvidenceCodes, Decision: AgentEpisodeMappingLegacyAnchorProposalDecision(value.Decision),
+		})
+		return proposal, err
+	case domain.EpisodeMappingModeAnchor:
+		err := proposal.FromAgentEpisodeMappingAnchorProposal(AgentEpisodeMappingAnchorProposal{
+			Capability:    AgentEpisodeMappingAnchorProposalCapabilityEpisodeMapping,
+			AcquisitionId: value.AcquisitionID, Mode: AgentEpisodeMappingAnchorProposalModeAnchor,
+			Anchor: EpisodeMappingAnchor{
+				SourceFileId: value.Anchor.SourceFileID, TargetSeason: int32(value.Anchor.TargetSeason), TargetEpisode: int32(value.Anchor.TargetEpisode),
+			},
+			EvidenceCodes: value.EvidenceCodes, Decision: AgentEpisodeMappingAnchorProposalDecision(value.Decision),
+		})
+		return proposal, err
+	case domain.EpisodeMappingModeExplicit:
+		assignments := make([]EpisodeMappingExplicitDisposition, 0, len(value.Assignments))
+		for _, assignment := range value.Assignments {
+			var converted EpisodeMappingExplicitDisposition
+			var err error
+			switch assignment.Action {
+			case domain.EpisodeMappingExplicitMap:
+				err = converted.FromEpisodeMappingExplicitMapDisposition(EpisodeMappingExplicitMapDisposition{
+					SourceFileId: assignment.SourceFileID, Action: EpisodeMappingExplicitMapDispositionAction(domain.EpisodeMappingExplicitMap),
+					TargetSeason: int32(*assignment.TargetSeason), TargetEpisode: int32(*assignment.TargetEpisode),
+				})
+			case domain.EpisodeMappingExplicitExclude:
+				err = converted.FromEpisodeMappingExplicitExcludeDisposition(EpisodeMappingExplicitExcludeDisposition{
+					SourceFileId: assignment.SourceFileID, Action: EpisodeMappingExplicitExcludeDispositionAction(domain.EpisodeMappingExplicitExclude),
+				})
+			}
+			if err != nil {
+				return proposal, err
+			}
+			assignments = append(assignments, converted)
+		}
+		err := proposal.FromAgentEpisodeMappingExplicitProposal(AgentEpisodeMappingExplicitProposal{
+			Capability:    AgentEpisodeMappingExplicitProposalCapabilityEpisodeMapping,
+			AcquisitionId: value.AcquisitionID, Mode: AgentEpisodeMappingExplicitProposalModeExplicit, Assignments: assignments,
+			EvidenceCodes: value.EvidenceCodes, Decision: AgentEpisodeMappingExplicitProposalDecision(value.Decision),
+		})
+		return proposal, err
+	default:
+		return proposal, errors.New("unsupported Agent episode mapping proposal mode")
 	}
 }
 

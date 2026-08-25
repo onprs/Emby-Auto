@@ -754,6 +754,21 @@ func (q *Queries) LockEpisodeTask(ctx context.Context, id pgtype.UUID) (EpisodeT
 	return i, err
 }
 
+const lockMaterializeAcquisitionForDownload = `-- name: LockMaterializeAcquisitionForDownload :one
+SELECT acquisition.id
+FROM downloads AS download
+JOIN acquisitions AS acquisition ON acquisition.id = download.acquisition_id
+WHERE download.id = $1
+FOR UPDATE OF acquisition
+`
+
+func (q *Queries) LockMaterializeAcquisitionForDownload(ctx context.Context, downloadID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockMaterializeAcquisitionForDownload, downloadID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const markDownloadMaterialized = `-- name: MarkDownloadMaterialized :one
 UPDATE downloads
 SET status = 'materialized',

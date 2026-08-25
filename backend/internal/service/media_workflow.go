@@ -38,12 +38,22 @@ func (workflow *MediaWorkflow) MaterializeDownload(
 	operationID uuid.UUID,
 ) error {
 	return workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+		lockedAcquisitionID, err := scope.Queries.LockMaterializeAcquisitionForDownload(ctx, repository.UUIDToPG(downloadID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock acquisition for materialization: %w", err)
+		}
 		locked, err := scope.Queries.LockDownloadForMaterialize(ctx, repository.UUIDToPG(downloadID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrNotFound
 		}
 		if err != nil {
 			return fmt.Errorf("lock download for materialization: %w", err)
+		}
+		if locked.WorkflowAcquisitionID != lockedAcquisitionID {
+			return mediaWorkflowError("download_acquisition_conflict", "the download acquisition changed before materialization", true)
 		}
 		if locked.Status == string(domain.DownloadMaterialized) {
 			return nil

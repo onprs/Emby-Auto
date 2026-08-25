@@ -450,7 +450,7 @@ func (workflow *RSSWorkflow) PersistPoll(
 ) (domain.RSSPollPersistResult, error) {
 	result := domain.RSSPollPersistResult{FetchedCount: len(feed.Entries)}
 	err := workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
-		command, err := scope.Queries.GetRSSPollCommand(ctx, repository.UUIDToPG(subscriptionID))
+		command, err := scope.Queries.LockRSSPollMappingContext(ctx, repository.UUIDToPG(subscriptionID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrNotFound
 		}
@@ -851,6 +851,26 @@ func (workflow *RSSWorkflow) reconcileRSSImportConflictsInTx(
 	if err != nil {
 		return 0, fmt.Errorf("list RSS import conflict reconciliation candidates: %w", err)
 	}
+	requests := make([]rssTargetOccupancyRequest, 0, len(rows))
+	requestByEntryID := make(map[uuid.UUID]int, len(rows))
+	for _, row := range rows {
+		if row.SourceSeason == nil || row.SourceEpisode == nil {
+			continue
+		}
+		entryID := repository.UUIDFromPG(row.EntryID)
+		requestByEntryID[entryID] = len(requests)
+		requests = append(requests, rssTargetOccupancyRequest{
+			subscriptionID:  subscriptionID,
+			sourceSeason:    int(*row.SourceSeason),
+			sourceEpisode:   int(*row.SourceEpisode),
+			excludedEntryID: entryID,
+			realtimeCheckID: realtimeCheckID,
+		})
+	}
+	expectedTargets, err := prepareRSSMappedTargetLocks(ctx, scope, requests)
+	if err != nil {
+		return 0, err
+	}
 	deletions := NewAcquisitionDeletionWorkflow(workflow.queries, workflow.transactor, workflow.operations)
 	reconciled := 0
 	for _, row := range rows {
@@ -858,8 +878,9 @@ func (workflow *RSSWorkflow) reconcileRSSImportConflictsInTx(
 			continue
 		}
 		entryID := repository.UUIDFromPG(row.EntryID)
-		occupancy, err := lockRSSMappedTargetOccupancyWithRealtimeCheck(
-			ctx, scope, subscriptionID, int(*row.SourceSeason), int(*row.SourceEpisode), entryID, realtimeCheckID,
+		requestIndex := requestByEntryID[entryID]
+		occupancy, err := loadRSSMappedTargetOccupancyAfterLock(
+			ctx, scope, requests[requestIndex], expectedTargets[requestIndex],
 		)
 		if err != nil {
 			return 0, err
@@ -1032,15 +1053,25 @@ func (workflow *RSSWorkflow) scheduleRSSDownload(
 		return fmt.Errorf("RSS entry ID is required")
 	}
 	err := workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
-		entry, err := scope.Queries.LockRSSEntryForEnqueue(ctx, db.LockRSSEntryForEnqueueParams{
-			ID:       repository.UUIDToPG(candidate.EntryID),
-			Recovery: recovery,
-		})
+		subscription, err := scope.Queries.LockRSSSubscriptionForEntryReservation(ctx, repository.UUIDToPG(candidate.EntryID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("lock RSS subscription for enqueue: %w", err)
+		}
+		if subscription.Enabled == recovery || subscription.DeletedAt.Valid || subscription.CompletedAt.Valid {
+			return nil
+		}
+		entry, err := scope.Queries.LockRSSEntryForEnqueue(ctx, repository.UUIDToPG(candidate.EntryID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return fmt.Errorf("lock RSS entry for enqueue: %w", err)
+		}
+		if entry.SubscriptionID != subscription.ID {
+			return NewError("state_conflict", "the RSS entry subscription changed before enqueue", ErrStateConflict, nil)
 		}
 		if !entry.Downloadable || (entry.Status != string(domain.RSSDiscovered) && entry.Status != string(domain.RSSEnqueueFailed)) {
 			return nil
@@ -1048,7 +1079,7 @@ func (workflow *RSSWorkflow) scheduleRSSDownload(
 		occupancy, err := lockRSSMappedTargetOccupancyWithRealtimeCheck(
 			ctx,
 			scope,
-			repository.UUIDFromPG(entry.SubscriptionID),
+			repository.UUIDFromPG(subscription.ID),
 			valueInt32(entry.SourceSeason),
 			valueInt32(entry.SourceEpisode),
 			candidate.EntryID,
@@ -1062,7 +1093,7 @@ func (workflow *RSSWorkflow) scheduleRSSDownload(
 				return err
 			}
 			if occupancy.Fulfilled {
-				return workflow.completeRSSSubscriptionAtFulfillmentInTx(ctx, scope, repository.UUIDFromPG(entry.SubscriptionID), uuid.Nil, "enqueue_guard")
+				return workflow.completeRSSSubscriptionAtFulfillmentInTx(ctx, scope, repository.UUIDFromPG(subscription.ID), uuid.Nil, "enqueue_guard")
 			}
 			return nil
 		}
@@ -1084,8 +1115,8 @@ func (workflow *RSSWorkflow) scheduleRSSDownload(
 		}
 		acquisition, err := scope.Queries.UpsertRSSAcquisition(ctx, db.UpsertRSSAcquisitionParams{
 			ID:               repository.UUIDToPG(uuid.New()),
-			SeriesID:         entry.SeriesID,
-			MappingProfileID: entry.MappingProfileID,
+			SeriesID:         subscription.SeriesID,
+			MappingProfileID: subscription.MappingProfileID,
 			RssEntryID:       entry.ID,
 			SourcePayload:    sourcePayload,
 		})

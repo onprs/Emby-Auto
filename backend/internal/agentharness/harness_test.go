@@ -219,6 +219,109 @@ func TestRunnerNormalizesRSSPreacquisitionMappingAnchor(t *testing.T) {
 	}
 }
 
+func TestRunnerNormalizesCompleteExplicitEpisodeMapping(t *testing.T) {
+	acquisitionID := "73500000-0000-4000-8000-000000000001"
+	regularFileID := "73500000-0000-4000-8000-000000000002"
+	specialFileID := "73500000-0000-4000-8000-000000000003"
+	excludedFileID := "73500000-0000-4000-8000-000000000004"
+	client := &harnessClientStub{run: func(_ context.Context, request agentapi.ToolLoopRequest) (agentapi.ToolLoopResult, error) {
+		submitted, err := request.Submit("submit_episode_mapping", json.RawMessage(`{
+			"acquisitionId":"`+acquisitionID+`",
+			"mode":"explicit",
+			"assignments":[
+				{"sourceFileId":"`+regularFileID+`","action":"map","targetSeason":1,"targetEpisode":12},
+				{"sourceFileId":"`+specialFileID+`","action":"map","targetSeason":0,"targetEpisode":4},
+				{"sourceFileId":"`+excludedFileID+`","action":"exclude"}
+			],
+			"evidenceCodes":["complete_file_scope","special_title_alignment"],
+			"decision":"resolved"
+		}`))
+		if err != nil || !submitted {
+			t.Fatalf("submission = %t, err = %v", submitted, err)
+		}
+		return agentapi.ToolLoopResult{}, nil
+	}}
+	result, err := (Runner{}).Run(context.Background(), client, Context{
+		Capability: domain.AgentCapabilityEpisodeMapping,
+		Resource:   json.RawMessage(`{"acquisitionId":"` + acquisitionID + `","fileCount":3,"episodeCount":40}`),
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var proposal domain.AgentEpisodeMappingProposal
+	if err := json.Unmarshal(result.Proposal, &proposal); err != nil || proposal.Mode != domain.EpisodeMappingModeExplicit || len(proposal.Assignments) != 3 {
+		t.Fatalf("proposal = %s, err = %v", result.Proposal, err)
+	}
+	if proposal.Assignments[1].TargetSeason == nil || *proposal.Assignments[1].TargetSeason != 0 || proposal.Assignments[1].TargetEpisode == nil || *proposal.Assignments[1].TargetEpisode != 4 {
+		t.Fatalf("Season 0 assignment = %#v", proposal.Assignments[1])
+	}
+	if proposal.Assignments[2].Action != domain.EpisodeMappingExplicitExclude || proposal.Assignments[2].TargetSeason != nil || proposal.Assignments[2].TargetEpisode != nil {
+		t.Fatalf("excluded assignment = %#v", proposal.Assignments[2])
+	}
+	if !strings.Contains(client.request.SystemPrompt, "including Season 0") || !strings.Contains(client.request.SystemPrompt, "episode-mapping-v2") {
+		t.Fatalf("system prompt = %q", client.request.SystemPrompt)
+	}
+	definition := client.request.Tools[len(client.request.Tools)-1]
+	if definition.Name != "submit_episode_mapping" || definition.Parameters["oneOf"] == nil {
+		t.Fatalf("submission definition = %#v", definition)
+	}
+	proposalBranches, ok := definition.Parameters["oneOf"].([]any)
+	if !ok || len(proposalBranches) != 2 {
+		t.Fatalf("proposal branches = %#v", definition.Parameters["oneOf"])
+	}
+	explicitBranch, ok := proposalBranches[1].(map[string]any)
+	if !ok {
+		t.Fatalf("explicit branch = %#v", proposalBranches[1])
+	}
+	explicitProperties, ok := explicitBranch["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("explicit properties = %#v", explicitBranch["properties"])
+	}
+	assignmentsSchema, ok := explicitProperties["assignments"].(map[string]any)
+	if !ok {
+		t.Fatalf("assignments schema = %#v", explicitProperties["assignments"])
+	}
+	assignmentSchema, ok := assignmentsSchema["items"].(map[string]any)
+	assignmentBranches, branchesOK := assignmentSchema["oneOf"].([]any)
+	if !ok || !branchesOK || len(assignmentBranches) != 2 {
+		t.Fatalf("assignment schema = %#v", assignmentsSchema["items"])
+	}
+}
+
+func TestRunnerRejectsEpisodeMappingSubmissionWithNullExcludedTarget(t *testing.T) {
+	acquisitionID := "73600000-0000-4000-8000-000000000001"
+	fileID := "73600000-0000-4000-8000-000000000002"
+	invalid := json.RawMessage(`{"acquisitionId":"` + acquisitionID + `","mode":"explicit","assignments":[{"sourceFileId":"` + fileID + `","action":"exclude","targetSeason":null}],"evidenceCodes":[],"decision":"resolved"}`)
+	client := &harnessClientStub{run: func(_ context.Context, request agentapi.ToolLoopRequest) (agentapi.ToolLoopResult, error) {
+		submitted, submitErr := request.Submit("submit_episode_mapping", invalid)
+		if submitted || submitErr == nil {
+			t.Fatalf("invalid submission = %t, %v; want rejected", submitted, submitErr)
+		}
+		var validationErr *SubmissionValidationError
+		if !errors.As(submitErr, &validationErr) || validationErr.Code != "agent_submission_schema_invalid" {
+			t.Fatalf("submission error = %#v", submitErr)
+		}
+		return agentapi.ToolLoopResult{Steps: []agentapi.ToolLoopStep{{
+			Sequence: 1, ToolName: "submit_episode_mapping", Arguments: invalid,
+			Result: json.RawMessage(`{"accepted":false,"error":"agent_submission_schema_invalid"}`), ErrorCode: "agent_submission_schema_invalid",
+		}}}, &agentapi.Error{Code: "agent_submission_exhausted", Retryable: true, Cause: submitErr}
+	}}
+	result, err := (Runner{}).Run(context.Background(), client, Context{
+		Capability: domain.AgentCapabilityEpisodeMapping,
+		Resource:   json.RawMessage(`{"acquisitionId":"` + acquisitionID + `","fileCount":1,"episodeCount":1}`),
+	})
+	var apiErr *agentapi.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != "agent_submission_exhausted" || !apiErr.Retryable {
+		t.Fatalf("Run() error = %#v", err)
+	}
+	if len(result.Proposal) != 0 {
+		t.Fatalf("invalid proposal was produced: %s", result.Proposal)
+	}
+	if len(result.Steps) != 1 || result.Steps[0].Status != "rejected" || result.Steps[0].ErrorCode != "agent_submission_schema_invalid" {
+		t.Fatalf("rejected steps = %#v", result.Steps)
+	}
+}
+
 func TestRunnerNormalizesSubtitleVideoMatch(t *testing.T) {
 	taskID := "74000000-0000-4000-8000-000000000001"
 	client := &harnessClientStub{run: func(_ context.Context, request agentapi.ToolLoopRequest) (agentapi.ToolLoopResult, error) {

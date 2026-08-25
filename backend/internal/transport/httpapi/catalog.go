@@ -1,8 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
@@ -57,7 +60,11 @@ func (server *Server) PreviewAcquisitionEpisodeMapping(
 	if request.Body == nil {
 		return PreviewAcquisitionEpisodeMapping400JSONResponse{BadRequestJSONResponse: badRequestError(ctx, "request body is required")}, nil
 	}
-	preview, err := server.catalog.PreviewEpisodeMapping(ctx, mappingPlanInput(uuid.UUID(request.AcquisitionId), request.Body.Anchor, "", uuid.Nil))
+	input, decodeErr := mappingPlanInput(uuid.UUID(request.AcquisitionId), *request.Body, "", uuid.Nil)
+	if decodeErr != nil {
+		return PreviewAcquisitionEpisodeMapping400JSONResponse{BadRequestJSONResponse: badRequestError(ctx, "episode mapping request is invalid")}, nil
+	}
+	preview, err := server.catalog.PreviewEpisodeMapping(ctx, input)
 	var serviceErr *service.Error
 	switch {
 	case errors.As(err, &serviceErr) && errors.Is(err, service.ErrInvalidInput):
@@ -87,12 +94,16 @@ func (server *Server) SaveAcquisitionEpisodeMapping(
 	if request.Body == nil {
 		return SaveAcquisitionEpisodeMapping400JSONResponse{BadRequestJSONResponse: badRequestError(ctx, "request body is required")}, nil
 	}
-	saved, err := server.catalog.SaveEpisodeMapping(ctx, mappingPlanInput(
+	input, decodeErr := mappingPlanInput(
 		uuid.UUID(request.AcquisitionId),
-		request.Body.Anchor,
+		*request.Body,
 		request.Params.IdempotencyKey,
 		authenticated.session.User.ID,
-	))
+	)
+	if decodeErr != nil {
+		return SaveAcquisitionEpisodeMapping400JSONResponse{BadRequestJSONResponse: badRequestError(ctx, "episode mapping request is invalid")}, nil
+	}
+	saved, err := server.catalog.SaveEpisodeMapping(ctx, input)
 	var serviceErr *service.Error
 	switch {
 	case errors.As(err, &serviceErr) && errors.Is(err, service.ErrInvalidInput):
@@ -114,34 +125,200 @@ func (server *Server) SaveAcquisitionEpisodeMapping(
 
 func mappingPlanInput(
 	acquisitionID uuid.UUID,
-	anchor EpisodeMappingAnchor,
+	plan EpisodeMappingPlanRequest,
 	idempotencyKey string,
 	actorUserID uuid.UUID,
-) domain.EpisodeMappingPlanInput {
-	return domain.EpisodeMappingPlanInput{
-		AcquisitionID: acquisitionID,
-		Anchor: domain.EpisodeMappingAnchorInput{
-			SourceFileID: uuid.UUID(anchor.SourceFileId),
-			Target: domain.EpisodeCoordinate{
-				Season:  int(anchor.TargetSeason),
-				Episode: int(anchor.TargetEpisode),
-			},
-		},
+) (domain.EpisodeMappingPlanInput, error) {
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		return domain.EpisodeMappingPlanInput{}, err
+	}
+	var envelope struct {
+		Mode        json.RawMessage `json:"mode"`
+		Anchor      json.RawMessage `json:"anchor"`
+		Assignments json.RawMessage `json:"assignments"`
+	}
+	if err := decodeStrictJSON(encoded, &envelope); err != nil {
+		return domain.EpisodeMappingPlanInput{}, err
+	}
+	mode := domain.EpisodeMappingModeAnchor
+	if len(envelope.Mode) != 0 {
+		if jsonValueMissing(envelope.Mode) {
+			return domain.EpisodeMappingPlanInput{}, errors.New("episode mapping mode must not be null")
+		}
+		var encodedMode string
+		if err := decodeStrictJSON(envelope.Mode, &encodedMode); err != nil {
+			return domain.EpisodeMappingPlanInput{}, err
+		}
+		mode = domain.EpisodeMappingMode(encodedMode)
+	}
+
+	input := domain.EpisodeMappingPlanInput{
+		AcquisitionID:  acquisitionID,
+		Mode:           mode,
 		IdempotencyKey: idempotencyKey,
 		ActorUserID:    actorUserID,
 	}
+	switch mode {
+	case domain.EpisodeMappingModeAnchor:
+		if len(envelope.Anchor) == 0 || jsonValueMissing(envelope.Anchor) || len(envelope.Assignments) != 0 {
+			return domain.EpisodeMappingPlanInput{}, errors.New("anchor mapping requires a non-null anchor and must omit assignments")
+		}
+		anchor, err := decodeEpisodeMappingAnchor(envelope.Anchor)
+		if err != nil {
+			return domain.EpisodeMappingPlanInput{}, err
+		}
+		input.Anchor = anchor
+		return input, nil
+	case domain.EpisodeMappingModeExplicit:
+		if len(envelope.Anchor) != 0 || len(envelope.Assignments) == 0 || jsonValueMissing(envelope.Assignments) {
+			return domain.EpisodeMappingPlanInput{}, errors.New("explicit mapping requires non-null assignments and must omit anchor")
+		}
+		assignments, err := decodeEpisodeMappingExplicitAssignments(envelope.Assignments)
+		if err != nil {
+			return domain.EpisodeMappingPlanInput{}, err
+		}
+		input.Assignments = assignments
+		return input, nil
+	default:
+		return domain.EpisodeMappingPlanInput{}, errors.New("episode mapping mode is invalid")
+	}
+}
+
+func decodeEpisodeMappingAnchor(raw json.RawMessage) (domain.EpisodeMappingAnchorInput, error) {
+	var encoded struct {
+		SourceFileID  json.RawMessage `json:"sourceFileId"`
+		TargetSeason  json.RawMessage `json:"targetSeason"`
+		TargetEpisode json.RawMessage `json:"targetEpisode"`
+	}
+	if err := decodeStrictJSON(raw, &encoded); err != nil {
+		return domain.EpisodeMappingAnchorInput{}, err
+	}
+	if jsonValueMissing(encoded.SourceFileID) || jsonValueMissing(encoded.TargetSeason) || jsonValueMissing(encoded.TargetEpisode) {
+		return domain.EpisodeMappingAnchorInput{}, errors.New("anchor fields must be present and non-null")
+	}
+	var sourceFileID uuid.UUID
+	var targetSeason, targetEpisode int32
+	if err := decodeStrictJSON(encoded.SourceFileID, &sourceFileID); err != nil {
+		return domain.EpisodeMappingAnchorInput{}, err
+	}
+	if err := decodeStrictJSON(encoded.TargetSeason, &targetSeason); err != nil {
+		return domain.EpisodeMappingAnchorInput{}, err
+	}
+	if err := decodeStrictJSON(encoded.TargetEpisode, &targetEpisode); err != nil {
+		return domain.EpisodeMappingAnchorInput{}, err
+	}
+	if targetSeason < 1 || targetEpisode < 1 {
+		return domain.EpisodeMappingAnchorInput{}, errors.New("anchor target must be a positive regular episode coordinate")
+	}
+	return domain.EpisodeMappingAnchorInput{
+		SourceFileID: sourceFileID,
+		Target:       domain.EpisodeCoordinate{Season: int(targetSeason), Episode: int(targetEpisode)},
+	}, nil
+}
+
+func decodeEpisodeMappingExplicitAssignments(raw json.RawMessage) ([]domain.EpisodeMappingExplicitInput, error) {
+	var encoded []json.RawMessage
+	if err := decodeStrictJSON(raw, &encoded); err != nil {
+		return nil, err
+	}
+	if len(encoded) == 0 || len(encoded) > 128 {
+		return nil, errors.New("explicit mapping assignments must contain between 1 and 128 items")
+	}
+	assignments := make([]domain.EpisodeMappingExplicitInput, 0, len(encoded))
+	for _, item := range encoded {
+		assignment, err := decodeEpisodeMappingExplicitAssignment(item)
+		if err != nil {
+			return nil, err
+		}
+		assignments = append(assignments, assignment)
+	}
+	return assignments, nil
+}
+
+func decodeEpisodeMappingExplicitAssignment(raw json.RawMessage) (domain.EpisodeMappingExplicitInput, error) {
+	var encoded struct {
+		SourceFileID  json.RawMessage `json:"sourceFileId"`
+		Action        json.RawMessage `json:"action"`
+		TargetSeason  json.RawMessage `json:"targetSeason"`
+		TargetEpisode json.RawMessage `json:"targetEpisode"`
+	}
+	if err := decodeStrictJSON(raw, &encoded); err != nil {
+		return domain.EpisodeMappingExplicitInput{}, err
+	}
+	if jsonValueMissing(encoded.SourceFileID) || jsonValueMissing(encoded.Action) {
+		return domain.EpisodeMappingExplicitInput{}, errors.New("explicit mapping disposition source and action must be present and non-null")
+	}
+	var sourceFileID uuid.UUID
+	var encodedAction string
+	if err := decodeStrictJSON(encoded.SourceFileID, &sourceFileID); err != nil {
+		return domain.EpisodeMappingExplicitInput{}, err
+	}
+	if err := decodeStrictJSON(encoded.Action, &encodedAction); err != nil {
+		return domain.EpisodeMappingExplicitInput{}, err
+	}
+	action := domain.EpisodeMappingExplicitAction(encodedAction)
+	assignment := domain.EpisodeMappingExplicitInput{SourceFileID: sourceFileID, Action: action}
+	switch action {
+	case domain.EpisodeMappingExplicitMap:
+		if jsonValueMissing(encoded.TargetSeason) || jsonValueMissing(encoded.TargetEpisode) {
+			return domain.EpisodeMappingExplicitInput{}, errors.New("map disposition targets must be present and non-null")
+		}
+		var targetSeason, targetEpisode int32
+		if err := decodeStrictJSON(encoded.TargetSeason, &targetSeason); err != nil {
+			return domain.EpisodeMappingExplicitInput{}, err
+		}
+		if err := decodeStrictJSON(encoded.TargetEpisode, &targetEpisode); err != nil {
+			return domain.EpisodeMappingExplicitInput{}, err
+		}
+		if targetSeason < 0 || targetEpisode < 1 {
+			return domain.EpisodeMappingExplicitInput{}, errors.New("map disposition target is invalid")
+		}
+		assignment.Target = domain.EpisodeCoordinate{Season: int(targetSeason), Episode: int(targetEpisode)}
+		return assignment, nil
+	case domain.EpisodeMappingExplicitExclude:
+		if len(encoded.TargetSeason) != 0 || len(encoded.TargetEpisode) != 0 {
+			return domain.EpisodeMappingExplicitInput{}, errors.New("exclude disposition must omit target fields")
+		}
+		return assignment, nil
+	default:
+		return domain.EpisodeMappingExplicitInput{}, errors.New("explicit mapping disposition action is invalid")
+	}
+}
+
+func decodeStrictJSON(raw []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("JSON contains trailing data")
+	}
+	return nil
+}
+
+func jsonValueMissing(raw json.RawMessage) bool {
+	return len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 func mappingPreviewResponse(preview domain.EpisodeMappingPreview) EpisodeMappingPreview {
+	mode := preview.Mode
+	if mode == "" {
+		mode = domain.EpisodeMappingModeAnchor
+	}
 	response := EpisodeMappingPreview{
 		AcquisitionId: preview.AcquisitionID,
 		SeriesId:      preview.SeriesID,
-		Anchor: EpisodeMappingAnchor{
+		Mode:          EpisodeMappingMode(mode),
+		Rows:          make([]EpisodeMappingRow, 0, len(preview.Rows)),
+	}
+	if mode == domain.EpisodeMappingModeAnchor {
+		response.Anchor = &EpisodeMappingAnchor{
 			SourceFileId:  preview.Anchor.SourceFileID,
 			TargetSeason:  int32(preview.Anchor.Target.Season),
 			TargetEpisode: int32(preview.Anchor.Target.Episode),
-		},
-		Rows: make([]EpisodeMappingRow, 0, len(preview.Rows)),
+		}
 	}
 	for _, row := range preview.Rows {
 		mapped := EpisodeMappingRow{

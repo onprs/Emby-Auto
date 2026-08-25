@@ -24,8 +24,8 @@ var promptVersions = map[domain.AgentCapability]string{
 	domain.AgentCapabilityRSSPreacquisitionMapping: "rss-preacquisition-mapping-v1",
 	domain.AgentCapabilityDownloadFileResolution:   "download-file-resolution-v1",
 	domain.AgentCapabilityCatalogCandidate:         "catalog-candidate-v2",
-	domain.AgentCapabilityEpisodeMapping:           "episode-mapping-v1",
-	domain.AgentCapabilitySubtitleVideoMatch:     "subtitle-video-match-v1",
+	domain.AgentCapabilityEpisodeMapping:           "episode-mapping-v2",
+	domain.AgentCapabilitySubtitleVideoMatch:       "subtitle-video-match-v1",
 }
 
 type Tool struct {
@@ -192,6 +192,8 @@ func systemPrompt(capability domain.AgentCapability, promptVersion string) strin
 		capabilityInstruction = " Inspect the complete scoped batch and bounded history. Classify every scoped entry exactly once with a final select or ignore decision. For current entries that resolve to the same season and episode, select exactly one preferred release and ignore every alternative. Never select a coordinate already imported, enqueueing, or enqueued in history; ignore current conflicts instead. Select intended unique episodic releases with positive coordinates. Never request user review."
 	case domain.AgentCapabilityRSSPreacquisitionMapping:
 		capabilityInstruction = " Inspect the complete scoped RSS source coordinates and synchronized regular TMDb episodes. Select one scoped source anchor and one target anchor that establishes the intended cumulative regular-season offset. Call the backend preview tool and submit only an anchor whose complete preview is mapped. Never guess when the supplied evidence is insufficient and never request a state change outside the typed proposal."
+	case domain.AgentCapabilityEpisodeMapping:
+		capabilityInstruction = " Inspect every scoped selected video and all synchronized TMDb episodes, including Season 0. Use anchor mode only when one regular-season anchor yields the complete intended mapping. Otherwise use explicit mode and classify every scoped file exactly once as map or exclude. Call the backend preview tool and submit only the same complete plan when every row is mapped or explicitly excluded. Never guess targets or exclusions when the supplied evidence is insufficient."
 	case domain.AgentCapabilityCatalogCandidate:
 		capabilityInstruction = " Infer a likely series title from the scoped resource, search the TMDb catalog tool, and submit only candidate IDs returned by the exact query in the proposal. Use review_required when the title or candidates are ambiguous."
 	case domain.AgentCapabilitySubtitleVideoMatch:
@@ -204,6 +206,13 @@ func systemPrompt(capability domain.AgentCapability, promptVersion string) strin
 }
 
 func normalizeSubmission(capability domain.AgentCapability, raw json.RawMessage) (json.RawMessage, error) {
+	if capability == domain.AgentCapabilityEpisodeMapping {
+		proposal, err := domain.DecodeAgentEpisodeMappingProposal(raw)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(proposal)
+	}
 	var target any
 	switch capability {
 	case domain.AgentCapabilityRSSCoordinate:
@@ -216,8 +225,6 @@ func normalizeSubmission(capability domain.AgentCapability, raw json.RawMessage)
 		target = &domain.AgentCatalogCandidateProposal{}
 	case domain.AgentCapabilityRSSPreacquisitionMapping:
 		target = &domain.AgentRSSPreacquisitionMappingProposal{}
-	case domain.AgentCapabilityEpisodeMapping:
-		target = &domain.AgentEpisodeMappingProposal{}
 	case domain.AgentCapabilitySubtitleVideoMatch:
 		target = &domain.AgentSubtitleVideoMatchProposal{}
 	default:
@@ -293,11 +300,34 @@ func submissionDefinition(capability domain.AgentCapability) (string, agentapi.T
 			"evidenceCodes": evidence, "decision": decision,
 		}, "scopeId", "sourceSeason", "sourceEpisode", "targetSeason", "targetEpisode", "evidenceCodes", "decision")
 	case domain.AgentCapabilityEpisodeMapping:
-		name = "submit_episode_mapping_anchor"
-		parameters = object(map[string]any{
-			"acquisitionId": uuidField, "sourceFileId": uuidField, "targetSeason": positive, "targetEpisode": positive,
-			"evidenceCodes": evidence, "decision": decision,
-		}, "acquisitionId", "sourceFileId", "targetSeason", "targetEpisode", "evidenceCodes", "decision")
+		name = "submit_episode_mapping"
+		anchor := object(map[string]any{
+			"sourceFileId": uuidField, "targetSeason": positive, "targetEpisode": positive,
+		}, "sourceFileId", "targetSeason", "targetEpisode")
+		explicitTargetSeason := map[string]any{"type": "integer", "minimum": 0, "maximum": 2147483647}
+		mapAssignment := object(map[string]any{
+			"sourceFileId":  uuidField,
+			"action":        map[string]any{"const": "map"},
+			"targetSeason":  explicitTargetSeason,
+			"targetEpisode": positive,
+		}, "sourceFileId", "action", "targetSeason", "targetEpisode")
+		excludeAssignment := object(map[string]any{
+			"sourceFileId": uuidField,
+			"action":       map[string]any{"const": "exclude"},
+		}, "sourceFileId", "action")
+		assignment := map[string]any{"oneOf": []any{mapAssignment, excludeAssignment}}
+		parameters = map[string]any{"oneOf": []any{
+			object(map[string]any{
+				"acquisitionId": uuidField, "mode": map[string]any{"const": "anchor"}, "anchor": anchor,
+				"evidenceCodes": evidence, "decision": decision,
+			}, "acquisitionId", "mode", "anchor", "evidenceCodes", "decision"),
+			object(map[string]any{
+				"acquisitionId": uuidField, "mode": map[string]any{"const": "explicit"},
+				"assignments":   map[string]any{"type": "array", "minItems": 1, "maxItems": 128, "items": assignment},
+				"evidenceCodes": evidence, "decision": decision,
+			}, "acquisitionId", "mode", "assignments", "evidenceCodes", "decision"),
+		}}
+
 	case domain.AgentCapabilitySubtitleVideoMatch:
 		name = "submit_subtitle_video_match"
 		selected := object(map[string]any{

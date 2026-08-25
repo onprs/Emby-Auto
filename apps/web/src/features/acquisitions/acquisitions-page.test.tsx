@@ -15,6 +15,7 @@ function failedAcquisition(): Acquisition {
     seriesId: '22222222-2222-2222-2222-222222222222',
     seriesTitle: '下载失败示例',
     sourceKind: 'rss',
+    sourceTitle: '原始资源列表标题',
     downloadId: '33333333-3333-3333-3333-333333333333',
     download: {
       id: '33333333-3333-3333-3333-333333333333',
@@ -96,6 +97,7 @@ describe('AcquisitionsPage failure actions', () => {
     });
 
     await screen.findAllByText('下载失败示例');
+    expect(screen.getAllByText('原始资源列表标题')).toHaveLength(2);
     expect(screen.queryByLabelText('排序')).not.toBeInTheDocument();
     await userEvent.click(screen.getAllByRole('button', { name: '整体进度，点击按正序排列' })[0]);
     await waitFor(() => {
