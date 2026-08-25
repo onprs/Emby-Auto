@@ -49,7 +49,7 @@
   },
   "devDependencies": {
     "@hey-api/openapi-ts": "0.99.0",
-    "@redocly/cli": "2.39.0",
+    "@redocly/cli": "2.47.0",
     "typescript": "6.0.3"
   },
   "engines": {
