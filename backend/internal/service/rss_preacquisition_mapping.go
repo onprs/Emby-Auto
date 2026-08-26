@@ -46,7 +46,7 @@ func (workflow *RSSWorkflow) TryDeterministicRSSPreacquisitionMapping(ctx contex
 			resolved = true
 			return nil
 		}
-		if mappingContext.ScopeStatus != "pending" || !mappingContext.Enabled || !mappingContext.AutoEpisodeMapping ||
+		if mappingContext.ScopeStatus != "pending" || !mappingContext.Enabled ||
 			mappingContext.DeletedAt.Valid || mappingContext.CompletedAt.Valid ||
 			mappingContext.SubscriptionVersion != mappingContext.CurrentSubscriptionVersion {
 			return NewError("agent_resolution_stale", "the RSS pre-acquisition mapping scope is no longer current", ErrStateConflict, nil)
@@ -184,7 +184,7 @@ func (workflow *RSSWorkflow) PreviewRSSPreacquisitionMapping(
 	if err != nil {
 		return nil, fmt.Errorf("load RSS pre-acquisition mapping context: %w", err)
 	}
-	if mappingContext.Status != "pending" || !mappingContext.SubscriptionEnabled || !mappingContext.AutoEpisodeMapping ||
+	if mappingContext.Status != "pending" || !mappingContext.SubscriptionEnabled ||
 		mappingContext.MappingProfileID.Valid || mappingContext.SubscriptionDeletedAt.Valid || mappingContext.SubscriptionCompletedAt.Valid {
 		return nil, NewError("agent_resolution_not_allowed", "the RSS mapping scope is no longer active", ErrStateConflict, nil)
 	}
@@ -286,7 +286,7 @@ func (workflow *RSSWorkflow) ApplyAgentRSSPreacquisitionMapping(
 		if err != nil {
 			return fmt.Errorf("lock RSS pre-acquisition mapping scope: %w", err)
 		}
-		if mappingContext.ScopeStatus != "pending" || !mappingContext.Enabled || !mappingContext.AutoEpisodeMapping ||
+		if mappingContext.ScopeStatus != "pending" || !mappingContext.Enabled ||
 			mappingContext.MappingProfileID.Valid || mappingContext.DeletedAt.Valid || mappingContext.CompletedAt.Valid ||
 			mappingContext.SubscriptionVersion != mappingContext.CurrentSubscriptionVersion {
 			return NewError("agent_resolution_stale", "the RSS pre-acquisition mapping scope changed before apply", ErrStateConflict, nil)

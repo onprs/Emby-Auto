@@ -24,6 +24,23 @@ func TestRSSSubscriptionProgressReconciliationScheduleAndUniquenessAreMinutely(t
 	}
 }
 
+func TestRSSPollReconciliationScheduleAndUniquenessAreMinutely(t *testing.T) {
+	args, options := rssPollReconciliationJob()
+	if args.Kind() != appqueue.KindRSSPollReconcile {
+		t.Fatalf("job kind = %q, want %q", args.Kind(), appqueue.KindRSSPollReconcile)
+	}
+	if options.MaxAttempts != 3 || options.Queue != appqueue.QueueGeneral {
+		t.Fatalf("insert options = %#v, want three attempts on the general queue", options)
+	}
+	if !options.UniqueOpts.ByArgs || !options.UniqueOpts.ByQueue ||
+		options.UniqueOpts.ByPeriod != rssPollReconciliationPeriod {
+		t.Fatalf("unique options = %#v, want args/queue uniqueness in one-minute periods", options.UniqueOpts)
+	}
+	if newRSSPollReconciliationPeriodicJob() == nil {
+		t.Fatal("newRSSPollReconciliationPeriodicJob() = nil")
+	}
+}
+
 func TestEventsRetentionCleanupScheduleAndUniquenessAreHourly(t *testing.T) {
 	startedAt := time.Date(2026, 8, 16, 12, 15, 0, 0, time.UTC)
 	if next := eventsRetentionCleanupSchedule().Next(startedAt); !next.Equal(startedAt.Add(time.Hour)) {

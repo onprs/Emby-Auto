@@ -70,7 +70,7 @@ func (handler *RSSPollHandler) WithRealtimeTargetVerifier(verifier service.RSSRe
 	return handler
 }
 
-func (handler *RSSPollHandler) Handle(ctx context.Context, operation domain.Operation) error {
+func (handler *RSSPollHandler) Handle(ctx context.Context, operation domain.Operation) (handleErr error) {
 	if operation.ResourceType != "rss_subscription" || operation.ResourceID == uuid.Nil {
 		return permanentFailure("invalid_rss_operation", "rss.poll requires an RSS subscription resource", nil)
 	}
@@ -99,6 +99,11 @@ func (handler *RSSPollHandler) Handle(ctx context.Context, operation domain.Oper
 	if payload.Continuous && payload.SubscriptionVersion > 0 && payload.SubscriptionVersion != command.Version {
 		return nil
 	}
+	if payload.Continuous {
+		defer func() {
+			handleErr = handler.snoozeRetryableContinuousFailure(ctx, operation.ID, command, handleErr)
+		}()
+	}
 
 	feeds := handler.feeds
 	if handler.newClient != nil {
@@ -117,34 +122,32 @@ func (handler *RSSPollHandler) Handle(ctx context.Context, operation domain.Oper
 		}
 		return retryableFailure("rss_fetch_failed", "the RSS feed could not be fetched", err)
 	}
-	if command.AutoEpisodeMapping {
-		preparation, err := handler.store.PreparePollMapping(ctx, operation.ID, command.SubscriptionID, feed)
+	preparation, err := handler.store.PreparePollMapping(ctx, operation.ID, command.SubscriptionID, feed)
+	if err != nil {
+		return retryableFailure("rss_mapping_storage_unavailable", "the RSS mapping could not be prepared", err)
+	}
+	if preparation.Applied {
+		return nil
+	}
+	if !preparation.Ready {
+		mappingApplied, err := handler.schedulePreacquisitionMapping(ctx, preparation)
+		if mappingApplied {
+			return nil
+		}
 		if err != nil {
-			return retryableFailure("rss_mapping_storage_unavailable", "the RSS mapping could not be prepared", err)
-		}
-		if preparation.Applied {
-			return nil
-		}
-		if !preparation.Ready {
-			mappingApplied, err := handler.schedulePreacquisitionMapping(ctx, preparation)
-			if mappingApplied {
-				return nil
+			failureCode := "rss_preacquisition_mapping_pending"
+			var serviceErr *service.Error
+			if errors.As(err, &serviceErr) && serviceErr.Code != "" {
+				failureCode = serviceErr.Code
 			}
-			if err != nil {
-				failureCode := "rss_preacquisition_mapping_pending"
-				var serviceErr *service.Error
-				if errors.As(err, &serviceErr) && serviceErr.Code != "" {
-					failureCode = serviceErr.Code
-				}
-				if auditErr := handler.store.RecordPollFailure(ctx, operation.ID, command.SubscriptionID, failureCode, err.Error()); auditErr != nil {
-					return retryableFailure("rss_storage_unavailable", "RSS mapping wait could not be recorded", auditErr)
-				}
+			if auditErr := handler.store.RecordPollFailure(ctx, operation.ID, command.SubscriptionID, failureCode, err.Error()); auditErr != nil {
+				return retryableFailure("rss_storage_unavailable", "RSS mapping wait could not be recorded", auditErr)
 			}
-			if payload.Continuous {
-				return river.JobSnooze(command.PollInterval)
-			}
-			return nil
 		}
+		if payload.Continuous {
+			return river.JobSnooze(command.PollInterval)
+		}
+		return nil
 	}
 	adjudicateReleases := false
 	if handler.agentResolutions != nil {
@@ -249,6 +252,28 @@ func (handler *RSSPollHandler) Handle(ctx context.Context, operation domain.Oper
 		return river.JobSnooze(command.PollInterval)
 	}
 	return nil
+}
+
+func (handler *RSSPollHandler) snoozeRetryableContinuousFailure(
+	ctx context.Context,
+	operationID uuid.UUID,
+	command domain.RSSPollCommand,
+	handleErr error,
+) error {
+	var failure *Failure
+	if handleErr == nil || !errors.As(handleErr, &failure) || !failure.Retryable {
+		return handleErr
+	}
+	if auditErr := handler.store.RecordPollFailure(
+		ctx,
+		operationID,
+		command.SubscriptionID,
+		failure.Code,
+		failure.Message,
+	); auditErr != nil {
+		return retryableFailure("rss_storage_unavailable", "RSS poll failure could not be recorded", auditErr)
+	}
+	return river.JobSnooze(command.PollInterval)
 }
 
 type rssRealtimeEntryStore interface {

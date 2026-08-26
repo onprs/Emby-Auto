@@ -189,6 +189,87 @@ func TestRSSRealtimeChecksRemainIndependentForSameTargetIntegration(t *testing.T
 	}
 }
 
+func TestComplementaryRSSSourcesReserveFirstTargetAndFillMissingEpisodeIntegration(t *testing.T) {
+	fixture := newRSSTargetFixture(t)
+	firstPoll, err := fixture.workflow.PersistPoll(
+		fixture.ctx,
+		fixture.pollOperationID,
+		fixture.subscriptionID,
+		domain.RSSFeed{Title: "Primary Source", Entries: []domain.RSSFeedEntry{targetFeedEntry(0, "primary")}},
+		domain.RSSPollPersistOptions{},
+	)
+	if err != nil {
+		t.Fatalf("PersistPoll(primary) error = %v", err)
+	}
+	if len(firstPoll.Candidates) != 1 {
+		t.Fatalf("primary candidates = %#v, want one", firstPoll.Candidates)
+	}
+	if err := fixture.workflow.ScheduleRSSDownload(fixture.ctx, firstPoll.Candidates[0]); err != nil {
+		t.Fatalf("ScheduleRSSDownload(primary) error = %v", err)
+	}
+
+	secondarySubscriptionID, secondaryPollOperationID := uuid.New(), uuid.New()
+	if _, err := fixture.pool.Exec(fixture.ctx, `
+INSERT INTO rss_subscriptions (
+    id, series_id, mapping_profile_id, name, feed_url, enabled,
+    poll_interval_seconds, source_season
+) VALUES ($1, $2, $3, 'Secondary Source', 'https://example.test/secondary.xml', true, 900, 1)`,
+		secondarySubscriptionID, fixture.seriesID, fixture.profileID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(fixture.ctx, `
+INSERT INTO operations (id, kind, resource_type, resource_id, idempotency_key, status, max_attempts, timeout_seconds)
+VALUES ($1, 'rss.poll', 'rss_subscription', $2, $3, 'running', 3, 60)`,
+		secondaryPollOperationID, secondarySubscriptionID, "rss-secondary-poll-"+secondaryPollOperationID.String()); err != nil {
+		t.Fatal(err)
+	}
+	secondaryPoll, err := fixture.workflow.PersistPoll(
+		fixture.ctx,
+		secondaryPollOperationID,
+		secondarySubscriptionID,
+		domain.RSSFeed{Title: "Secondary Source", Entries: []domain.RSSFeedEntry{
+			targetFeedEntry(0, "secondary"),
+			targetFeedEntry(1, "secondary"),
+		}},
+		domain.RSSPollPersistOptions{},
+	)
+	if err != nil {
+		t.Fatalf("PersistPoll(secondary) error = %v", err)
+	}
+	if len(secondaryPoll.Candidates) != 1 {
+		t.Fatalf("secondary candidates = %#v, want only missing episode", secondaryPoll.Candidates)
+	}
+	var candidateEpisode int
+	if err := fixture.pool.QueryRow(fixture.ctx, `SELECT source_episode FROM rss_entries WHERE id = $1`, secondaryPoll.Candidates[0].EntryID).Scan(&candidateEpisode); err != nil {
+		t.Fatal(err)
+	}
+	if candidateEpisode != 2 {
+		t.Fatalf("secondary candidate episode = %d, want 2", candidateEpisode)
+	}
+	var occupiedDownloadable bool
+	var occupiedReasons []string
+	if err := fixture.pool.QueryRow(fixture.ctx, `
+SELECT downloadable, rejection_reasons
+FROM rss_entries
+WHERE subscription_id = $1 AND source_episode = 1`, secondarySubscriptionID).Scan(&occupiedDownloadable, &occupiedReasons); err != nil {
+		t.Fatal(err)
+	}
+	if occupiedDownloadable || len(occupiedReasons) != 1 || occupiedReasons[0] != rssTargetProcessingReason {
+		t.Fatalf("secondary duplicate target = downloadable %t reasons %v", occupiedDownloadable, occupiedReasons)
+	}
+	var firstTargetAcquisitions int
+	if err := fixture.pool.QueryRow(fixture.ctx, `
+SELECT count(*)
+FROM acquisitions AS acquisition
+JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
+WHERE entry.source_episode = 1 AND acquisition.series_id = $1`, fixture.seriesID).Scan(&firstTargetAcquisitions); err != nil {
+		t.Fatal(err)
+	}
+	if firstTargetAcquisitions != 1 {
+		t.Fatalf("first target acquisitions = %d, want one winner", firstTargetAcquisitions)
+	}
+}
+
 func TestRSSPollRealtimeCheckOverridesStaleCatalogSnapshotIntegration(t *testing.T) {
 	fixture := newRSSTargetFixture(t)
 	fixture.addCatalogEpisode(t, 0)
@@ -287,31 +368,38 @@ func TestRSSPollFiltersMappedTargetAlreadyInEmbyCatalogIntegration(t *testing.T)
 	}
 	var downloadable, fulfilled bool
 	var reason, source string
-	var acquisitions int
+	var acquisitions, fulfillmentRecords int
 	if err := fixture.pool.QueryRow(fixture.ctx, `
 SELECT entry.downloadable, entry.imported_at IS NOT NULL, entry.rejection_reasons[1], entry.fulfillment_source,
-       (SELECT count(*) FROM acquisitions AS acquisition WHERE acquisition.rss_entry_id = entry.id)
+       (SELECT count(*) FROM acquisitions AS acquisition WHERE acquisition.rss_entry_id = entry.id),
+       (SELECT count(*) FROM rss_target_fulfillments AS fulfillment WHERE fulfillment.rss_entry_id = entry.id)
 FROM rss_entries AS entry
-WHERE entry.subscription_id = $1`, fixture.subscriptionID).Scan(&downloadable, &fulfilled, &reason, &source, &acquisitions); err != nil {
+WHERE entry.subscription_id = $1`, fixture.subscriptionID).Scan(&downloadable, &fulfilled, &reason, &source, &acquisitions, &fulfillmentRecords); err != nil {
 		t.Fatal(err)
 	}
-	if downloadable || !fulfilled || reason != rssTargetInLibraryReason || source != rssFulfillmentEmbyCatalog || acquisitions != 0 {
-		t.Fatalf("entry = downloadable %t fulfilled %t reason %q source %q acquisitions %d", downloadable, fulfilled, reason, source, acquisitions)
+	if downloadable || !fulfilled || reason != rssTargetInLibraryReason || source != rssFulfillmentEmbyCatalog || acquisitions != 0 || fulfillmentRecords != 1 {
+		t.Fatalf("entry = downloadable %t fulfilled %t reason %q source %q acquisitions %d fulfillment records %d", downloadable, fulfilled, reason, source, acquisitions, fulfillmentRecords)
 	}
 
 	if _, err := fixture.pool.Exec(fixture.ctx, `UPDATE emby_library_items SET present = false WHERE provider_ids @> jsonb_build_object('Tmdb', $1::bigint::text)`, fixture.targetTMDbIDs[0]); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.workflow.PersistPoll(fixture.ctx, fixture.pollOperationID, fixture.subscriptionID, domain.RSSFeed{Title: "Target Occupancy"}, domain.RSSPollPersistOptions{}); err != nil {
+	absentCheckID := fixture.addRealtimeCheck(t, 0, false, time.Now())
+	if _, err := fixture.workflow.PersistPoll(fixture.ctx, fixture.pollOperationID, fixture.subscriptionID, domain.RSSFeed{Title: "Target Occupancy"}, domain.RSSPollPersistOptions{RealtimeCheckID: absentCheckID}); err != nil {
 		t.Fatalf("PersistPoll() after catalog removal error = %v", err)
 	}
 	var stillFulfilled bool
 	var fulfillmentSource *string
-	if err := fixture.pool.QueryRow(fixture.ctx, `SELECT imported_at IS NOT NULL, fulfillment_source FROM rss_entries WHERE subscription_id = $1`, fixture.subscriptionID).Scan(&stillFulfilled, &fulfillmentSource); err != nil {
+	if err := fixture.pool.QueryRow(fixture.ctx, `
+SELECT imported_at IS NOT NULL,
+       fulfillment_source,
+       (SELECT count(*) FROM rss_target_fulfillments AS fulfillment WHERE fulfillment.rss_entry_id = entry.id)
+FROM rss_entries AS entry
+WHERE subscription_id = $1`, fixture.subscriptionID).Scan(&stillFulfilled, &fulfillmentSource, &fulfillmentRecords); err != nil {
 		t.Fatal(err)
 	}
-	if stillFulfilled || fulfillmentSource != nil {
-		t.Fatalf("stale catalog fulfillment remained: fulfilled %t source %v", stillFulfilled, fulfillmentSource)
+	if stillFulfilled || fulfillmentSource != nil || fulfillmentRecords != 0 {
+		t.Fatalf("stale catalog fulfillment remained: fulfilled %t source %v records %d", stillFulfilled, fulfillmentSource, fulfillmentRecords)
 	}
 }
 

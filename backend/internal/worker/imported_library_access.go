@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -30,8 +31,10 @@ func NewImportedLibraryAccess(ownerUID int) (ImportedLibraryAccess, error) {
 }
 
 func (access osImportedLibraryAccess) Apply(path string) error {
-	if err := os.Chown(path, access.ownerUID, -1); err != nil {
-		return fmt.Errorf("set imported library owner: %w", err)
+	if runtime.GOOS != "windows" {
+		if err := os.Chown(path, access.ownerUID, -1); err != nil {
+			return fmt.Errorf("set imported library owner: %w", err)
+		}
 	}
 	if err := os.Chmod(path, importedLibraryPathMode); err != nil {
 		return fmt.Errorf("set imported library permissions: %w", err)

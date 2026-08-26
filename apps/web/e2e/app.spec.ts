@@ -12,6 +12,7 @@ async function captureScreenshot(page: Page, testInfo: TestInfo, name: string) {
     await mkdir(process.env.EMBY_AUTO_SCREENSHOT_DIR, { recursive: true });
     await writeFile(path.join(process.env.EMBY_AUTO_SCREENSHOT_DIR, `${name}-${testInfo.project.name}.png`), screenshot);
   }
+  return screenshot;
 }
 
 test.describe('application shell', () => {
@@ -464,6 +465,124 @@ test.describe('application shell', () => {
     await expect(page.getByText('已选择 1 项')).toBeVisible();
     await expect(page.getByRole('button', { name: '批量删除' })).toBeVisible();
     expect(pageErrors).toEqual([]);
+  });
+
+  test('keeps live search results and grouped RSS sources responsive', async ({ page }, testInfo) => {
+    await stubAuthenticatedApp(page);
+    const now = '2026-08-26T08:00:00Z';
+    const searchId = '26000000-0000-4000-8000-000000000001';
+    const candidateTitle = '[Fixture] Extremely Long Release Title WithoutLayoutBreaks S01E01 1080p WEB-DL H.264 AAC CHS-CHT VeryLongUnbrokenIdentifier0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const previousSearch = {
+      id: '26000000-0000-4000-8000-000000000002', query: '上一轮稳定搜索', status: 'completed',
+      createdAt: now, updatedAt: now,
+    };
+    const completedSearch = {
+      id: searchId,
+      query: '当前长标题搜索',
+      status: 'completed',
+      candidates: [{
+        id: '26000000-0000-4000-8000-000000000003', searchRunId: searchId, provider: 'fixture',
+        title: candidateTitle, downloadable: true, downloadUri: 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567',
+        publishedAt: now, sizeBytes: 2147483648, createdAt: now,
+      }],
+      createdAt: now,
+      updatedAt: now,
+    };
+    await page.route('**/api/v1/searches**', async (route) => {
+      const request = route.request();
+      const pathname = new URL(request.url()).pathname;
+      if (request.method() === 'POST') {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return route.fulfill({
+          status: 202,
+          contentType: 'application/json',
+          body: JSON.stringify({ search: completedSearch, operationId: '26000000-0000-4000-8000-000000000004', status: 'queued' }),
+        });
+      }
+      if (pathname === `/api/v1/searches/${searchId}`) {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(completedSearch) });
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [previousSearch] }) });
+    });
+    await page.route('**/api/v1/acquisitions**', (route) => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ items: [] }),
+    }));
+
+    await page.goto('/searches');
+    const recent = page.getByRole('region', { name: '最近搜索' });
+    await expect(recent.getByText('上一轮稳定搜索')).toBeVisible();
+    await page.locator('#search-query').fill('当前长标题搜索');
+    await page.getByRole('button', { name: '搜索', exact: true }).click();
+    await expect(page.getByRole('button', { name: '搜索中' })).toBeVisible();
+    await expect(recent.getByText('上一轮稳定搜索')).toBeVisible();
+    await expect(recent.getByText('当前长标题搜索')).toHaveCount(0);
+    const candidate = page.getByText(candidateTitle, { exact: true });
+    await expect(candidate).toBeVisible();
+    const selectButton = page.getByRole('button', { name: '选择', exact: true });
+    const [candidateFontSize, selectBox] = await Promise.all([
+      candidate.evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize)),
+      selectButton.boundingBox(),
+    ]);
+    expect(candidateFontSize).toBeLessThanOrEqual(14);
+    expect(selectBox).not.toBeNull();
+    expect(selectBox!.width).toBeLessThanOrEqual(96);
+    expect(selectBox!.height).toBeLessThanOrEqual(40);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.waitForTimeout(400);
+    const searchScreenshot = await captureScreenshot(page, testInfo, 'search-live-results');
+    expect(searchScreenshot.byteLength).toBeGreaterThan(15_000);
+
+    const sharedSeriesId = '26000000-0000-4000-8000-000000000010';
+    const subscription = (id: string, name: string, feedUrl: string, progress: number) => ({
+      id,
+      seriesId: sharedSeriesId,
+      tmdbSeriesId: 260,
+      seriesTitle: '多源互补番剧标题与一个用于验证响应式折行的较长后缀',
+      name,
+      feedUrl,
+      includeKeywords: [],
+      excludeKeywords: [],
+      enabled: true,
+      autoEpisodeMapping: false,
+      autoReview: false,
+      cleanupSourceOnCompletion: false,
+      sourceSeason: 1,
+      pollIntervalSeconds: 900,
+      overallProgress: progress,
+      taskCount: 4,
+      completedTaskCount: Math.round(progress * 4),
+      attentionTaskCount: 0,
+      retryableTaskCount: 0,
+      nextPollAt: '2026-08-26T08:15:00Z',
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const rssItems = [
+      subscription('26000000-0000-4000-8000-000000000011', '字幕组主源：稳定更新与超长订阅名称用于布局检查', 'https://primary.example.test/very/long/path/feed.xml', 0.75),
+      subscription('26000000-0000-4000-8000-000000000012', '字幕组补集源', 'https://complement.example.test/rss.xml', 0.5),
+      {
+        ...subscription('26000000-0000-4000-8000-000000000013', '另一部作品的独立源', 'https://other.example.test/rss.xml', 0.25),
+        seriesId: '26000000-0000-4000-8000-000000000014',
+        tmdbSeriesId: 261,
+        seriesTitle: '另一部作品',
+      },
+    ];
+    await page.route('**/api/v1/rss/subscriptions**', (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: rssItems }),
+    }));
+
+    await page.goto('/rss');
+    await expect(page.getByRole('heading', { name: 'RSS 订阅' })).toBeVisible();
+    const sourceNames = page.getByText('字幕组主源：稳定更新与超长订阅名称用于布局检查');
+    await expect(testInfo.project.name === 'mobile' ? sourceNames.first() : sourceNames.last()).toBeVisible();
+    expect(await page.getByText('本页 2 个订阅源').evaluateAll((elements) =>
+      elements.some((element) => element.getClientRects().length > 0))).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    const rssScreenshot = await captureScreenshot(page, testInfo, 'rss-multi-source-groups');
+    expect(rssScreenshot.byteLength).toBeGreaterThan(15_000);
   });
 
   test('navigates to the settings route', async ({ page }, testInfo) => {

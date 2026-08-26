@@ -17,7 +17,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 )
 
-func TestEnsureDeterministicPollMappingCreatesProfileBeforeAcquisitionIntegration(t *testing.T) {
+func TestEnsureDeterministicPollMappingCreatesProfileWhenAutomaticFileMappingIsDisabledIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, pool := testutil.NewMigratedPostgres(t)
@@ -44,7 +44,7 @@ VALUES ($1, $3, 1, 'Episode 1'), ($2, $3, 2, 'Episode 2')`, episodeIDs[0], episo
 	if _, err := pool.Exec(ctx, `
 INSERT INTO rss_subscriptions (
   id, series_id, name, feed_url, enabled, auto_episode_mapping, poll_interval_seconds, source_season
-) VALUES ($1, $2, 'First Subscription', 'https://example.test/feed.xml', true, true, 900, 1)`, subscriptionID, seriesID); err != nil {
+) VALUES ($1, $2, 'First Subscription', 'https://example.test/feed.xml', true, false, 900, 1)`, subscriptionID, seriesID); err != nil {
 		t.Fatal(err)
 	}
 	staleScopeID := uuid.New()
@@ -175,6 +175,110 @@ WHERE idempotency_key = $1 AND status = 'queued'`,
 	}
 	if recoveryOperations != 1 {
 		t.Fatalf("recovery operation count = %d, want 1", recoveryOperations)
+	}
+}
+
+func TestReconcileDuePollsRecoversEveryTerminalGenerationIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, pool := testutil.NewMigratedPostgres(t)
+	transactor := database.NewTransactor(pool)
+	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := NewRSSWorkflow(db.New(pool), transactor, NewOperationScheduler(transactor, riverClient))
+
+	seriesID, subscriptionID := uuid.New(), uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, tmdb_series_id, title) VALUES ($1, $2, 'Due Poll Recovery')`, seriesID, time.Now().UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO rss_subscriptions (
+  id, series_id, name, feed_url, enabled, poll_interval_seconds, source_season, next_poll_at
+) VALUES ($1, $2, 'Due Poll Recovery', 'https://example.test/due.xml', true, 900, 1, now() - interval '1 hour')`, subscriptionID, seriesID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO operations (
+  id, kind, resource_type, resource_id, idempotency_key, status, max_attempts, attempt_count,
+  timeout_seconds, error_code, error_message, finished_at
+) VALUES ($1, 'rss.poll', 'rss_subscription', $2, $3, 'failed', 5, 5, 30,
+          'rss_storage_unavailable', 'storage unavailable', now())`,
+		uuid.New(), subscriptionID, "rss.poll:"+subscriptionID.String()+":v1:continuous"); err != nil {
+		t.Fatal(err)
+	}
+
+	type reconciliationResult struct {
+		count int
+		err   error
+	}
+	start := make(chan struct{})
+	results := make(chan reconciliationResult, 2)
+	for range 2 {
+		go func() {
+			<-start
+			count, reconcileErr := workflow.ReconcileDuePolls(ctx)
+			results <- reconciliationResult{count: count, err: reconcileErr}
+		}()
+	}
+	close(start)
+	count := 0
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("concurrent ReconcileDuePolls() error = %v", result.err)
+		}
+		count += result.count
+	}
+	if count != 1 {
+		t.Fatalf("concurrent ReconcileDuePolls() created %d operations, want 1", count)
+	}
+	var firstKey string
+	var nextPollInFuture bool
+	if err := pool.QueryRow(ctx, `
+SELECT idempotency_key
+FROM operations
+WHERE resource_id = $1 AND status = 'queued'
+ORDER BY created_at DESC LIMIT 1`, subscriptionID).Scan(&firstKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT next_poll_at > now() FROM rss_subscriptions WHERE id = $1`, subscriptionID).Scan(&nextPollInFuture); err != nil {
+		t.Fatal(err)
+	}
+	wantFirstKey := "rss.poll:recovery:due-v1:" + subscriptionID.String() + ":v1:g1"
+	if firstKey != wantFirstKey || !nextPollInFuture {
+		t.Fatalf("first recovery = key %q future %t, want %q/true", firstKey, nextPollInFuture, wantFirstKey)
+	}
+	count, err = workflow.ReconcileDuePolls(ctx)
+	if err != nil || count != 0 {
+		t.Fatalf("active ReconcileDuePolls() = %d, %v, want 0/nil", count, err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+UPDATE operations
+SET status = 'failed', error_code = 'rss_storage_unavailable', error_message = 'still unavailable', finished_at = now()
+WHERE idempotency_key = $1`, firstKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE rss_subscriptions SET next_poll_at = now() - interval '1 minute' WHERE id = $1`, subscriptionID); err != nil {
+		t.Fatal(err)
+	}
+	count, err = workflow.ReconcileDuePolls(ctx)
+	if err != nil || count != 1 {
+		t.Fatalf("next-generation ReconcileDuePolls() = %d, %v, want 1/nil", count, err)
+	}
+	var secondKey string
+	if err := pool.QueryRow(ctx, `
+SELECT idempotency_key
+FROM operations
+WHERE resource_id = $1 AND status = 'queued'
+ORDER BY created_at DESC LIMIT 1`, subscriptionID).Scan(&secondKey); err != nil {
+		t.Fatal(err)
+	}
+	wantSecondKey := "rss.poll:recovery:due-v1:" + subscriptionID.String() + ":v1:g2"
+	if secondKey != wantSecondKey {
+		t.Fatalf("second recovery key = %q, want %q", secondKey, wantSecondKey)
 	}
 }
 
@@ -341,7 +445,7 @@ INSERT INTO rss_subscriptions (
 	}
 }
 
-func TestAgentPreacquisitionMappingCreatesProfileBeforeLiveVerificationOrAcquisitionIntegration(t *testing.T) {
+func TestAgentPreacquisitionMappingCreatesProfileWhenAutomaticFileMappingIsDisabledIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, pool := testutil.NewMigratedPostgres(t)
@@ -373,7 +477,7 @@ VALUES
 	if _, err := pool.Exec(ctx, `
 INSERT INTO rss_subscriptions (
   id, series_id, name, feed_url, enabled, auto_episode_mapping, poll_interval_seconds, source_season
-) VALUES ($1, $2, 'Offset Subscription', 'https://example.test/offset.xml', true, true, 900, 1)`, subscriptionID, seriesID); err != nil {
+) VALUES ($1, $2, 'Offset Subscription', 'https://example.test/offset.xml', true, false, 900, 1)`, subscriptionID, seriesID); err != nil {
 		t.Fatal(err)
 	}
 	pollOperationID := uuid.New()

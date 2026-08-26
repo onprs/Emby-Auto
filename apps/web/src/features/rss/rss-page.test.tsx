@@ -4,7 +4,7 @@ import { http, HttpResponse } from 'msw';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { RssSubscription } from '@/api/generated/types.gen';
-import { RssPage } from '@/features/rss/rss-page';
+import { groupRSSSubscriptions, RssPage } from '@/features/rss/rss-page';
 import { server } from '@/test/msw-server';
 import { renderWithProviders } from '@/test/render';
 
@@ -35,7 +35,79 @@ function subscription(id: string, name: string): RssSubscription {
   };
 }
 
+describe('RssPage series grouping', () => {
+  it('groups complementary feeds by authoritative series ID', () => {
+    const primary = subscription('20000000-0000-0000-0000-000000000021', '主订阅源');
+    const secondary = subscription('20000000-0000-0000-0000-000000000022', '补充订阅源');
+    const other = {
+      ...subscription('20000000-0000-0000-0000-000000000023', '其它订阅源'),
+      seriesId: '10000000-0000-0000-0000-000000000002',
+      tmdbSeriesId: 84,
+      seriesTitle: '另一部作品',
+    };
+
+    const groups = groupRSSSubscriptions([primary, other, secondary]);
+
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toMatchObject({
+      seriesId: primary.seriesId,
+      seriesTitle: primary.seriesTitle,
+      tmdbSeriesId: primary.tmdbSeriesId,
+    });
+    expect(groups[0].sources.map((item) => item.id)).toEqual([primary.id, secondary.id]);
+    expect(groups[1].sources.map((item) => item.id)).toEqual([other.id]);
+  });
+
+  it('renders one series header with multiple source rows', async () => {
+    const items = [
+      subscription('20000000-0000-0000-0000-000000000024', '主订阅源'),
+      subscription('20000000-0000-0000-0000-000000000025', '补充订阅源'),
+    ];
+    const requests: string[] = [];
+    server.use(http.get('*/api/v1/rss/subscriptions', ({ request }) => {
+      requests.push(request.url);
+      return HttpResponse.json({ items });
+    }));
+
+    renderWithProviders(<RssPage />, { routePath: '/rss', initialEntry: '/rss' });
+
+    await screen.findAllByText('主订阅源');
+    expect(screen.getAllByText('本页 2 个订阅源')).toHaveLength(2);
+    expect(screen.getAllByText('排序测试作品')).toHaveLength(2);
+    expect(screen.getAllByText('example.test').length).toBeGreaterThanOrEqual(2);
+    expect(new URL(requests[0]).searchParams.get('sortBy')).toBe('series_title');
+  });
+});
+
 describe('RssPage list controls', () => {
+  it('keeps server row ordering when sorting by a source field', async () => {
+    const first = subscription('20000000-0000-0000-0000-000000000031', 'A 源');
+    const middle = {
+      ...subscription('20000000-0000-0000-0000-000000000032', 'M 源'),
+      seriesId: '10000000-0000-0000-0000-000000000002',
+      tmdbSeriesId: 84,
+      seriesTitle: '另一部作品',
+    };
+    const last = subscription('20000000-0000-0000-0000-000000000033', 'Z 源');
+    const requests: string[] = [];
+    server.use(http.get('*/api/v1/rss/subscriptions', ({ request }) => {
+      requests.push(request.url);
+      return HttpResponse.json({ items: [first, middle, last] });
+    }));
+
+    const { container } = renderWithProviders(<RssPage />, { routePath: '/rss', initialEntry: '/rss' });
+    await screen.findAllByText('A 源');
+    await userEvent.click(screen.getByRole('button', { name: '订阅，点击按正序排列' }));
+    await waitFor(() => expect(new URL(requests.at(-1)!).searchParams.get('sortBy')).toBe('name'));
+
+    const rows = [...container.querySelectorAll('table tbody tr')].map((row) => row.textContent);
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toContain('A 源');
+    expect(rows[1]).toContain('M 源');
+    expect(rows[2]).toContain('Z 源');
+    expect(screen.queryByText(/本页 \d+ 个订阅源/)).not.toBeInTheDocument();
+  });
+
   it('sorts through subscription column headers without a separate sort select', async () => {
     const item = subscription('20000000-0000-0000-0000-000000000001', '每周更新');
     const requests: string[] = [];

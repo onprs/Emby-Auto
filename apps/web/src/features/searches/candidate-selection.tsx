@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { ChevronUp, CircleOff, ListPlus } from 'lucide-react';
 import { useState } from 'react';
 import { useLocation, useNavigate } from '@tanstack/react-router';
 
@@ -22,93 +23,79 @@ export function CandidateTable({ candidates, emptyLabel, onAcquired }: { candida
     return <EmptyState title="暂无候选" description={emptyLabel} />;
   }
   return (
-    <>
-      <div className="space-y-2 sm:hidden">
+    <div className="overflow-hidden rounded-md border border-zinc-200 bg-white shadow-card">
+      <ul className="divide-y divide-zinc-100">
         {candidates.map((candidate) => (
-          <CandidateCard key={candidate.id} candidate={candidate} onAcquired={onAcquired} />
+          <CandidateItem key={candidate.id} candidate={candidate} onAcquired={onAcquired} />
         ))}
-      </div>
-      <div className="hidden sm:block">
-        <table className="min-w-full divide-y divide-zinc-200 border border-zinc-200 bg-white">
-          <thead className="bg-zinc-50">
-            <tr>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-600">标题</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-600">大小</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-600">发布时间</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-600">操作</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-zinc-200">
-            {candidates.map((candidate) => (
-              <CandidateRow key={candidate.id} candidate={candidate} onAcquired={onAcquired} />
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
+      </ul>
+    </div>
   );
 }
 
-function CandidateRow({ candidate, onAcquired }: { candidate: ReleaseCandidate; onAcquired?: () => void }) {
+function CandidateItem({ candidate, onAcquired }: { candidate: ReleaseCandidate; onAcquired?: () => void }) {
   const [open, setOpen] = useState(false);
   return (
-    <>
-      <tr>
-        <td className="max-w-md px-4 py-3 align-top">
-          <span className="block whitespace-normal break-words font-medium text-zinc-900">{candidate.title}</span>
-        </td>
-        <td className="px-4 py-3 align-top text-sm text-zinc-600">{formatBytes(candidate.sizeBytes)}</td>
-        <td className="px-4 py-3 align-top text-sm text-zinc-600">{formatDateTime(candidate.publishedAt)}</td>
-        <td className="px-4 py-3 align-top">
-          <CandidateActions candidate={candidate} open={open} setOpen={setOpen} onAcquired={onAcquired} />
-        </td>
-      </tr>
-      {open ? (
-        <tr>
-          <td colSpan={4} className="bg-zinc-50 px-4 py-4">
-            <CandidateForm candidate={candidate} onAcquired={onAcquired} />
-          </td>
-        </tr>
+    <li>
+      <div className="grid min-h-16 items-center gap-x-4 gap-y-2 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_7rem_10.5rem_5rem] sm:px-4">
+        <p className="min-w-0 whitespace-normal break-words text-sm font-medium leading-5 text-zinc-900">{candidate.title}</p>
+        <p className="text-xs text-zinc-500 sm:text-sm">{formatBytes(candidate.sizeBytes)}</p>
+        <p className="text-xs text-zinc-500 sm:text-sm">{formatDateTime(candidate.publishedAt)}</p>
+        <div className="flex justify-start sm:justify-end">
+          <CandidateActions candidate={candidate} open={open} setOpen={setOpen} />
+        </div>
+      </div>
+      {!candidate.downloadable ? (
+        <p className="border-t border-zinc-100 bg-zinc-50 px-3 py-2 text-xs text-zinc-600 sm:px-4">
+          {candidate.unavailableReason === 'download_uri_missing' ? '不可下载：缺少下载地址' : '不可下载'}
+        </p>
       ) : null}
-    </>
-  );
-}
-
-function CandidateCard({ candidate, onAcquired }: { candidate: ReleaseCandidate; onAcquired?: () => void }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <article className="rounded-xl border border-zinc-200 bg-white p-4 shadow-card">
-      <h3 className="whitespace-normal break-words text-sm font-medium text-zinc-900">{candidate.title}</h3>
-      <p className="mt-2 text-xs text-zinc-600">大小 {formatBytes(candidate.sizeBytes)} · 发布时间 {formatDateTime(candidate.publishedAt)}</p>
-      <div className="mt-3">
-        <CandidateActions candidate={candidate} open={open} setOpen={setOpen} onAcquired={onAcquired} />
-      </div>
       {open ? (
-        <div className="mt-3 bg-zinc-50 p-3">
+        <div className="animate-fade-in border-t border-zinc-200 bg-zinc-50 px-3 py-4 sm:px-4">
           <CandidateForm candidate={candidate} onAcquired={onAcquired} />
         </div>
       ) : null}
-    </article>
+    </li>
   );
 }
 
-function CandidateActions({ candidate, open, setOpen, onAcquired }: { candidate: ReleaseCandidate; open: boolean; setOpen: (v: boolean | ((prev: boolean) => boolean)) => void; onAcquired?: () => void }) {
+function CandidateActions({ candidate, open, setOpen }: { candidate: ReleaseCandidate; open: boolean; setOpen: (v: boolean | ((prev: boolean) => boolean)) => void }) {
   if (!candidate.downloadable) {
-    const reason = candidate.unavailableReason === 'download_uri_missing' ? '不可下载：缺少下载地址' : '不可下载';
+    const reason = candidate.unavailableReason === 'download_uri_missing' ? '缺少下载地址' : '不可下载';
     return (
-      <div className="space-y-1">
-        <Button type="button" variant="outline" disabled>
-          选择
-        </Button>
-        <p className="text-xs text-zinc-600">{reason}</p>
-      </div>
+      <Button type="button" variant="ghost" size="sm" className="h-10 sm:h-8" disabled title={reason}>
+        <CircleOff aria-hidden="true" />
+        选择
+      </Button>
     );
   }
   return (
-    <Button type="button" variant="outline" onClick={() => setOpen((value) => !value)}>
+    <Button type="button" variant="ghost" size="sm" className="h-10 sm:h-8" onClick={() => setOpen((value) => !value)}>
+      {open ? <ChevronUp aria-hidden="true" /> : <ListPlus aria-hidden="true" />}
       {open ? '收起' : '选择'}
     </Button>
   );
+}
+
+function isLikelySeasonPack(title: string): boolean {
+  const normalized = title.toLowerCase();
+  return /([0-9]{1,3}\s*[-~+]\s*[0-9]{1,3}|全[集話话]|合[集輯]|complete|season pack|\bpack\b)/i.test(normalized);
+}
+
+function guessSeasonFromTitle(title: string): string {
+  const match = title.match(/(?:season|s)\s*([0-9]{1,2})|第\s*([0-9]{1,2}|[一二三四五六七八九十]+)\s*季/i);
+  if (match) {
+    if (match[1]) return String(parseInt(match[1], 10) || 1);
+  }
+  return '1';
+}
+
+function guessEpisodeFromTitle(title: string): string {
+  const match = title.match(/(?:ep|episode|e|第)\s*([0-9]{1,3})(?:话|話|集)?/i);
+  if (match && match[1]) {
+    return String(parseInt(match[1], 10) || 1);
+  }
+  return '1';
 }
 
 function CandidateForm({ candidate, onAcquired }: { candidate: ReleaseCandidate; onAcquired?: () => void }) {
@@ -120,9 +107,9 @@ function CandidateForm({ candidate, onAcquired }: { candidate: ReleaseCandidate;
   const [mediaType, setMediaType] = useState<'episode' | 'movie'>('episode');
   const [series, setSeries] = useState<SeriesSelection | null>(null);
   const [movie, setMovie] = useState<MovieSelection | null>(null);
-  const [sourceSeason, setSourceSeason] = useState('1');
-  const [sourceEpisode, setSourceEpisode] = useState('1');
-  const [singleEpisode, setSingleEpisode] = useState(true);
+  const [sourceSeason, setSourceSeason] = useState(() => guessSeasonFromTitle(candidate.title));
+  const [sourceEpisode, setSourceEpisode] = useState(() => guessEpisodeFromTitle(candidate.title));
+  const [singleEpisode, setSingleEpisode] = useState(() => !isLikelySeasonPack(candidate.title));
   const holder = useState(() => new IdempotencyKeyHolder())[0];
 
   const select = useMutation({

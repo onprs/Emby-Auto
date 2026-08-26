@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
@@ -120,6 +120,80 @@ afterEach(() => {
 });
 
 describe('SearchesPage live and recent', () => {
+  it('shows the pending search in current results and freezes recent history until terminal', async () => {
+    const previous = searchRunFixture({
+      id: SEARCH_ID_2,
+      query: '上一轮搜索',
+      status: 'completed',
+      createdAt: '2026-08-22T07:00:00Z',
+      updatedAt: '2026-08-22T07:01:00Z',
+    });
+    let recentCalls = 0;
+    let releasePost: () => void = () => {};
+    const pendingPost = new Promise<void>((resolve) => {
+      releasePost = resolve;
+    });
+    server.use(
+      http.get('*/api/v1/searches', () => {
+        recentCalls += 1;
+        const current = searchRunFixture({
+          id: SEARCH_ID,
+          query: '本次搜索',
+          status: 'running',
+          createdAt: '2026-08-22T08:00:00Z',
+          updatedAt: '2026-08-22T08:00:01Z',
+        });
+        return HttpResponse.json({ items: recentCalls === 1 ? [previous] : [current, previous], nextCursor: null });
+      }),
+      http.post('*/api/v1/searches', async () => {
+        await pendingPost;
+        return HttpResponse.json({
+          search: {
+            id: SEARCH_ID,
+            query: '本次搜索',
+            status: 'queued',
+            candidates: [],
+            createdAt: '2026-08-22T08:00:00Z',
+            updatedAt: '2026-08-22T08:00:00Z',
+          },
+          operationId: 'op-1',
+          status: 'queued',
+        }, { status: 202 });
+      }),
+      http.get(`*/api/v1/searches/${SEARCH_ID}`, () => HttpResponse.json({
+        id: SEARCH_ID,
+        query: '本次搜索',
+        status: 'running',
+        candidates: [],
+        createdAt: '2026-08-22T08:00:00Z',
+        updatedAt: '2026-08-22T08:00:01Z',
+      })),
+      http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [] })),
+    );
+
+    const { queryClient, router } = renderWithProviders(<SearchesPage />, { routePath: '/searches', initialEntry: '/searches' });
+    const recentRegion = await screen.findByRole('region', { name: '最近搜索' });
+    await within(recentRegion).findByText('上一轮搜索');
+
+    await userEvent.type(screen.getByLabelText('关键词'), '本次搜索');
+    await userEvent.click(screen.getByRole('button', { name: '搜索' }));
+
+    const currentRegion = screen.getByRole('region', { name: '当前搜索结果' });
+    expect(within(currentRegion).getByText('正在创建搜索')).toBeInTheDocument();
+    expect(within(currentRegion).getByText(/关键词：本次搜索 · 正在创建/)).toBeInTheDocument();
+    expect(within(recentRegion).getByText('上一轮搜索')).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe('/searches');
+
+    await act(async () => releasePost());
+    await within(currentRegion).findByText(/排队中|搜索中/);
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['searches'] });
+    });
+    await waitFor(() => expect(recentCalls).toBeGreaterThan(1));
+    expect(within(recentRegion).queryByText('本次搜索')).not.toBeInTheDocument();
+    expect(within(recentRegion).getByText('上一轮搜索')).toBeInTheDocument();
+  });
+
   it('keeps path at /searches and polls queued -> running -> completed with fake timers, stops after completed', async () => {
     vi.useFakeTimers();
     let pollCount = 0;
@@ -198,21 +272,21 @@ describe('SearchesPage live and recent', () => {
     expect(router.state.location.pathname).toBe('/searches');
 
     await advancePoll(3000);
-    expect(screen.getByText(/搜索中/)).toBeInTheDocument();
+    expect(screen.getAllByText(/搜索中/)[0]).toBeInTheDocument();
     expect(pollCount).toBe(2);
 
     await advancePoll(3000);
     expect(screen.getAllByText(candidateTitle)[0]).toBeInTheDocument();
     expect(router.state.location.pathname).toBe('/searches');
     expect(pollCount).toBe(3);
-    expect(recentCalls).toBe(initialRecent + 2);
+    expect(recentCalls).toBe(initialRecent + 1);
     const titleEl = screen.getAllByText(candidateTitle)[0];
     expect(titleEl.className).toMatch(/break-words/);
     expect(titleEl.className).toMatch(/whitespace-normal/);
 
     await advancePoll(3000);
     expect(pollCount).toBe(3);
-    expect(recentCalls).toBe(initialRecent + 2);
+    expect(recentCalls).toBe(initialRecent + 1);
     vi.useRealTimers();
   });
 
@@ -338,7 +412,7 @@ describe('SearchesPage live and recent', () => {
     await advancePoll(3000);
     expect(screen.getAllByText('Completed Candidate')[0]).toBeInTheDocument();
     expect(pollCount).toBe(2);
-    expect(recentCalls).toBe(initialCalls + 2);
+    expect(recentCalls).toBe(initialCalls + 1);
     const afterCompleted = recentCalls;
     await advancePoll(3000);
     expect(recentCalls).toBe(afterCompleted);
@@ -392,8 +466,8 @@ describe('SearchesPage live and recent', () => {
     await flushMicrotasks();
     expect(screen.getByText(/排队中/)).toBeInTheDocument();
     expect(pollCount).toBe(1);
-    // onSuccess 已刷新一次
-    expect(recentCalls).toBe(initialCalls + 1);
+    // 创建成功只更新当前结果，最近搜索在终态前保持原快照。
+    expect(recentCalls).toBe(initialCalls);
 
     await advancePoll(3000);
     expect(screen.getByText('搜索失败')).toBeInTheDocument();
@@ -401,8 +475,8 @@ describe('SearchesPage live and recent', () => {
     const matches = screen.getAllByText(friendly);
     expect(matches).toHaveLength(1);
     expect(screen.queryByText(failedCandidateTitle)).not.toBeInTheDocument();
-    // 进入 failed 终态再刷新一次
-    expect(recentCalls).toBe(initialCalls + 2);
+    // 进入 failed 终态后刷新一次。
+    expect(recentCalls).toBe(initialCalls + 1);
     expect(pollCount).toBe(2);
     const afterFailed = recentCalls;
     await advancePoll(3000);
@@ -479,10 +553,17 @@ describe('SearchAcquisitionsSection', () => {
 });
 
 describe('Candidate selection', () => {
-  it('candidate form has no nested card structure and is operable', async () => {
+  it('candidate form has no nested card structure and uses compact stable result rows', async () => {
     const candidates = [candidateFixture({ id: CANDIDATE_NEW, title: '候选标题' })];
     renderWithProviders(<CandidateTable candidates={candidates} emptyLabel="暂无候选" />, { routePath: '/searches', initialEntry: '/searches' });
-    await userEvent.click((await screen.findAllByRole('button', { name: '选择' }))[0]);
+    const title = await screen.findByText('候选标题');
+    const choose = screen.getByRole('button', { name: '选择' });
+    expect(title.className).toMatch(/text-sm/);
+    expect(title.className).toMatch(/leading-5/);
+    expect(title.parentElement?.className).toMatch(/sm:grid-cols-\[minmax\(0,1fr\)_7rem_10\.5rem_5rem\]/);
+    expect(choose.className).toMatch(/h-10/);
+    expect(choose.className).toMatch(/sm:h-8/);
+    await userEvent.click(choose);
     const form = await screen.findByText('创建获取');
     expect(form).toBeInTheDocument();
     const cardElements = document.querySelectorAll('.shadow-card');

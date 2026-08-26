@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { Search as SearchIcon } from 'lucide-react';
+import { LoaderCircle, Search as SearchIcon } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
+import type { SearchRunSummary } from '@/api/generated/types.gen';
 import { ApiFailure } from '@/api/app-client';
 import { fetchRecentSearches, fetchSearch, startSearch } from '@/features/searches/api';
 import { CandidateTable } from '@/features/searches/candidate-selection';
@@ -22,6 +23,8 @@ export function SearchesPage() {
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [liveSearchId, setLiveSearchId] = useState<string | null>(null);
+  const [submittedQuery, setSubmittedQuery] = useState('');
+  const [recentSnapshot, setRecentSnapshot] = useState<SearchRunSummary[] | null>(null);
   const holder = useState(() => new IdempotencyKeyHolder())[0];
 
   const recent = useQuery({
@@ -52,6 +55,7 @@ export function SearchesPage() {
     const isTerminal = status === 'completed' || status === 'failed' || status === 'cancelled';
     if (isTerminal && live.data && live.data.id !== terminalSyncRef.current) {
       terminalSyncRef.current = live.data.id;
+      setRecentSnapshot(null);
       void queryClient.invalidateQueries({ queryKey: ['searches'] });
     }
   }, [live.data?.id, live.data?.status, queryClient]);
@@ -61,16 +65,14 @@ export function SearchesPage() {
     onSuccess: (result) => {
       holder.reset();
       setError(null);
-      const searchId = result.search?.id;
-      if (searchId) {
-        setLiveSearchId(searchId);
-      }
-      void queryClient.invalidateQueries({ queryKey: ['searches'] });
+      queryClient.setQueryData(['search', result.search.id], result.search);
+      setLiveSearchId(result.search.id);
     },
     onError: (cause) => {
       if (cause instanceof ApiFailure && cause.isConflict) {
         holder.reset();
       }
+      setRecentSnapshot(null);
       setError(cause instanceof Error ? cause.message : '创建搜索失败');
     },
   });
@@ -78,6 +80,10 @@ export function SearchesPage() {
   const handleAcquired = () => {
     void queryClient.invalidateQueries({ queryKey: ['acquisitions'] });
   };
+
+  const isSearchRunning = start.isPending || (Boolean(liveSearchId) && (live.isPending || live.data?.status === 'queued' || live.data?.status === 'running'));
+  const visibleRecentItems = recentSnapshot ?? recent.data?.items ?? [];
+  const currentQuery = start.isPending ? start.variables : live.data?.query ?? submittedQuery;
 
   return (
     <PageBody>
@@ -88,8 +94,12 @@ export function SearchesPage() {
         onSubmit={(event) => {
           event.preventDefault();
           setError(null);
-          if (query.trim()) {
-            start.mutate(query.trim());
+          const keywords = query.trim();
+          if (keywords) {
+            setSubmittedQuery(keywords);
+            setRecentSnapshot(recent.data?.items ?? []);
+            setLiveSearchId(null);
+            start.mutate(keywords);
           }
         }}
       >
@@ -102,49 +112,57 @@ export function SearchesPage() {
             placeholder="输入番剧名称或发布关键词"
           />
         </div>
-        <Button type="submit" disabled={start.isPending || !query.trim()}>
-          <SearchIcon />
-          搜索
+        <Button type="submit" disabled={isSearchRunning || !query.trim()}>
+          {isSearchRunning ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <SearchIcon aria-hidden="true" />}
+          {isSearchRunning ? '搜索中' : '搜索'}
         </Button>
       </form>
       {error ? <ErrorState className="mb-4" message={error} /> : null}
 
-      <section className="mb-8 space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-zinc-950">当前搜索结果</h2>
-          {live.data ? <span className="text-xs text-zinc-500">关键词：{live.data.query} · {friendlyStatus(live.data.status)}</span> : null}
+      <section className="mb-8 space-y-3" aria-labelledby="current-search-results-heading">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 id="current-search-results-heading" className="text-base font-semibold text-zinc-950">当前搜索结果</h2>
+          {currentQuery ? (
+            <span className="text-xs text-zinc-500">
+              关键词：{currentQuery} · {start.isPending ? '正在创建' : live.data ? friendlyStatus(live.data.status) : '准备中'}
+            </span>
+          ) : null}
         </div>
-        {!liveSearchId ? (
-          <EmptyState title="尚未搜索" description="输入关键词并执行搜索，结果将在此实时显示" />
-        ) : live.isPending ? (
-          <LoadingState label="正在搜索" />
-        ) : live.error ? (
-          <ErrorState message={live.error.message} onRetry={() => live.refetch()} />
-        ) : live.data.candidates.length === 0 ? (
-          <EmptyState
-            title={live.data.status === 'completed' ? '未找到匹配的发布候选' : live.data.status === 'failed' ? '搜索失败' : '搜索仍在进行中'}
-            description={live.data.errorMessage ? friendlyError(live.data.errorCode, live.data.errorMessage) : '等待搜索返回具体资源'}
-          />
-        ) : (
-          <>
-            <CandidateTable candidates={live.data.candidates} emptyLabel="未找到匹配的发布候选" onAcquired={handleAcquired} />
-            {live.data.errorMessage ? <ErrorState message={friendlyError(live.data.errorCode, live.data.errorMessage)} /> : null}
-          </>
-        )}
+        <div key={liveSearchId ?? (start.isPending ? `pending-${start.variables}` : 'empty')} className="animate-fade-in">
+          {start.isPending ? (
+            <LoadingState className="border-y border-zinc-200 bg-white" label="正在创建搜索" />
+          ) : !liveSearchId ? (
+            <EmptyState title="尚未搜索" description="输入关键词并执行搜索，结果将在此实时显示" />
+          ) : live.isPending || (live.data && live.data.candidates.length === 0 && (live.data.status === 'queued' || live.data.status === 'running')) ? (
+            <LoadingState label={`正在搜索“${currentQuery}”，请稍候...`} />
+          ) : live.error ? (
+            <ErrorState message={live.error.message} onRetry={() => live.refetch()} />
+          ) : !live.data || live.data.candidates.length === 0 ? (
+            <EmptyState
+              title={live.data?.status === 'completed' ? '未找到匹配的发布候选' : live.data?.status === 'failed' ? '搜索失败' : '搜索仍在进行中'}
+              description={live.data?.errorMessage ? friendlyError(live.data.errorCode, live.data.errorMessage) : '未检索到可获取的候选资源'}
+            />
+          ) : (
+            <>
+              <CandidateTable candidates={live.data.candidates} emptyLabel="未找到匹配的发布候选" onAcquired={handleAcquired} />
+              {live.data.errorMessage ? <ErrorState message={friendlyError(live.data.errorCode, live.data.errorMessage)} /> : null}
+            </>
+          )}
+        </div>
       </section>
 
-      <section className="mb-8 space-y-3">
-        <h2 className="text-base font-semibold text-zinc-950">最近搜索</h2>
-        {recent.isPending ? (
+      <section className="mb-8 space-y-3" aria-labelledby="recent-searches-heading">
+        <h2 id="recent-searches-heading" className="text-base font-semibold text-zinc-950">最近搜索</h2>
+        {recentSnapshot === null && recent.isPending ? (
           <LoadingState label="正在读取最近搜索" />
-        ) : recent.error ? (
+        ) : recentSnapshot === null && recent.error ? (
           <ErrorState message={recent.error.message} onRetry={() => recent.refetch()} />
-        ) : recent.data.items.length === 0 ? (
+        ) : visibleRecentItems.length === 0 ? (
           <EmptyState title="暂无最近结果" description="提交搜索后，最近 5 条搜索记录将在此显示" />
         ) : (
-          <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-card">
+          <div className="overflow-hidden rounded-md border border-zinc-200 bg-white shadow-card">
             <ul className="divide-y divide-zinc-100">
-              {recent.data.items.slice(0, 5).map((run) => (
+              {visibleRecentItems.slice(0, 5).map((run) => (
                 <li key={run.id} className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0 flex-1">
                     <Link

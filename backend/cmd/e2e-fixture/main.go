@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,22 @@ const (
 	fixtureHash    = "0123456789abcdef0123456789abcdef01234567"
 	fixtureRSSHash = "1123456789abcdef0123456789abcdef01234567"
 )
+
+var fixtureEpisodePattern = regexp.MustCompile(`(?i)S([0-9]{2})E([0-9]{2})`)
+
+type fixtureSeriesSpec struct {
+	ID           int
+	Title        string
+	EpisodeID    int
+	EpisodeTitle string
+}
+
+var fixtureSeriesSpecs = []fixtureSeriesSpec{
+	{ID: 100, Title: "Fixture Show", EpisodeID: 10001, EpisodeTitle: "Pilot"},
+	{ID: 102, Title: "Fixture RSS Chromium", EpisodeID: 10201, EpisodeTitle: "Chromium Premiere"},
+	{ID: 103, Title: "Fixture RSS Firefox", EpisodeID: 10301, EpisodeTitle: "Firefox Premiere"},
+	{ID: 104, Title: "Fixture RSS Edge", EpisodeID: 10401, EpisodeTitle: "Edge Premiere"},
+}
 
 var fixtureASS = []byte(`[Script Info]
 ScriptType: v4.00+
@@ -34,10 +51,13 @@ Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,Fixture subtitle
 `)
 
 type torrentState struct {
-	Hash     string
-	SavePath string
-	Category string
-	Resumed  bool
+	Hash        string
+	SavePath    string
+	Category    string
+	SeriesTitle string
+	Season      int
+	Episode     int
+	Resumed     bool
 }
 
 type fixtureServer struct {
@@ -158,12 +178,45 @@ func (fixture *fixtureServer) rss(writer http.ResponseWriter, request *http.Requ
 	if run := request.URL.Query().Get("run"); run != "" {
 		hash = fixtureHashFor("rss:" + run)
 	}
-	_, _ = fmt.Fprintf(writer, `<?xml version="1.0"?><rss version="2.0"><channel><title>Fixture Show</title><item><guid>fixture-s01e01-%s</guid><title>[Fixture] Fixture Show - S01E01</title><link>http://fixture.invalid/episode/1</link><enclosure type="application/x-bittorrent" url="magnet:?xt=urn:btih:%s" length="4096"/></item></channel></rss>`, hash[:12], hash)
+	seriesID := 100
+	if parsed, err := strconv.Atoi(request.URL.Query().Get("series")); err == nil {
+		seriesID = parsed
+	}
+	series := fixtureSeriesByID(seriesID)
+	coordinate := "S01E01"
+	displayName := url.QueryEscape(series.Title + " - " + coordinate)
+	_, _ = fmt.Fprintf(writer, `<?xml version="1.0"?><rss version="2.0"><channel><title>%s</title><item><guid>fixture-%d-%s-%s</guid><title>[Fixture] %s - %s</title><link>http://fixture.invalid/series/%d/episode/1</link><enclosure type="application/x-bittorrent" url="magnet:?xt=urn:btih:%s&amp;dn=%s" length="4096"/></item></channel></rss>`, series.Title, series.ID, strings.ToLower(coordinate), hash[:12], series.Title, coordinate, series.ID, hash, displayName)
 }
 
 func fixtureHashFor(seed string) string {
 	value := sha1.Sum([]byte(seed))
 	return fmt.Sprintf("%x", value)
+}
+
+func fixtureSeriesByID(id int) fixtureSeriesSpec {
+	if series, ok := findFixtureSeriesByID(id); ok {
+		return series
+	}
+	return fixtureSeriesSpecs[0]
+}
+
+func findFixtureSeriesByID(id int) (fixtureSeriesSpec, bool) {
+	for _, series := range fixtureSeriesSpecs {
+		if series.ID == id {
+			return series, true
+		}
+	}
+	return fixtureSeriesSpec{}, false
+}
+
+func fixtureSeriesForSearch(query string) fixtureSeriesSpec {
+	normalized := strings.ToLower(strings.TrimSpace(query))
+	for _, series := range fixtureSeriesSpecs[1:] {
+		if strings.Contains(normalized, strings.ToLower(series.Title)) {
+			return series
+		}
+	}
+	return fixtureSeriesSpecs[0]
 }
 
 func (fixture *fixtureServer) qbittorrent(writer http.ResponseWriter, request *http.Request) {
@@ -181,6 +234,8 @@ func (fixture *fixtureServer) qbittorrent(writer http.ResponseWriter, request *h
 	case "/api/v2/torrents/files":
 		fixture.writeTorrentFiles(writer)
 	case "/api/v2/torrents/filePrio":
+		writer.WriteHeader(http.StatusOK)
+	case "/api/v2/torrents/setDownloadLimit", "/api/v2/torrents/setUploadLimit":
 		writer.WriteHeader(http.StatusOK)
 	case "/api/v2/torrents/categories":
 		fixture.mu.Lock()
@@ -249,6 +304,7 @@ func (fixture *fixtureServer) addTorrent(writer http.ResponseWriter, request *ht
 	savePath := request.FormValue("savepath")
 	category := request.FormValue("category")
 	hash, err := magnetHash(request.FormValue("urls"))
+	seriesTitle, season, episode := torrentIdentityFromMagnet(request.FormValue("urls"))
 	if savePath == "" || category == "" || err != nil {
 		http.Error(writer, "savepath, category, and a valid magnet URL are required", http.StatusBadRequest)
 		return
@@ -257,8 +313,11 @@ func (fixture *fixtureServer) addTorrent(writer http.ResponseWriter, request *ht
 		http.Error(writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	video := filepath.Join(savePath, "Fixture Show - S01E01.mkv")
-	subtitle := filepath.Join(savePath, "Fixture Show - S01E01.zh-Hans.ass")
+	coordinate := fmt.Sprintf("S%02dE%02d", season, episode)
+	videoName := fmt.Sprintf("%s - %s.mkv", seriesTitle, coordinate)
+	subtitleName := fmt.Sprintf("%s - %s.zh-Hans.ass", seriesTitle, coordinate)
+	video := filepath.Join(savePath, videoName)
+	subtitle := filepath.Join(savePath, subtitleName)
 	if err := os.WriteFile(video, []byte("fixture-video-payload\n"), 0o644); err != nil {
 		http.Error(writer, err.Error(), http.StatusInternalServerError)
 		return
@@ -268,7 +327,9 @@ func (fixture *fixtureServer) addTorrent(writer http.ResponseWriter, request *ht
 		return
 	}
 	fixture.mu.Lock()
-	fixture.torrent = &torrentState{Hash: hash, SavePath: savePath, Category: category}
+	fixture.torrent = &torrentState{
+		Hash: hash, SavePath: savePath, Category: category, SeriesTitle: seriesTitle, Season: season, Episode: episode,
+	}
 	fixture.mu.Unlock()
 	writer.WriteHeader(http.StatusOK)
 }
@@ -289,9 +350,11 @@ func (fixture *fixtureServer) writeTorrents(writer http.ResponseWriter) {
 		state = "uploading"
 		amountLeft = 0
 	}
+	coordinate := fmt.Sprintf("S%02dE%02d", fixture.torrent.Season, fixture.torrent.Episode)
+	videoName := fmt.Sprintf("%s - %s.mkv", fixture.torrent.SeriesTitle, coordinate)
 	_ = json.NewEncoder(writer).Encode([]map[string]any{{
-		"hash": fixture.torrent.Hash, "name": "Fixture Show", "state": state, "progress": progress,
-		"amount_left": amountLeft, "content_path": filepath.Join(fixture.torrent.SavePath, "Fixture Show - S01E01.mkv"),
+		"hash": fixture.torrent.Hash, "name": fixture.torrent.SeriesTitle, "state": state, "progress": progress,
+		"amount_left": amountLeft, "content_path": filepath.Join(fixture.torrent.SavePath, videoName),
 		"save_path": fixture.torrent.SavePath, "size": 4096, "total_size": 4096, "category": fixture.torrent.Category,
 	}})
 }
@@ -313,6 +376,37 @@ func magnetHash(raw string) (string, error) {
 	return value, nil
 }
 
+func torrentIdentityFromMagnet(raw string) (string, int, int) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "Fixture Show", 1, 1
+	}
+	name := parsed.Query().Get("dn")
+	season, episode := coordinateFromName(name)
+	match := fixtureEpisodePattern.FindStringIndex(name)
+	if len(match) != 2 {
+		return "Fixture Show", season, episode
+	}
+	seriesTitle := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(name[:match[0]]), "-"))
+	if seriesTitle == "" {
+		seriesTitle = "Fixture Show"
+	}
+	return seriesTitle, season, episode
+}
+
+func coordinateFromName(name string) (int, int) {
+	match := fixtureEpisodePattern.FindStringSubmatch(name)
+	if len(match) != 3 {
+		return 1, 1
+	}
+	season, seasonErr := strconv.Atoi(match[1])
+	episode, episodeErr := strconv.Atoi(match[2])
+	if seasonErr != nil || episodeErr != nil || season < 1 || season > 99 || episode < 1 || episode > 99 {
+		return 1, 1
+	}
+	return season, episode
+}
+
 func (fixture *fixtureServer) writeTorrentFiles(writer http.ResponseWriter) {
 	fixture.mu.Lock()
 	state := fixture.torrent
@@ -321,12 +415,19 @@ func (fixture *fixtureServer) writeTorrentFiles(writer http.ResponseWriter) {
 		http.Error(writer, "torrent not found", http.StatusNotFound)
 		return
 	}
-	videoInfo, _ := os.Stat(filepath.Join(state.SavePath, "Fixture Show - S01E01.mkv"))
-	subtitleInfo, _ := os.Stat(filepath.Join(state.SavePath, "Fixture Show - S01E01.zh-Hans.ass"))
+	coordinate := fmt.Sprintf("S%02dE%02d", state.Season, state.Episode)
+	videoName := fmt.Sprintf("%s - %s.mkv", state.SeriesTitle, coordinate)
+	subtitleName := fmt.Sprintf("%s - %s.zh-Hans.ass", state.SeriesTitle, coordinate)
+	videoInfo, videoErr := os.Stat(filepath.Join(state.SavePath, videoName))
+	subtitleInfo, subtitleErr := os.Stat(filepath.Join(state.SavePath, subtitleName))
+	if videoErr != nil || subtitleErr != nil {
+		http.Error(writer, "torrent files are unavailable", http.StatusInternalServerError)
+		return
+	}
 	writer.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(writer).Encode([]map[string]any{
-		{"index": 0, "name": "Fixture Show - S01E01.mkv", "size": videoInfo.Size(), "progress": 1, "priority": 1, "is_seed": false},
-		{"index": 1, "name": "Fixture Show - S01E01.zh-Hans.ass", "size": subtitleInfo.Size(), "progress": 1, "priority": 1, "is_seed": false},
+		{"index": 0, "name": videoName, "size": videoInfo.Size(), "progress": 1, "priority": 1, "is_seed": false},
+		{"index": 1, "name": subtitleName, "size": subtitleInfo.Size(), "progress": 1, "priority": 1, "is_seed": false},
 	})
 }
 
@@ -336,17 +437,37 @@ func (fixture *fixtureServer) tmdb(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	writer.Header().Set("Content-Type", "application/json")
+	if request.URL.Path == "/tmdb/search/tv" {
+		series := fixtureSeriesForSearch(request.URL.Query().Get("query"))
+		_ = json.NewEncoder(writer).Encode(map[string]any{"results": []map[string]any{{
+			"id": series.ID, "name": series.Title, "original_name": series.Title,
+			"first_air_date": "2026-01-01", "overview": "E2E fixture series",
+		}}})
+		return
+	}
+	for _, series := range fixtureSeriesSpecs {
+		if request.URL.Path == fmt.Sprintf("/tmdb/tv/%d", series.ID) {
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"id": series.ID, "name": series.Title, "original_name": series.Title,
+				"seasons": []map[string]any{{"id": series.ID*10 + 1, "name": "Season 1", "season_number": 1, "episode_count": 1}},
+			})
+			return
+		}
+		if request.URL.Path == fmt.Sprintf("/tmdb/tv/%d/season/1", series.ID) {
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"id": series.ID*10 + 1, "name": "Season 1", "season_number": 1,
+				"episodes": []map[string]any{{
+					"id": series.EpisodeID, "name": series.EpisodeTitle, "episode_number": 1, "air_date": "2026-01-01",
+				}},
+			})
+			return
+		}
+	}
 	switch request.URL.Path {
 	case "/tmdb/configuration":
 		_, _ = fmt.Fprint(writer, `{}`)
-	case "/tmdb/search/tv":
-		_, _ = fmt.Fprint(writer, `{"results":[{"id":100,"name":"Fixture Show","original_name":"Fixture Show","first_air_date":"2026-01-01","overview":"E2E fixture series"}]}`)
 	case "/tmdb/search/movie":
 		_, _ = fmt.Fprint(writer, `{"results":[{"id":200,"title":"Fixture Movie","original_title":"Fixture Movie","release_date":"2024-03-08","overview":"E2E fixture movie"}]}`)
-	case "/tmdb/tv/100":
-		_, _ = fmt.Fprint(writer, `{"id":100,"name":"Fixture Show","original_name":"Fixture Show","seasons":[{"id":1001,"name":"Season 1","season_number":1,"episode_count":1}]}`)
-	case "/tmdb/tv/100/season/1":
-		_, _ = fmt.Fprint(writer, `{"id":1001,"name":"Season 1","season_number":1,"episodes":[{"id":10001,"name":"Pilot","episode_number":1,"air_date":"2026-01-01"}]}`)
 	default:
 		http.NotFound(writer, request)
 	}
@@ -385,25 +506,90 @@ func (fixture *fixtureServer) writeEmbyItems(writer http.ResponseWriter, request
 		_ = json.NewEncoder(writer).Encode(map[string]any{"Items": items, "TotalRecordCount": len(items)})
 		return
 	}
-	items := []map[string]any{
-		{"Id": "series-fixture", "ParentId": "library-fixture", "Type": "Series", "Name": "Fixture Show", "ProviderIds": map[string]string{"Tmdb": "100"}},
-		{"Id": "season-fixture", "ParentId": "series-fixture", "Type": "Season", "Name": "Season 1", "IndexNumber": 1, "ProviderIds": map[string]string{}},
+	includeType := request.URL.Query().Get("IncludeItemTypes")
+	requestedSeriesID := embyRequestedSeriesID(request)
+	if includeType == "Series" {
+		items := []map[string]any{}
+		if series, ok := findFixtureSeriesByID(requestedSeriesID); ok {
+			items = append(items, embySeriesItem(series))
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"Items": items, "TotalRecordCount": len(items)})
+		return
 	}
-	if videoPath := firstVideoPath(fixture.animeLibraryRoot); videoPath != "" {
-		items = append(items, map[string]any{"Id": "episode-fixture", "ParentId": "season-fixture", "Type": "Episode", "Name": "Pilot", "Path": videoPath, "IndexNumber": 1, "ParentIndexNumber": 1, "ProviderIds": map[string]string{"Tmdb": "10001"}})
+	if includeType == "Episode" && requestedSeriesID != 0 {
+		items := []map[string]any{}
+		if series, ok := findFixtureSeriesByID(requestedSeriesID); ok {
+			items = fixture.embyEpisodeItems(series)
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"Items": items, "TotalRecordCount": len(items)})
+		return
+	}
+	items := make([]map[string]any, 0)
+	for _, series := range fixtureSeriesSpecs {
+		items = append(items, embySeriesItem(series))
+		items = append(items, map[string]any{
+			"Id": fmt.Sprintf("season-fixture-%d", series.ID), "ParentId": fmt.Sprintf("series-fixture-%d", series.ID),
+			"Type": "Season", "Name": "Season 1", "IndexNumber": 1, "ProviderIds": map[string]string{},
+		})
+		items = append(items, fixture.embyEpisodeItems(series)...)
 	}
 	_ = json.NewEncoder(writer).Encode(map[string]any{"Items": items, "TotalRecordCount": len(items)})
 }
 
+func embyRequestedSeriesID(request *http.Request) int {
+	provider := strings.TrimSpace(request.URL.Query().Get("AnyProviderIdEquals"))
+	if strings.HasPrefix(strings.ToLower(provider), "tmdb.") {
+		if id, err := strconv.Atoi(provider[len("tmdb."):]); err == nil {
+			return id
+		}
+	}
+	parentID := strings.TrimSpace(request.URL.Query().Get("ParentId"))
+	if strings.HasPrefix(parentID, "series-fixture-") {
+		if id, err := strconv.Atoi(strings.TrimPrefix(parentID, "series-fixture-")); err == nil {
+			return id
+		}
+	}
+	return 0
+}
+
+func embySeriesItem(series fixtureSeriesSpec) map[string]any {
+	return map[string]any{
+		"Id": fmt.Sprintf("series-fixture-%d", series.ID), "ParentId": "library-fixture", "Type": "Series",
+		"Name": series.Title, "ProviderIds": map[string]string{"Tmdb": strconv.Itoa(series.ID)},
+	}
+}
+
+func (fixture *fixtureServer) embyEpisodeItems(series fixtureSeriesSpec) []map[string]any {
+	items := make([]map[string]any, 0)
+	for _, videoPath := range videoPaths(filepath.Join(fixture.animeLibraryRoot, series.Title)) {
+		season, episode := coordinateFromName(filepath.Base(videoPath))
+		items = append(items, map[string]any{
+			"Id":       fmt.Sprintf("episode-fixture-%d-%d-%d", series.ID, season, episode),
+			"ParentId": fmt.Sprintf("season-fixture-%d", series.ID), "Type": "Episode",
+			"Name": series.EpisodeTitle, "Path": videoPath, "IndexNumber": episode, "ParentIndexNumber": season,
+			"ProviderIds": map[string]string{"Tmdb": strconv.Itoa(series.EpisodeID)},
+		})
+	}
+	return items
+}
+
 func firstVideoPath(root string) string {
-	videoPath := ""
+	paths := videoPaths(root)
+	if len(paths) == 0 {
+		return ""
+	}
+	return paths[0]
+}
+
+func videoPaths(root string) []string {
+	paths := make([]string, 0)
 	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err == nil && !entry.IsDir() && isVideoExtension(filepath.Ext(path)) && videoPath == "" {
-			videoPath = path
+		if err == nil && !entry.IsDir() && isVideoExtension(filepath.Ext(path)) {
+			paths = append(paths, path)
 		}
 		return nil
 	})
-	return videoPath
+	return paths
 }
 
 func isVideoExtension(extension string) bool {

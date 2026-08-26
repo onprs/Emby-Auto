@@ -111,6 +111,129 @@ WHERE subscription_id = $1
 	}
 }
 
+func TestRSSTargetFulfillmentMigrationBackfillsOnlyProvenTargetsAndRestoresRollbackBoundaryIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	databaseURL, pool := testutil.NewMigratedPostgres(t)
+	downgradeApplication(t, ctx, pool, 40)
+
+	seriesID, seasonID, targetEpisodeID := uuid.New(), uuid.New(), uuid.New()
+	profileID, subscriptionID, mappingID := uuid.New(), uuid.New(), uuid.New()
+	managedEntryID, ambiguousManagedEntryID, catalogEntryID := uuid.New(), uuid.New(), uuid.New()
+	acquisitionID, downloadID, sourceFileID := uuid.New(), uuid.New(), uuid.New()
+	taskID, transcodeProfileID, importID := uuid.New(), uuid.New(), uuid.New()
+	if _, err := testutil.ExecFixture(ctx, pool, `
+INSERT INTO media_series (id, tmdb_series_id, title) VALUES ($1, $2, 'Fulfillment migration fixture');
+INSERT INTO tmdb_seasons (id, series_id, season_number, episode_count) VALUES ($3, $1, 1, 1);
+INSERT INTO media_episodes (id, season_id, episode_number, title) VALUES ($4, $3, 1, 'Episode 1')`,
+		seriesID, time.Now().UnixNano(), seasonID, targetEpisodeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testutil.ExecFixture(ctx, pool, `
+INSERT INTO episode_mapping_profiles (
+  id, series_id, name, version, active, anchor_source_season, anchor_source_episode,
+  anchor_target_episode_id, target_episode_offset, decision_source
+) VALUES ($1, $2, $3, 1, true, 1, 1, $4, 0, 'deterministic');
+INSERT INTO episode_mappings (
+  id, profile_id, source_season, source_episode, absolute_episode,
+  target_episode_id, mapping_status, match_source
+) VALUES ($5, $1, 1, 1, 1, $4, 'mapped', 'anchor')`,
+		profileID, seriesID, "fulfillment-migration-"+profileID.String(), targetEpisodeID, mappingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO rss_subscriptions (
+  id, series_id, mapping_profile_id, name, feed_url, enabled,
+  poll_interval_seconds, source_season
+) VALUES ($1, $2, $3, 'Fulfillment migration fixture', $4, true, 900, 1)`,
+		subscriptionID, seriesID, profileID, "https://example.test/"+subscriptionID.String()+".xml"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO rss_entries (
+  id, subscription_id, identity_key, title, download_uri, downloadable,
+  rejection_reasons, source_season, source_episode, status, imported_at, fulfillment_source
+) VALUES
+  ($1, $4, $5, 'Proven managed import', 'https://example.test/managed.torrent', false,
+   ARRAY['target_episode_imported']::text[], 1, 1, 'enqueued', now(), 'managed_import'),
+  ($2, $4, $6, 'Ambiguous managed import', 'https://example.test/ambiguous-managed.torrent', false,
+   ARRAY['target_episode_imported']::text[], 1, 1, 'enqueued', now(), 'managed_import'),
+  ($3, $4, $7, 'Ambiguous catalog fulfillment', 'https://example.test/catalog.torrent', false,
+   ARRAY['target_episode_in_library']::text[], 1, 1, 'discovered', now(), 'emby_catalog')`,
+		managedEntryID, ambiguousManagedEntryID, catalogEntryID, subscriptionID,
+		"guid:"+managedEntryID.String(), "guid:"+ambiguousManagedEntryID.String(), "guid:"+catalogEntryID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testutil.ExecFixture(ctx, pool, `
+INSERT INTO transcode_profiles (
+    id, name, version, active, is_default, video_codec, encoder, container,
+    file_extension, quality_mode, quality_value, audio_policy, preset,
+    pixel_format, thread_count, max_concurrency
+) VALUES ($1, $2, 1, true, false, 'h264', 'libx264', 'matroska',
+          'mkv', 'crf', 20, 'copy', 'medium', 'yuv420p', 0, 1);
+INSERT INTO acquisitions (id, series_id, mapping_profile_id, source_kind, rss_entry_id)
+VALUES ($3, $4, $5, 'rss', $6);
+INSERT INTO downloads (id, acquisition_id, status, progress)
+VALUES ($7, $3, 'materialized', 1);
+INSERT INTO download_files (
+    id, download_id, file_index, relative_path, size_bytes, media_kind,
+    selected, source_season, source_episode
+) VALUES ($8, $7, 0, 'proven.mkv', 1024, 'video', true, 1, 1);
+INSERT INTO episode_tasks (
+    id, acquisition_id, source_video_file_id, mapping_id, transcode_profile_id,
+    state, video_state, subtitle_state
+) VALUES ($9, $3, $8, $10, $1, 'imported', 'video_ready', 'ass_ready');
+INSERT INTO imports (
+    id, task_id, attempt, status, destination_video_path,
+    destination_subtitle_path, started_at, completed_at
+)
+VALUES ($11, $9, 1, 'succeeded', '/library/proven.mkv', '/library/proven.ass',
+        now() - interval '1 minute', now())
+`, transcodeProfileID, "fulfillment-migration-"+transcodeProfileID.String(), acquisitionID,
+		seriesID, profileID, managedEntryID, downloadID, sourceFileID, taskID, mappingID, importID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.NewMigrator().Migrate(ctx, databaseURL); err != nil {
+		t.Fatalf("Migrate() from v40 error = %v", err)
+	}
+	rows, err := pool.Query(ctx, `
+SELECT rss_entry_id, target_episode_id, source
+FROM rss_target_fulfillments
+ORDER BY source`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[uuid.UUID]string{}
+	for rows.Next() {
+		var entryID, targetID uuid.UUID
+		var source string
+		if err := rows.Scan(&entryID, &targetID, &source); err != nil {
+			t.Fatal(err)
+		}
+		if targetID != targetEpisodeID {
+			t.Fatalf("backfilled target = %s, want %s", targetID, targetEpisodeID)
+		}
+		got[entryID] = source
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if got[managedEntryID] != "managed_import" || got[ambiguousManagedEntryID] != "" || got[catalogEntryID] != "" || len(got) != 1 {
+		t.Fatalf("backfilled fulfillments = %#v, want only the task-proven managed target", got)
+	}
+
+	downgradeApplication(t, ctx, pool, 40)
+	var tableExists bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('rss_target_fulfillments') IS NOT NULL`).Scan(&tableExists); err != nil {
+		t.Fatal(err)
+	}
+	if tableExists {
+		t.Fatal("target fulfillment table still exists after migration 41 down")
+	}
+}
+
 func TestRSSAcquisitionProvenanceMigrationBackfillsAndRestoresRollbackBoundaryIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

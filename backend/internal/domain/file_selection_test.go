@@ -139,9 +139,13 @@ func TestParseSourceCoordinateRecognizesSupportedFormsWithoutUsingResolution(t *
 		wantEpisode   int
 	}{
 		{name: "season episode token", path: "Show.S01E12.1080p.mkv", defaultSeason: 4, wantSeason: 1, wantEpisode: 12},
+		{name: "season episode decimal", path: "Show.S01E12.5.1080p.mkv", defaultSeason: 4, wantSeason: 1, wantEpisode: 125},
 		{name: "dash episode", path: "[Group] Show - 02 [1080p].mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 2},
+		{name: "dash decimal episode", path: "[Group] Show - 14.5 [1080p].mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 145},
+		{name: "bracketed decimal episode", path: "[Synthetic-Group][Sample Show][12.5][Special][1080P].mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 125},
 		{name: "uppercase revision", path: "[Group] Show [02V2] [1080p].mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 2},
 		{name: "east asian episode", path: "Show 第03話.mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 3},
+		{name: "east asian decimal episode", path: "Show 第12.5话.mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 125},
 		{name: "season directory", path: "Season 2/Show - 04.mkv", defaultSeason: 1, wantSeason: 2, wantEpisode: 4},
 		{name: "episode token", path: "Show EP29 WEB-DL.mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 29},
 		{
@@ -200,5 +204,50 @@ func TestSelectDownloadFilesRejectsUnsafeOrAmbiguousInput(t *testing.T) {
 				t.Fatalf("SelectDownloadFiles() error = %v, want %v", err, test.want)
 			}
 		})
+	}
+}
+
+func TestSelectDownloadFilesPairsBilingualSubtitlesAndIgnoresCommentaryExtras(t *testing.T) {
+	files := []DownloadFile{
+		{Index: 0, RelativePath: "Pack/谈话/[Group][Talk][01].sc.ass", SizeBytes: 50},
+		{Index: 1, RelativePath: "Pack/谈话/[Group][Talk][01].mkv", SizeBytes: 500},
+		{Index: 2, RelativePath: "Pack/[Group][01][1080P].mkv", SizeBytes: 2_000},
+		{Index: 3, RelativePath: "Pack/[Group][01][1080P].scjp.ass", SizeBytes: 80},
+		{Index: 4, RelativePath: "Pack/[Group][01][1080P].tcjp.ass", SizeBytes: 80},
+		{Index: 5, RelativePath: "Pack/[Group][12][1080P].mkv", SizeBytes: 2_100},
+		{Index: 6, RelativePath: "Pack/[Group][12][1080P].scjp.ass", SizeBytes: 85},
+		{Index: 7, RelativePath: "Pack/[Group][12.5][Special][1080P].mkv", SizeBytes: 2_150},
+		{Index: 8, RelativePath: "Pack/[Group][12.5][Special][1080P].scjp.ass", SizeBytes: 85},
+	}
+
+	result, err := SelectDownloadFiles(files, FileSelectionOptions{DefaultSeason: 1})
+	if err != nil {
+		t.Fatalf("SelectDownloadFiles() error = %v", err)
+	}
+	if len(result.Episodes) != 3 {
+		t.Fatalf("episode count = %d, want 3", len(result.Episodes))
+	}
+
+	// Episode 1
+	ep1 := result.Episodes[0]
+	if ep1.SourceSeason != 1 || ep1.SourceEpisode != 1 || ep1.Video.Index != 2 || ep1.Subtitle == nil || ep1.Subtitle.Index != 3 {
+		t.Fatalf("episode 1 = %#v, want video 2, subtitle 3 (scjp)", ep1)
+	}
+	// Episode 12
+	ep12 := result.Episodes[1]
+	if ep12.SourceSeason != 1 || ep12.SourceEpisode != 12 || ep12.Video.Index != 5 || ep12.Subtitle == nil || ep12.Subtitle.Index != 6 {
+		t.Fatalf("episode 12 = %#v, want video 5, subtitle 6", ep12)
+	}
+	// Episode 12.5 (distinct from 12)
+	ep125 := result.Episodes[2]
+	if ep125.SourceSeason != 1 || ep125.SourceEpisode != 125 || ep125.Video.Index != 7 || ep125.Subtitle == nil || ep125.Subtitle.Index != 8 {
+		t.Fatalf("episode 12.5 = %#v, want video 7, subtitle 8", ep125)
+	}
+
+	if result.Files[0].Kind != MediaExtra || result.Files[1].Kind != MediaExtra {
+		t.Fatalf("talk files kind = %q / %q, want extra", result.Files[0].Kind, result.Files[1].Kind)
+	}
+	if result.Files[3].Language != "zh-Hans" || result.Files[4].Language != "zh-Hant" {
+		t.Fatalf("bilingual subtitle languages = %q / %q, want zh-Hans / zh-Hant", result.Files[3].Language, result.Files[4].Language)
 	}
 }

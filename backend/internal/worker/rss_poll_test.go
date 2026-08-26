@@ -166,7 +166,7 @@ func (stub *rssRealtimeVerifierStub) VerifyCoordinates(context.Context, uuid.UUI
 	return uuid.Nil, nil
 }
 
-func TestRSSPollHandlerPreparesDeterministicMappingBeforeRealtimeVerification(t *testing.T) {
+func TestRSSPollHandlerPreparesTargetMappingWhenAutomaticFileMappingIsDisabled(t *testing.T) {
 	subscriptionID := uuid.MustParse("50000000-0000-0000-0000-000000000091")
 	feed := domain.RSSFeed{Title: "First subscription", Entries: []domain.RSSFeedEntry{{
 		Title: "First subscription S01E01", DownloadURI: "https://example.test/episode-01.torrent",
@@ -174,7 +174,7 @@ func TestRSSPollHandlerPreparesDeterministicMappingBeforeRealtimeVerification(t 
 	store := &rssPollStoreStub{
 		command: domain.RSSPollCommand{
 			SubscriptionID: subscriptionID, FeedURL: "https://example.test/feed.xml", Enabled: true,
-			AutoEpisodeMapping: true, SourceSeason: 1, PollInterval: time.Minute,
+			AutoEpisodeMapping: false, SourceSeason: 1, PollInterval: time.Minute,
 		},
 		ensureMappingReady: true,
 	}
@@ -270,6 +270,30 @@ func TestRSSPollHandlerRetriesRealtimeVerificationFailure(t *testing.T) {
 	}
 	if store.persistedFeed.Title != "" {
 		t.Fatalf("PersistPoll() ran after failed verification: %#v", store.persistedFeed)
+	}
+}
+
+func TestRSSPollHandlerSnoozesContinuousRealtimeFailureWithoutExhaustingPoll(t *testing.T) {
+	subscriptionID := uuid.New()
+	store := &rssPollStoreStub{command: domain.RSSPollCommand{
+		SubscriptionID: subscriptionID, FeedURL: "https://example.test/feed.xml", Enabled: true,
+		SourceSeason: 1, PollInterval: 7 * time.Minute,
+	}}
+	verifier := &rssRealtimeVerifierStub{subscriptionErr: &service.RSSRealtimeVerificationError{
+		Code: "emby_realtime_request_failed", Message: "real-time Emby target verification failed", Retryable: true,
+	}}
+	handler := NewRSSPollHandler(&rssFeedClientStub{feed: domain.RSSFeed{Title: "Realtime failure"}}, store, 1).
+		WithRealtimeTargetVerifier(verifier)
+	err := handler.Handle(context.Background(), domain.Operation{
+		ID: uuid.New(), ResourceType: "rss_subscription", ResourceID: subscriptionID,
+		Payload: []byte(`{"continuous":true}`),
+	})
+	var snooze *river.JobSnoozeError
+	if !errors.As(err, &snooze) || snooze.Duration != 7*time.Minute {
+		t.Fatalf("Handle() error = %#v, want seven-minute snooze", err)
+	}
+	if store.failureCalls != 1 || store.failureCode != "emby_realtime_request_failed" {
+		t.Fatalf("failure audit = calls %d code %q", store.failureCalls, store.failureCode)
 	}
 }
 

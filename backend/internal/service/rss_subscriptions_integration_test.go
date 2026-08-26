@@ -221,6 +221,28 @@ WHERE resource_type = 'rss_subscription' AND resource_id = $1 AND topic = 'rss.s
 	if persistedProfileID != profileID || !persistedAutoMapping || !autoSelected || !eventAutoMapping {
 		t.Fatalf("persisted profile/policy/event = %s/%t/%t/%t, want %s/true/true/true", persistedProfileID, persistedAutoMapping, autoSelected, eventAutoMapping, profileID)
 	}
+
+	complementary, err := workflow.CreateSubscription(ctx, domain.CreateRSSSubscription{
+		TMDbSeriesID: tmdbSeriesID, SeriesTitle: "Auto Profile Show", Name: "Complementary RSS",
+		FeedURL: "https://example.test/complementary-profile.xml", Enabled: false, SourceSeason: 1,
+		PollInterval: 15 * time.Minute, ActorUserID: actorID,
+	})
+	if err != nil {
+		t.Fatalf("CreateSubscription(complementary) error = %v", err)
+	}
+	if complementary.SeriesID != created.SeriesID || complementary.MappingProfileID != profileID {
+		t.Fatalf("complementary grouping/profile = %s/%s, want %s/%s", complementary.SeriesID, complementary.MappingProfileID, created.SeriesID, profileID)
+	}
+	var groupedSeriesCount, sourceCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_series WHERE tmdb_series_id = $1`, tmdbSeriesID).Scan(&groupedSeriesCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rss_subscriptions WHERE series_id = $1 AND deleted_at IS NULL`, created.SeriesID).Scan(&sourceCount); err != nil {
+		t.Fatal(err)
+	}
+	if groupedSeriesCount != 1 || sourceCount != 2 {
+		t.Fatalf("automatic grouping = series %d sources %d, want 1/2", groupedSeriesCount, sourceCount)
+	}
 }
 
 func TestCreateRSSSubscriptionDoesNotGuessBetweenCompatibleProfilesIntegration(t *testing.T) {

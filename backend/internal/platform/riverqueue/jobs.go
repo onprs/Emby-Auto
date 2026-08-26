@@ -35,6 +35,7 @@ const (
 	KindDownloadSelectionApply           = "download.selection.apply"
 	KindEventsRetentionCleanup           = "events.retention.cleanup"
 	KindRSSSubscriptionProgressReconcile = "rss.subscription.progress.reconcile"
+	KindRSSPollReconcile                 = "rss.poll.reconcile"
 )
 
 type OperationArgs struct {
@@ -138,6 +139,10 @@ func (DownloadCancelArgs) Kind() string { return KindDownloadCancel }
 type EventsRetentionCleanupArgs struct{}
 
 func (EventsRetentionCleanupArgs) Kind() string { return KindEventsRetentionCleanup }
+
+type RSSPollReconcileArgs struct{}
+
+func (RSSPollReconcileArgs) Kind() string { return KindRSSPollReconcile }
 
 type RSSSubscriptionProgressReconcileArgs struct{}
 

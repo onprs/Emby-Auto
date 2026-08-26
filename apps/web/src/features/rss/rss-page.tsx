@@ -27,7 +27,7 @@ export function RssPage() {
   const location = useLocation();
   const listSource = currentAppLocation(location.href);
   const search = useSearch({ strict: false }) as { query?: string; sortBy?: RssSubscriptionSortBy; sortOrder?: SortOrder };
-  const sortBy = search.sortBy ?? 'name';
+  const sortBy = search.sortBy ?? 'series_title';
   const sortOrder = search.sortOrder ?? 'asc';
   const [queryInput, setQueryInput] = useState(search.query ?? '');
   const [creating, setCreating] = useState(false);
@@ -64,6 +64,8 @@ export function RssPage() {
   };
 
   const items = subscriptions.data?.items ?? [];
+  const groupedView = sortBy === 'series_title';
+  const groups = groupedView ? groupRSSSubscriptions(items) : [];
   const selectedItems = items.filter((item) => selected.has(item.id));
   const allChecked = items.length > 0 && items.every((item) => selected.has(item.id));
   const toggleOne = (id: string) => setSelected((current) => {
@@ -253,9 +255,50 @@ export function RssPage() {
             {sortHeader('总进度', 'progress')}
             {sortHeader('下次检查', 'next_poll_at')}
           </div>
-          <div className="space-y-2 sm:hidden">
-            {subscriptions.data.items.map((item) => (
-              <article key={item.id} className="rounded-xl border border-zinc-200/90 bg-white p-4 shadow-card transition-shadow duration-200 hover:shadow-card-hover">
+          <div className="space-y-4 sm:hidden">
+            {groupedView ? groups.map((group) => (
+              <section key={group.seriesId} className="overflow-hidden rounded-lg border border-zinc-200/90 bg-white shadow-[0_5px_14px_-3px_rgb(9_9_11/0.18)]">
+                <header className="relative z-10 flex items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50/80 px-3.5 py-3 shadow-[0_2px_5px_rgb(9_9_11/0.09)]">
+                  <div className="min-w-0">
+                    <h2 className="break-words text-sm font-semibold text-zinc-950">{group.seriesTitle}</h2>
+                    <p className="mt-0.5 text-xs text-zinc-500">TMDb {group.tmdbSeriesId}</p>
+                  </div>
+                  <span className="shrink-0 text-xs text-zinc-500">本页 {group.sources.length} 个订阅源</span>
+                </header>
+                <div className="divide-y divide-zinc-100">
+                  {group.sources.map((item) => (
+                    <article key={item.id} className="px-3.5 py-3.5 hover:bg-zinc-50/50 transition-colors">
+                      <div className="flex items-start gap-3">
+                        <input
+                          type="checkbox"
+                          aria-label={`选择 ${item.name}`}
+                          checked={selected.has(item.id)}
+                          onChange={() => toggleOne(item.id)}
+                          className="mt-1 size-4 accent-emerald-700"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <ContextLink rememberList to="/rss/$subscriptionId" params={{ subscriptionId: item.id }} className="block break-words text-sm font-semibold text-zinc-900 hover:underline">
+                                {item.name}
+                              </ContextLink>
+                              <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-zinc-500">
+                                <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-zinc-700">{rssFeedHost(item.feedUrl)}</span>
+                                <span>第 {item.sourceSeason} 季</span>
+                              </p>
+                            </div>
+                            <RecordActions actions={rowActions(item)} onChanged={refresh} />
+                          </div>
+                          <div className="mt-2.5"><SubscriptionProgress subscription={item} /></div>
+                          <p className="mt-2 text-xs text-zinc-500">下次检查 {item.completedAt ? '已完成' : item.enabled ? formatDateTime(item.nextPollAt) : '已暂停'}</p>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )) : items.map((item) => (
+              <article key={item.id} className="rounded-xl border border-zinc-200/90 bg-white p-3.5 shadow-card">
                 <div className="flex items-start gap-3">
                   <input
                     type="checkbox"
@@ -265,56 +308,113 @@ export function RssPage() {
                     className="mt-1 size-4 accent-emerald-700"
                   />
                   <div className="min-w-0 flex-1">
-                    <ContextLink rememberList to="/rss/$subscriptionId" params={{ subscriptionId: item.id }} className="block break-words font-medium text-zinc-900 hover:underline">
-                      {item.name}
-                    </ContextLink>
-                    <p className="mt-1 break-words text-sm text-zinc-500">{item.seriesTitle} · 第 {item.sourceSeason} 季</p>
-                    <div className="mt-3"><SubscriptionProgress subscription={item} /></div>
-                    <div className="mt-3 flex items-end justify-between gap-3">
-                      <p className="min-w-0 text-xs text-zinc-500">下次检查 {item.completedAt ? '已完成' : item.enabled ? formatDateTime(item.nextPollAt) : '已暂停'}</p>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <ContextLink rememberList to="/rss/$subscriptionId" params={{ subscriptionId: item.id }} className="block break-words text-sm font-semibold text-zinc-900 hover:underline">
+                          {item.name}
+                        </ContextLink>
+                        <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-zinc-500">
+                          <span className="font-medium text-zinc-800">{item.seriesTitle}</span>
+                          <span>· 第 {item.sourceSeason} 季 ·</span>
+                          <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-zinc-700">{rssFeedHost(item.feedUrl)}</span>
+                        </p>
+                      </div>
                       <RecordActions actions={rowActions(item)} onChanged={refresh} />
                     </div>
+                    <div className="mt-2.5"><SubscriptionProgress subscription={item} /></div>
+                    <p className="mt-2 text-xs text-zinc-500">下次检查 {item.completedAt ? '已完成' : item.enabled ? formatDateTime(item.nextPollAt) : '已暂停'}</p>
                   </div>
                 </div>
               </article>
             ))}
           </div>
           <div className="hidden sm:block">
-            <DataTable head={[
-              <input key="all" type="checkbox" aria-label="全选当前页订阅" checked={allChecked} onChange={toggleAll} className="size-4 accent-emerald-700" />,
-              sortHeader('订阅', 'name'),
-              sortHeader('作品', 'series_title'),
-              sortHeader('对应季', 'source_season'),
-              sortHeader('总进度', 'progress'),
-              sortHeader('下次检查', 'next_poll_at'),
-              '操作',
-            ]}>
-              {subscriptions.data.items.map((item) => (
-                <tr key={item.id}>
-                  <td className="px-4 py-3">
-                    <input
-                      type="checkbox"
-                      aria-label={`选择 ${item.name}`}
-                      checked={selected.has(item.id)}
-                      onChange={() => toggleOne(item.id)}
-                      className="size-4 accent-emerald-700"
-                    />
-                  </td>
-                  <td className="max-w-0 px-4 py-3">
-                    <ContextLink rememberList to="/rss/$subscriptionId" params={{ subscriptionId: item.id }} className="block truncate font-medium text-zinc-900 hover:underline">
-                      {item.name}
-                    </ContextLink>
-                  </td>
-                  <td className="px-4 py-3 text-zinc-600">{item.seriesTitle}</td>
-                  <td className="px-4 py-3 text-zinc-600">第 {item.sourceSeason} 季</td>
-                  <td className="w-64 px-4 py-3"><SubscriptionProgress subscription={item} compact /></td>
-                  <td className="px-4 py-3 text-zinc-600">{item.completedAt ? '已完成' : item.enabled ? formatDateTime(item.nextPollAt) : '已暂停'}</td>
-                  <td className="w-12 px-2 py-3 text-right">
-                    <RecordActions actions={rowActions(item)} onChanged={refresh} />
-                  </td>
-                </tr>
-              ))}
-            </DataTable>
+            {groupedView ? (
+              <DataTable head={[
+                <input key="all" type="checkbox" aria-label="全选当前页订阅" checked={allChecked} onChange={toggleAll} className="size-4 accent-emerald-700" />,
+                sortHeader('订阅源', 'name'),
+                sortHeader('对应季', 'source_season'),
+                sortHeader('总进度', 'progress'),
+                sortHeader('下次检查', 'next_poll_at'),
+                '操作',
+              ]}>
+                {groups.flatMap((group) => [
+                  <tr key={`series-${group.seriesId}`} className="relative z-[1] border-t border-zinc-300 bg-zinc-50/80">
+                    <td colSpan={6} className="px-4 py-2.5 shadow-[0_3px_8px_rgb(9_9_11/0.11)]">
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="flex min-w-0 items-baseline gap-2.5">
+                          <h2 className="truncate text-sm font-semibold text-zinc-950">{group.seriesTitle}</h2>
+                          <span className="shrink-0 text-xs text-zinc-500">TMDb {group.tmdbSeriesId}</span>
+                        </div>
+                        <span className="shrink-0 text-xs text-zinc-500">本页 {group.sources.length} 个订阅源</span>
+                      </div>
+                    </td>
+                  </tr>,
+                  ...group.sources.map((item) => (
+                    <tr key={item.id} className="bg-white hover:bg-zinc-50/70 transition-colors">
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          aria-label={`选择 ${item.name}`}
+                          checked={selected.has(item.id)}
+                          onChange={() => toggleOne(item.id)}
+                          className="size-4 accent-emerald-700"
+                        />
+                      </td>
+                      <td className="max-w-0 px-4 py-3">
+                        <ContextLink rememberList to="/rss/$subscriptionId" params={{ subscriptionId: item.id }} className="block truncate text-sm font-semibold text-zinc-900 hover:underline">
+                          {item.name}
+                        </ContextLink>
+                        <p className="mt-0.5 truncate text-xs text-zinc-500">{rssFeedHost(item.feedUrl)}</p>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-zinc-600">第 {item.sourceSeason} 季</td>
+                      <td className="w-64 px-4 py-3"><SubscriptionProgress subscription={item} compact /></td>
+                      <td className="px-4 py-3 text-sm text-zinc-600">{item.completedAt ? '已完成' : item.enabled ? formatDateTime(item.nextPollAt) : '已暂停'}</td>
+                      <td className="w-12 px-2 py-3 text-right">
+                        <RecordActions actions={rowActions(item)} onChanged={refresh} />
+                      </td>
+                    </tr>
+                  )),
+                ])}
+              </DataTable>
+            ) : (
+              <DataTable head={[
+                <input key="all" type="checkbox" aria-label="全选当前页订阅" checked={allChecked} onChange={toggleAll} className="size-4 accent-emerald-700" />,
+                sortHeader('订阅源', 'name'),
+                sortHeader('作品', 'series_title'),
+                sortHeader('对应季', 'source_season'),
+                sortHeader('总进度', 'progress'),
+                sortHeader('下次检查', 'next_poll_at'),
+                '操作',
+              ]}>
+                {items.map((item) => (
+                  <tr key={item.id}>
+                    <td className="px-4 py-3">
+                      <input
+                        type="checkbox"
+                        aria-label={`选择 ${item.name}`}
+                        checked={selected.has(item.id)}
+                        onChange={() => toggleOne(item.id)}
+                        className="size-4 accent-emerald-700"
+                      />
+                    </td>
+                    <td className="max-w-0 px-4 py-3">
+                      <ContextLink rememberList to="/rss/$subscriptionId" params={{ subscriptionId: item.id }} className="block truncate text-sm font-medium text-zinc-900 hover:underline">
+                        {item.name}
+                      </ContextLink>
+                      <p className="mt-0.5 truncate text-xs text-zinc-500">{rssFeedHost(item.feedUrl)}</p>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-zinc-600">{item.seriesTitle}</td>
+                    <td className="px-4 py-3 text-sm text-zinc-600">第 {item.sourceSeason} 季</td>
+                    <td className="w-64 px-4 py-3"><SubscriptionProgress subscription={item} compact /></td>
+                    <td className="px-4 py-3 text-sm text-zinc-600">{item.completedAt ? '已完成' : item.enabled ? formatDateTime(item.nextPollAt) : '已暂停'}</td>
+                    <td className="w-12 px-2 py-3 text-right">
+                      <RecordActions actions={rowActions(item)} onChanged={refresh} />
+                    </td>
+                  </tr>
+                ))}
+              </DataTable>
+            )}
           </div>
           <PaginationControls
             canGoBack={pagination.canGoBack}
@@ -327,4 +427,37 @@ export function RssPage() {
       )}
     </PageBody>
   );
+}
+
+type RSSSubscriptionGroup = {
+  seriesId: string;
+  seriesTitle: string;
+  tmdbSeriesId: number;
+  sources: RssSubscription[];
+};
+
+export function groupRSSSubscriptions(items: RssSubscription[]): RSSSubscriptionGroup[] {
+  const groups = new Map<string, RSSSubscriptionGroup>();
+  for (const item of items) {
+    const existing = groups.get(item.seriesId);
+    if (existing) {
+      existing.sources.push(item);
+      continue;
+    }
+    groups.set(item.seriesId, {
+      seriesId: item.seriesId,
+      seriesTitle: item.seriesTitle,
+      tmdbSeriesId: item.tmdbSeriesId,
+      sources: [item],
+    });
+  }
+  return [...groups.values()];
+}
+
+function rssFeedHost(feedUrl: string): string {
+  try {
+    return new URL(feedUrl).host;
+  } catch {
+    return feedUrl;
+  }
 }

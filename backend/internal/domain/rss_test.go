@@ -9,13 +9,13 @@ func TestBuildRSSIdentityUsesStablePriorityAndNormalization(t *testing.T) {
 		want  string
 	}{
 		{
-			name: "guid has priority over hash and URL",
+			name: "BTIH has priority over a potentially reused GUID",
 			input: RSSIdentityInput{
 				GUID: "  release-42  ",
 				BTIH: "0123456789ABCDEF0123456789ABCDEF01234567",
 				URL:  "https://example.test/release.torrent",
 			},
-			want: "guid:release-42",
+			want: "btih:0123456789abcdef0123456789abcdef01234567",
 		},
 		{
 			name:  "BTIH is case insensitive",
@@ -44,6 +44,26 @@ func TestBuildRSSIdentityUsesStablePriorityAndNormalization(t *testing.T) {
 				t.Fatalf("BuildRSSIdentity() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestBuildRSSIdentitySeparatesReusedGUIDWithDifferentTorrentHashes(t *testing.T) {
+	first, err := BuildRSSIdentity(RSSIdentityInput{
+		GUID: "reused-guid",
+		BTIH: "0123456789abcdef0123456789abcdef01234567",
+	})
+	if err != nil {
+		t.Fatalf("first identity error = %v", err)
+	}
+	second, err := BuildRSSIdentity(RSSIdentityInput{
+		GUID: "reused-guid",
+		BTIH: "89abcdef0123456789abcdef0123456789abcdef",
+	})
+	if err != nil {
+		t.Fatalf("second identity error = %v", err)
+	}
+	if first == second {
+		t.Fatalf("reused GUID identities = %q and %q, want distinct BTIH identities", first, second)
 	}
 }
 

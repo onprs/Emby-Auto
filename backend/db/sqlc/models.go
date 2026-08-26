@@ -594,6 +594,17 @@ type RssSubscriptionProgress struct {
 	CalculatedAt         pgtype.Timestamptz `db:"calculated_at" json:"calculated_at"`
 }
 
+type RssTargetFulfillment struct {
+	RssEntryID      pgtype.UUID        `db:"rss_entry_id" json:"rss_entry_id"`
+	TargetEpisodeID pgtype.UUID        `db:"target_episode_id" json:"target_episode_id"`
+	Source          string             `db:"source" json:"source"`
+	TaskID          pgtype.UUID        `db:"task_id" json:"task_id"`
+	VerifiedAt      pgtype.Timestamptz `db:"verified_at" json:"verified_at"`
+	InvalidatedAt   pgtype.Timestamptz `db:"invalidated_at" json:"invalidated_at"`
+	CreatedAt       pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
 type RssTargetRealtimeCheck struct {
 	TargetEpisodeID pgtype.UUID        `db:"target_episode_id" json:"target_episode_id"`
 	CheckID         pgtype.UUID        `db:"check_id" json:"check_id"`

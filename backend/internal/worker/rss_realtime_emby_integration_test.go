@@ -41,7 +41,7 @@ func TestRSSRealtimeEmbyVerifierRecordsMappedTargetCheckIntegration(t *testing.T
 	_, pool := testutil.NewMigratedPostgres(t)
 	queries := db.New(pool)
 	seriesID, seasonID, episodeID := uuid.New(), uuid.New(), uuid.New()
-	profileID, subscriptionID := uuid.New(), uuid.New()
+	profileID, subscriptionID, entryID := uuid.New(), uuid.New(), uuid.New()
 	if _, err := testutil.ExecFixture(ctx, pool, `
 INSERT INTO media_series (id, tmdb_series_id, title) VALUES ($1, 500, 'Realtime Target');
 INSERT INTO tmdb_seasons (id, series_id, season_number, episode_count) VALUES ($2, $1, 2, 1);
@@ -58,8 +58,16 @@ INSERT INTO episode_mappings (
 INSERT INTO rss_subscriptions (
   id, series_id, mapping_profile_id, name, feed_url, enabled,
   poll_interval_seconds, source_season
-) VALUES ($6, $1, $4, 'Realtime Feed', 'https://example.test/feed.xml', true, 900, 1)`,
-		seriesID, seasonID, episodeID, profileID, uuid.New(), subscriptionID,
+) VALUES ($6, $1, $4, 'Realtime Feed', 'https://example.test/feed.xml', true, 900, 1);
+INSERT INTO rss_entries (
+  id, subscription_id, identity_key, title, downloadable, rejection_reasons,
+  source_season, source_episode, status, imported_at, fulfillment_source
+) VALUES ($7, $6, $8, 'Catalog target', false, ARRAY['target_episode_in_library']::text[],
+          1, 1, 'discovered', now() - interval '2 minutes', 'emby_catalog');
+INSERT INTO rss_target_fulfillments (
+  rss_entry_id, target_episode_id, source, verified_at, invalidated_at
+) VALUES ($7, $3, 'emby_catalog', now() - interval '2 minutes', now() - interval '1 minute')`,
+		seriesID, seasonID, episodeID, profileID, uuid.New(), subscriptionID, entryID, "guid:"+entryID.String(),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -87,13 +95,33 @@ INSERT INTO rss_subscriptions (
 	var gotTargetID uuid.UUID
 	var present bool
 	var source string
+	var invalidatedAt *time.Time
 	if err := pool.QueryRow(ctx, `
-SELECT target_episode_id, present, match_source
-FROM rss_target_realtime_checks
-WHERE check_id = $1`, checkID).Scan(&gotTargetID, &present, &source); err != nil {
+SELECT realtime.target_episode_id, realtime.present, realtime.match_source, fulfillment.invalidated_at
+FROM rss_target_realtime_checks AS realtime
+JOIN rss_target_fulfillments AS fulfillment
+  ON fulfillment.target_episode_id = realtime.target_episode_id
+WHERE realtime.check_id = $1`, checkID).Scan(&gotTargetID, &present, &source, &invalidatedAt); err != nil {
 		t.Fatal(err)
 	}
-	if gotTargetID != episodeID || !present || source != "tmdb_episode" {
-		t.Fatalf("stored check = target %s present %t source %q", gotTargetID, present, source)
+	if gotTargetID != episodeID || !present || source != "tmdb_episode" || invalidatedAt != nil {
+		t.Fatalf("stored present check = target %s present %t source %q invalidated %v", gotTargetID, present, source, invalidatedAt)
+	}
+
+	client.episodes = nil
+	absentCheckID, err := verifier.VerifyCoordinates(ctx, subscriptionID, []domain.EpisodeCoordinate{{Season: 1, Episode: 1}})
+	if err != nil {
+		t.Fatalf("VerifyCoordinates(absent) error = %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+SELECT realtime.present, realtime.match_source, fulfillment.invalidated_at
+FROM rss_target_realtime_checks AS realtime
+JOIN rss_target_fulfillments AS fulfillment
+  ON fulfillment.target_episode_id = realtime.target_episode_id
+WHERE realtime.check_id = $1`, absentCheckID).Scan(&present, &source, &invalidatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if present || source != "absent" || invalidatedAt == nil {
+		t.Fatalf("stored absent check = present %t source %q invalidated %v", present, source, invalidatedAt)
 	}
 }

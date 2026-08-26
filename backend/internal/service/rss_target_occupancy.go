@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -30,6 +31,7 @@ type rssTargetOccupancy struct {
 	Reason            string
 	Fulfilled         bool
 	FulfillmentSource string
+	CheckedAt         time.Time
 }
 
 func loadRSSMappedTargetOccupancyWithRealtimeCheck(
@@ -89,6 +91,9 @@ func loadRSSMappedTargetOccupancyWithRealtimeCheck(
 		TargetEpisodeID: repository.UUIDFromPG(row.TargetEpisodeID),
 		TargetSeason:    int(row.TargetSeason),
 		TargetEpisode:   int(row.TargetEpisode),
+	}
+	if row.RealtimeCheckedAt.Valid {
+		occupancy.CheckedAt = row.RealtimeCheckedAt.Time
 	}
 	switch {
 	case row.ManagedImportPresent:
@@ -234,10 +239,16 @@ func markRSSEntryTargetOccupiedInTx(
 	if entryID == uuid.Nil || occupancy.Reason == "" {
 		return false, nil
 	}
+	var verifiedAt pgtype.Timestamptz
+	if !occupancy.CheckedAt.IsZero() {
+		verifiedAt = pgtype.Timestamptz{Time: occupancy.CheckedAt, Valid: true}
+	}
 	_, err := scope.Queries.MarkRSSEntryTargetOccupied(ctx, db.MarkRSSEntryTargetOccupiedParams{
 		RejectionReason:   occupancy.Reason,
 		Fulfilled:         occupancy.Fulfilled,
 		FulfillmentSource: occupancy.FulfillmentSource,
+		TargetEpisodeID:   repository.UUIDToPG(occupancy.TargetEpisodeID),
+		VerifiedAt:        verifiedAt,
 		ID:                repository.UUIDToPG(entryID),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {

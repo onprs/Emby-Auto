@@ -47,6 +47,12 @@ func TestNewJobArgsUsesStableKindsAndOperationPayload(t *testing.T) {
 	}
 }
 
+func TestPeriodicRSSJobArgumentsUseStableKind(t *testing.T) {
+	if got := (RSSPollReconcileArgs{}).Kind(); got != KindRSSPollReconcile {
+		t.Fatalf("RSSPollReconcileArgs.Kind() = %q, want %q", got, KindRSSPollReconcile)
+	}
+}
+
 func TestInsertOptionsIsolateTranscodeConcurrency(t *testing.T) {
 	transcode, err := InsertOptions(KindTranscodeRun, 4)
 	if err != nil {

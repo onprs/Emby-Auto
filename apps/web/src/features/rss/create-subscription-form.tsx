@@ -24,6 +24,7 @@ type MatchMode = 'idle' | 'auto' | 'agent' | 'manual';
 export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
   const queryClient = useQueryClient();
   const [feedUrl, setFeedUrl] = useState('');
+  const [subscriptionName, setSubscriptionName] = useState('');
   const [series, setSeries] = useState<SeriesSelection | null>(null);
   const [mode, setMode] = useState<MatchMode>('idle');
   const [keyword, setKeyword] = useState('');
@@ -48,6 +49,10 @@ export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
       setAutomaticCandidates(result.candidates);
       setAgentResolutionId(result.agentResolutionId ?? '');
       setSubmitted('');
+      if (result.feedTitle && !subscriptionName) {
+        const groupMatch = result.feedTitle.match(/^\[([^\]]+)\]/);
+        setSubscriptionName(groupMatch ? groupMatch[1] : result.feedTitle);
+      }
       if (result.candidates.length > 0) {
         setMode('auto');
       } else if (result.catalogMatchSource === 'agent_pending' && result.agentResolutionId) {
@@ -108,7 +113,7 @@ export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
       return createSubscription({
         tmdbSeriesId: series.tmdbSeriesId,
         seriesTitle: series.title,
-        name: series.title,
+        name: subscriptionName.trim() || series.title,
         feedUrl: feedUrl.trim(),
         includeKeywords: parseKeywordInput(includeKeywords),
         excludeKeywords: parseKeywordInput(excludeKeywords),
@@ -283,6 +288,16 @@ export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
             ) : null}
           </div>
         )}
+
+        <div className="space-y-2">
+          <Label htmlFor="rss-subscription-name">订阅源名称（如字幕组名）</Label>
+          <Input
+            id="rss-subscription-name"
+            value={subscriptionName}
+            onChange={(event) => setSubscriptionName(event.target.value)}
+            placeholder="例如：字幕组名称或发布版本（留空默认使用番剧名）"
+          />
+        </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">

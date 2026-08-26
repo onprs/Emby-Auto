@@ -194,13 +194,24 @@ func (verifier *RSSRealtimeEmbyVerifier) verify(ctx context.Context, targets []r
 		}
 		for index, target := range targets {
 			match := matches[index]
-			if err := scope.Queries.UpsertRSSRealtimeTargetCheck(ctx, db.UpsertRSSRealtimeTargetCheckParams{
+			params := db.UpsertRSSRealtimeTargetCheckParams{
 				TargetEpisodeID: repository.UUIDToPG(target.targetEpisodeID),
 				CheckID:         repository.UUIDToPG(checkID),
 				Present:         match.present,
 				MatchSource:     match.source,
 				CheckedAt:       pgtype.Timestamptz{Time: checkedAt, Valid: true},
-			}); err != nil {
+			}
+			if err := scope.Queries.UpsertRSSRealtimeTargetCheck(ctx, params); err != nil {
+				return err
+			}
+			if err := scope.Queries.RefreshRSSEmbyCatalogFulfillmentsForRealtimeTarget(
+				ctx,
+				db.RefreshRSSEmbyCatalogFulfillmentsForRealtimeTargetParams{
+					Present:         params.Present,
+					CheckedAt:       params.CheckedAt,
+					TargetEpisodeID: params.TargetEpisodeID,
+				},
+			); err != nil {
 				return err
 			}
 		}

@@ -113,7 +113,33 @@ export function AcquisitionDetailPage({ acquisitionId }: { acquisitionId: string
       </section>
 
       <section className="mt-8" aria-labelledby="media-items-heading">
-        <h2 id="media-items-heading" className="text-base font-semibold text-zinc-950">任务处理项</h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 id="media-items-heading" className="text-base font-semibold text-zinc-950">
+            {task.tasks.length > 1 ? `整季各集处理进度（共 ${task.tasks.length} 集）` : '任务处理项'}
+          </h2>
+          {task.tasks.length > 1 ? (
+            <div className="flex flex-wrap gap-2 text-xs">
+              <span className="rounded bg-emerald-50 px-2 py-0.5 font-medium text-emerald-800 border border-emerald-200/60">
+                已入库 {task.tasks.filter((t) => t.state === 'imported').length}
+              </span>
+              {task.tasks.some((t) => t.state === 'processing' || t.state === 'importing' || t.state === 'finalizing') ? (
+                <span className="rounded bg-sky-50 px-2 py-0.5 font-medium text-sky-800 border border-sky-200/60">
+                  处理中 {task.tasks.filter((t) => t.state === 'processing' || t.state === 'importing' || t.state === 'finalizing').length}
+                </span>
+              ) : null}
+              {task.tasks.some((t) => t.state === 'awaiting_review') ? (
+                <span className="rounded bg-amber-50 px-2 py-0.5 font-medium text-amber-800 border border-amber-200/60">
+                  待审核 {task.tasks.filter((t) => t.state === 'awaiting_review').length}
+                </span>
+              ) : null}
+              {task.tasks.some((t) => t.state === 'failed') ? (
+                <span className="rounded bg-red-50 px-2 py-0.5 font-medium text-red-800 border border-red-200/60">
+                  失败 {task.tasks.filter((t) => t.state === 'failed').length}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
         {task.archived ? (
           <div className="mt-3 border-y border-zinc-200 py-4">
             <div className="flex flex-wrap items-center gap-2">

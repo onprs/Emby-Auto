@@ -73,7 +73,7 @@ describe('CreateSubscriptionForm', () => {
     expect(captured).toMatchObject({
       tmdbSeriesId: 101,
       seriesTitle: 'Fixture Show: Specials',
-      name: 'Fixture Show: Specials',
+      name: 'Fixture Show',
       feedUrl,
       includeKeywords: ['简日', '1080p'],
       excludeKeywords: ['720p', '合集'],

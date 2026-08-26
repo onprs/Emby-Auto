@@ -33,6 +33,7 @@ import (
 const (
 	eventsRetentionCleanupPeriod                = time.Hour
 	rssSubscriptionProgressReconciliationPeriod = time.Minute
+	rssPollReconciliationPeriod                 = time.Minute
 )
 
 func eventsRetentionCleanupSchedule() river.PeriodicSchedule {
@@ -76,6 +77,26 @@ func newRSSSubscriptionProgressReconciliationPeriodicJob() *river.PeriodicJob {
 		river.PeriodicInterval(rssSubscriptionProgressReconciliationPeriod),
 		rssSubscriptionProgressReconciliationJob,
 		&river.PeriodicJobOpts{ID: "rss_subscription_progress_reconciliation"},
+	)
+}
+
+func rssPollReconciliationJob() (river.JobArgs, *river.InsertOpts) {
+	return appqueue.RSSPollReconcileArgs{}, &river.InsertOpts{
+		MaxAttempts: 3,
+		Queue:       appqueue.QueueGeneral,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs:   true,
+			ByQueue:  true,
+			ByPeriod: rssPollReconciliationPeriod,
+		},
+	}
+}
+
+func newRSSPollReconciliationPeriodicJob() *river.PeriodicJob {
+	return river.NewPeriodicJob(
+		river.PeriodicInterval(rssPollReconciliationPeriod),
+		rssPollReconciliationJob,
+		&river.PeriodicJobOpts{ID: "rss_poll_reconciliation", RunOnStart: true},
 	)
 }
 
@@ -252,6 +273,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, checkOnly 
 	)
 	river.AddWorker(workers, appworker.NewEventsRetentionWorker(configuration, repository.NewEvents(queries)))
 	river.AddWorker(workers, appworker.NewRSSSubscriptionProgressReconcileWorker(rssWorkflow))
+	river.AddWorker(workers, appworker.NewRSSPollReconcileWorker(rssWorkflow))
 	transcodeWorkers := cfg.RiverTranscodeWorkers
 	if profile, profileErr := queries.GetDefaultTranscodeProfile(ctx); profileErr == nil && profile.MaxConcurrency > 0 {
 		transcodeWorkers = int(profile.MaxConcurrency)
@@ -271,6 +293,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, checkOnly 
 		PeriodicJobs: []*river.PeriodicJob{
 			newEventsRetentionPeriodicJob(),
 			newRSSSubscriptionProgressReconciliationPeriodicJob(),
+			newRSSPollReconciliationPeriodicJob(),
 		},
 	})
 	if err != nil {

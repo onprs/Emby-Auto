@@ -65,9 +65,8 @@ type RSSReleaseAnalysis struct {
 	RejectionReasons []string
 }
 
-// BuildRSSIdentity applies the stable RSS identity priority used by the
-// subscription uniqueness constraint: GUID, BTIH, canonical URL, then a
-// title/published-time digest.
+// BuildRSSIdentity 按内容稳定性选择去重键：BTIH、GUID、规范 URL，
+// 最后才使用标题与发布时间摘要。BTIH 优先可避免上游复用 GUID 时吞掉新种子。
 var (
 	rssRangePattern       = regexp.MustCompile(`(?i)(?:^|[^0-9])([0-9]{1,3})[[:space:]]*[-~+&—–][[:space:]]*([0-9]{1,3})(?:$|[^0-9])`)
 	rssMarkedRangePattern = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:s[0-9]{1,2}[ ._-]*)?(?:episode|ep|e)[ ._-]*[0-9]{1,4}(?:v[0-9]+)?[[:space:]]*[-~+&][[:space:]]*(?:episode|ep|e)?[ ._-]*[0-9]{1,4}(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
@@ -175,11 +174,11 @@ func canAdjudicateRSSReleaseAnalysis(analysis RSSReleaseAnalysis) bool {
 }
 
 func BuildRSSIdentity(input RSSIdentityInput) (string, error) {
-	if guid := strings.TrimSpace(input.GUID); guid != "" {
-		return "guid:" + guid, nil
-	}
 	if hash := normalizeBTIH(input.BTIH); hash != "" {
 		return "btih:" + hash, nil
+	}
+	if guid := strings.TrimSpace(input.GUID); guid != "" {
+		return "guid:" + guid, nil
 	}
 	if hash := btihFromMagnet(input.URL); hash != "" {
 		return "btih:" + hash, nil

@@ -11,6 +11,26 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const advanceDueRSSPollRecovery = `-- name: AdvanceDueRSSPollRecovery :execrows
+UPDATE rss_subscriptions
+SET next_poll_at = now() + make_interval(secs => poll_interval_seconds),
+    updated_at = now()
+WHERE id = $1
+  AND enabled
+  AND deleted_at IS NULL
+  AND completed_at IS NULL
+  AND next_poll_at IS NOT NULL
+  AND next_poll_at <= now()
+`
+
+func (q *Queries) AdvanceDueRSSPollRecovery(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, advanceDueRSSPollRecovery, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const applyDeterministicRSSPollMappingProfile = `-- name: ApplyDeterministicRSSPollMappingProfile :one
 UPDATE rss_subscriptions
 SET mapping_profile_id = $1,
@@ -20,7 +40,6 @@ WHERE id = $2
   AND version = $3
   AND mapping_profile_id IS NULL
   AND enabled
-  AND auto_episode_mapping
   AND deleted_at IS NULL
   AND completed_at IS NULL
 RETURNING version
@@ -52,7 +71,6 @@ WHERE scope.id = $2
   AND subscription.version = $3
   AND subscription.mapping_profile_id IS NULL
   AND subscription.enabled
-  AND subscription.auto_episode_mapping
   AND subscription.deleted_at IS NULL
   AND subscription.completed_at IS NULL
 RETURNING subscription.version
@@ -118,19 +136,90 @@ func (q *Queries) ArchiveRSSSubscription(ctx context.Context, arg ArchiveRSSSubs
 }
 
 const clearRSSEmbyCatalogFulfillment = `-- name: ClearRSSEmbyCatalogFulfillment :one
-UPDATE rss_entries
-SET imported_at = NULL,
-    fulfillment_source = NULL,
-    updated_at = now()
-WHERE id = $1
-  AND imported_at IS NOT NULL
-  AND fulfillment_source = 'emby_catalog'
-RETURNING id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source
+WITH removed AS (
+    DELETE FROM rss_target_fulfillments AS fulfillment
+    WHERE fulfillment.rss_entry_id = $1
+      AND fulfillment.target_episode_id = $2
+      AND fulfillment.source = 'emby_catalog'
+    RETURNING fulfillment.rss_entry_id
+),
+cleared AS (
+    UPDATE rss_entries AS entry
+    SET imported_at = CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM rss_target_fulfillments AS remaining
+                WHERE remaining.rss_entry_id = entry.id
+                  AND NOT (
+                      remaining.source = 'emby_catalog'
+                      AND remaining.target_episode_id = $2
+                  )
+            ) THEN entry.imported_at
+            ELSE NULL
+        END,
+        fulfillment_source = CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM rss_target_fulfillments AS managed
+                WHERE managed.rss_entry_id = entry.id
+                  AND managed.source = 'managed_import'
+            ) THEN 'managed_import'
+            WHEN EXISTS (
+                SELECT 1
+                FROM rss_target_fulfillments AS catalog
+                WHERE catalog.rss_entry_id = entry.id
+                  AND catalog.source = 'emby_catalog'
+                  AND catalog.target_episode_id <> $2
+            ) THEN 'emby_catalog'
+            ELSE NULL
+        END,
+        updated_at = now()
+    WHERE entry.id IN (SELECT rss_entry_id FROM removed)
+      AND entry.fulfillment_source = 'emby_catalog'
+    RETURNING entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source
+)
+SELECT id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source FROM cleared
 `
 
-func (q *Queries) ClearRSSEmbyCatalogFulfillment(ctx context.Context, id pgtype.UUID) (RssEntry, error) {
-	row := q.db.QueryRow(ctx, clearRSSEmbyCatalogFulfillment, id)
-	var i RssEntry
+type ClearRSSEmbyCatalogFulfillmentParams struct {
+	ID              pgtype.UUID `db:"id" json:"id"`
+	TargetEpisodeID pgtype.UUID `db:"target_episode_id" json:"target_episode_id"`
+}
+
+type ClearRSSEmbyCatalogFulfillmentRow struct {
+	ID                 pgtype.UUID        `db:"id" json:"id"`
+	SubscriptionID     pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
+	ReleaseCandidateID pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
+	IdentityKey        string             `db:"identity_key" json:"identity_key"`
+	Guid               *string            `db:"guid" json:"guid"`
+	Btih               *string            `db:"btih" json:"btih"`
+	CanonicalUrl       *string            `db:"canonical_url" json:"canonical_url"`
+	Title              string             `db:"title" json:"title"`
+	PublishedAt        pgtype.Timestamptz `db:"published_at" json:"published_at"`
+	Status             string             `db:"status" json:"status"`
+	EnqueueAttempts    int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
+	LastErrorCode      *string            `db:"last_error_code" json:"last_error_code"`
+	LastErrorMessage   *string            `db:"last_error_message" json:"last_error_message"`
+	UpstreamPayload    []byte             `db:"upstream_payload" json:"upstream_payload"`
+	DiscoveredAt       pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
+	EnqueuedAt         pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
+	UpdatedAt          pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DownloadUri        *string            `db:"download_uri" json:"download_uri"`
+	Downloadable       bool               `db:"downloadable" json:"downloadable"`
+	RejectionReasons   []string           `db:"rejection_reasons" json:"rejection_reasons"`
+	SourceSeason       *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode      *int32             `db:"source_episode" json:"source_episode"`
+	DuplicateCount     int32              `db:"duplicate_count" json:"duplicate_count"`
+	LastErrorRetryable bool               `db:"last_error_retryable" json:"last_error_retryable"`
+	ImportedAt         pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
+	CoordinateSource   *string            `db:"coordinate_source" json:"coordinate_source"`
+	AgentResolutionID  pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
+	FulfillmentSource  *string            `db:"fulfillment_source" json:"fulfillment_source"`
+}
+
+func (q *Queries) ClearRSSEmbyCatalogFulfillment(ctx context.Context, arg ClearRSSEmbyCatalogFulfillmentParams) (ClearRSSEmbyCatalogFulfillmentRow, error) {
+	row := q.db.QueryRow(ctx, clearRSSEmbyCatalogFulfillment, arg.ID, arg.TargetEpisodeID)
+	var i ClearRSSEmbyCatalogFulfillmentRow
 	err := row.Scan(
 		&i.ID,
 		&i.SubscriptionID,
@@ -497,7 +586,6 @@ WHERE scope.subscription_id = subscription.id
   AND (
       subscription.mapping_profile_id IS NOT NULL
       OR NOT subscription.enabled
-      OR NOT subscription.auto_episode_mapping
       OR subscription.deleted_at IS NOT NULL
       OR subscription.completed_at IS NOT NULL
       OR scope.subscription_version <> subscription.version
@@ -773,6 +861,15 @@ SELECT
           AND realtime.check_id = $1::uuid
           AND realtime.checked_at >= now() - interval '30 seconds'
     ), false)::boolean AS realtime_catalog_present,
+    (
+        SELECT realtime.checked_at
+        FROM rss_target_realtime_checks AS realtime
+        WHERE realtime.target_episode_id = target.target_episode_id
+          AND realtime.check_id = $1::uuid
+          AND realtime.checked_at >= now() - interval '30 seconds'
+        ORDER BY realtime.checked_at DESC
+        LIMIT 1
+    ) AS realtime_checked_at,
     EXISTS (
         SELECT 1
         FROM emby_library_items AS item
@@ -932,14 +1029,15 @@ type GetRSSMappedTargetOccupancyParams struct {
 }
 
 type GetRSSMappedTargetOccupancyRow struct {
-	TargetEpisodeID        pgtype.UUID `db:"target_episode_id" json:"target_episode_id"`
-	TargetSeason           int32       `db:"target_season" json:"target_season"`
-	TargetEpisode          int32       `db:"target_episode" json:"target_episode"`
-	RealtimeCheckValid     bool        `db:"realtime_check_valid" json:"realtime_check_valid"`
-	RealtimeCatalogPresent bool        `db:"realtime_catalog_present" json:"realtime_catalog_present"`
-	CatalogPresent         bool        `db:"catalog_present" json:"catalog_present"`
-	ManagedImportPresent   bool        `db:"managed_import_present" json:"managed_import_present"`
-	ProcessingPresent      bool        `db:"processing_present" json:"processing_present"`
+	TargetEpisodeID        pgtype.UUID        `db:"target_episode_id" json:"target_episode_id"`
+	TargetSeason           int32              `db:"target_season" json:"target_season"`
+	TargetEpisode          int32              `db:"target_episode" json:"target_episode"`
+	RealtimeCheckValid     bool               `db:"realtime_check_valid" json:"realtime_check_valid"`
+	RealtimeCatalogPresent bool               `db:"realtime_catalog_present" json:"realtime_catalog_present"`
+	RealtimeCheckedAt      pgtype.Timestamptz `db:"realtime_checked_at" json:"realtime_checked_at"`
+	CatalogPresent         bool               `db:"catalog_present" json:"catalog_present"`
+	ManagedImportPresent   bool               `db:"managed_import_present" json:"managed_import_present"`
+	ProcessingPresent      bool               `db:"processing_present" json:"processing_present"`
 }
 
 func (q *Queries) GetRSSMappedTargetOccupancy(ctx context.Context, arg GetRSSMappedTargetOccupancyParams) (GetRSSMappedTargetOccupancyRow, error) {
@@ -957,6 +1055,7 @@ func (q *Queries) GetRSSMappedTargetOccupancy(ctx context.Context, arg GetRSSMap
 		&i.TargetEpisode,
 		&i.RealtimeCheckValid,
 		&i.RealtimeCatalogPresent,
+		&i.RealtimeCheckedAt,
 		&i.CatalogPresent,
 		&i.ManagedImportPresent,
 		&i.ProcessingPresent,
@@ -1274,7 +1373,6 @@ func (q *Queries) InsertRSSEntry(ctx context.Context, arg InsertRSSEntryParams) 
 const isCurrentRSSPreacquisitionMappingScope = `-- name: IsCurrentRSSPreacquisitionMappingScope :one
 SELECT scope.status = 'pending'
        AND subscription.enabled
-       AND subscription.auto_episode_mapping
        AND subscription.mapping_profile_id IS NULL
        AND subscription.deleted_at IS NULL
        AND subscription.completed_at IS NULL
@@ -1292,8 +1390,7 @@ func (q *Queries) IsCurrentRSSPreacquisitionMappingScope(ctx context.Context, sc
 }
 
 const isRSSPreacquisitionMappingEnabled = `-- name: IsRSSPreacquisitionMappingEnabled :one
-SELECT subscription.auto_episode_mapping
-       AND subscription.enabled
+SELECT subscription.enabled
        AND subscription.mapping_profile_id IS NULL
        AND subscription.deleted_at IS NULL
        AND subscription.completed_at IS NULL
@@ -1357,7 +1454,6 @@ FROM rss_preacquisition_mapping_scopes AS scope
 JOIN rss_subscriptions AS subscription ON subscription.id = scope.subscription_id
 WHERE scope.status = 'pending'
   AND subscription.enabled
-  AND subscription.auto_episode_mapping
   AND subscription.mapping_profile_id IS NULL
   AND subscription.deleted_at IS NULL
   AND subscription.completed_at IS NULL
@@ -1401,7 +1497,6 @@ JOIN rss_subscriptions AS subscription ON subscription.id = scope.subscription_i
 WHERE subscription.series_id = $1
   AND scope.status = 'pending'
   AND subscription.enabled
-  AND subscription.auto_episode_mapping
   AND subscription.mapping_profile_id IS NULL
   AND subscription.deleted_at IS NULL
   AND subscription.completed_at IS NULL
@@ -1431,6 +1526,61 @@ func (q *Queries) ListAutomaticRSSPreacquisitionMappingScopesBySeries(ctx contex
 			return nil, err
 		}
 		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDueRSSPollRecoveryCandidates = `-- name: ListDueRSSPollRecoveryCandidates :many
+SELECT
+    subscription.id,
+    subscription.version,
+    (
+        SELECT count(*)
+        FROM operations AS poll
+        WHERE poll.kind = 'rss.poll'
+          AND poll.resource_type = 'rss_subscription'
+          AND poll.resource_id = subscription.id
+    )::bigint AS poll_generation
+FROM rss_subscriptions AS subscription
+WHERE subscription.enabled
+  AND subscription.deleted_at IS NULL
+  AND subscription.completed_at IS NULL
+  AND subscription.next_poll_at IS NOT NULL
+  AND subscription.next_poll_at <= now()
+  AND NOT EXISTS (
+      SELECT 1
+      FROM operations AS active_poll
+      WHERE active_poll.kind = 'rss.poll'
+        AND active_poll.resource_type = 'rss_subscription'
+        AND active_poll.resource_id = subscription.id
+        AND active_poll.status IN ('queued', 'running')
+  )
+ORDER BY subscription.next_poll_at, subscription.id
+LIMIT $1
+`
+
+type ListDueRSSPollRecoveryCandidatesRow struct {
+	ID             pgtype.UUID `db:"id" json:"id"`
+	Version        int32       `db:"version" json:"version"`
+	PollGeneration int64       `db:"poll_generation" json:"poll_generation"`
+}
+
+func (q *Queries) ListDueRSSPollRecoveryCandidates(ctx context.Context, pageSize int32) ([]ListDueRSSPollRecoveryCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listDueRSSPollRecoveryCandidates, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDueRSSPollRecoveryCandidatesRow{}
+	for rows.Next() {
+		var i ListDueRSSPollRecoveryCandidatesRow
+		if err := rows.Scan(&i.ID, &i.Version, &i.PollGeneration); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1573,41 +1723,6 @@ func (q *Queries) ListRSSCompletionCleanupCandidates(ctx context.Context, subscr
 	for rows.Next() {
 		var i ListRSSCompletionCleanupCandidatesRow
 		if err := rows.Scan(&i.TaskID, &i.ImportID, &i.DownloadID); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listRSSEmbyCatalogFulfilledEntries = `-- name: ListRSSEmbyCatalogFulfilledEntries :many
-SELECT id, source_season, source_episode
-FROM rss_entries
-WHERE subscription_id = $1
-  AND imported_at IS NOT NULL
-  AND fulfillment_source = 'emby_catalog'
-ORDER BY id
-`
-
-type ListRSSEmbyCatalogFulfilledEntriesRow struct {
-	ID            pgtype.UUID `db:"id" json:"id"`
-	SourceSeason  *int32      `db:"source_season" json:"source_season"`
-	SourceEpisode *int32      `db:"source_episode" json:"source_episode"`
-}
-
-func (q *Queries) ListRSSEmbyCatalogFulfilledEntries(ctx context.Context, subscriptionID pgtype.UUID) ([]ListRSSEmbyCatalogFulfilledEntriesRow, error) {
-	rows, err := q.db.Query(ctx, listRSSEmbyCatalogFulfilledEntries, subscriptionID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListRSSEmbyCatalogFulfilledEntriesRow{}
-	for rows.Next() {
-		var i ListRSSEmbyCatalogFulfilledEntriesRow
-		if err := rows.Scan(&i.ID, &i.SourceSeason, &i.SourceEpisode); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1805,7 +1920,6 @@ const listRSSPreAcquisitionMappingRecoveryCandidates = `-- name: ListRSSPreAcqui
 SELECT subscription.id, subscription.version
 FROM rss_subscriptions AS subscription
 WHERE subscription.enabled
-  AND subscription.auto_episode_mapping
   AND subscription.mapping_profile_id IS NULL
   AND subscription.deleted_at IS NULL
   AND subscription.completed_at IS NULL
@@ -1867,7 +1981,6 @@ FROM rss_entries AS entry
 JOIN rss_subscriptions AS subscription ON subscription.id = entry.subscription_id
 WHERE entry.subscription_id = $1
   AND subscription.enabled
-  AND subscription.auto_episode_mapping
   AND subscription.mapping_profile_id IS NULL
   AND subscription.deleted_at IS NULL
   AND subscription.completed_at IS NULL
@@ -2577,6 +2690,45 @@ func (q *Queries) ListRSSSubscriptionsSorted(ctx context.Context, arg ListRSSSub
 	return items, nil
 }
 
+const listStaleRSSEmbyCatalogFulfillmentsForCheck = `-- name: ListStaleRSSEmbyCatalogFulfillmentsForCheck :many
+SELECT DISTINCT
+    fulfillment.rss_entry_id,
+    fulfillment.target_episode_id
+FROM rss_target_fulfillments AS fulfillment
+JOIN rss_target_realtime_checks AS realtime
+  ON realtime.target_episode_id = fulfillment.target_episode_id
+ AND realtime.check_id = $1
+ AND realtime.checked_at >= now() - interval '30 seconds'
+WHERE fulfillment.source = 'emby_catalog'
+  AND NOT realtime.present
+ORDER BY fulfillment.rss_entry_id, fulfillment.target_episode_id
+`
+
+type ListStaleRSSEmbyCatalogFulfillmentsForCheckRow struct {
+	RssEntryID      pgtype.UUID `db:"rss_entry_id" json:"rss_entry_id"`
+	TargetEpisodeID pgtype.UUID `db:"target_episode_id" json:"target_episode_id"`
+}
+
+func (q *Queries) ListStaleRSSEmbyCatalogFulfillmentsForCheck(ctx context.Context, realtimeCheckID pgtype.UUID) ([]ListStaleRSSEmbyCatalogFulfillmentsForCheckRow, error) {
+	rows, err := q.db.Query(ctx, listStaleRSSEmbyCatalogFulfillmentsForCheck, realtimeCheckID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListStaleRSSEmbyCatalogFulfillmentsForCheckRow{}
+	for rows.Next() {
+		var i ListStaleRSSEmbyCatalogFulfillmentsForCheckRow
+		if err := rows.Scan(&i.RssEntryID, &i.TargetEpisodeID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSubscriptionCascadeAcquisitions = `-- name: ListSubscriptionCascadeAcquisitions :many
 SELECT
     acquisition.id AS acquisition_id,
@@ -2988,14 +3140,29 @@ WHERE task.id = $1
   AND NOT EXISTS (
       SELECT 1
       FROM generate_series(1, completion.final_source_episode) AS expected(source_episode)
-      WHERE NOT EXISTS (
-          SELECT 1
-          FROM rss_entries AS imported_entry
-          WHERE imported_entry.subscription_id = subscription.id
-            AND imported_entry.source_season = subscription.source_season
-            AND imported_entry.source_episode = expected.source_episode
-            AND imported_entry.imported_at IS NOT NULL
-      )
+      LEFT JOIN episode_mappings AS expected_mapping
+        ON expected_mapping.profile_id = subscription.mapping_profile_id
+       AND expected_mapping.source_season = subscription.source_season
+       AND expected_mapping.source_episode = expected.source_episode
+       AND expected_mapping.mapping_status = 'mapped'
+      WHERE expected_mapping.target_episode_id IS NULL
+         OR NOT EXISTS (
+              SELECT 1
+              FROM rss_target_fulfillments AS fulfillment
+              JOIN rss_entries AS fulfillment_entry
+                ON fulfillment_entry.id = fulfillment.rss_entry_id
+              JOIN rss_subscriptions AS fulfillment_subscription
+                ON fulfillment_subscription.id = fulfillment_entry.subscription_id
+              WHERE fulfillment_subscription.series_id = subscription.series_id
+                AND fulfillment.target_episode_id = expected_mapping.target_episode_id
+                AND (
+                    fulfillment.source = 'managed_import'
+                    OR (
+                        fulfillment.source = 'emby_catalog'
+                        AND fulfillment.invalidated_at IS NULL
+                    )
+                )
+          )
   )
 FOR UPDATE OF subscription
 `
@@ -3050,14 +3217,29 @@ WHERE subscription.id = $1
   AND NOT EXISTS (
       SELECT 1
       FROM generate_series(1, completion.final_source_episode) AS expected(source_episode)
-      WHERE NOT EXISTS (
-          SELECT 1
-          FROM rss_entries AS fulfilled_entry
-          WHERE fulfilled_entry.subscription_id = subscription.id
-            AND fulfilled_entry.source_season = subscription.source_season
-            AND fulfilled_entry.source_episode = expected.source_episode
-            AND fulfilled_entry.imported_at IS NOT NULL
-      )
+      LEFT JOIN episode_mappings AS expected_mapping
+        ON expected_mapping.profile_id = subscription.mapping_profile_id
+       AND expected_mapping.source_season = subscription.source_season
+       AND expected_mapping.source_episode = expected.source_episode
+       AND expected_mapping.mapping_status = 'mapped'
+      WHERE expected_mapping.target_episode_id IS NULL
+         OR NOT EXISTS (
+              SELECT 1
+              FROM rss_target_fulfillments AS fulfillment
+              JOIN rss_entries AS fulfillment_entry
+                ON fulfillment_entry.id = fulfillment.rss_entry_id
+              JOIN rss_subscriptions AS fulfillment_subscription
+                ON fulfillment_subscription.id = fulfillment_entry.subscription_id
+              WHERE fulfillment_subscription.series_id = subscription.series_id
+                AND fulfillment.target_episode_id = expected_mapping.target_episode_id
+                AND (
+                    fulfillment.source = 'managed_import'
+                    OR (
+                        fulfillment.source = 'emby_catalog'
+                        AND fulfillment.invalidated_at IS NULL
+                    )
+                )
+          )
   )
 FOR UPDATE OF subscription
 `
@@ -3271,21 +3453,82 @@ func (q *Queries) MarkRSSEntryEnqueueing(ctx context.Context, id pgtype.UUID) (R
 }
 
 const markRSSEntryImportedForTask = `-- name: MarkRSSEntryImportedForTask :one
-UPDATE rss_entries AS entry
-SET imported_at = COALESCE(entry.imported_at, now()),
-    fulfillment_source = 'managed_import',
-    updated_at = now()
-FROM acquisitions AS acquisition
-JOIN episode_tasks AS task ON task.acquisition_id = acquisition.id
-WHERE task.id = $1
-  AND task.state = 'imported'
-  AND entry.id = acquisition.rss_entry_id
-RETURNING entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source
+WITH updated AS (
+    UPDATE rss_entries AS entry
+    SET imported_at = COALESCE(entry.imported_at, now()),
+        fulfillment_source = 'managed_import',
+        updated_at = now()
+    FROM acquisitions AS acquisition
+    JOIN episode_tasks AS task ON task.acquisition_id = acquisition.id
+    WHERE task.id = $1
+      AND task.state = 'imported'
+      AND entry.id = acquisition.rss_entry_id
+    RETURNING entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source
+),
+recorded AS (
+    INSERT INTO rss_target_fulfillments (
+        rss_entry_id,
+        target_episode_id,
+        source,
+        task_id,
+        verified_at
+    )
+    SELECT
+        updated.id,
+        mapping.target_episode_id,
+        'managed_import',
+        task.id,
+        now()
+    FROM updated
+    JOIN acquisitions AS acquisition ON acquisition.rss_entry_id = updated.id
+    JOIN episode_tasks AS task ON task.acquisition_id = acquisition.id
+    JOIN episode_mappings AS mapping
+      ON mapping.id = task.mapping_id
+     AND mapping.mapping_status = 'mapped'
+    WHERE task.id = $1
+    ON CONFLICT (rss_entry_id, target_episode_id, source) DO UPDATE
+    SET task_id = COALESCE(EXCLUDED.task_id, rss_target_fulfillments.task_id),
+        verified_at = GREATEST(rss_target_fulfillments.verified_at, EXCLUDED.verified_at),
+        updated_at = now()
+    RETURNING rss_entry_id
+)
+SELECT id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source FROM updated
 `
 
-func (q *Queries) MarkRSSEntryImportedForTask(ctx context.Context, taskID pgtype.UUID) (RssEntry, error) {
+type MarkRSSEntryImportedForTaskRow struct {
+	ID                 pgtype.UUID        `db:"id" json:"id"`
+	SubscriptionID     pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
+	ReleaseCandidateID pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
+	IdentityKey        string             `db:"identity_key" json:"identity_key"`
+	Guid               *string            `db:"guid" json:"guid"`
+	Btih               *string            `db:"btih" json:"btih"`
+	CanonicalUrl       *string            `db:"canonical_url" json:"canonical_url"`
+	Title              string             `db:"title" json:"title"`
+	PublishedAt        pgtype.Timestamptz `db:"published_at" json:"published_at"`
+	Status             string             `db:"status" json:"status"`
+	EnqueueAttempts    int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
+	LastErrorCode      *string            `db:"last_error_code" json:"last_error_code"`
+	LastErrorMessage   *string            `db:"last_error_message" json:"last_error_message"`
+	UpstreamPayload    []byte             `db:"upstream_payload" json:"upstream_payload"`
+	DiscoveredAt       pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
+	EnqueuedAt         pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
+	UpdatedAt          pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DownloadUri        *string            `db:"download_uri" json:"download_uri"`
+	Downloadable       bool               `db:"downloadable" json:"downloadable"`
+	RejectionReasons   []string           `db:"rejection_reasons" json:"rejection_reasons"`
+	SourceSeason       *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode      *int32             `db:"source_episode" json:"source_episode"`
+	DuplicateCount     int32              `db:"duplicate_count" json:"duplicate_count"`
+	LastErrorRetryable bool               `db:"last_error_retryable" json:"last_error_retryable"`
+	ImportedAt         pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
+	CoordinateSource   *string            `db:"coordinate_source" json:"coordinate_source"`
+	AgentResolutionID  pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
+	FulfillmentSource  *string            `db:"fulfillment_source" json:"fulfillment_source"`
+}
+
+func (q *Queries) MarkRSSEntryImportedForTask(ctx context.Context, taskID pgtype.UUID) (MarkRSSEntryImportedForTaskRow, error) {
 	row := q.db.QueryRow(ctx, markRSSEntryImportedForTask, taskID)
-	var i RssEntry
+	var i MarkRSSEntryImportedForTaskRow
 	err := row.Scan(
 		&i.ID,
 		&i.SubscriptionID,
@@ -3375,50 +3618,136 @@ func (q *Queries) MarkRSSEntryScheduleFailed(ctx context.Context, arg MarkRSSEnt
 }
 
 const markRSSEntryTargetOccupied = `-- name: MarkRSSEntryTargetOccupied :one
-UPDATE rss_entries
-SET downloadable = false,
-    rejection_reasons = ARRAY[$1::text],
-    imported_at = CASE
-        WHEN $2::boolean THEN COALESCE(imported_at, now())
-        ELSE imported_at
-    END,
-    fulfillment_source = CASE
-        WHEN $2::boolean THEN COALESCE(fulfillment_source, $3::text)
-        ELSE fulfillment_source
-    END,
-    last_error_code = NULL,
-    last_error_message = NULL,
-    last_error_retryable = false,
-    updated_at = now()
-WHERE id = $4
-  AND NOT (
-      imported_at IS NOT NULL
-      AND fulfillment_source IS NOT NULL
-      AND fulfillment_source = 'managed_import'
-  )
-  AND (
-      downloadable
-      OR rejection_reasons IS DISTINCT FROM ARRAY[$1::text]
-      OR ($2::boolean AND imported_at IS NULL)
-  )
-RETURNING id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source
+WITH eligible AS (
+    SELECT entry.id
+    FROM rss_entries AS entry
+    WHERE entry.id = $1
+      AND $2::boolean
+),
+removed_obsolete_catalog AS (
+    DELETE FROM rss_target_fulfillments AS fulfillment
+    USING eligible
+    WHERE fulfillment.rss_entry_id = eligible.id
+      AND fulfillment.source = 'emby_catalog'
+      AND fulfillment.target_episode_id <> $3
+    RETURNING fulfillment.rss_entry_id
+),
+updated AS (
+    UPDATE rss_entries
+    SET downloadable = false,
+        rejection_reasons = ARRAY[$4::text],
+        imported_at = CASE
+            WHEN $2::boolean THEN COALESCE(imported_at, now())
+            ELSE imported_at
+        END,
+        fulfillment_source = CASE
+            WHEN $2::boolean
+             AND $5::text = 'managed_import' THEN 'managed_import'
+            WHEN $2::boolean THEN COALESCE(fulfillment_source, $5::text)
+            ELSE fulfillment_source
+        END,
+        last_error_code = NULL,
+        last_error_message = NULL,
+        last_error_retryable = false,
+        updated_at = now()
+    WHERE id = $1
+      AND NOT (
+          imported_at IS NOT NULL
+          AND fulfillment_source IS NOT NULL
+          AND fulfillment_source = 'managed_import'
+      )
+      AND (
+          downloadable
+          OR rejection_reasons IS DISTINCT FROM ARRAY[$4::text]
+          OR ($2::boolean AND imported_at IS NULL)
+          OR (
+              $2::boolean
+              AND $5::text = 'managed_import'
+              AND fulfillment_source IS DISTINCT FROM 'managed_import'
+          )
+      )
+    RETURNING id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source
+),
+recorded AS (
+    INSERT INTO rss_target_fulfillments (
+        rss_entry_id,
+        target_episode_id,
+        source,
+        verified_at
+    )
+    SELECT
+        eligible.id,
+        $3,
+        $5::text,
+        COALESCE($6::timestamptz, now())
+    FROM eligible
+    CROSS JOIN (
+        SELECT count(*) AS removed_count
+        FROM removed_obsolete_catalog
+    ) AS removed
+    ON CONFLICT (rss_entry_id, target_episode_id, source) DO UPDATE
+    SET verified_at = GREATEST(rss_target_fulfillments.verified_at, EXCLUDED.verified_at),
+        invalidated_at = CASE
+            WHEN rss_target_fulfillments.invalidated_at IS NULL
+              OR rss_target_fulfillments.invalidated_at <= EXCLUDED.verified_at THEN NULL
+            ELSE rss_target_fulfillments.invalidated_at
+        END,
+        updated_at = now()
+    RETURNING rss_entry_id
+)
+SELECT id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source FROM updated
 `
 
 type MarkRSSEntryTargetOccupiedParams struct {
-	RejectionReason   string      `db:"rejection_reason" json:"rejection_reason"`
-	Fulfilled         bool        `db:"fulfilled" json:"fulfilled"`
-	FulfillmentSource string      `db:"fulfillment_source" json:"fulfillment_source"`
-	ID                pgtype.UUID `db:"id" json:"id"`
+	ID                pgtype.UUID        `db:"id" json:"id"`
+	Fulfilled         bool               `db:"fulfilled" json:"fulfilled"`
+	TargetEpisodeID   pgtype.UUID        `db:"target_episode_id" json:"target_episode_id"`
+	RejectionReason   string             `db:"rejection_reason" json:"rejection_reason"`
+	FulfillmentSource string             `db:"fulfillment_source" json:"fulfillment_source"`
+	VerifiedAt        pgtype.Timestamptz `db:"verified_at" json:"verified_at"`
 }
 
-func (q *Queries) MarkRSSEntryTargetOccupied(ctx context.Context, arg MarkRSSEntryTargetOccupiedParams) (RssEntry, error) {
+type MarkRSSEntryTargetOccupiedRow struct {
+	ID                 pgtype.UUID        `db:"id" json:"id"`
+	SubscriptionID     pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
+	ReleaseCandidateID pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
+	IdentityKey        string             `db:"identity_key" json:"identity_key"`
+	Guid               *string            `db:"guid" json:"guid"`
+	Btih               *string            `db:"btih" json:"btih"`
+	CanonicalUrl       *string            `db:"canonical_url" json:"canonical_url"`
+	Title              string             `db:"title" json:"title"`
+	PublishedAt        pgtype.Timestamptz `db:"published_at" json:"published_at"`
+	Status             string             `db:"status" json:"status"`
+	EnqueueAttempts    int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
+	LastErrorCode      *string            `db:"last_error_code" json:"last_error_code"`
+	LastErrorMessage   *string            `db:"last_error_message" json:"last_error_message"`
+	UpstreamPayload    []byte             `db:"upstream_payload" json:"upstream_payload"`
+	DiscoveredAt       pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
+	EnqueuedAt         pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
+	UpdatedAt          pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DownloadUri        *string            `db:"download_uri" json:"download_uri"`
+	Downloadable       bool               `db:"downloadable" json:"downloadable"`
+	RejectionReasons   []string           `db:"rejection_reasons" json:"rejection_reasons"`
+	SourceSeason       *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode      *int32             `db:"source_episode" json:"source_episode"`
+	DuplicateCount     int32              `db:"duplicate_count" json:"duplicate_count"`
+	LastErrorRetryable bool               `db:"last_error_retryable" json:"last_error_retryable"`
+	ImportedAt         pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
+	CoordinateSource   *string            `db:"coordinate_source" json:"coordinate_source"`
+	AgentResolutionID  pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
+	FulfillmentSource  *string            `db:"fulfillment_source" json:"fulfillment_source"`
+}
+
+func (q *Queries) MarkRSSEntryTargetOccupied(ctx context.Context, arg MarkRSSEntryTargetOccupiedParams) (MarkRSSEntryTargetOccupiedRow, error) {
 	row := q.db.QueryRow(ctx, markRSSEntryTargetOccupied,
-		arg.RejectionReason,
-		arg.Fulfilled,
-		arg.FulfillmentSource,
 		arg.ID,
+		arg.Fulfilled,
+		arg.TargetEpisodeID,
+		arg.RejectionReason,
+		arg.FulfillmentSource,
+		arg.VerifiedAt,
 	)
-	var i RssEntry
+	var i MarkRSSEntryTargetOccupiedRow
 	err := row.Scan(
 		&i.ID,
 		&i.SubscriptionID,
@@ -3614,6 +3943,47 @@ func (q *Queries) RecordRSSPollFailure(ctx context.Context, id pgtype.UUID) (Rss
 		&i.AutoEpisodeMapping,
 	)
 	return i, err
+}
+
+const refreshRSSEmbyCatalogFulfillmentsForRealtimeTarget = `-- name: RefreshRSSEmbyCatalogFulfillmentsForRealtimeTarget :exec
+UPDATE rss_target_fulfillments AS fulfillment
+SET verified_at = CASE
+        WHEN $1::boolean
+         AND (
+             fulfillment.invalidated_at IS NULL
+             OR fulfillment.invalidated_at <= $2::timestamptz
+         )
+        THEN GREATEST(fulfillment.verified_at, $2::timestamptz)
+        ELSE fulfillment.verified_at
+    END,
+    invalidated_at = CASE
+        WHEN $1::boolean
+         AND (
+             fulfillment.invalidated_at IS NULL
+             OR fulfillment.invalidated_at <= $2::timestamptz
+         ) THEN NULL
+        WHEN NOT $1::boolean
+         AND fulfillment.verified_at <= $2::timestamptz
+        THEN GREATEST(
+            COALESCE(fulfillment.invalidated_at, $2::timestamptz),
+            $2::timestamptz
+        )
+        ELSE fulfillment.invalidated_at
+    END,
+    updated_at = now()
+WHERE fulfillment.target_episode_id = $3
+  AND fulfillment.source = 'emby_catalog'
+`
+
+type RefreshRSSEmbyCatalogFulfillmentsForRealtimeTargetParams struct {
+	Present         bool               `db:"present" json:"present"`
+	CheckedAt       pgtype.Timestamptz `db:"checked_at" json:"checked_at"`
+	TargetEpisodeID pgtype.UUID        `db:"target_episode_id" json:"target_episode_id"`
+}
+
+func (q *Queries) RefreshRSSEmbyCatalogFulfillmentsForRealtimeTarget(ctx context.Context, arg RefreshRSSEmbyCatalogFulfillmentsForRealtimeTargetParams) error {
+	_, err := q.db.Exec(ctx, refreshRSSEmbyCatalogFulfillmentsForRealtimeTarget, arg.Present, arg.CheckedAt, arg.TargetEpisodeID)
+	return err
 }
 
 const resetRSSIncompleteRecoveryEntries = `-- name: ResetRSSIncompleteRecoveryEntries :many

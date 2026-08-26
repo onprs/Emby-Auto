@@ -47,6 +47,16 @@ export function AcquisitionMediaItem({
         <StatusBadge value={item.data?.state ?? summary.state} />
       </div>
 
+      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-zinc-100 pt-3 text-xs">
+        <span className="text-zinc-500 font-medium">处理阶段：</span>
+        <span className="inline-flex items-center gap-1 rounded bg-zinc-100 px-2 py-0.5 text-zinc-700">
+          转码: <StatusBadge value={item.data?.videoState ?? summary.videoState} />
+        </span>
+        <span className="inline-flex items-center gap-1 rounded bg-zinc-100 px-2 py-0.5 text-zinc-700">
+          字幕: <StatusBadge value={item.data?.subtitleState ?? summary.subtitleState} />
+        </span>
+      </div>
+
       {item.isPending ? <LoadingState className="mt-4" label="正在读取处理项" /> : null}
       {item.error ? <ErrorState className="mt-4" message={item.error.message} onRetry={() => item.refetch()} /> : null}
       {item.data ? <MediaItemContent task={item.data} onChanged={refresh} /> : null}

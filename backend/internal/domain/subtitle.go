@@ -420,6 +420,7 @@ func subtitleLabelSignals(label string) (simplified, traditional, otherLanguage 
 	)
 	traditional = containsAny(lower, "繁体", "繁體", "繁中", "繁日", "繁英", "简繁", "簡繁", "繁简", "繁簡") || containsSubtitleLabelToken(normalized,
 		"zh hant", "zh tw", "zh hk", "zh mo", "cht", "tc", "big5", "traditional", "traditional chinese",
+		"jptc", "tcjp", "jpntc", "tcjpn",
 	)
 	otherLanguage = containsAny(lower,
 		"简英", "簡英", "简日", "簡日", "中英", "中日", "双语", "雙語", "英文", "英语", "英語", "日文", "日语", "日語",

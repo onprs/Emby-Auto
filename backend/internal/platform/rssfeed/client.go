@@ -115,6 +115,7 @@ func parse(body []byte) (domain.RSSFeed, error) {
 
 type rssDocument struct {
 	Channel rssChannel `xml:"channel"`
+	Items   []rssItem  `xml:"item"`
 }
 
 type rssChannel struct {
@@ -123,11 +124,13 @@ type rssChannel struct {
 }
 
 type rssItem struct {
+	About       string         `xml:"about,attr"`
 	GUID        string         `xml:"guid"`
 	Title       string         `xml:"title"`
 	Link        string         `xml:"link"`
 	PubDate     string         `xml:"pubDate"`
 	Published   string         `xml:"published"`
+	Date        string         `xml:"date"`
 	Description string         `xml:"description"`
 	Content     string         `xml:"encoded"`
 	MagnetURI   string         `xml:"magnetURI"`
@@ -136,9 +139,10 @@ type rssItem struct {
 }
 
 type rssEnclosure struct {
-	URL    string `xml:"url,attr"`
-	Type   string `xml:"type,attr"`
-	Length string `xml:"length,attr"`
+	URL      string `xml:"url,attr"`
+	Resource string `xml:"resource,attr"`
+	Type     string `xml:"type,attr"`
+	Length   string `xml:"length,attr"`
 }
 
 type rssTorrent struct {
@@ -167,16 +171,21 @@ type atomLink struct {
 }
 
 func normalizeRSS(document rssDocument) domain.RSSFeed {
-	feed := domain.RSSFeed{Title: strings.TrimSpace(document.Channel.Title), Entries: make([]domain.RSSFeedEntry, 0, len(document.Channel.Items))}
-	for _, item := range document.Channel.Items {
+	items := document.Channel.Items
+	if len(document.Items) > 0 {
+		// RSS 1.0/RDF 将 item 放在 RDF 根节点下，与 channel 同级。
+		items = document.Items
+	}
+	feed := domain.RSSFeed{Title: strings.TrimSpace(document.Channel.Title), Entries: make([]domain.RSSFeedEntry, 0, len(items))}
+	for _, item := range items {
 		link := strings.TrimSpace(item.Link)
 		downloadURI := firstDownloadURI(enclosureURLs(item.Enclosures), []string{item.MagnetURI, item.Torrent.MagnetURI}, link, item.Description, item.Content, item.GUID)
 		feed.Entries = append(feed.Entries, domain.RSSFeedEntry{
-			GUID:        strings.TrimSpace(item.GUID),
+			GUID:        strings.TrimSpace(firstNonBlank(item.GUID, item.About)),
 			Title:       strings.TrimSpace(item.Title),
 			URL:         link,
 			DownloadURI: downloadURI,
-			PublishedAt: parseTime(firstNonBlank(item.PubDate, item.Published)),
+			PublishedAt: parseTime(firstNonBlank(item.PubDate, item.Published, item.Date)),
 			UpstreamPayload: map[string]any{
 				"description": strings.TrimSpace(item.Description),
 				"content":     strings.TrimSpace(item.Content),
@@ -219,12 +228,22 @@ func normalizeAtom(document atomDocument) domain.RSSFeed {
 func enclosureURLs(enclosures []rssEnclosure) []string {
 	result := make([]string, 0, len(enclosures))
 	for _, enclosure := range enclosures {
-		result = append(result, enclosure.URL)
+		result = append(result, firstNonBlank(enclosure.URL, enclosure.Resource))
 	}
 	return result
 }
 
 func firstDownloadURI(enclosures, explicit []string, link string, text ...string) string {
+	// 优先寻找携带有效 BTIH 的 magnet，保证条目标识与实际下载 URI 一致，
+	// 避免上游同时提供 HTTP 附件时遮蔽显式 magnet。
+	for _, candidates := range [][]string{explicit, enclosures} {
+		for _, candidate := range candidates {
+			trimmed := strings.TrimSpace(candidate)
+			if strings.HasPrefix(strings.ToLower(trimmed), "magnet:") && isSupportedDownloadURI(trimmed, true) {
+				return trimmed
+			}
+		}
+	}
 	for _, candidates := range [][]string{enclosures, explicit} {
 		for _, candidate := range candidates {
 			if isSupportedDownloadURI(candidate, true) {

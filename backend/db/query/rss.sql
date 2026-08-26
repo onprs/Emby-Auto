@@ -623,7 +623,6 @@ WHERE id = sqlc.arg(id)
   AND version = sqlc.arg(expected_version)
   AND mapping_profile_id IS NULL
   AND enabled
-  AND auto_episode_mapping
   AND deleted_at IS NULL
   AND completed_at IS NULL
 RETURNING version;
@@ -632,7 +631,6 @@ RETURNING version;
 SELECT subscription.id, subscription.version
 FROM rss_subscriptions AS subscription
 WHERE subscription.enabled
-  AND subscription.auto_episode_mapping
   AND subscription.mapping_profile_id IS NULL
   AND subscription.deleted_at IS NULL
   AND subscription.completed_at IS NULL
@@ -661,6 +659,45 @@ WHERE subscription.enabled
   )
 ORDER BY subscription.created_at, subscription.id
 LIMIT 100;
+
+-- name: ListDueRSSPollRecoveryCandidates :many
+SELECT
+    subscription.id,
+    subscription.version,
+    (
+        SELECT count(*)
+        FROM operations AS poll
+        WHERE poll.kind = 'rss.poll'
+          AND poll.resource_type = 'rss_subscription'
+          AND poll.resource_id = subscription.id
+    )::bigint AS poll_generation
+FROM rss_subscriptions AS subscription
+WHERE subscription.enabled
+  AND subscription.deleted_at IS NULL
+  AND subscription.completed_at IS NULL
+  AND subscription.next_poll_at IS NOT NULL
+  AND subscription.next_poll_at <= now()
+  AND NOT EXISTS (
+      SELECT 1
+      FROM operations AS active_poll
+      WHERE active_poll.kind = 'rss.poll'
+        AND active_poll.resource_type = 'rss_subscription'
+        AND active_poll.resource_id = subscription.id
+        AND active_poll.status IN ('queued', 'running')
+  )
+ORDER BY subscription.next_poll_at, subscription.id
+LIMIT sqlc.arg(page_size);
+
+-- name: AdvanceDueRSSPollRecovery :execrows
+UPDATE rss_subscriptions
+SET next_poll_at = now() + make_interval(secs => poll_interval_seconds),
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND enabled
+  AND deleted_at IS NULL
+  AND completed_at IS NULL
+  AND next_poll_at IS NOT NULL
+  AND next_poll_at <= now();
 
 -- name: ListRSSMappedRealtimeTargets :many
 SELECT
@@ -724,6 +761,35 @@ SET present = EXCLUDED.present,
     match_source = EXCLUDED.match_source,
     checked_at = EXCLUDED.checked_at;
 
+-- name: RefreshRSSEmbyCatalogFulfillmentsForRealtimeTarget :exec
+UPDATE rss_target_fulfillments AS fulfillment
+SET verified_at = CASE
+        WHEN sqlc.arg(present)::boolean
+         AND (
+             fulfillment.invalidated_at IS NULL
+             OR fulfillment.invalidated_at <= sqlc.arg(checked_at)::timestamptz
+         )
+        THEN GREATEST(fulfillment.verified_at, sqlc.arg(checked_at)::timestamptz)
+        ELSE fulfillment.verified_at
+    END,
+    invalidated_at = CASE
+        WHEN sqlc.arg(present)::boolean
+         AND (
+             fulfillment.invalidated_at IS NULL
+             OR fulfillment.invalidated_at <= sqlc.arg(checked_at)::timestamptz
+         ) THEN NULL
+        WHEN NOT sqlc.arg(present)::boolean
+         AND fulfillment.verified_at <= sqlc.arg(checked_at)::timestamptz
+        THEN GREATEST(
+            COALESCE(fulfillment.invalidated_at, sqlc.arg(checked_at)::timestamptz),
+            sqlc.arg(checked_at)::timestamptz
+        )
+        ELSE fulfillment.invalidated_at
+    END,
+    updated_at = now()
+WHERE fulfillment.target_episode_id = sqlc.arg(target_episode_id)
+  AND fulfillment.source = 'emby_catalog';
+
 -- name: DeleteExpiredRSSRealtimeTargetChecks :exec
 DELETE FROM rss_target_realtime_checks
 WHERE checked_at < now() - interval '10 minutes';
@@ -766,6 +832,15 @@ SELECT
           AND realtime.check_id = sqlc.narg(realtime_check_id)::uuid
           AND realtime.checked_at >= now() - interval '30 seconds'
     ), false)::boolean AS realtime_catalog_present,
+    (
+        SELECT realtime.checked_at
+        FROM rss_target_realtime_checks AS realtime
+        WHERE realtime.target_episode_id = target.target_episode_id
+          AND realtime.check_id = sqlc.narg(realtime_check_id)::uuid
+          AND realtime.checked_at >= now() - interval '30 seconds'
+        ORDER BY realtime.checked_at DESC
+        LIMIT 1
+    ) AS realtime_checked_at,
     EXISTS (
         SELECT 1
         FROM emby_library_items AS item
@@ -915,52 +990,143 @@ SELECT
     ) AS processing_present
 FROM target;
 
--- name: ListRSSEmbyCatalogFulfilledEntries :many
-SELECT id, source_season, source_episode
-FROM rss_entries
-WHERE subscription_id = sqlc.arg(subscription_id)
-  AND imported_at IS NOT NULL
-  AND fulfillment_source = 'emby_catalog'
-ORDER BY id;
+-- name: ListStaleRSSEmbyCatalogFulfillmentsForCheck :many
+SELECT DISTINCT
+    fulfillment.rss_entry_id,
+    fulfillment.target_episode_id
+FROM rss_target_fulfillments AS fulfillment
+JOIN rss_target_realtime_checks AS realtime
+  ON realtime.target_episode_id = fulfillment.target_episode_id
+ AND realtime.check_id = sqlc.arg(realtime_check_id)
+ AND realtime.checked_at >= now() - interval '30 seconds'
+WHERE fulfillment.source = 'emby_catalog'
+  AND NOT realtime.present
+ORDER BY fulfillment.rss_entry_id, fulfillment.target_episode_id;
 
 -- name: ClearRSSEmbyCatalogFulfillment :one
-UPDATE rss_entries
-SET imported_at = NULL,
-    fulfillment_source = NULL,
-    updated_at = now()
-WHERE id = sqlc.arg(id)
-  AND imported_at IS NOT NULL
-  AND fulfillment_source = 'emby_catalog'
-RETURNING *;
+WITH removed AS (
+    DELETE FROM rss_target_fulfillments AS fulfillment
+    WHERE fulfillment.rss_entry_id = sqlc.arg(id)
+      AND fulfillment.target_episode_id = sqlc.arg(target_episode_id)
+      AND fulfillment.source = 'emby_catalog'
+    RETURNING fulfillment.rss_entry_id
+),
+cleared AS (
+    UPDATE rss_entries AS entry
+    SET imported_at = CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM rss_target_fulfillments AS remaining
+                WHERE remaining.rss_entry_id = entry.id
+                  AND NOT (
+                      remaining.source = 'emby_catalog'
+                      AND remaining.target_episode_id = sqlc.arg(target_episode_id)
+                  )
+            ) THEN entry.imported_at
+            ELSE NULL
+        END,
+        fulfillment_source = CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM rss_target_fulfillments AS managed
+                WHERE managed.rss_entry_id = entry.id
+                  AND managed.source = 'managed_import'
+            ) THEN 'managed_import'
+            WHEN EXISTS (
+                SELECT 1
+                FROM rss_target_fulfillments AS catalog
+                WHERE catalog.rss_entry_id = entry.id
+                  AND catalog.source = 'emby_catalog'
+                  AND catalog.target_episode_id <> sqlc.arg(target_episode_id)
+            ) THEN 'emby_catalog'
+            ELSE NULL
+        END,
+        updated_at = now()
+    WHERE entry.id IN (SELECT rss_entry_id FROM removed)
+      AND entry.fulfillment_source = 'emby_catalog'
+    RETURNING entry.*
+)
+SELECT * FROM cleared;
 
 -- name: MarkRSSEntryTargetOccupied :one
-UPDATE rss_entries
-SET downloadable = false,
-    rejection_reasons = ARRAY[sqlc.arg(rejection_reason)::text],
-    imported_at = CASE
-        WHEN sqlc.arg(fulfilled)::boolean THEN COALESCE(imported_at, now())
-        ELSE imported_at
-    END,
-    fulfillment_source = CASE
-        WHEN sqlc.arg(fulfilled)::boolean THEN COALESCE(fulfillment_source, sqlc.arg(fulfillment_source)::text)
-        ELSE fulfillment_source
-    END,
-    last_error_code = NULL,
-    last_error_message = NULL,
-    last_error_retryable = false,
-    updated_at = now()
-WHERE id = sqlc.arg(id)
-  AND NOT (
-      imported_at IS NOT NULL
-      AND fulfillment_source IS NOT NULL
-      AND fulfillment_source = 'managed_import'
-  )
-  AND (
-      downloadable
-      OR rejection_reasons IS DISTINCT FROM ARRAY[sqlc.arg(rejection_reason)::text]
-      OR (sqlc.arg(fulfilled)::boolean AND imported_at IS NULL)
-  )
-RETURNING *;
+WITH eligible AS (
+    SELECT entry.id
+    FROM rss_entries AS entry
+    WHERE entry.id = sqlc.arg(id)
+      AND sqlc.arg(fulfilled)::boolean
+),
+removed_obsolete_catalog AS (
+    DELETE FROM rss_target_fulfillments AS fulfillment
+    USING eligible
+    WHERE fulfillment.rss_entry_id = eligible.id
+      AND fulfillment.source = 'emby_catalog'
+      AND fulfillment.target_episode_id <> sqlc.arg(target_episode_id)
+    RETURNING fulfillment.rss_entry_id
+),
+updated AS (
+    UPDATE rss_entries
+    SET downloadable = false,
+        rejection_reasons = ARRAY[sqlc.arg(rejection_reason)::text],
+        imported_at = CASE
+            WHEN sqlc.arg(fulfilled)::boolean THEN COALESCE(imported_at, now())
+            ELSE imported_at
+        END,
+        fulfillment_source = CASE
+            WHEN sqlc.arg(fulfilled)::boolean
+             AND sqlc.arg(fulfillment_source)::text = 'managed_import' THEN 'managed_import'
+            WHEN sqlc.arg(fulfilled)::boolean THEN COALESCE(fulfillment_source, sqlc.arg(fulfillment_source)::text)
+            ELSE fulfillment_source
+        END,
+        last_error_code = NULL,
+        last_error_message = NULL,
+        last_error_retryable = false,
+        updated_at = now()
+    WHERE id = sqlc.arg(id)
+      AND NOT (
+          imported_at IS NOT NULL
+          AND fulfillment_source IS NOT NULL
+          AND fulfillment_source = 'managed_import'
+      )
+      AND (
+          downloadable
+          OR rejection_reasons IS DISTINCT FROM ARRAY[sqlc.arg(rejection_reason)::text]
+          OR (sqlc.arg(fulfilled)::boolean AND imported_at IS NULL)
+          OR (
+              sqlc.arg(fulfilled)::boolean
+              AND sqlc.arg(fulfillment_source)::text = 'managed_import'
+              AND fulfillment_source IS DISTINCT FROM 'managed_import'
+          )
+      )
+    RETURNING *
+),
+recorded AS (
+    INSERT INTO rss_target_fulfillments (
+        rss_entry_id,
+        target_episode_id,
+        source,
+        verified_at
+    )
+    SELECT
+        eligible.id,
+        sqlc.arg(target_episode_id),
+        sqlc.arg(fulfillment_source)::text,
+        COALESCE(sqlc.narg(verified_at)::timestamptz, now())
+    FROM eligible
+    CROSS JOIN (
+        SELECT count(*) AS removed_count
+        FROM removed_obsolete_catalog
+    ) AS removed
+    ON CONFLICT (rss_entry_id, target_episode_id, source) DO UPDATE
+    SET verified_at = GREATEST(rss_target_fulfillments.verified_at, EXCLUDED.verified_at),
+        invalidated_at = CASE
+            WHEN rss_target_fulfillments.invalidated_at IS NULL
+              OR rss_target_fulfillments.invalidated_at <= EXCLUDED.verified_at THEN NULL
+            ELSE rss_target_fulfillments.invalidated_at
+        END,
+        updated_at = now()
+    RETURNING rss_entry_id
+)
+SELECT * FROM updated;
 
 -- name: ListRSSImportConflictReconciliationCandidates :many
 SELECT DISTINCT
@@ -1024,16 +1190,46 @@ WHERE task.id = sqlc.arg(task_id)
 FOR UPDATE OF subscription;
 
 -- name: MarkRSSEntryImportedForTask :one
-UPDATE rss_entries AS entry
-SET imported_at = COALESCE(entry.imported_at, now()),
-    fulfillment_source = 'managed_import',
-    updated_at = now()
-FROM acquisitions AS acquisition
-JOIN episode_tasks AS task ON task.acquisition_id = acquisition.id
-WHERE task.id = sqlc.arg(task_id)
-  AND task.state = 'imported'
-  AND entry.id = acquisition.rss_entry_id
-RETURNING entry.*;
+WITH updated AS (
+    UPDATE rss_entries AS entry
+    SET imported_at = COALESCE(entry.imported_at, now()),
+        fulfillment_source = 'managed_import',
+        updated_at = now()
+    FROM acquisitions AS acquisition
+    JOIN episode_tasks AS task ON task.acquisition_id = acquisition.id
+    WHERE task.id = sqlc.arg(task_id)
+      AND task.state = 'imported'
+      AND entry.id = acquisition.rss_entry_id
+    RETURNING entry.*
+),
+recorded AS (
+    INSERT INTO rss_target_fulfillments (
+        rss_entry_id,
+        target_episode_id,
+        source,
+        task_id,
+        verified_at
+    )
+    SELECT
+        updated.id,
+        mapping.target_episode_id,
+        'managed_import',
+        task.id,
+        now()
+    FROM updated
+    JOIN acquisitions AS acquisition ON acquisition.rss_entry_id = updated.id
+    JOIN episode_tasks AS task ON task.acquisition_id = acquisition.id
+    JOIN episode_mappings AS mapping
+      ON mapping.id = task.mapping_id
+     AND mapping.mapping_status = 'mapped'
+    WHERE task.id = sqlc.arg(task_id)
+    ON CONFLICT (rss_entry_id, target_episode_id, source) DO UPDATE
+    SET task_id = COALESCE(EXCLUDED.task_id, rss_target_fulfillments.task_id),
+        verified_at = GREATEST(rss_target_fulfillments.verified_at, EXCLUDED.verified_at),
+        updated_at = now()
+    RETURNING rss_entry_id
+)
+SELECT * FROM updated;
 
 -- name: LockRSSSubscriptionAtCompleteImport :one
 SELECT
@@ -1069,14 +1265,29 @@ WHERE task.id = sqlc.arg(task_id)
   AND NOT EXISTS (
       SELECT 1
       FROM generate_series(1, completion.final_source_episode) AS expected(source_episode)
-      WHERE NOT EXISTS (
-          SELECT 1
-          FROM rss_entries AS imported_entry
-          WHERE imported_entry.subscription_id = subscription.id
-            AND imported_entry.source_season = subscription.source_season
-            AND imported_entry.source_episode = expected.source_episode
-            AND imported_entry.imported_at IS NOT NULL
-      )
+      LEFT JOIN episode_mappings AS expected_mapping
+        ON expected_mapping.profile_id = subscription.mapping_profile_id
+       AND expected_mapping.source_season = subscription.source_season
+       AND expected_mapping.source_episode = expected.source_episode
+       AND expected_mapping.mapping_status = 'mapped'
+      WHERE expected_mapping.target_episode_id IS NULL
+         OR NOT EXISTS (
+              SELECT 1
+              FROM rss_target_fulfillments AS fulfillment
+              JOIN rss_entries AS fulfillment_entry
+                ON fulfillment_entry.id = fulfillment.rss_entry_id
+              JOIN rss_subscriptions AS fulfillment_subscription
+                ON fulfillment_subscription.id = fulfillment_entry.subscription_id
+              WHERE fulfillment_subscription.series_id = subscription.series_id
+                AND fulfillment.target_episode_id = expected_mapping.target_episode_id
+                AND (
+                    fulfillment.source = 'managed_import'
+                    OR (
+                        fulfillment.source = 'emby_catalog'
+                        AND fulfillment.invalidated_at IS NULL
+                    )
+                )
+          )
   )
 FOR UPDATE OF subscription;
 
@@ -1109,14 +1320,29 @@ WHERE subscription.id = sqlc.arg(subscription_id)
   AND NOT EXISTS (
       SELECT 1
       FROM generate_series(1, completion.final_source_episode) AS expected(source_episode)
-      WHERE NOT EXISTS (
-          SELECT 1
-          FROM rss_entries AS fulfilled_entry
-          WHERE fulfilled_entry.subscription_id = subscription.id
-            AND fulfilled_entry.source_season = subscription.source_season
-            AND fulfilled_entry.source_episode = expected.source_episode
-            AND fulfilled_entry.imported_at IS NOT NULL
-      )
+      LEFT JOIN episode_mappings AS expected_mapping
+        ON expected_mapping.profile_id = subscription.mapping_profile_id
+       AND expected_mapping.source_season = subscription.source_season
+       AND expected_mapping.source_episode = expected.source_episode
+       AND expected_mapping.mapping_status = 'mapped'
+      WHERE expected_mapping.target_episode_id IS NULL
+         OR NOT EXISTS (
+              SELECT 1
+              FROM rss_target_fulfillments AS fulfillment
+              JOIN rss_entries AS fulfillment_entry
+                ON fulfillment_entry.id = fulfillment.rss_entry_id
+              JOIN rss_subscriptions AS fulfillment_subscription
+                ON fulfillment_subscription.id = fulfillment_entry.subscription_id
+              WHERE fulfillment_subscription.series_id = subscription.series_id
+                AND fulfillment.target_episode_id = expected_mapping.target_episode_id
+                AND (
+                    fulfillment.source = 'managed_import'
+                    OR (
+                        fulfillment.source = 'emby_catalog'
+                        AND fulfillment.invalidated_at IS NULL
+                    )
+                )
+          )
   )
 FOR UPDATE OF subscription;
 
@@ -1607,7 +1833,6 @@ FROM rss_entries AS entry
 JOIN rss_subscriptions AS subscription ON subscription.id = entry.subscription_id
 WHERE entry.subscription_id = sqlc.arg(subscription_id)
   AND subscription.enabled
-  AND subscription.auto_episode_mapping
   AND subscription.mapping_profile_id IS NULL
   AND subscription.deleted_at IS NULL
   AND subscription.completed_at IS NULL
@@ -1699,7 +1924,6 @@ WHERE scope.id = sqlc.arg(scope_id)
   AND subscription.version = sqlc.arg(expected_version)
   AND subscription.mapping_profile_id IS NULL
   AND subscription.enabled
-  AND subscription.auto_episode_mapping
   AND subscription.deleted_at IS NULL
   AND subscription.completed_at IS NULL
 RETURNING subscription.version;
@@ -1722,8 +1946,7 @@ WHERE subscription_id = sqlc.arg(subscription_id)
   AND status = 'pending';
 
 -- name: IsRSSPreacquisitionMappingEnabled :one
-SELECT subscription.auto_episode_mapping
-       AND subscription.enabled
+SELECT subscription.enabled
        AND subscription.mapping_profile_id IS NULL
        AND subscription.deleted_at IS NULL
        AND subscription.completed_at IS NULL
@@ -1736,7 +1959,6 @@ WHERE scope.id = sqlc.arg(scope_id);
 -- name: IsCurrentRSSPreacquisitionMappingScope :one
 SELECT scope.status = 'pending'
        AND subscription.enabled
-       AND subscription.auto_episode_mapping
        AND subscription.mapping_profile_id IS NULL
        AND subscription.deleted_at IS NULL
        AND subscription.completed_at IS NULL
@@ -1755,7 +1977,6 @@ WHERE scope.subscription_id = subscription.id
   AND (
       subscription.mapping_profile_id IS NOT NULL
       OR NOT subscription.enabled
-      OR NOT subscription.auto_episode_mapping
       OR subscription.deleted_at IS NOT NULL
       OR subscription.completed_at IS NOT NULL
       OR scope.subscription_version <> subscription.version
@@ -1767,7 +1988,6 @@ FROM rss_preacquisition_mapping_scopes AS scope
 JOIN rss_subscriptions AS subscription ON subscription.id = scope.subscription_id
 WHERE scope.status = 'pending'
   AND subscription.enabled
-  AND subscription.auto_episode_mapping
   AND subscription.mapping_profile_id IS NULL
   AND subscription.deleted_at IS NULL
   AND subscription.completed_at IS NULL
@@ -1790,7 +2010,6 @@ JOIN rss_subscriptions AS subscription ON subscription.id = scope.subscription_i
 WHERE subscription.series_id = sqlc.arg(series_id)
   AND scope.status = 'pending'
   AND subscription.enabled
-  AND subscription.auto_episode_mapping
   AND subscription.mapping_profile_id IS NULL
   AND subscription.deleted_at IS NULL
   AND subscription.completed_at IS NULL

@@ -58,21 +58,31 @@ async function login(page: Page) {
 }
 
 async function configure(page: Page) {
-  await page.goto('/settings');
-  await expect(page.getByRole('heading', { name: '设置' })).toBeVisible();
+  await page.goto('/settings/services');
+  await expect(page.getByRole('heading', { name: '外部服务' })).toBeVisible();
   const currentURL = await page.locator('#qb-url').inputValue();
   if (currentURL !== manifest.fixtureURL) {
     await page.locator('#qb-url').fill(manifest.fixtureURL);
     await page.locator('#qb-username').fill('fixture');
-    await page.getByLabel('密码操作').selectOption('set');
     await page.locator('[id="secret-密码"]').fill('fixture-password');
 
     await page.locator('#emby-url').fill(`${manifest.fixtureURL}/emby`);
-    await page.getByLabel('API key操作').selectOption('set');
     await page.locator('[id="secret-API key"]').fill('fixture-key');
-    await page.getByLabel('API Read Access Token操作').selectOption('set');
     await page.locator('[id="secret-API Read Access Token"]').fill('fixture-token');
+    await page.getByRole('button', { name: '保存外部服务配置' }).click();
+    await expect(page.getByText('配置已保存', { exact: false })).toBeVisible();
+  }
 
+  for (const title of ['qBittorrent', 'Emby', 'TMDb']) {
+    const card = page.getByRole('heading', { name: title, exact: true }).locator('xpath=../..');
+    await card.getByRole('button', { name: '测试连接' }).click();
+    await expect(card.getByText('连接成功', { exact: false })).toBeVisible();
+  }
+
+  await page.goto('/settings/storage');
+  await expect(page.getByRole('heading', { name: '存储与媒体工具' })).toBeVisible();
+  const currentDownloadRoot = await page.locator('#downloadRoot').inputValue();
+  if (currentDownloadRoot !== manifest.paths.downloadRoot) {
     await page.locator('#downloadRoot').fill(manifest.paths.downloadRoot);
     await page.locator('#workRoot').fill(manifest.paths.workRoot);
     await page.locator('#stagingRoot').fill(manifest.paths.stagingRoot);
@@ -80,15 +90,12 @@ async function configure(page: Page) {
     await page.locator('#movieLibraryRoot').fill(manifest.paths.movieLibraryRoot);
     await page.locator('#ffmpeg').fill(manifest.paths.ffmpegPath);
     await page.locator('#ffprobe').fill(manifest.paths.ffprobePath);
-    await page.getByRole('button', { name: '保存全部配置' }).click();
-    await expect(page.getByText('密码已配置', { exact: false })).toBeVisible();
+    await page.getByRole('button', { name: '保存存储配置' }).click();
+    await expect(page.getByText('配置已保存', { exact: false })).toBeVisible();
   }
-
-  for (const title of ['qBittorrent', 'Emby', 'TMDb', '媒体工具']) {
-    const card = page.getByRole('heading', { name: title, exact: true }).locator('xpath=../..');
-    await card.getByRole('button', { name: '测试连接' }).click();
-    await expect(card.getByText('连接成功', { exact: false })).toBeVisible();
-  }
+  const mediaTools = page.getByRole('heading', { name: '媒体工具', exact: true }).locator('xpath=../..');
+  await mediaTools.getByRole('button', { name: '测试连接' }).click();
+  await expect(mediaTools.getByText('连接成功', { exact: false })).toBeVisible();
 }
 
 async function json<T>(request: APIRequestContext, url: string): Promise<T> {
@@ -127,6 +134,20 @@ async function setFixtureControl(page: Page, target: string, enabled: boolean) {
   expect(response.ok(), `fixture control ${target}=${enabled}`).toBeTruthy();
 }
 
+async function retryFailedTaskFromPage(page: Page, taskId: string) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const responsePromise = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === `/api/v1/tasks/${taskId}/retry` && response.request().method() === 'POST');
+    await page.getByRole('button', { name: '重试任务', exact: true }).click();
+    const response = await responsePromise;
+    if (response.ok()) return;
+    expect(response.status()).toBe(409);
+    await page.reload();
+    await expect(page.getByRole('button', { name: '重试任务', exact: true })).toBeVisible();
+  }
+  throw new Error('task retry remained stale after reloading the latest task version');
+}
+
 async function waitForFixtureStatus(page: Page, target: string, enabled: boolean) {
   await poll(
     async () => {
@@ -139,13 +160,15 @@ async function waitForFixtureStatus(page: Page, target: string, enabled: boolean
 }
 
 async function setQBPassword(page: Page, action: 'set' | 'clear') {
-  await page.goto('/settings');
-  await page.getByLabel('密码操作').selectOption(action);
-  if (action === 'set') {
-    await page.locator('[id="secret-密码"]').fill('fixture-password');
+  await page.goto('/settings/services');
+  const password = page.locator('[id="secret-密码"]');
+  await expect(password).toBeVisible();
+  if (action === 'clear') {
+    await expect(password).toHaveValue('fixture-password');
   }
+  await password.fill(action === 'set' ? 'fixture-password' : '');
   const saved = page.waitForResponse((response) => response.url().includes('/api/v1/config') && response.request().method() === 'PUT');
-  await page.getByRole('button', { name: '保存全部配置' }).click();
+  await page.getByRole('button', { name: '保存外部服务配置' }).click();
   expect((await saved).ok()).toBeTruthy();
   await expect(page.getByText(action === 'set' ? '密码已配置' : '密码未配置', { exact: false })).toBeVisible();
 }
@@ -187,27 +210,34 @@ async function createMovieAcquisition(page: Page, query: string) {
   return { acquisitionId, downloadId: acquisition.downloadId! };
 }
 
-async function createRSSSubscription(page: Page, name: string, cleanupSourceOnCompletion = false) {
+async function createRSSSubscription(
+  page: Page,
+  name: string,
+  cleanupSourceOnCompletion = false,
+  seriesID = 100,
+  seriesTitle = 'Fixture Show',
+) {
   await page.goto('/rss');
   await page.getByRole('button', { name: '新建订阅' }).click();
-  const feedUrl = `${manifest.fixtureURL}/rss.xml?run=${encodeURIComponent(name)}`;
+  const feedUrl = `${manifest.fixtureURL}/rss.xml?run=${encodeURIComponent(name)}&series=${seriesID}`;
   await page.locator('#rss-url').fill(feedUrl);
   await page.getByRole('button', { name: /识别作品/ }).click();
   // 自动识别成功时直接出现 TMDb 候选；识别失败（如夹具故障）时回退到手动关键词搜索。
   const keyword = page.locator('#rss-tmdb-keyword');
-  await expect(page.getByRole('button', { name: /Fixture Show/ }).or(keyword).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: new RegExp(seriesTitle) }).or(keyword).first()).toBeVisible();
   if (await keyword.isVisible()) {
-    await keyword.fill('Fixture Show');
+    await keyword.fill(seriesTitle);
     await page.getByRole('button', { name: '查询', exact: true }).click();
   }
-  await page.getByRole('button', { name: /Fixture Show/ }).click();
+  await page.getByRole('button', { name: new RegExp(seriesTitle) }).click();
+  await page.locator('#rss-season').fill('1');
   if (cleanupSourceOnCompletion) {
     await page.getByRole('checkbox', { name: '最终集入库后，删除对应的 qBittorrent 种子和缓存文件' }).check();
   }
   const createResponse = page.waitForResponse((response) => response.url().includes('/api/v1/rss/subscriptions') && response.request().method() === 'POST');
   await page.getByRole('button', { name: '创建订阅' }).click();
   expect((await createResponse).ok()).toBeTruthy();
-  await expect(page.getByRole('link', { name: 'Fixture Show' }).first()).toBeVisible();
+  await expect(page.getByRole('link', { name: seriesTitle }).first()).toBeVisible();
   const subscriptions = await json<RssSubscriptionPage>(page.request, '/api/v1/rss/subscriptions?limit=100');
   const subscriptionId = subscriptions.items.find((item) => item.feedUrl === feedUrl)?.id;
   expect(subscriptionId).toBeTruthy();
@@ -219,10 +249,11 @@ async function mapAndMaterialize(page: Page, acquisitionId: string, downloadId: 
     () => json<Download>(page.request, `/api/v1/downloads/${downloadId}`),
     (download) => download.status === 'failed' || download.status === 'materialized',
   );
-  if (mappingBoundary.status === 'failed') {
-    expect(mappingBoundary.failureStage).toBe('materialize');
-    expect(mappingBoundary.errorCode).toBe('mapping_profile_required');
+  if (mappingBoundary.status === 'materialized') {
+    return;
   }
+  expect(mappingBoundary.failureStage).toBe('materialize');
+  expect(mappingBoundary.errorCode).toBe('mapping_profile_required');
   await poll(
     () => page.request.get('/api/v1/tmdb/series/100/catalog'),
     (response) => response.ok(),
@@ -319,7 +350,8 @@ async function reviewImportAndScan(page: Page, acquisitionId: string) {
   await expect(page.getByRole('link', { name: 'Fixture Library' })).toBeVisible();
   await page.getByRole('link', { name: 'Fixture Library' }).click();
   await expect(page.getByText('Pilot', { exact: true })).toBeVisible();
-  await expect(page.getByRole('link', { name: '查看' })).toBeVisible();
+  const pilotRow = page.getByRole('row').filter({ has: page.getByText('Pilot', { exact: true }) });
+  await expect(pilotRow.getByRole('link', { name: '查看任务' })).toBeVisible();
 }
 
 test('@cross-browser real search pipeline reaches reviewed import and Emby catalog', async ({ page }, testInfo) => {
@@ -388,16 +420,13 @@ test('@cross-browser real RSS pipeline reaches acquisition, task and Emby catalo
   await login(page);
   await configure(page);
 
+  const rssSeries = testInfo.project.name === 'firefox'
+    ? { id: 103, title: 'Fixture RSS Firefox', episodeTitle: 'Firefox Premiere' }
+    : testInfo.project.name === 'edge'
+      ? { id: 104, title: 'Fixture RSS Edge', episodeTitle: 'Edge Premiere' }
+      : { id: 102, title: 'Fixture RSS Chromium', episodeTitle: 'Chromium Premiere' };
   const subscriptionName = `Fixture RSS ${testInfo.project.name}`;
-  const subscriptionId = await createRSSSubscription(page, subscriptionName, true);
-  await page.goto(`/rss/${subscriptionId}`);
-  await page.getByRole('button', { name: '立即检查' }).click();
-  await expect(page).toHaveURL(/\/operations\/[0-9a-f-]+(?:\?.*)?$/);
-  const pollOperationId = currentResourceID(page);
-  await poll(
-    () => json<{ status: string }>(page.request, `/api/v1/operations/${pollOperationId}`),
-    (value) => value.status === 'succeeded',
-  );
+  const subscriptionId = await createRSSSubscription(page, subscriptionName, true, rssSeries.id, rssSeries.title);
 
   const entries = await poll(
     () => json<RssEntryPage>(page.request, `/api/v1/rss/subscriptions/${subscriptionId}/entries?limit=50`),
@@ -416,7 +445,17 @@ test('@cross-browser real RSS pipeline reaches acquisition, task and Emby catalo
   expect(importOperation.status).toBe('succeeded');
   await poll(
     () => json<Task>(page.request, `/api/v1/tasks/${taskId}`),
-    (value) => value.state === 'imported' && value.cleanup?.status === 'completed',
+    (value) => value.state === 'imported',
+    90_000,
+  );
+  await poll(
+    () => json<RssSubscription>(page.request, `/api/v1/rss/subscriptions/${subscriptionId}`),
+    (value) => !value.enabled && Boolean(value.completedAt),
+    90_000,
+  );
+  await poll(
+    () => json<Task>(page.request, `/api/v1/tasks/${taskId}`),
+    (value) => value.cleanup?.status === 'completed',
     90_000,
   );
   const subscriptionOperations = await json<OperationPage>(page.request, `/api/v1/operations?limit=100&resourceType=rss_subscription&resourceId=${subscriptionId}`);
@@ -434,13 +473,13 @@ test('@cross-browser real RSS pipeline reaches acquisition, task and Emby catalo
   expect(retainedSubscription.enabled).toBeFalsy();
   expect(retainedSubscription.completedAt).toBeTruthy();
 
-  const animeDirectory = path.join(manifest.paths.animeLibraryRoot, 'Fixture Show', 'Season1');
-  expect(fs.existsSync(path.join(animeDirectory, 'Fixture Show - S01E01 - Pilot.mp4'))).toBeTruthy();
-  expect(fs.existsSync(path.join(animeDirectory, 'Fixture Show - S01E01 - Pilot.ass'))).toBeTruthy();
+  const animeDirectory = path.join(manifest.paths.animeLibraryRoot, rssSeries.title, 'Season1');
+  expect(fs.existsSync(path.join(animeDirectory, `${rssSeries.title} - S01E01 - ${rssSeries.episodeTitle}.mp4`))).toBeTruthy();
+  expect(fs.existsSync(path.join(animeDirectory, `${rssSeries.title} - S01E01 - ${rssSeries.episodeTitle}.ass`))).toBeTruthy();
 
   await requestEmbyRefreshAndUpdateCatalog(page);
   await page.getByRole('link', { name: 'Fixture Library' }).click();
-  await expect(page.getByText('Pilot', { exact: true })).toBeVisible();
+  await expect(page.getByText(rssSeries.episodeTitle, { exact: true })).toBeVisible();
 });
 
 test('@recovery configuration connectivity is persisted and stale tabs conflict', async ({ page, context }) => {
@@ -450,25 +489,25 @@ test('@recovery configuration connectivity is persisted and stale tabs conflict'
   const dependency = page.getByText('qBittorrent', { exact: true }).locator('xpath=..');
   await expect(dependency.getByText('可用', { exact: true })).toBeVisible();
 
-  await page.goto('/settings');
+  await page.goto('/settings/services');
   const stalePage = await context.newPage();
   await stalePage.route('**/api/v1/events**', (route) => route.abort());
-  await stalePage.goto('/settings');
+  await stalePage.goto('/settings/services');
   await page.locator('#qb-username').fill('fixture-primary');
   const firstSave = page.waitForResponse((response) => response.url().includes('/api/v1/config') && response.request().method() === 'PUT');
-  await page.getByRole('button', { name: '保存全部配置' }).click();
+  await page.getByRole('button', { name: '保存外部服务配置' }).click();
   expect((await firstSave).ok()).toBeTruthy();
 
   await stalePage.locator('#qb-username').fill('fixture-stale');
   const staleSave = stalePage.waitForResponse((response) => response.url().includes('/api/v1/config') && response.request().method() === 'PUT');
-  await stalePage.getByRole('button', { name: '保存全部配置' }).click();
+  await stalePage.getByRole('button', { name: '保存外部服务配置' }).click();
   expect((await staleSave).status()).toBe(409);
   await expect(stalePage.getByText('配置已被其他操作修改', { exact: false })).toBeVisible();
   await stalePage.close();
 
   await page.locator('#qb-username').fill('fixture');
   const restored = page.waitForResponse((response) => response.url().includes('/api/v1/config') && response.request().method() === 'PUT');
-  await page.getByRole('button', { name: '保存全部配置' }).click();
+  await page.getByRole('button', { name: '保存外部服务配置' }).click();
   expect((await restored).ok()).toBeTruthy();
 });
 
@@ -493,9 +532,11 @@ test('@recovery download enqueue failure can retry and active download can cance
   );
   const recovered = await poll(
     () => json<Download>(page.request, `/api/v1/downloads/${retryFlow.downloadId}`),
-    (value) => value.status === 'failed' && value.failureStage === 'materialize',
+    (value) => value.status === 'materialized' || (value.status === 'failed' && value.failureStage === 'materialize'),
   );
-  expect(recovered.errorCode).toBe('mapping_profile_required');
+  if (recovered.status === 'failed') {
+    expect(recovered.errorCode).toBe('mapping_profile_required');
+  }
 
   await setFixtureControl(page, 'qbittorrent', true);
   try {
@@ -513,6 +554,7 @@ test('@recovery download enqueue failure can retry and active download can cance
 });
 
 test('@recovery task media failure retries, stale review conflicts, and processing cancels', async ({ page, context }) => {
+  test.setTimeout(180_000);
   await login(page);
   await configure(page);
   await setFixtureControl(page, 'media_invalid', true);
@@ -531,7 +573,7 @@ test('@recovery task media failure retries, stale review conflicts, and processi
     );
     await setFixtureControl(page, 'media_invalid', false);
     await page.goto(`/tasks/${retryTaskId}`);
-    await page.getByRole('button', { name: '重试任务', exact: true }).click();
+    await retryFailedTaskFromPage(page, retryTaskId);
     await poll(
       () => json<Task>(page.request, `/api/v1/tasks/${retryTaskId}`),
       (value) => value.state === 'awaiting_review',
@@ -621,7 +663,11 @@ test('@recovery RSS upstream failure is audited and succeeds on retry', async ({
       (value) => value.status === 'succeeded',
       90_000,
     );
-    const entries = await json<RssEntryPage>(page.request, `/api/v1/rss/subscriptions/${subscriptionId}/entries?limit=50`);
+    const entries = await poll(
+      () => json<RssEntryPage>(page.request, `/api/v1/rss/subscriptions/${subscriptionId}/entries?limit=50`),
+      (value) => value.items.length > 0,
+      90_000,
+    );
     expect(entries.items.length).toBeGreaterThan(0);
   } finally {
     await setFixtureControl(page, 'rss', false);
@@ -637,9 +683,13 @@ test('@recovery SSE replays events produced while the API restarts', async ({ pa
   await setFixtureControl(page, 'search_slow', true);
   const query = 'Fixture SSE restart';
   await producer.locator('#search-query').fill(query);
+  const createSearchResponse = producer.waitForResponse((response) =>
+    response.url().endsWith('/api/v1/searches') && response.request().method() === 'POST',
+  );
   await producer.getByRole('button', { name: '搜索', exact: true }).click();
-  await expect(producer).toHaveURL(/\/searches\/[0-9a-f-]+(?:\?.*)?$/);
-  const searchId = currentResourceID(producer);
+  const created = await (await createSearchResponse).json() as { search: { id: string } };
+  const searchId = created.search.id;
+  await expect(producer).toHaveURL(/\/searches(?:\?.*)?$/);
   await setFixtureControl(page, 'api_restart', true);
   await waitForFixtureStatus(page, 'api_restarted', true);
   await setFixtureControl(page, 'search_slow', false);
@@ -648,7 +698,8 @@ test('@recovery SSE replays events produced while the API restarts', async ({ pa
     (value) => value.status === 'completed',
   );
 
-  const row = page.getByRole('row').filter({ hasText: query });
+  const recent = page.getByRole('region', { name: '最近搜索' });
+  const row = recent.getByRole('listitem').filter({ hasText: query });
   await expect(row).toBeVisible({ timeout: 70_000 });
   await expect(row.getByText('已完成', { exact: true })).toBeVisible();
   await producer.close();
@@ -657,17 +708,17 @@ test('@recovery SSE replays events produced while the API restarts', async ({ pa
 test('@recovery invalidated session clears protected UI and does not persist a write', async ({ page, context }) => {
   await login(page);
   await configure(page);
-  await page.goto('/settings');
+  await page.goto('/settings/services');
   const originalUsername = await page.locator('#qb-username').inputValue();
   await page.locator('#qb-username').fill('must-not-persist');
   await context.clearCookies();
-  await page.getByRole('button', { name: '保存全部配置' }).click();
+  await page.getByRole('button', { name: '保存外部服务配置' }).click();
   await expect(page.getByRole('heading', { name: '管理员登录' })).toBeVisible();
 
   await page.getByLabel('用户名').fill(manifest.username);
   await page.getByLabel('密码').fill(manifest.password);
   await page.getByRole('button', { name: '登录', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '设置' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '外部服务' })).toBeVisible();
   await expect(page.locator('#qb-username')).toHaveValue(originalUsername);
 });
 

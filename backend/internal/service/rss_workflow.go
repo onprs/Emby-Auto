@@ -93,7 +93,7 @@ func (workflow *RSSWorkflow) PreparePollMapping(
 			result.Ready = true
 			return nil
 		}
-		if !mappingContext.Enabled || !mappingContext.AutoEpisodeMapping || mappingContext.DeletedAt.Valid || mappingContext.CompletedAt.Valid {
+		if !mappingContext.Enabled || mappingContext.DeletedAt.Valid || mappingContext.CompletedAt.Valid {
 			return nil
 		}
 		if _, err := scope.Queries.LockMediaSeries(ctx, mappingContext.SeriesID); err != nil {
@@ -247,7 +247,7 @@ func (workflow *RSSWorkflow) prepareAgentPollMapping(
 			result.Ready = true
 			return nil
 		}
-		if !mappingContext.Enabled || !mappingContext.AutoEpisodeMapping || mappingContext.DeletedAt.Valid || mappingContext.CompletedAt.Valid {
+		if !mappingContext.Enabled || mappingContext.DeletedAt.Valid || mappingContext.CompletedAt.Valid {
 			return nil
 		}
 
@@ -385,6 +385,52 @@ func deterministicRSSPollMappingAnchor(
 		return domain.EpisodeCoordinate{}, domain.EpisodeCoordinate{}, false
 	}
 	return anchor, anchor, true
+}
+
+const rssDuePollRecoveryVersion = "v1"
+
+// ReconcileDuePolls 恢复已到期但没有活动 River poll 的启用订阅。
+// poll_generation 让每次终态失败产生新的幂等代数，并发巡检仍会收敛到同一任务。
+func (workflow *RSSWorkflow) ReconcileDuePolls(ctx context.Context) (int, error) {
+	if workflow == nil || workflow.queries == nil || workflow.operations == nil {
+		return 0, fmt.Errorf("RSS due poll recovery is unavailable")
+	}
+	rows, err := workflow.queries.ListDueRSSPollRecoveryCandidates(ctx, 100)
+	if err != nil {
+		return 0, fmt.Errorf("list due RSS poll recovery candidates: %w", err)
+	}
+	reconciled := 0
+	for _, row := range rows {
+		subscriptionID := repository.UUIDFromPG(row.ID)
+		result, err := workflow.operations.Schedule(ctx, ScheduleOperationRequest{
+			Kind:         appqueue.KindRSSPoll,
+			ResourceType: "rss_subscription",
+			ResourceID:   subscriptionID,
+			IdempotencyKey: fmt.Sprintf(
+				"rss.poll:recovery:due-%s:%s:v%d:g%d",
+				rssDuePollRecoveryVersion,
+				subscriptionID,
+				row.Version,
+				row.PollGeneration,
+			),
+			MaxAttempts: 5,
+			Timeout:     30 * time.Second,
+			Payload: map[string]any{
+				"continuous":          true,
+				"subscriptionVersion": row.Version,
+			},
+		})
+		if err != nil {
+			return reconciled, fmt.Errorf("schedule due RSS poll recovery: %w", err)
+		}
+		if _, err := workflow.queries.AdvanceDueRSSPollRecovery(ctx, row.ID); err != nil {
+			return reconciled, fmt.Errorf("advance due RSS poll recovery: %w", err)
+		}
+		if result.Created {
+			reconciled++
+		}
+	}
+	return reconciled, nil
 }
 
 const rssPreAcquisitionMappingRecoveryVersion = "v1"
@@ -714,12 +760,21 @@ func (workflow *RSSWorkflow) persistFeedEntry(
 	existingID := repository.UUIDFromPG(existing.ID)
 	importedBySelf := existing.ImportedAt.Valid && valueOrEmpty(existing.FulfillmentSource) == rssFulfillmentManagedImport
 	if importedBySelf {
-		// 已由本系统入库完成的条目保持完成状态：仅刷新发布元数据，
-		// 不重新核验占用，也不覆盖可下载性、拒绝原因与源坐标。
+		// 已由本系统入库完成的条目保持汇总状态和源坐标；profile 变化后仍按
+		// 现有坐标刷新目标级占用证据，避免把旧目标重解释为当前目标。
 		params.Downloadable = existing.Downloadable
 		params.RejectionReasons = existing.RejectionReasons
 		params.SourceSeason = existing.SourceSeason
 		params.SourceEpisode = existing.SourceEpisode
+		occupancy = rssTargetOccupancy{}
+		if !preacquisitionMapping && existing.SourceSeason != nil && existing.SourceEpisode != nil {
+			occupancy, err = loadRSSMappedTargetOccupancyWithRealtimeCheck(
+				ctx, queries, subscriptionID, int(*existing.SourceSeason), int(*existing.SourceEpisode), existingID, realtimeCheckID,
+			)
+			if err != nil {
+				return false, false, false, err
+			}
+		}
 	} else {
 		if existing.SourceSeason != nil && existing.SourceEpisode != nil && existing.CoordinateSource != nil &&
 			(*existing.CoordinateSource == string(domain.DecisionSourceAgentAuto) ||
@@ -765,7 +820,7 @@ func (workflow *RSSWorkflow) persistFeedEntry(
 	}); err != nil {
 		return false, false, false, fmt.Errorf("update duplicate RSS entry: %w", err)
 	}
-	if !importedBySelf && occupancy.Reason != "" {
+	if occupancy.Reason != "" {
 		if _, err := markRSSEntryTargetOccupiedInTx(ctx, scope, existingID, operationID, occupancy); err != nil {
 			return false, false, false, err
 		}
@@ -805,34 +860,32 @@ func (workflow *RSSWorkflow) refreshRSSEmbyCatalogFulfillmentsInTx(
 	ctx context.Context,
 	scope database.TxScope,
 	operationID uuid.UUID,
-	subscriptionID uuid.UUID,
+	_ uuid.UUID,
 	realtimeCheckID uuid.UUID,
 ) error {
-	rows, err := scope.Queries.ListRSSEmbyCatalogFulfilledEntries(ctx, repository.UUIDToPG(subscriptionID))
+	if realtimeCheckID == uuid.Nil {
+		return nil
+	}
+	rows, err := scope.Queries.ListStaleRSSEmbyCatalogFulfillmentsForCheck(
+		ctx,
+		repository.UUIDToPG(realtimeCheckID),
+	)
 	if err != nil {
-		return fmt.Errorf("list RSS Emby catalog fulfillments: %w", err)
+		return fmt.Errorf("list stale RSS Emby catalog fulfillments: %w", err)
 	}
 	for _, row := range rows {
-		if row.SourceSeason == nil || row.SourceEpisode == nil {
-			continue
-		}
-		entryID := repository.UUIDFromPG(row.ID)
-		occupancy, err := loadRSSMappedTargetOccupancyWithRealtimeCheck(
-			ctx, scope.Queries, subscriptionID, int(*row.SourceSeason), int(*row.SourceEpisode), entryID, realtimeCheckID,
-		)
-		if err != nil {
-			return err
-		}
-		if occupancy.Fulfilled {
-			continue
-		}
-		if _, err := scope.Queries.ClearRSSEmbyCatalogFulfillment(ctx, row.ID); errors.Is(err, pgx.ErrNoRows) {
+		entryID := repository.UUIDFromPG(row.RssEntryID)
+		if _, err := scope.Queries.ClearRSSEmbyCatalogFulfillment(ctx, db.ClearRSSEmbyCatalogFulfillmentParams{
+			ID:              row.RssEntryID,
+			TargetEpisodeID: row.TargetEpisodeID,
+		}); errors.Is(err, pgx.ErrNoRows) {
 			continue
 		} else if err != nil {
 			return fmt.Errorf("clear stale RSS Emby catalog fulfillment: %w", err)
 		}
 		if err := appendResourceEvent(ctx, scope.Queries, "rss_entry", entryID, operationID, uuid.Nil, "rss.entry.fulfillment_expired", map[string]any{
 			"fulfillmentSource": rssFulfillmentEmbyCatalog,
+			"targetEpisodeId":   repository.UUIDFromPG(row.TargetEpisodeID),
 		}); err != nil {
 			return err
 		}

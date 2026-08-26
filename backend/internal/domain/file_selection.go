@@ -26,17 +26,21 @@ var (
 	ErrDuplicateDownloadFile = errors.New("duplicate download file")
 	ErrNoMainVideo           = errors.New("no main video found")
 
-	extraTokenPattern          = regexp.MustCompile(`(?i)(^|[^[:alnum:]])(?:ncop|nced|op[0-9]*|ed[0-9]*|pv[0-9]*|cm[0-9]*|sp[0-9]*|menu|scans?|sample|trailer|teaser|bonus|creditless)(?:$|[^[:alnum:]])`)
-	extraSingleTokenPattern    = regexp.MustCompile(`(?i)^(?:ncop|nced|op[0-9]*|ed[0-9]*|pv[0-9]*|cm[0-9]*|sp[0-9]*|menu|scans?|sample|trailer|teaser|bonus|creditless)$`)
+	extraTokenPattern          = regexp.MustCompile(`(?i)(^|[^[:alnum:]])(?:ncop|nced|op[0-9]*|ed[0-9]*|pv[0-9]*|cm[0-9]*|sp[0-9]*|menu|scans?|sample|trailer|teaser|bonus|creditless|talk[0-9]*|commentary|audiocommentary|谈话|訪談|访谈|副音声|コメンタリー|オーディオコメンタリー)(?:$|[^[:alnum:]])`)
+	extraSingleTokenPattern    = regexp.MustCompile(`(?i)^(?:ncop|nced|op[0-9]*|ed[0-9]*|pv[0-9]*|cm[0-9]*|sp[0-9]*|menu|scans?|sample|trailer|teaser|bonus|creditless|talk[0-9]*|commentary|audiocommentary|谈话|訪談|访谈|副音声|コメンタリー|オーディオコメンタリー)$`)
 	extraDirectoryTokenPattern = regexp.MustCompile(`[\p{L}\p{N}]+`)
-	seasonEpisodePattern       = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])s([0-9]{1,2})[ ._-]*e([0-9]{1,3})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
-	seasonDirectoryPattern     = regexp.MustCompile(`(?i)(?:^|/)(?:season|s)[ ._-]*([0-9]{1,2})(?:/|$)`)
-	eastAsianEpisodePattern    = regexp.MustCompile(`(?:第[[:space:]]*)?([0-9]{1,3})[[:space:]]*[话話集]`)
-	episodeTokenPattern        = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:ep|episode|e)[ ._-]*([0-9]{1,3})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
-	delimitedEpisodePattern    = regexp.MustCompile(`(?i)(?:^|[[:space:]._\[\]-])([0-9]{1,3})(?:v[0-9]+)?(?:$|[[:space:]._\]\)-])`)
-	drivePathPattern           = regexp.MustCompile(`(?i)^[a-z]:/`)
-	nonNamePattern             = regexp.MustCompile(`[^[:alnum:]]+`)
-	trailingLanguagePattern    = regexp.MustCompile(`(?i)[ ._-]+(?:zh[ ._-]*(?:hans|hant|cn|sg|tw|hk|mo)|chs|cht|sc|tc|gb(?:2312|k)?|big5|简体(?:中文)?|簡體(?:中文)?|简中|簡中|ja|jpn|jp|en|eng)$`)
+	seasonDecimalEpisodePattern   = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])s([0-9]{1,2})[ ._-]*e([0-9]{1,3})[.]([0-9]{1,2})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
+	seasonEpisodePattern          = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])s([0-9]{1,2})[ ._-]*e([0-9]{1,3})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
+	seasonDirectoryPattern        = regexp.MustCompile(`(?i)(?:^|/)(?:season|s)[ ._-]*([0-9]{1,2})(?:/|$)`)
+	eastAsianDecimalEpisodePattern = regexp.MustCompile(`(?:第[[:space:]]*)?([0-9]{1,3})[.]([0-9]{1,2})[[:space:]]*[话話集]`)
+	eastAsianEpisodePattern       = regexp.MustCompile(`(?:第[[:space:]]*)?([0-9]{1,3})[[:space:]]*[话話集]`)
+	episodeTokenDecimalPattern    = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:ep|episode|e)[ ._-]*([0-9]{1,3})[.]([0-9]{1,2})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
+	episodeTokenPattern           = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:ep|episode|e)[ ._-]*([0-9]{1,3})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
+	delimitedDecimalEpisodePattern = regexp.MustCompile(`(?i)(?:^|[[:space:]._\[\]-])([0-9]{1,3})[.]([0-9]{1,2})(?:v[0-9]+)?(?:$|[[:space:]._\]\)-])`)
+	delimitedEpisodePattern       = regexp.MustCompile(`(?i)(?:^|[[:space:]._\[\]-])([0-9]{1,3})(?:v[0-9]+)?(?:$|[[:space:]._\]\)-])`)
+	drivePathPattern              = regexp.MustCompile(`(?i)^[a-z]:/`)
+	nonNamePattern                = regexp.MustCompile(`[^[:alnum:]]+`)
+	trailingLanguagePattern       = regexp.MustCompile(`(?i)[ ._-]+(?:zh[ ._-]*(?:hans|hant|cn|sg|tw|hk|mo)|chs|cht|sc|tc|gb(?:2312|k)?|big5|scjp|tcjp|jpsc|jptc|chs[ ._-]*jp(?:n)?|cht[ ._-]*jp(?:n)?|sc[ ._-]*jp(?:n)?|tc[ ._-]*jp(?:n)?|chs[ ._-]*eng?|cht[ ._-]*eng?|sc[ ._-]*eng?|tc[ ._-]*eng?|简日(?:双语)?|繁日(?:双语)?|日简|日繁|中日(?:双语)?|中英(?:双语)?|简英|繁英|双语|简体(?:中文)?|簡體(?:中文)?|简中|簡中|繁中|简繁|繁简|ja|jpn|jp|en|eng)$`)
 )
 
 var videoExtensions = map[string]struct{}{
@@ -194,6 +198,14 @@ func ParseSourceCoordinate(filePath string, defaultSeason int) (int, int, bool) 
 	normalized := strings.ReplaceAll(strings.TrimSpace(filePath), `\`, "/")
 	base := path.Base(normalized)
 	stem := strings.TrimSuffix(base, path.Ext(base))
+	if matches := seasonDecimalEpisodePattern.FindStringSubmatch(stem); len(matches) == 4 {
+		season := decimal(matches[1])
+		major := decimal(matches[2])
+		minor := decimal(matches[3])
+		if season > 0 && (major > 0 || minor > 0) {
+			return season, decimalEpisodeCoordinate(major, minor), true
+		}
+	}
 	if matches := seasonEpisodePattern.FindStringSubmatch(stem); len(matches) == 3 {
 		season := decimal(matches[1])
 		episode := decimal(matches[2])
@@ -206,6 +218,17 @@ func ParseSourceCoordinate(filePath string, defaultSeason int) (int, int, bool) 
 	if matches := seasonDirectoryPattern.FindStringSubmatch(normalized); len(matches) == 2 {
 		season = decimal(matches[1])
 	}
+	for _, pattern := range []*regexp.Regexp{eastAsianDecimalEpisodePattern, episodeTokenDecimalPattern, delimitedDecimalEpisodePattern} {
+		matches := pattern.FindStringSubmatch(stem)
+		if len(matches) != 3 {
+			continue
+		}
+		major := decimal(matches[1])
+		minor := decimal(matches[2])
+		if season > 0 && (major > 0 || minor > 0) {
+			return season, decimalEpisodeCoordinate(major, minor), true
+		}
+	}
 	for _, pattern := range []*regexp.Regexp{eastAsianEpisodePattern, episodeTokenPattern, delimitedEpisodePattern} {
 		matches := pattern.FindStringSubmatch(stem)
 		if len(matches) != 2 {
@@ -217,6 +240,10 @@ func ParseSourceCoordinate(filePath string, defaultSeason int) (int, int, bool) 
 		}
 	}
 	return 0, 0, false
+}
+
+func decimalEpisodeCoordinate(major, minor int) int {
+	return major*10 + minor
 }
 
 func classifyDownloadPath(filePath string) MediaKind {
