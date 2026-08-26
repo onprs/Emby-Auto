@@ -259,6 +259,10 @@ func TestRSSSubscriptionProgressDependencyTriggersMarkEverySourceIntegration(t *
 			_, err := tx.Exec(ctx, `UPDATE rss_entries SET source_episode = 2 WHERE id = $1`, ids.entryID)
 			return err
 		}},
+		{name: "rss entry source fraction", mutate: func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `UPDATE rss_entries SET source_episode_fraction_hundredths = 50 WHERE id = $1`, ids.entryID)
+			return err
+		}},
 		{name: "acquisitions", mutate: func(tx pgx.Tx) error {
 			_, err := tx.Exec(ctx, `UPDATE acquisitions SET deletion_requested_at = now() WHERE id = $1`, ids.acquisitionID)
 			return err
@@ -269,6 +273,10 @@ func TestRSSSubscriptionProgressDependencyTriggersMarkEverySourceIntegration(t *
 		}},
 		{name: "download files", mutate: func(tx pgx.Tx) error {
 			_, err := tx.Exec(ctx, `UPDATE download_files SET selected = false WHERE id = $1`, ids.fileID)
+			return err
+		}},
+		{name: "download file source fraction", mutate: func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `UPDATE download_files SET source_episode_fraction_hundredths = 50 WHERE id = $1`, ids.fileID)
 			return err
 		}},
 		{name: "episode tasks", mutate: func(tx pgx.Tx) error {

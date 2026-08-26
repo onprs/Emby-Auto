@@ -1069,21 +1069,22 @@ func validateDownloadFileProposal(proposal domain.AgentDownloadFileResolutionPro
 	if len(proposal.Videos) == 0 {
 		return invalid("download_file_resolution_invalid")
 	}
-	seenCoordinates := map[[2]int]struct{}{}
+	seenCoordinates := map[[3]int]struct{}{}
 	selectedVideos := map[uuid.UUID]struct{}{}
 	selectedFiles := map[uuid.UUID]struct{}{}
 	for _, video := range proposal.Videos {
 		file, owned := snapshot.Files[video.FileID]
-		if !owned || file.MediaKind != string(domain.MediaVideo) || video.SourceSeason <= 0 || video.SourceEpisode <= 0 {
+		if !owned || file.MediaKind != string(domain.MediaVideo) || video.SourceSeason <= 0 || video.SourceEpisode <= 0 ||
+			video.SourceEpisodeFractionHundredths < 0 || video.SourceEpisodeFractionHundredths > 99 {
 			return invalid("download_file_scope_violation")
 		}
-		if snapshot.DefaultSourceEpisode != nil && (video.SourceSeason != snapshot.DefaultSourceSeason || video.SourceEpisode != *snapshot.DefaultSourceEpisode) {
+		if snapshot.DefaultSourceEpisode != nil && (video.SourceSeason != snapshot.DefaultSourceSeason || video.SourceEpisode != *snapshot.DefaultSourceEpisode || video.SourceEpisodeFractionHundredths != 0) {
 			return invalid("download_single_episode_coordinate_mismatch")
 		}
 		if _, duplicate := selectedFiles[video.FileID]; duplicate {
 			return invalid("download_file_duplicate")
 		}
-		coordinate := [2]int{video.SourceSeason, video.SourceEpisode}
+		coordinate := [3]int{video.SourceSeason, video.SourceEpisode, video.SourceEpisodeFractionHundredths}
 		if _, duplicate := seenCoordinates[coordinate]; duplicate {
 			return invalid("download_coordinate_duplicate")
 		}
@@ -1599,8 +1600,9 @@ func (service *AgentResolutionService) applyDownloadFileResolution(
 		for _, item := range normalized {
 			if _, err := scope.Queries.SetDownloadFileResolution(ctx, db.SetDownloadFileResolutionParams{
 				Selected: item.Selected, SourceSeason: optionalResolutionInt32(item.SourceSeason),
-				SourceEpisode: optionalResolutionInt32(item.SourceEpisode), ID: repository.UUIDToPG(item.FileID),
-				DownloadID: download.ID,
+				SourceEpisode:                   optionalResolutionInt32(item.SourceEpisode),
+				SourceEpisodeFractionHundredths: int32(item.SourceEpisodeFractionHundredths),
+				ID:                              repository.UUIDToPG(item.FileID), DownloadID: download.ID,
 			}); err != nil {
 				return fmt.Errorf("apply Agent download file resolution: %w", err)
 			}
@@ -1738,10 +1740,10 @@ func (service *AgentResolutionService) applySubtitleVideoMatch(
 }
 
 func downloadResolutionItemsFromAgentProposal(files []db.DownloadFile, proposal domain.AgentDownloadFileResolutionProposal) ([]domain.DownloadFileResolutionItem, error) {
-	videoCoordinates := make(map[uuid.UUID][2]int, len(proposal.Videos))
-	selected := make(map[uuid.UUID][2]int, len(proposal.Videos)+len(proposal.Subtitles))
+	videoCoordinates := make(map[uuid.UUID][3]int, len(proposal.Videos))
+	selected := make(map[uuid.UUID][3]int, len(proposal.Videos)+len(proposal.Subtitles))
 	for _, video := range proposal.Videos {
-		coordinate := [2]int{video.SourceSeason, video.SourceEpisode}
+		coordinate := [3]int{video.SourceSeason, video.SourceEpisode, video.SourceEpisodeFractionHundredths}
 		videoCoordinates[video.FileID] = coordinate
 		selected[video.FileID] = coordinate
 	}
@@ -1759,9 +1761,11 @@ func downloadResolutionItemsFromAgentProposal(files []db.DownloadFile, proposal 
 		if coordinate, ok := selected[fileID]; ok {
 			season, episode := coordinate[0], coordinate[1]
 			item.Selected, item.SourceSeason, item.SourceEpisode = true, &season, &episode
+			item.SourceEpisodeFractionHundredths = coordinate[2]
 		} else {
 			item.SourceSeason = int32PointerToInt(file.SourceSeason)
 			item.SourceEpisode = int32PointerToInt(file.SourceEpisode)
+			item.SourceEpisodeFractionHundredths = int(file.SourceEpisodeFractionHundredths)
 		}
 		items = append(items, item)
 	}

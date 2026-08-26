@@ -703,6 +703,7 @@ WHERE id = sqlc.arg(id)
 SELECT
     mapping.source_season,
     mapping.source_episode,
+    mapping.source_episode_fraction_hundredths,
     mapping.target_episode_id,
     season.season_number AS target_season,
     episode.episode_number AS target_episode,
@@ -716,14 +717,16 @@ JOIN episode_mappings AS mapping
 JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
 JOIN tmdb_seasons AS season ON season.id = episode.season_id
 WHERE subscription.id = sqlc.arg(subscription_id)
+  AND mapping.source_episode_fraction_hundredths = 0
   AND season.season_number > 0
-ORDER BY mapping.source_season, mapping.source_episode;
+ORDER BY mapping.source_season, mapping.source_episode, mapping.source_episode_fraction_hundredths;
 
 -- name: GetRSSEntryMappedRealtimeTarget :one
 SELECT
     entry.subscription_id,
     mapping.source_season,
     mapping.source_episode,
+    mapping.source_episode_fraction_hundredths,
     mapping.target_episode_id,
     season.season_number AS target_season,
     episode.episode_number AS target_episode,
@@ -736,6 +739,7 @@ JOIN episode_mappings AS mapping
   ON mapping.profile_id = subscription.mapping_profile_id
  AND mapping.source_season = entry.source_season
  AND mapping.source_episode = entry.source_episode
+ AND mapping.source_episode_fraction_hundredths = entry.source_episode_fraction_hundredths
  AND mapping.mapping_status = 'mapped'
 JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
 JOIN tmdb_seasons AS season ON season.id = episode.season_id
@@ -760,6 +764,29 @@ ON CONFLICT (target_episode_id, check_id) DO UPDATE
 SET present = EXCLUDED.present,
     match_source = EXCLUDED.match_source,
     checked_at = EXCLUDED.checked_at;
+
+-- name: IsRSSRealtimeTargetCheckAuthoritative :one
+SELECT EXISTS (
+    SELECT 1
+    FROM rss_target_realtime_checks AS current_check
+    WHERE current_check.target_episode_id = sqlc.arg(target_episode_id)
+      AND current_check.check_id = sqlc.arg(check_id)
+      AND current_check.present
+      AND current_check.checked_at >= now() - interval '30 seconds'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM rss_target_realtime_checks AS newer_check
+          WHERE newer_check.target_episode_id = current_check.target_episode_id
+            AND newer_check.check_id <> current_check.check_id
+            AND (
+                newer_check.checked_at > current_check.checked_at
+                OR (
+                    newer_check.checked_at = current_check.checked_at
+                    AND newer_check.present IS DISTINCT FROM current_check.present
+                )
+            )
+      )
+)::boolean;
 
 -- name: RefreshRSSEmbyCatalogFulfillmentsForRealtimeTarget :exec
 UPDATE rss_target_fulfillments AS fulfillment
@@ -808,6 +835,7 @@ WITH target AS (
       ON mapping.profile_id = subscription.mapping_profile_id
      AND mapping.source_season = sqlc.arg(source_season)
      AND mapping.source_episode = sqlc.arg(source_episode)
+     AND mapping.source_episode_fraction_hundredths = 0
      AND mapping.mapping_status = 'mapped'
     JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
     JOIN tmdb_seasons AS season ON season.id = episode.season_id
@@ -956,6 +984,16 @@ SELECT
                             THEN (acquisition.source_payload->>'sourceEpisode')::bigint
                         END
                     )
+                    AND owner_mapping.source_episode_fraction_hundredths = COALESCE(
+                        owner_entry.source_episode_fraction_hundredths,
+                        CASE
+                            WHEN acquisition.rss_entry_id IS NULL
+                             AND acquisition.source_payload->'singleEpisode' = 'true'::jsonb
+                             AND COALESCE(acquisition.source_payload->>'sourceEpisodeFractionHundredths', '0') ~ '^(?:0|[1-9][0-9]?)$'
+                            THEN COALESCE((acquisition.source_payload->>'sourceEpisodeFractionHundredths')::integer, 0)
+                        END,
+                        0
+                    )
                     AND download.status <> 'cancelled'
                     AND NOT EXISTS (
                         SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id
@@ -978,6 +1016,7 @@ SELECT
                    AND source_file.media_kind = 'video'
                    AND source_file.source_season = owner_mapping.source_season
                    AND source_file.source_episode = owner_mapping.source_episode
+                   AND source_file.source_episode_fraction_hundredths = owner_mapping.source_episode_fraction_hundredths
                   WHERE owner_mapping.profile_id = acquisition.mapping_profile_id
                     AND owner_mapping.target_episode_id = target.target_episode_id
                     AND owner_mapping.mapping_status = 'mapped'
@@ -1250,6 +1289,7 @@ CROSS JOIN LATERAL (
             FROM episode_mappings AS mapping
             WHERE mapping.profile_id = profile.id
               AND mapping.source_season = subscription.source_season
+              AND mapping.source_episode_fraction_hundredths = 0
               AND mapping.mapping_status = 'mapped'
         )
         ELSE profile.source_season_lengths[subscription.source_season]
@@ -1269,6 +1309,7 @@ WHERE task.id = sqlc.arg(task_id)
         ON expected_mapping.profile_id = subscription.mapping_profile_id
        AND expected_mapping.source_season = subscription.source_season
        AND expected_mapping.source_episode = expected.source_episode
+       AND expected_mapping.source_episode_fraction_hundredths = 0
        AND expected_mapping.mapping_status = 'mapped'
       WHERE expected_mapping.target_episode_id IS NULL
          OR NOT EXISTS (
@@ -1307,6 +1348,7 @@ CROSS JOIN LATERAL (
             FROM episode_mappings AS mapping
             WHERE mapping.profile_id = profile.id
               AND mapping.source_season = subscription.source_season
+              AND mapping.source_episode_fraction_hundredths = 0
               AND mapping.mapping_status = 'mapped'
         )
         ELSE profile.source_season_lengths[subscription.source_season]
@@ -1324,6 +1366,7 @@ WHERE subscription.id = sqlc.arg(subscription_id)
         ON expected_mapping.profile_id = subscription.mapping_profile_id
        AND expected_mapping.source_season = subscription.source_season
        AND expected_mapping.source_episode = expected.source_episode
+       AND expected_mapping.source_episode_fraction_hundredths = 0
        AND expected_mapping.mapping_status = 'mapped'
       WHERE expected_mapping.target_episode_id IS NULL
          OR NOT EXISTS (
@@ -1420,6 +1463,7 @@ WHERE subscription.id = sqlc.arg(subscription_id)
   AND subscription.completed_at IS NULL
   AND entry.source_season = subscription.source_season
   AND entry.source_episode = ANY(sqlc.arg(source_episodes)::integer[])
+  AND entry.source_episode_fraction_hundredths = 0
 FOR UPDATE OF entry, subscription;
 
 -- name: ResetRSSIncompleteRecoveryEntries :many
@@ -1437,6 +1481,7 @@ WHERE subscription.id = sqlc.arg(subscription_id)
   AND entry.subscription_id = subscription.id
   AND entry.source_season = subscription.source_season
   AND entry.source_episode = ANY(sqlc.arg(source_episodes)::integer[])
+  AND entry.source_episode_fraction_hundredths = 0
   AND entry.imported_at IS NULL
   AND entry.downloadable
   AND entry.status IN ('enqueued', 'enqueue_failed')
@@ -1595,6 +1640,26 @@ RETURNING *;
 INSERT INTO rss_entry_adjudications (entry_id, subscription_id, batch_id)
 VALUES (sqlc.arg(entry_id), sqlc.arg(subscription_id), sqlc.arg(batch_id))
 RETURNING *;
+
+-- name: GetLegacyRSSEntryForBTIHUpgrade :one
+SELECT legacy.*
+FROM rss_entries AS legacy
+WHERE legacy.subscription_id = sqlc.arg(subscription_id)
+  AND legacy.guid = sqlc.arg(guid)
+  AND legacy.identity_key = 'guid:' || sqlc.arg(guid)
+  AND legacy.btih IS NULL
+  AND legacy.canonical_url IS NOT DISTINCT FROM sqlc.narg(canonical_url)::text
+  AND legacy.title = sqlc.arg(title)
+  AND legacy.published_at IS NOT DISTINCT FROM sqlc.narg(published_at)::timestamptz
+  AND NOT EXISTS (
+      SELECT 1
+      FROM rss_entries AS exact_btih
+      WHERE exact_btih.subscription_id = legacy.subscription_id
+        AND lower(exact_btih.btih) = lower(sqlc.arg(btih))
+  )
+ORDER BY legacy.discovered_at, legacy.id
+LIMIT 1
+FOR UPDATE OF legacy;
 
 -- name: GetRSSEntryBySignals :one
 SELECT *
@@ -1842,6 +1907,7 @@ WHERE entry.subscription_id = sqlc.arg(subscription_id)
   AND entry.source_episode IS NOT NULL
   AND entry.source_season > 0
   AND entry.source_episode > 0
+  AND entry.source_episode_fraction_hundredths = 0
   AND NOT EXISTS (
       SELECT 1
       FROM rss_entry_adjudications AS adjudication

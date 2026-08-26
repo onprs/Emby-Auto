@@ -375,6 +375,10 @@ func downloadResponse(view domain.DownloadView) Download {
 			value := int32(*file.SourceEpisode)
 			item.SourceEpisode = &value
 		}
+		if file.SourceEpisodeFractionHundredths > 0 {
+			value := int32(file.SourceEpisodeFractionHundredths)
+			item.SourceEpisodeFractionHundredths = &value
+		}
 		optionalString(&item.Language, file.Language)
 		if file.ExclusionReason != "" {
 			value := DownloadFileExclusionReason(file.ExclusionReason)
@@ -424,6 +428,10 @@ func acquisitionResponse(view domain.AcquisitionView) Acquisition {
 		value := int32(*view.SourceEpisode)
 		response.SourceEpisode = &value
 	}
+	if view.SourceEpisodeFractionHundredths > 0 {
+		value := int32(view.SourceEpisodeFractionHundredths)
+		response.SourceEpisodeFractionHundredths = &value
+	}
 	response.SingleEpisode = view.SingleEpisode
 	optionalString(&response.SourceTitle, view.SourceTitle)
 	response.ArchivedAt = view.ArchivedAt
@@ -470,6 +478,10 @@ func acquisitionResponse(view domain.AcquisitionView) Acquisition {
 		if task.SourceEpisode > 0 {
 			value := int32(task.SourceEpisode)
 			item.SourceEpisode = &value
+		}
+		if task.SourceEpisodeFractionHundredths > 0 {
+			value := int32(task.SourceEpisodeFractionHundredths)
+			item.SourceEpisodeFractionHundredths = &value
 		}
 		if task.TargetSeason != nil {
 			value := int32(*task.TargetSeason)
@@ -533,6 +545,10 @@ func rssEntryResponse(view domain.RSSEntryView) RSSEntry {
 	if view.SourceEpisode != nil {
 		value := int32(*view.SourceEpisode)
 		response.SourceEpisode = &value
+	}
+	if view.SourceEpisodeFractionHundredths > 0 {
+		value := int32(view.SourceEpisodeFractionHundredths)
+		response.SourceEpisodeFractionHundredths = &value
 	}
 	if view.CoordinateSource != "" {
 		value := RSSEntryCoordinateSource(view.CoordinateSource)

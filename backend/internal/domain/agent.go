@@ -16,7 +16,7 @@ const (
 	AgentCapabilityDownloadFileResolution   AgentCapability = "download_file_resolution"
 	AgentCapabilityCatalogCandidate         AgentCapability = "catalog_candidate"
 	AgentCapabilityEpisodeMapping           AgentCapability = "episode_mapping"
-	AgentCapabilitySubtitleVideoMatch      AgentCapability = "subtitle_video_match"
+	AgentCapabilitySubtitleVideoMatch       AgentCapability = "subtitle_video_match"
 )
 
 type AgentResolutionStatus string
@@ -91,9 +91,10 @@ type AgentRSSPreacquisitionMappingProposal struct {
 }
 
 type AgentDownloadVideoProposal struct {
-	FileID        uuid.UUID `json:"fileId"`
-	SourceSeason  int       `json:"sourceSeason"`
-	SourceEpisode int       `json:"sourceEpisode"`
+	FileID                          uuid.UUID `json:"fileId"`
+	SourceSeason                    int       `json:"sourceSeason"`
+	SourceEpisode                   int       `json:"sourceEpisode"`
+	SourceEpisodeFractionHundredths int       `json:"sourceEpisodeFractionHundredths,omitempty"`
 }
 
 type AgentDownloadSubtitleProposal struct {
@@ -144,10 +145,10 @@ type SubtitleCandidateSelection struct {
 }
 
 type AgentSubtitleVideoMatchProposal struct {
-	TaskID          uuid.UUID                  `json:"taskId"`
-	Selected        SubtitleCandidateSelection `json:"selected"`
-	EvidenceCodes   []string                   `json:"evidenceCodes"`
-	Decision        string                     `json:"decision"`
+	TaskID        uuid.UUID                  `json:"taskId"`
+	Selected      SubtitleCandidateSelection `json:"selected"`
+	EvidenceCodes []string                   `json:"evidenceCodes"`
+	Decision      string                     `json:"decision"`
 }
 
 type AgentResolution struct {

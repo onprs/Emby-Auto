@@ -423,7 +423,7 @@ INSERT INTO episode_mappings (
     id, profile_id, source_season, source_episode, target_episode_id,
     mapping_status, match_source, created_at, updated_at
 ) VALUES ($1, $2, $3, $4, $5, 'mapped', 'explicit', $6, $7)
-ON CONFLICT (profile_id, source_season, source_episode) DO UPDATE SET
+ON CONFLICT (profile_id, source_season, source_episode, source_episode_fraction_hundredths) DO UPDATE SET
     updated_at = episode_mappings.updated_at
 RETURNING id, target_episode_id
 `, task.MappingID, profileID, task.SourceSeason, task.SourceEpisode, episodeID, task.CreatedAt, task.UpdatedAt).Scan(&mappingID, &targetEpisodeID); err != nil {

@@ -166,6 +166,10 @@ func taskResponse(task domain.EpisodeTask) Task {
 			value := int32(task.SourceEpisode)
 			response.SourceEpisode = &value
 		}
+		if task.SourceEpisodeFractionHundredths > 0 {
+			value := int32(task.SourceEpisodeFractionHundredths)
+			response.SourceEpisodeFractionHundredths = &value
+		}
 		if task.TargetSeason >= 0 {
 			value := int32(task.TargetSeason)
 			response.TargetSeason = &value

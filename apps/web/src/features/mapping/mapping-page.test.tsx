@@ -256,6 +256,26 @@ describe('MappingPage', () => {
     }));
   });
 
+  it('forces fractional source episodes into explicit mapping without colliding with integers', async () => {
+    mockBaseRequests();
+    server.use(
+      http.get(`*/api/v1/downloads/${downloadId}`, () => HttpResponse.json({
+        ...download,
+        files: [
+          { ...download.files[0], relativePath: 'Show - 12.5.mkv', sourceEpisode: 12, sourceEpisodeFractionHundredths: 50 },
+          { ...download.files[1], relativePath: 'Show - 125.mkv', sourceEpisode: 125, sourceEpisodeFractionHundredths: 0 },
+        ],
+      })),
+    );
+    renderPage();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '单点连续' })).toBeDisabled());
+    expect(screen.getByRole('button', { name: '逐个文件' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('S01E12.5')).toBeInTheDocument();
+    expect(screen.getByText('S01E125')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /映射到 S01E01/ })).not.toBeInTheDocument();
+  });
+
   it('previews and saves complete explicit mappings including Season 0', async () => {
     mockBaseRequests();
     let previewBody: { mode: 'explicit'; assignments: EpisodeMappingExplicitDisposition[] } | undefined;

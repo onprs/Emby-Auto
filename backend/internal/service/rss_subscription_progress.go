@@ -199,6 +199,7 @@ func acquisitionProgressView(
 		if task.SourceEpisode != nil {
 			summary.SourceEpisode = int(*task.SourceEpisode)
 		}
+		summary.SourceEpisodeFractionHundredths = int(task.SourceEpisodeFractionHundredths)
 		if task.TargetSeason != nil {
 			value := int(*task.TargetSeason)
 			summary.TargetSeason = &value

@@ -653,15 +653,16 @@ func (workflow *CatalogWorkflow) saveEpisodeMapping(
 				targetEpisodeID = repository.UUIDToPG(row.TargetEpisodeID)
 			}
 			if _, err := scope.Queries.CreateEpisodeMapping(ctx, db.CreateEpisodeMappingParams{
-				ID:              repository.UUIDToPG(uuid.New()),
-				ProfileID:       repository.UUIDToPG(profileID),
-				SourceSeason:    int32(row.SourceSeason),
-				SourceEpisode:   int32(row.SourceEpisode),
-				AbsoluteEpisode: absoluteEpisode,
-				TargetEpisodeID: targetEpisodeID,
-				MappingStatus:   string(row.Status),
-				MatchSource:     string(row.MatchSource),
-				ErrorCode:       optionalString(row.ErrorCode),
+				ID:                              repository.UUIDToPG(uuid.New()),
+				ProfileID:                       repository.UUIDToPG(profileID),
+				SourceSeason:                    int32(row.SourceSeason),
+				SourceEpisode:                   int32(row.SourceEpisode),
+				SourceEpisodeFractionHundredths: int32(row.SourceEpisodeFractionHundredths),
+				AbsoluteEpisode:                 absoluteEpisode,
+				TargetEpisodeID:                 targetEpisodeID,
+				MappingStatus:                   string(row.Status),
+				MatchSource:                     string(row.MatchSource),
+				ErrorCode:                       optionalString(row.ErrorCode),
 			}); err != nil {
 				return fmt.Errorf("create episode mapping: %w", err)
 			}
@@ -688,6 +689,12 @@ func (workflow *CatalogWorkflow) saveEpisodeMapping(
 				repository.UUIDFromPG(lockedDownload.ID),
 				preview.Rows,
 			)
+			if err == nil {
+				_, err = scope.Queries.SyncMappingScopeSourceFacts(ctx, repository.UUIDToPG(input.AcquisitionID))
+				if err != nil {
+					err = fmt.Errorf("synchronize explicit mapping source facts: %w", err)
+				}
+			}
 		}
 		if err != nil {
 			return err
@@ -783,11 +790,12 @@ func applyMappingProfileToRSSScope(
 }
 
 type explicitMappingFile struct {
-	id            uuid.UUID
-	relativePath  string
-	mediaKind     domain.MediaKind
-	sourceSeason  *int32
-	sourceEpisode *int32
+	id                              uuid.UUID
+	relativePath                    string
+	mediaKind                       domain.MediaKind
+	sourceSeason                    *int32
+	sourceEpisode                   *int32
+	sourceEpisodeFractionHundredths int32
 }
 
 type explicitMappingFileChange struct {
@@ -809,11 +817,12 @@ func applyExplicitMappingFilePlan(
 	files := make([]explicitMappingFile, 0, len(fileRows))
 	for _, file := range fileRows {
 		files = append(files, explicitMappingFile{
-			id:            repository.UUIDFromPG(file.ID),
-			relativePath:  file.RelativePath,
-			mediaKind:     domain.MediaKind(file.MediaKind),
-			sourceSeason:  file.SourceSeason,
-			sourceEpisode: file.SourceEpisode,
+			id:                              repository.UUIDFromPG(file.ID),
+			relativePath:                    file.RelativePath,
+			mediaKind:                       domain.MediaKind(file.MediaKind),
+			sourceSeason:                    file.SourceSeason,
+			sourceEpisode:                   file.SourceEpisode,
+			sourceEpisodeFractionHundredths: file.SourceEpisodeFractionHundredths,
 		})
 	}
 	changes, excluded, err := planExplicitMappingFileChanges(rows, files)
@@ -825,10 +834,11 @@ func applyExplicitMappingFilePlan(
 	for _, change := range changes {
 		season, episode := int32(change.coordinate.Season), int32(change.coordinate.Episode)
 		changed, err := queries.UpdateExplicitMappingFileCoordinate(ctx, db.UpdateExplicitMappingFileCoordinateParams{
-			SourceSeason:  &season,
-			SourceEpisode: &episode,
-			ID:            repository.UUIDToPG(change.id),
-			DownloadID:    repository.UUIDToPG(downloadID),
+			SourceSeason:                    &season,
+			SourceEpisode:                   &episode,
+			SourceEpisodeFractionHundredths: int32(change.coordinate.EpisodeFractionHundredths),
+			ID:                              repository.UUIDToPG(change.id),
+			DownloadID:                      repository.UUIDToPG(downloadID),
 		})
 		if err != nil {
 			return 0, 0, fmt.Errorf("update explicit mapping file coordinate: %w", err)
@@ -874,15 +884,20 @@ func planExplicitMappingFileChanges(
 		if !ok {
 			return nil, 0, NewError("mapping_source_changed", "the selected video set changed before the explicit mapping was saved", ErrStateConflict, map[string]any{"sourceFileId": file.id})
 		}
-		desired := domain.EpisodeCoordinate{Season: row.SourceSeason, Episode: row.SourceEpisode}
-		if mappingSourceCoordinate(file.relativePath, file.sourceSeason, file.sourceEpisode) != desired {
+		desired := domain.EpisodeCoordinate{
+			Season: row.SourceSeason, Episode: row.SourceEpisode,
+			EpisodeFractionHundredths: row.SourceEpisodeFractionHundredths,
+		}
+		if mappingSourceCoordinate(
+			file.relativePath, file.sourceSeason, file.sourceEpisode, file.sourceEpisodeFractionHundredths,
+		) != desired {
 			return nil, 0, NewError("mapping_source_changed", "a source video coordinate changed before the explicit mapping was saved", ErrStateConflict, map[string]any{"sourceFileId": file.id})
 		}
 		if previous := videoByCoordinate[desired]; previous != uuid.Nil && previous != file.id {
 			return nil, 0, NewError("mapping_source_duplicate", "selected video files resolve to the same source coordinate", ErrStateConflict, map[string]any{"sourceFileIds": []uuid.UUID{previous, file.id}})
 		}
 		videoByCoordinate[desired] = file.id
-		stored := persistedSourceCoordinate(file.sourceSeason, file.sourceEpisode)
+		stored := persistedSourceCoordinate(file.sourceSeason, file.sourceEpisode, file.sourceEpisodeFractionHundredths)
 		if stored.Season > 0 && stored.Episode > 0 {
 			videosByStoredCoordinate[stored] = append(videosByStoredCoordinate[stored], file.id)
 		}
@@ -901,18 +916,21 @@ func planExplicitMappingFileChanges(
 		if file.mediaKind != domain.MediaSubtitle {
 			continue
 		}
-		stored := persistedSourceCoordinate(file.sourceSeason, file.sourceEpisode)
+		stored := persistedSourceCoordinate(file.sourceSeason, file.sourceEpisode, file.sourceEpisodeFractionHundredths)
 		desired := stored
 		ownerID := uuid.Nil
-		if season, episode, parsed := domain.ParseSourceCoordinate(file.relativePath, stored.Season); parsed {
-			desired = domain.EpisodeCoordinate{Season: season, Episode: episode}
+		if parsed, matched := domain.ParseSourceCoordinate(file.relativePath, stored.Season); matched {
+			desired = parsed
 			ownerID = videoByCoordinate[desired]
 		} else {
 			owners := videosByStoredCoordinate[stored]
 			if len(owners) == 1 {
 				ownerID = owners[0]
 				owner := rowsByID[ownerID]
-				desired = domain.EpisodeCoordinate{Season: owner.SourceSeason, Episode: owner.SourceEpisode}
+				desired = domain.EpisodeCoordinate{
+					Season: owner.SourceSeason, Episode: owner.SourceEpisode,
+					EpisodeFractionHundredths: owner.SourceEpisodeFractionHundredths,
+				}
 			}
 		}
 		owner, ok := rowsByID[ownerID]
@@ -926,8 +944,8 @@ func planExplicitMappingFileChanges(
 	return changes, excluded, nil
 }
 
-func persistedSourceCoordinate(sourceSeason, sourceEpisode *int32) domain.EpisodeCoordinate {
-	coordinate := domain.EpisodeCoordinate{}
+func persistedSourceCoordinate(sourceSeason, sourceEpisode *int32, sourceEpisodeFractionHundredths int32) domain.EpisodeCoordinate {
+	coordinate := domain.EpisodeCoordinate{EpisodeFractionHundredths: int(sourceEpisodeFractionHundredths)}
 	if sourceSeason != nil {
 		coordinate.Season = int(*sourceSeason)
 	}
@@ -944,15 +962,18 @@ func repairMappingScopeCoordinates(ctx context.Context, queries *db.Queries, acq
 	}
 	var corrected int64
 	for _, file := range files {
-		coordinate := mappingSourceCoordinate(file.RelativePath, file.SourceSeason, file.SourceEpisode)
+		coordinate := mappingSourceCoordinate(
+			file.RelativePath, file.SourceSeason, file.SourceEpisode, file.SourceEpisodeFractionHundredths,
+		)
 		if coordinate.Season <= 0 || coordinate.Episode <= 0 {
 			continue
 		}
 		season, episode := int32(coordinate.Season), int32(coordinate.Episode)
 		changed, err := queries.UpdateSelectedFileCoordinateFamily(ctx, db.UpdateSelectedFileCoordinateFamilyParams{
-			NewSourceSeason:  &season,
-			NewSourceEpisode: &episode,
-			SourceFileID:     file.ID,
+			NewSourceSeason:                    &season,
+			NewSourceEpisode:                   &episode,
+			NewSourceEpisodeFractionHundredths: int32(coordinate.EpisodeFractionHundredths),
+			SourceFileID:                       file.ID,
 		})
 		if err != nil {
 			return 0, fmt.Errorf("update selected file source coordinate: %w", err)
@@ -1022,17 +1043,20 @@ func scheduleMappingMaterializations(
 	return scheduledCount, nil
 }
 
-func mappingSourceCoordinate(relativePath string, sourceSeason, sourceEpisode *int32) domain.EpisodeCoordinate {
-	coordinate := domain.EpisodeCoordinate{}
+func mappingSourceCoordinate(
+	relativePath string,
+	sourceSeason, sourceEpisode *int32,
+	sourceEpisodeFractionHundredths int32,
+) domain.EpisodeCoordinate {
+	coordinate := domain.EpisodeCoordinate{EpisodeFractionHundredths: int(sourceEpisodeFractionHundredths)}
 	if sourceSeason != nil {
 		coordinate.Season = int(*sourceSeason)
 	}
 	if sourceEpisode != nil {
 		coordinate.Episode = int(*sourceEpisode)
 	}
-	if season, episode, ok := domain.ParseSourceCoordinate(relativePath, coordinate.Season); ok {
-		coordinate.Season = season
-		coordinate.Episode = episode
+	if parsed, ok := domain.ParseSourceCoordinate(relativePath, coordinate.Season); ok {
+		coordinate = parsed
 	}
 	return coordinate
 }
@@ -1104,9 +1128,19 @@ func (workflow *CatalogWorkflow) buildMappingPreview(
 	seenCoordinates := map[domain.EpisodeCoordinate]uuid.UUID{}
 	for _, file := range files {
 		fileID := repository.UUIDFromPG(file.ID)
-		source := mappingSourceCoordinate(file.RelativePath, file.SourceSeason, file.SourceEpisode)
+		source := mappingSourceCoordinate(
+			file.RelativePath, file.SourceSeason, file.SourceEpisode, file.SourceEpisodeFractionHundredths,
+		)
 		if source.Season <= 0 || source.Episode <= 0 {
 			return domain.EpisodeMappingPreview{}, NewError("mapping_source_invalid", "a selected video file has no valid episode coordinate", ErrStateConflict, map[string]any{"fileId": fileID})
+		}
+		if source.EpisodeFractionHundredths != 0 && normalizedMappingMode(input) == domain.EpisodeMappingModeAnchor {
+			return domain.EpisodeMappingPreview{}, NewError(
+				"mapping_source_requires_explicit",
+				"fractional source episodes require explicit mapping",
+				ErrStateConflict,
+				map[string]any{"fileId": fileID},
+			)
 		}
 		if previous, duplicate := seenCoordinates[source]; duplicate {
 			return domain.EpisodeMappingPreview{}, NewError("mapping_source_duplicate", "selected video files have duplicate episode coordinates", ErrStateConflict, map[string]any{
@@ -1182,7 +1216,9 @@ func (workflow *CatalogWorkflow) buildMappingPreview(
 		if assignment.Action == domain.EpisodeMappingExplicitExclude {
 			preview.Rows = append(preview.Rows, domain.EpisodeMappingRow{
 				SourceFileID: file.id, RelativePath: file.relativePath, SourceSeason: file.coordinate.Season,
-				SourceEpisode: file.coordinate.Episode, Status: domain.MappingExcluded, MatchSource: domain.MappingMatchExplicit,
+				SourceEpisode:                   file.coordinate.Episode,
+				SourceEpisodeFractionHundredths: file.coordinate.EpisodeFractionHundredths,
+				Status:                          domain.MappingExcluded, MatchSource: domain.MappingMatchExplicit,
 			})
 			continue
 		}
@@ -1363,16 +1399,17 @@ func mappingRowFromResolution(
 	targetIDs map[domain.EpisodeCoordinate]uuid.UUID,
 ) domain.EpisodeMappingRow {
 	return domain.EpisodeMappingRow{
-		SourceSeason:    source.Season,
-		SourceEpisode:   source.Episode,
-		AbsoluteEpisode: resolved.AbsoluteEpisode,
-		Status:          resolved.Status,
-		TargetSeason:    resolved.Target.Season,
-		TargetEpisode:   resolved.Target.Episode,
-		TargetEpisodeID: targetIDs[resolved.Target],
-		TargetTitle:     resolved.TargetTitle,
-		MatchSource:     resolved.MatchSource,
-		ErrorCode:       resolved.ErrorCode,
+		SourceSeason:                    source.Season,
+		SourceEpisode:                   source.Episode,
+		SourceEpisodeFractionHundredths: source.EpisodeFractionHundredths,
+		AbsoluteEpisode:                 resolved.AbsoluteEpisode,
+		Status:                          resolved.Status,
+		TargetSeason:                    resolved.Target.Season,
+		TargetEpisode:                   resolved.Target.Episode,
+		TargetEpisodeID:                 targetIDs[resolved.Target],
+		TargetTitle:                     resolved.TargetTitle,
+		MatchSource:                     resolved.MatchSource,
+		ErrorCode:                       resolved.ErrorCode,
 	}
 }
 

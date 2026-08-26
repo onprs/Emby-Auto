@@ -6,8 +6,9 @@ import (
 )
 
 type EpisodeCoordinate struct {
-	Season  int
-	Episode int
+	Season                    int
+	Episode                   int
+	EpisodeFractionHundredths int
 }
 
 type TMDbSeason struct {
@@ -62,6 +63,9 @@ func ResolveEpisodeMapping(request EpisodeMappingRequest) EpisodeMappingResult {
 	if !validSourceCoordinate(request.Source) || !validSourceCoordinate(request.AnchorSource) {
 		return pendingMapping(0, EpisodeCoordinate{}, "mapping_source_invalid")
 	}
+	if request.Source.EpisodeFractionHundredths != 0 || request.AnchorSource.EpisodeFractionHundredths != 0 {
+		return pendingMapping(0, EpisodeCoordinate{}, "mapping_source_requires_explicit")
+	}
 	if request.Source.Season != request.AnchorSource.Season {
 		return pendingMapping(0, EpisodeCoordinate{}, "mapping_source_season_mismatch")
 	}
@@ -96,7 +100,7 @@ func ResolveExplicitEpisodeMapping(source, target EpisodeCoordinate, seasons []T
 	if !validSourceCoordinate(source) {
 		return pendingMapping(0, EpisodeCoordinate{}, "mapping_source_invalid")
 	}
-	if target.Season < 0 || target.Episode <= 0 {
+	if !validTargetCoordinate(target) {
 		return pendingMapping(0, target, "mapping_target_out_of_range")
 	}
 	title, errorCode := resolveTargetTitle(seasons, target)
@@ -121,7 +125,7 @@ func ResolveExplicitEpisodeMapping(source, target EpisodeCoordinate, seasons []T
 }
 
 func AbsoluteEpisodeForTarget(target EpisodeCoordinate, seasons []TMDbSeason) (int, bool) {
-	if !validSourceCoordinate(target) {
+	if !validTargetCoordinate(target) || target.Season == 0 {
 		return 0, false
 	}
 	absolute := 0
@@ -190,7 +194,12 @@ func resolveTargetTitle(seasons []TMDbSeason, target EpisodeCoordinate) (string,
 }
 
 func validSourceCoordinate(coordinate EpisodeCoordinate) bool {
-	return coordinate.Season > 0 && coordinate.Episode > 0
+	return coordinate.Season > 0 && coordinate.Episode > 0 &&
+		coordinate.EpisodeFractionHundredths >= 0 && coordinate.EpisodeFractionHundredths <= 99
+}
+
+func validTargetCoordinate(coordinate EpisodeCoordinate) bool {
+	return coordinate.Season >= 0 && coordinate.Episode > 0 && coordinate.EpisodeFractionHundredths == 0
 }
 
 func pendingMapping(absolute int, target EpisodeCoordinate, code string) EpisodeMappingResult {

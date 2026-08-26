@@ -60,35 +60,36 @@ type TaskArtifactSet struct {
 }
 
 type EpisodeTask struct {
-	ID                 uuid.UUID
-	MediaType          TaskMediaType
-	MovieTitle         string
-	ReleaseYear        int
-	AcquisitionID      uuid.UUID
-	DownloadID         uuid.UUID
-	SeriesTitle        string
-	SourceSeason       int
-	SourceEpisode      int
-	TargetSeason       int
-	TargetEpisode      int
-	TargetEpisodeTitle string
-	State              TaskState
-	VideoState         VideoState
-	SubtitleState      SubtitleState
-	Version            int32
-	FailureStage       string
-	ErrorCode          string
-	ErrorMessage       string
-	Artifacts          *TaskArtifactSet
-	Review             *TaskReview
-	Import             *TaskImport
-	Cleanup            *TaskCleanup
-	EmbyItemID         *uuid.UUID
-	EmbyLibraryID      *uuid.UUID
-	Operations         []OperationSummary
-	Actions            TaskActions
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	ID                              uuid.UUID
+	MediaType                       TaskMediaType
+	MovieTitle                      string
+	ReleaseYear                     int
+	AcquisitionID                   uuid.UUID
+	DownloadID                      uuid.UUID
+	SeriesTitle                     string
+	SourceSeason                    int
+	SourceEpisode                   int
+	SourceEpisodeFractionHundredths int
+	TargetSeason                    int
+	TargetEpisode                   int
+	TargetEpisodeTitle              string
+	State                           TaskState
+	VideoState                      VideoState
+	SubtitleState                   SubtitleState
+	Version                         int32
+	FailureStage                    string
+	ErrorCode                       string
+	ErrorMessage                    string
+	Artifacts                       *TaskArtifactSet
+	Review                          *TaskReview
+	Import                          *TaskImport
+	Cleanup                         *TaskCleanup
+	EmbyItemID                      *uuid.UUID
+	EmbyLibraryID                   *uuid.UUID
+	Operations                      []OperationSummary
+	Actions                         TaskActions
+	CreatedAt                       time.Time
+	UpdatedAt                       time.Time
 }
 
 type OperationSummary struct {

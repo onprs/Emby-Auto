@@ -76,6 +76,7 @@ INSERT INTO download_files (
     selected,
     source_season,
     source_episode,
+    source_episode_fraction_hundredths,
     language
 ) VALUES (
     sqlc.arg(id),
@@ -87,6 +88,7 @@ INSERT INTO download_files (
     sqlc.arg(selected),
     sqlc.narg(source_season),
     sqlc.narg(source_episode),
+    sqlc.arg(source_episode_fraction_hundredths),
     sqlc.narg(language)
 )
 RETURNING *;
@@ -203,6 +205,7 @@ UPDATE download_files
 SET selected = sqlc.arg(selected),
     source_season = sqlc.narg(source_season),
     source_episode = sqlc.narg(source_episode),
+    source_episode_fraction_hundredths = sqlc.arg(source_episode_fraction_hundredths),
     updated_at = now()
 WHERE id = sqlc.arg(id)
   AND download_id = sqlc.arg(download_id)

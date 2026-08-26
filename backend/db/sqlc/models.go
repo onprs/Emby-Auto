@@ -162,18 +162,19 @@ type Download struct {
 }
 
 type DownloadFile struct {
-	ID            pgtype.UUID        `db:"id" json:"id"`
-	DownloadID    pgtype.UUID        `db:"download_id" json:"download_id"`
-	FileIndex     int32              `db:"file_index" json:"file_index"`
-	RelativePath  string             `db:"relative_path" json:"relative_path"`
-	SizeBytes     int64              `db:"size_bytes" json:"size_bytes"`
-	MediaKind     string             `db:"media_kind" json:"media_kind"`
-	Selected      bool               `db:"selected" json:"selected"`
-	SourceSeason  *int32             `db:"source_season" json:"source_season"`
-	SourceEpisode *int32             `db:"source_episode" json:"source_episode"`
-	Language      *string            `db:"language" json:"language"`
-	CreatedAt     pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt     pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	ID                              pgtype.UUID        `db:"id" json:"id"`
+	DownloadID                      pgtype.UUID        `db:"download_id" json:"download_id"`
+	FileIndex                       int32              `db:"file_index" json:"file_index"`
+	RelativePath                    string             `db:"relative_path" json:"relative_path"`
+	SizeBytes                       int64              `db:"size_bytes" json:"size_bytes"`
+	MediaKind                       string             `db:"media_kind" json:"media_kind"`
+	Selected                        bool               `db:"selected" json:"selected"`
+	SourceSeason                    *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32             `db:"source_episode" json:"source_episode"`
+	Language                        *string            `db:"language" json:"language"`
+	CreatedAt                       pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt                       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	SourceEpisodeFractionHundredths int32              `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
 }
 
 type EmbyLibrary struct {
@@ -225,17 +226,18 @@ type EmbyScanRun struct {
 }
 
 type EpisodeMapping struct {
-	ID              pgtype.UUID        `db:"id" json:"id"`
-	ProfileID       pgtype.UUID        `db:"profile_id" json:"profile_id"`
-	SourceSeason    int32              `db:"source_season" json:"source_season"`
-	SourceEpisode   int32              `db:"source_episode" json:"source_episode"`
-	AbsoluteEpisode *int32             `db:"absolute_episode" json:"absolute_episode"`
-	TargetEpisodeID pgtype.UUID        `db:"target_episode_id" json:"target_episode_id"`
-	MappingStatus   string             `db:"mapping_status" json:"mapping_status"`
-	MatchSource     string             `db:"match_source" json:"match_source"`
-	ErrorCode       *string            `db:"error_code" json:"error_code"`
-	CreatedAt       pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	ID                              pgtype.UUID        `db:"id" json:"id"`
+	ProfileID                       pgtype.UUID        `db:"profile_id" json:"profile_id"`
+	SourceSeason                    int32              `db:"source_season" json:"source_season"`
+	SourceEpisode                   int32              `db:"source_episode" json:"source_episode"`
+	AbsoluteEpisode                 *int32             `db:"absolute_episode" json:"absolute_episode"`
+	TargetEpisodeID                 pgtype.UUID        `db:"target_episode_id" json:"target_episode_id"`
+	MappingStatus                   string             `db:"mapping_status" json:"mapping_status"`
+	MatchSource                     string             `db:"match_source" json:"match_source"`
+	ErrorCode                       *string            `db:"error_code" json:"error_code"`
+	CreatedAt                       pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt                       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	SourceEpisodeFractionHundredths int32              `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
 }
 
 type EpisodeMappingProfile struct {
@@ -486,34 +488,35 @@ type RssAdjudicationBatch struct {
 }
 
 type RssEntry struct {
-	ID                 pgtype.UUID        `db:"id" json:"id"`
-	SubscriptionID     pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
-	ReleaseCandidateID pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
-	IdentityKey        string             `db:"identity_key" json:"identity_key"`
-	Guid               *string            `db:"guid" json:"guid"`
-	Btih               *string            `db:"btih" json:"btih"`
-	CanonicalUrl       *string            `db:"canonical_url" json:"canonical_url"`
-	Title              string             `db:"title" json:"title"`
-	PublishedAt        pgtype.Timestamptz `db:"published_at" json:"published_at"`
-	Status             string             `db:"status" json:"status"`
-	EnqueueAttempts    int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
-	LastErrorCode      *string            `db:"last_error_code" json:"last_error_code"`
-	LastErrorMessage   *string            `db:"last_error_message" json:"last_error_message"`
-	UpstreamPayload    []byte             `db:"upstream_payload" json:"upstream_payload"`
-	DiscoveredAt       pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
-	EnqueuedAt         pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
-	UpdatedAt          pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-	DownloadUri        *string            `db:"download_uri" json:"download_uri"`
-	Downloadable       bool               `db:"downloadable" json:"downloadable"`
-	RejectionReasons   []string           `db:"rejection_reasons" json:"rejection_reasons"`
-	SourceSeason       *int32             `db:"source_season" json:"source_season"`
-	SourceEpisode      *int32             `db:"source_episode" json:"source_episode"`
-	DuplicateCount     int32              `db:"duplicate_count" json:"duplicate_count"`
-	LastErrorRetryable bool               `db:"last_error_retryable" json:"last_error_retryable"`
-	ImportedAt         pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
-	CoordinateSource   *string            `db:"coordinate_source" json:"coordinate_source"`
-	AgentResolutionID  pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
-	FulfillmentSource  *string            `db:"fulfillment_source" json:"fulfillment_source"`
+	ID                              pgtype.UUID        `db:"id" json:"id"`
+	SubscriptionID                  pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
+	ReleaseCandidateID              pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
+	IdentityKey                     string             `db:"identity_key" json:"identity_key"`
+	Guid                            *string            `db:"guid" json:"guid"`
+	Btih                            *string            `db:"btih" json:"btih"`
+	CanonicalUrl                    *string            `db:"canonical_url" json:"canonical_url"`
+	Title                           string             `db:"title" json:"title"`
+	PublishedAt                     pgtype.Timestamptz `db:"published_at" json:"published_at"`
+	Status                          string             `db:"status" json:"status"`
+	EnqueueAttempts                 int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
+	LastErrorCode                   *string            `db:"last_error_code" json:"last_error_code"`
+	LastErrorMessage                *string            `db:"last_error_message" json:"last_error_message"`
+	UpstreamPayload                 []byte             `db:"upstream_payload" json:"upstream_payload"`
+	DiscoveredAt                    pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
+	EnqueuedAt                      pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
+	UpdatedAt                       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DownloadUri                     *string            `db:"download_uri" json:"download_uri"`
+	Downloadable                    bool               `db:"downloadable" json:"downloadable"`
+	RejectionReasons                []string           `db:"rejection_reasons" json:"rejection_reasons"`
+	SourceSeason                    *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32             `db:"source_episode" json:"source_episode"`
+	DuplicateCount                  int32              `db:"duplicate_count" json:"duplicate_count"`
+	LastErrorRetryable              bool               `db:"last_error_retryable" json:"last_error_retryable"`
+	ImportedAt                      pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
+	CoordinateSource                *string            `db:"coordinate_source" json:"coordinate_source"`
+	AgentResolutionID               pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
+	FulfillmentSource               *string            `db:"fulfillment_source" json:"fulfillment_source"`
+	SourceEpisodeFractionHundredths int32              `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
 }
 
 type RssEntryAdjudication struct {

@@ -730,32 +730,52 @@ func (workflow *RSSWorkflow) persistFeedEntry(
 		SourceEpisode:    optionalInt32(analysis.SourceEpisode),
 		UpstreamPayload:  payloadJSON,
 	}
-	row, err := queries.InsertRSSEntry(ctx, params)
-	if err == nil {
-		if occupancy.Reason != "" {
-			if _, err := markRSSEntryTargetOccupiedInTx(ctx, scope, repository.UUIDFromPG(row.ID), operationID, occupancy); err != nil {
-				return false, false, false, err
-			}
+	var existing db.RssEntry
+	legacyClaimed := false
+	guid := strings.TrimSpace(item.GUID)
+	if btih != "" && guid != "" {
+		existing, err = queries.GetLegacyRSSEntryForBTIHUpgrade(ctx, db.GetLegacyRSSEntryForBTIHUpgradeParams{
+			SubscriptionID: repository.UUIDToPG(subscriptionID),
+			Guid:           optionalString(guid),
+			CanonicalUrl:   params.CanonicalUrl,
+			Title:          params.Title,
+			PublishedAt:    params.PublishedAt,
+			Btih:           btih,
+		})
+		if err == nil {
+			legacyClaimed = true
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return false, false, false, fmt.Errorf("load legacy RSS entry for BTIH upgrade: %w", err)
 		}
-		if adjudicate {
-			if _, err := queries.CreatePendingRSSAdjudication(ctx, db.CreatePendingRSSAdjudicationParams{
-				EntryID: row.ID, SubscriptionID: row.SubscriptionID, BatchID: repository.UUIDToPG(adjudicationBatchID),
-			}); err != nil {
-				return false, false, false, fmt.Errorf("stage RSS entry for Agent adjudication: %w", err)
+	}
+	if !legacyClaimed {
+		row, insertErr := queries.InsertRSSEntry(ctx, params)
+		if insertErr == nil {
+			if occupancy.Reason != "" {
+				if _, err := markRSSEntryTargetOccupiedInTx(ctx, scope, repository.UUIDFromPG(row.ID), operationID, occupancy); err != nil {
+					return false, false, false, err
+				}
 			}
+			if adjudicate {
+				if _, err := queries.CreatePendingRSSAdjudication(ctx, db.CreatePendingRSSAdjudicationParams{
+					EntryID: row.ID, SubscriptionID: row.SubscriptionID, BatchID: repository.UUIDToPG(adjudicationBatchID),
+				}); err != nil {
+					return false, false, false, fmt.Errorf("stage RSS entry for Agent adjudication: %w", err)
+				}
+			}
+			return true, false, adjudicate, nil
 		}
-		return true, false, adjudicate, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return false, false, false, fmt.Errorf("insert RSS entry: %w", err)
-	}
-	existing, err := queries.GetRSSEntryBySignals(ctx, db.GetRSSEntryBySignalsParams{
-		SubscriptionID: repository.UUIDToPG(subscriptionID),
-		IdentityKey:    identity,
-		Btih:           optionalString(btih),
-	})
-	if err != nil {
-		return false, false, false, fmt.Errorf("load duplicate RSS entry: %w", err)
+		if !errors.Is(insertErr, pgx.ErrNoRows) {
+			return false, false, false, fmt.Errorf("insert RSS entry: %w", insertErr)
+		}
+		existing, err = queries.GetRSSEntryBySignals(ctx, db.GetRSSEntryBySignalsParams{
+			SubscriptionID: repository.UUIDToPG(subscriptionID),
+			IdentityKey:    identity,
+			Btih:           optionalString(btih),
+		})
+		if err != nil {
+			return false, false, false, fmt.Errorf("load duplicate RSS entry: %w", err)
+		}
 	}
 	existingID := repository.UUIDFromPG(existing.ID)
 	importedBySelf := existing.ImportedAt.Valid && valueOrEmpty(existing.FulfillmentSource) == rssFulfillmentManagedImport

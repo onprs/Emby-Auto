@@ -81,7 +81,7 @@ export function AcquisitionDetailPage({ acquisitionId }: { acquisitionId: string
             { label: '任务来源', value: sourceKindLabel(task.sourceKind) },
             ...(task.sourceTitle ? [{ label: '原始资源标题', value: task.sourceTitle }] : []),
             { label: '内容类型', value: isMovie ? '电影' : '番剧' },
-            ...(!isMovie ? [{ label: '源集数', value: episodeLabel(task.sourceSeason, task.sourceEpisode) }] : []),
+            ...(!isMovie ? [{ label: '源集数', value: episodeLabel(task.sourceSeason, task.sourceEpisode, task.sourceEpisodeFractionHundredths) }] : []),
             ...(task.mappingDecisionSource ? [{ label: '剧集映射来源', value: decisionSourceLabel(task.mappingDecisionSource) }] : []),
             { label: '处理项', value: task.tasks.length > 0 ? `${task.tasks.length} 项` : '等待生成' },
             { label: '最近更新', value: formatDateTime(task.updatedAt) },

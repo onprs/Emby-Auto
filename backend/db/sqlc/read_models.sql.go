@@ -107,6 +107,7 @@ WHERE EXISTS (
                     WHERE mapping.profile_id = acquisition.mapping_profile_id
                       AND mapping.source_season = file.source_season
                       AND mapping.source_episode = file.source_episode
+                      AND mapping.source_episode_fraction_hundredths = file.source_episode_fraction_hundredths
                       AND mapping.mapping_status = 'mapped'
                       AND mapping.target_episode_id IS NOT NULL
                 )
@@ -363,6 +364,7 @@ LEFT JOIN episode_mappings AS mapping
     ON mapping.profile_id = acquisition.mapping_profile_id
    AND mapping.source_season = file.source_season
    AND mapping.source_episode = file.source_episode
+   AND mapping.source_episode_fraction_hundredths = file.source_episode_fraction_hundredths
 WHERE acquisition.id = $1
 GROUP BY media.media_type
 `
@@ -407,6 +409,7 @@ LEFT JOIN episode_mappings AS mapping
     ON mapping.profile_id = acquisition.mapping_profile_id
    AND mapping.source_season = file.source_season
    AND mapping.source_episode = file.source_episode
+   AND mapping.source_episode_fraction_hundredths = file.source_episode_fraction_hundredths
 WHERE acquisition.id = ANY($1::uuid[])
 GROUP BY acquisition.id, media.media_type
 `
@@ -472,6 +475,7 @@ SELECT
     history.download_id,
     entry.source_season,
     entry.source_episode,
+    entry.source_episode_fraction_hundredths,
     target_season.season_number AS target_season,
     target_episode.episode_number AS target_episode,
     target_episode.title AS target_episode_title,
@@ -491,6 +495,7 @@ LEFT JOIN episode_mappings AS mapping
   ON mapping.profile_id = subscription.mapping_profile_id
  AND mapping.source_season = entry.source_season
  AND mapping.source_episode = entry.source_episode
+ AND mapping.source_episode_fraction_hundredths = entry.source_episode_fraction_hundredths
  AND mapping.mapping_status = 'mapped'
 LEFT JOIN media_episodes AS target_episode ON target_episode.id = mapping.target_episode_id
 LEFT JOIN tmdb_seasons AS target_season ON target_season.id = target_episode.season_id
@@ -498,29 +503,30 @@ LIMIT 1
 `
 
 type GetArchivedRSSAcquisitionByIDRow struct {
-	AcquisitionID        pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
-	EntryID              pgtype.UUID        `db:"entry_id" json:"entry_id"`
-	SubscriptionID       pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
-	SeriesID             pgtype.UUID        `db:"series_id" json:"series_id"`
-	TmdbSeriesID         *int64             `db:"tmdb_series_id" json:"tmdb_series_id"`
-	SeriesTitle          string             `db:"series_title" json:"series_title"`
-	SourceTitle          string             `db:"source_title" json:"source_title"`
-	MappingProfileID     pgtype.UUID        `db:"mapping_profile_id" json:"mapping_profile_id"`
-	TaskID               pgtype.UUID        `db:"task_id" json:"task_id"`
-	DownloadID           pgtype.UUID        `db:"download_id" json:"download_id"`
-	SourceSeason         *int32             `db:"source_season" json:"source_season"`
-	SourceEpisode        *int32             `db:"source_episode" json:"source_episode"`
-	TargetSeason         *int32             `db:"target_season" json:"target_season"`
-	TargetEpisode        *int32             `db:"target_episode" json:"target_episode"`
-	TargetEpisodeTitle   *string            `db:"target_episode_title" json:"target_episode_title"`
-	AcquisitionCreatedAt pgtype.Timestamptz `db:"acquisition_created_at" json:"acquisition_created_at"`
-	TaskCreatedAt        pgtype.Timestamptz `db:"task_created_at" json:"task_created_at"`
-	VideoReadyAt         pgtype.Timestamptz `db:"video_ready_at" json:"video_ready_at"`
-	SubtitleReadyAt      pgtype.Timestamptz `db:"subtitle_ready_at" json:"subtitle_ready_at"`
-	ArtifactReadyAt      pgtype.Timestamptz `db:"artifact_ready_at" json:"artifact_ready_at"`
-	ReviewedAt           pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
-	ImportedAt           pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
-	ArchivedAt           pgtype.Timestamptz `db:"archived_at" json:"archived_at"`
+	AcquisitionID                   pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
+	EntryID                         pgtype.UUID        `db:"entry_id" json:"entry_id"`
+	SubscriptionID                  pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
+	SeriesID                        pgtype.UUID        `db:"series_id" json:"series_id"`
+	TmdbSeriesID                    *int64             `db:"tmdb_series_id" json:"tmdb_series_id"`
+	SeriesTitle                     string             `db:"series_title" json:"series_title"`
+	SourceTitle                     string             `db:"source_title" json:"source_title"`
+	MappingProfileID                pgtype.UUID        `db:"mapping_profile_id" json:"mapping_profile_id"`
+	TaskID                          pgtype.UUID        `db:"task_id" json:"task_id"`
+	DownloadID                      pgtype.UUID        `db:"download_id" json:"download_id"`
+	SourceSeason                    *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32             `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32              `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	TargetSeason                    *int32             `db:"target_season" json:"target_season"`
+	TargetEpisode                   *int32             `db:"target_episode" json:"target_episode"`
+	TargetEpisodeTitle              *string            `db:"target_episode_title" json:"target_episode_title"`
+	AcquisitionCreatedAt            pgtype.Timestamptz `db:"acquisition_created_at" json:"acquisition_created_at"`
+	TaskCreatedAt                   pgtype.Timestamptz `db:"task_created_at" json:"task_created_at"`
+	VideoReadyAt                    pgtype.Timestamptz `db:"video_ready_at" json:"video_ready_at"`
+	SubtitleReadyAt                 pgtype.Timestamptz `db:"subtitle_ready_at" json:"subtitle_ready_at"`
+	ArtifactReadyAt                 pgtype.Timestamptz `db:"artifact_ready_at" json:"artifact_ready_at"`
+	ReviewedAt                      pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
+	ImportedAt                      pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
+	ArchivedAt                      pgtype.Timestamptz `db:"archived_at" json:"archived_at"`
 }
 
 func (q *Queries) GetArchivedRSSAcquisitionByID(ctx context.Context, id pgtype.UUID) (GetArchivedRSSAcquisitionByIDRow, error) {
@@ -539,6 +545,7 @@ func (q *Queries) GetArchivedRSSAcquisitionByID(ctx context.Context, id pgtype.U
 		&i.DownloadID,
 		&i.SourceSeason,
 		&i.SourceEpisode,
+		&i.SourceEpisodeFractionHundredths,
 		&i.TargetSeason,
 		&i.TargetEpisode,
 		&i.TargetEpisodeTitle,
@@ -771,6 +778,7 @@ SELECT
     source_file.download_id,
     source_file.source_season,
     source_file.source_episode,
+    source_file.source_episode_fraction_hundredths,
     season.season_number AS target_season,
     episode.episode_number AS target_episode,
     episode.title AS target_episode_title,
@@ -827,33 +835,34 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) AS latest_cleanup ON true
 WHERE task.acquisition_id = $1
-ORDER BY source_file.source_season, source_file.source_episode, task.id
+ORDER BY source_file.source_season, source_file.source_episode, source_file.source_episode_fraction_hundredths, task.id
 `
 
 type ListAcquisitionTaskSummariesRow struct {
-	ID                      pgtype.UUID        `db:"id" json:"id"`
-	MediaType               string             `db:"media_type" json:"media_type"`
-	DownloadID              pgtype.UUID        `db:"download_id" json:"download_id"`
-	SourceSeason            *int32             `db:"source_season" json:"source_season"`
-	SourceEpisode           *int32             `db:"source_episode" json:"source_episode"`
-	TargetSeason            *int32             `db:"target_season" json:"target_season"`
-	TargetEpisode           *int32             `db:"target_episode" json:"target_episode"`
-	TargetEpisodeTitle      *string            `db:"target_episode_title" json:"target_episode_title"`
-	State                   string             `db:"state" json:"state"`
-	VideoState              string             `db:"video_state" json:"video_state"`
-	SubtitleState           string             `db:"subtitle_state" json:"subtitle_state"`
-	ArtifactBasename        *string            `db:"artifact_basename" json:"artifact_basename"`
-	ReviewDecision          *string            `db:"review_decision" json:"review_decision"`
-	ReviewedAt              pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
-	ImportStatus            string             `db:"import_status" json:"import_status"`
-	DestinationVideoPath    *string            `db:"destination_video_path" json:"destination_video_path"`
-	DestinationSubtitlePath *string            `db:"destination_subtitle_path" json:"destination_subtitle_path"`
-	EmbyRefreshStatus       string             `db:"emby_refresh_status" json:"emby_refresh_status"`
-	CleanupStatus           string             `db:"cleanup_status" json:"cleanup_status"`
-	FailureStage            *string            `db:"failure_stage" json:"failure_stage"`
-	ErrorCode               *string            `db:"error_code" json:"error_code"`
-	ErrorMessage            *string            `db:"error_message" json:"error_message"`
-	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	ID                              pgtype.UUID        `db:"id" json:"id"`
+	MediaType                       string             `db:"media_type" json:"media_type"`
+	DownloadID                      pgtype.UUID        `db:"download_id" json:"download_id"`
+	SourceSeason                    *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32             `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32              `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	TargetSeason                    *int32             `db:"target_season" json:"target_season"`
+	TargetEpisode                   *int32             `db:"target_episode" json:"target_episode"`
+	TargetEpisodeTitle              *string            `db:"target_episode_title" json:"target_episode_title"`
+	State                           string             `db:"state" json:"state"`
+	VideoState                      string             `db:"video_state" json:"video_state"`
+	SubtitleState                   string             `db:"subtitle_state" json:"subtitle_state"`
+	ArtifactBasename                *string            `db:"artifact_basename" json:"artifact_basename"`
+	ReviewDecision                  *string            `db:"review_decision" json:"review_decision"`
+	ReviewedAt                      pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
+	ImportStatus                    string             `db:"import_status" json:"import_status"`
+	DestinationVideoPath            *string            `db:"destination_video_path" json:"destination_video_path"`
+	DestinationSubtitlePath         *string            `db:"destination_subtitle_path" json:"destination_subtitle_path"`
+	EmbyRefreshStatus               string             `db:"emby_refresh_status" json:"emby_refresh_status"`
+	CleanupStatus                   string             `db:"cleanup_status" json:"cleanup_status"`
+	FailureStage                    *string            `db:"failure_stage" json:"failure_stage"`
+	ErrorCode                       *string            `db:"error_code" json:"error_code"`
+	ErrorMessage                    *string            `db:"error_message" json:"error_message"`
+	UpdatedAt                       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 func (q *Queries) ListAcquisitionTaskSummaries(ctx context.Context, acquisitionID pgtype.UUID) ([]ListAcquisitionTaskSummariesRow, error) {
@@ -871,6 +880,7 @@ func (q *Queries) ListAcquisitionTaskSummaries(ctx context.Context, acquisitionI
 			&i.DownloadID,
 			&i.SourceSeason,
 			&i.SourceEpisode,
+			&i.SourceEpisodeFractionHundredths,
 			&i.TargetSeason,
 			&i.TargetEpisode,
 			&i.TargetEpisodeTitle,
@@ -908,6 +918,7 @@ SELECT
     source_file.download_id,
     source_file.source_season,
     source_file.source_episode,
+    source_file.source_episode_fraction_hundredths,
     season.season_number AS target_season,
     episode.episode_number AS target_episode,
     episode.title AS target_episode_title,
@@ -964,34 +975,35 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) AS latest_cleanup ON true
 WHERE task.acquisition_id = ANY($1::uuid[])
-ORDER BY task.acquisition_id, source_file.source_season, source_file.source_episode, task.id
+ORDER BY task.acquisition_id, source_file.source_season, source_file.source_episode, source_file.source_episode_fraction_hundredths, task.id
 `
 
 type ListAcquisitionTaskSummariesByAcquisitionIDsRow struct {
-	AcquisitionID           pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
-	ID                      pgtype.UUID        `db:"id" json:"id"`
-	MediaType               string             `db:"media_type" json:"media_type"`
-	DownloadID              pgtype.UUID        `db:"download_id" json:"download_id"`
-	SourceSeason            *int32             `db:"source_season" json:"source_season"`
-	SourceEpisode           *int32             `db:"source_episode" json:"source_episode"`
-	TargetSeason            *int32             `db:"target_season" json:"target_season"`
-	TargetEpisode           *int32             `db:"target_episode" json:"target_episode"`
-	TargetEpisodeTitle      *string            `db:"target_episode_title" json:"target_episode_title"`
-	State                   string             `db:"state" json:"state"`
-	VideoState              string             `db:"video_state" json:"video_state"`
-	SubtitleState           string             `db:"subtitle_state" json:"subtitle_state"`
-	ArtifactBasename        *string            `db:"artifact_basename" json:"artifact_basename"`
-	ReviewDecision          *string            `db:"review_decision" json:"review_decision"`
-	ReviewedAt              pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
-	ImportStatus            string             `db:"import_status" json:"import_status"`
-	DestinationVideoPath    *string            `db:"destination_video_path" json:"destination_video_path"`
-	DestinationSubtitlePath *string            `db:"destination_subtitle_path" json:"destination_subtitle_path"`
-	EmbyRefreshStatus       string             `db:"emby_refresh_status" json:"emby_refresh_status"`
-	CleanupStatus           string             `db:"cleanup_status" json:"cleanup_status"`
-	FailureStage            *string            `db:"failure_stage" json:"failure_stage"`
-	ErrorCode               *string            `db:"error_code" json:"error_code"`
-	ErrorMessage            *string            `db:"error_message" json:"error_message"`
-	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	AcquisitionID                   pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
+	ID                              pgtype.UUID        `db:"id" json:"id"`
+	MediaType                       string             `db:"media_type" json:"media_type"`
+	DownloadID                      pgtype.UUID        `db:"download_id" json:"download_id"`
+	SourceSeason                    *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32             `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32              `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	TargetSeason                    *int32             `db:"target_season" json:"target_season"`
+	TargetEpisode                   *int32             `db:"target_episode" json:"target_episode"`
+	TargetEpisodeTitle              *string            `db:"target_episode_title" json:"target_episode_title"`
+	State                           string             `db:"state" json:"state"`
+	VideoState                      string             `db:"video_state" json:"video_state"`
+	SubtitleState                   string             `db:"subtitle_state" json:"subtitle_state"`
+	ArtifactBasename                *string            `db:"artifact_basename" json:"artifact_basename"`
+	ReviewDecision                  *string            `db:"review_decision" json:"review_decision"`
+	ReviewedAt                      pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
+	ImportStatus                    string             `db:"import_status" json:"import_status"`
+	DestinationVideoPath            *string            `db:"destination_video_path" json:"destination_video_path"`
+	DestinationSubtitlePath         *string            `db:"destination_subtitle_path" json:"destination_subtitle_path"`
+	EmbyRefreshStatus               string             `db:"emby_refresh_status" json:"emby_refresh_status"`
+	CleanupStatus                   string             `db:"cleanup_status" json:"cleanup_status"`
+	FailureStage                    *string            `db:"failure_stage" json:"failure_stage"`
+	ErrorCode                       *string            `db:"error_code" json:"error_code"`
+	ErrorMessage                    *string            `db:"error_message" json:"error_message"`
+	UpdatedAt                       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 func (q *Queries) ListAcquisitionTaskSummariesByAcquisitionIDs(ctx context.Context, acquisitionIds []pgtype.UUID) ([]ListAcquisitionTaskSummariesByAcquisitionIDsRow, error) {
@@ -1010,6 +1022,7 @@ func (q *Queries) ListAcquisitionTaskSummariesByAcquisitionIDs(ctx context.Conte
 			&i.DownloadID,
 			&i.SourceSeason,
 			&i.SourceEpisode,
+			&i.SourceEpisodeFractionHundredths,
 			&i.TargetSeason,
 			&i.TargetEpisode,
 			&i.TargetEpisodeTitle,
@@ -1114,6 +1127,7 @@ WHERE acquisitions.deletion_requested_at IS NULL
                               WHERE mapping.profile_id = acquisitions.mapping_profile_id
                                 AND mapping.source_season = file.source_season
                                 AND mapping.source_episode = file.source_episode
+                                AND mapping.source_episode_fraction_hundredths = file.source_episode_fraction_hundredths
                                 AND mapping.mapping_status = 'mapped'
                                 AND mapping.target_episode_id IS NOT NULL
                           )
@@ -1200,7 +1214,7 @@ func (q *Queries) ListAcquisitions(ctx context.Context, arg ListAcquisitionsPara
 }
 
 const listDownloadFiles = `-- name: ListDownloadFiles :many
-SELECT id, download_id, file_index, relative_path, size_bytes, media_kind, selected, source_season, source_episode, language, created_at, updated_at
+SELECT id, download_id, file_index, relative_path, size_bytes, media_kind, selected, source_season, source_episode, language, created_at, updated_at, source_episode_fraction_hundredths
 FROM download_files
 WHERE download_id = $1
 ORDER BY file_index
@@ -1228,6 +1242,7 @@ func (q *Queries) ListDownloadFiles(ctx context.Context, downloadID pgtype.UUID)
 			&i.Language,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.SourceEpisodeFractionHundredths,
 		); err != nil {
 			return nil, err
 		}
@@ -1542,7 +1557,7 @@ func (q *Queries) ListOperations(ctx context.Context, arg ListOperationsParams) 
 
 const listRSSEntries = `-- name: ListRSSEntries :many
 SELECT
-    entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source,
+    entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source, entry.source_episode_fraction_hundredths,
     adjudication.batch_id AS adjudication_batch_id,
     COALESCE(adjudication.state, 'not_required')::text AS adjudication_state,
     adjudication.source AS adjudication_source,
@@ -1595,40 +1610,41 @@ type ListRSSEntriesParams struct {
 }
 
 type ListRSSEntriesRow struct {
-	ID                       pgtype.UUID        `db:"id" json:"id"`
-	SubscriptionID           pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
-	ReleaseCandidateID       pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
-	IdentityKey              string             `db:"identity_key" json:"identity_key"`
-	Guid                     *string            `db:"guid" json:"guid"`
-	Btih                     *string            `db:"btih" json:"btih"`
-	CanonicalUrl             *string            `db:"canonical_url" json:"canonical_url"`
-	Title                    string             `db:"title" json:"title"`
-	PublishedAt              pgtype.Timestamptz `db:"published_at" json:"published_at"`
-	Status                   string             `db:"status" json:"status"`
-	EnqueueAttempts          int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
-	LastErrorCode            *string            `db:"last_error_code" json:"last_error_code"`
-	LastErrorMessage         *string            `db:"last_error_message" json:"last_error_message"`
-	UpstreamPayload          []byte             `db:"upstream_payload" json:"upstream_payload"`
-	DiscoveredAt             pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
-	EnqueuedAt               pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
-	UpdatedAt                pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-	DownloadUri              *string            `db:"download_uri" json:"download_uri"`
-	Downloadable             bool               `db:"downloadable" json:"downloadable"`
-	RejectionReasons         []string           `db:"rejection_reasons" json:"rejection_reasons"`
-	SourceSeason             *int32             `db:"source_season" json:"source_season"`
-	SourceEpisode            *int32             `db:"source_episode" json:"source_episode"`
-	DuplicateCount           int32              `db:"duplicate_count" json:"duplicate_count"`
-	LastErrorRetryable       bool               `db:"last_error_retryable" json:"last_error_retryable"`
-	ImportedAt               pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
-	CoordinateSource         *string            `db:"coordinate_source" json:"coordinate_source"`
-	AgentResolutionID        pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
-	FulfillmentSource        *string            `db:"fulfillment_source" json:"fulfillment_source"`
-	AdjudicationBatchID      pgtype.UUID        `db:"adjudication_batch_id" json:"adjudication_batch_id"`
-	AdjudicationState        string             `db:"adjudication_state" json:"adjudication_state"`
-	AdjudicationSource       *string            `db:"adjudication_source" json:"adjudication_source"`
-	AdjudicationResolutionID pgtype.UUID        `db:"adjudication_resolution_id" json:"adjudication_resolution_id"`
-	RelatedEntryID           pgtype.UUID        `db:"related_entry_id" json:"related_entry_id"`
-	SuccessfulImportPresent  bool               `db:"successful_import_present" json:"successful_import_present"`
+	ID                              pgtype.UUID        `db:"id" json:"id"`
+	SubscriptionID                  pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
+	ReleaseCandidateID              pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
+	IdentityKey                     string             `db:"identity_key" json:"identity_key"`
+	Guid                            *string            `db:"guid" json:"guid"`
+	Btih                            *string            `db:"btih" json:"btih"`
+	CanonicalUrl                    *string            `db:"canonical_url" json:"canonical_url"`
+	Title                           string             `db:"title" json:"title"`
+	PublishedAt                     pgtype.Timestamptz `db:"published_at" json:"published_at"`
+	Status                          string             `db:"status" json:"status"`
+	EnqueueAttempts                 int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
+	LastErrorCode                   *string            `db:"last_error_code" json:"last_error_code"`
+	LastErrorMessage                *string            `db:"last_error_message" json:"last_error_message"`
+	UpstreamPayload                 []byte             `db:"upstream_payload" json:"upstream_payload"`
+	DiscoveredAt                    pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
+	EnqueuedAt                      pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
+	UpdatedAt                       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DownloadUri                     *string            `db:"download_uri" json:"download_uri"`
+	Downloadable                    bool               `db:"downloadable" json:"downloadable"`
+	RejectionReasons                []string           `db:"rejection_reasons" json:"rejection_reasons"`
+	SourceSeason                    *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32             `db:"source_episode" json:"source_episode"`
+	DuplicateCount                  int32              `db:"duplicate_count" json:"duplicate_count"`
+	LastErrorRetryable              bool               `db:"last_error_retryable" json:"last_error_retryable"`
+	ImportedAt                      pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
+	CoordinateSource                *string            `db:"coordinate_source" json:"coordinate_source"`
+	AgentResolutionID               pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
+	FulfillmentSource               *string            `db:"fulfillment_source" json:"fulfillment_source"`
+	SourceEpisodeFractionHundredths int32              `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	AdjudicationBatchID             pgtype.UUID        `db:"adjudication_batch_id" json:"adjudication_batch_id"`
+	AdjudicationState               string             `db:"adjudication_state" json:"adjudication_state"`
+	AdjudicationSource              *string            `db:"adjudication_source" json:"adjudication_source"`
+	AdjudicationResolutionID        pgtype.UUID        `db:"adjudication_resolution_id" json:"adjudication_resolution_id"`
+	RelatedEntryID                  pgtype.UUID        `db:"related_entry_id" json:"related_entry_id"`
+	SuccessfulImportPresent         bool               `db:"successful_import_present" json:"successful_import_present"`
 }
 
 func (q *Queries) ListRSSEntries(ctx context.Context, arg ListRSSEntriesParams) ([]ListRSSEntriesRow, error) {
@@ -1675,6 +1691,7 @@ func (q *Queries) ListRSSEntries(ctx context.Context, arg ListRSSEntriesParams) 
 			&i.CoordinateSource,
 			&i.AgentResolutionID,
 			&i.FulfillmentSource,
+			&i.SourceEpisodeFractionHundredths,
 			&i.AdjudicationBatchID,
 			&i.AdjudicationState,
 			&i.AdjudicationSource,

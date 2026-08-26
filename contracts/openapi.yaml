@@ -2726,7 +2726,7 @@ components:
       enum: [queued, running, proposed, review_required, applied, rejected, failed, cancelled, expired]
     AgentResolutionCapability:
       type: string
-      enum: [rss_coordinate, rss_release_adjudication, rss_preacquisition_mapping, download_file_resolution, catalog_candidate, episode_mapping]
+      enum: [rss_coordinate, rss_release_adjudication, rss_preacquisition_mapping, download_file_resolution, catalog_candidate, episode_mapping, subtitle_video_match]
     AgentProposalValidation:
       type: object
       additionalProperties: false
@@ -2810,6 +2810,12 @@ components:
         fileId: { type: string, format: uuid }
         sourceSeason: { type: integer, format: int32, minimum: 1 }
         sourceEpisode: { type: integer, format: int32, minimum: 1 }
+        sourceEpisodeFractionHundredths:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 99
+          default: 0
     AgentDownloadSubtitleProposal:
       type: object
       additionalProperties: false
@@ -2915,6 +2921,29 @@ components:
         - $ref: "#/components/schemas/AgentEpisodeMappingLegacyAnchorProposal"
         - $ref: "#/components/schemas/AgentEpisodeMappingAnchorProposal"
         - $ref: "#/components/schemas/AgentEpisodeMappingExplicitProposal"
+    AgentSubtitleCandidateSelection:
+      type: object
+      additionalProperties: false
+      required: [candidateId]
+      properties:
+        candidateId:
+          type: string
+          minLength: 1
+          maxLength: 128
+    AgentSubtitleVideoMatchProposal:
+      type: object
+      additionalProperties: false
+      required: [capability, taskId, selected, evidenceCodes, decision]
+      properties:
+        capability: { type: string, const: subtitle_video_match }
+        taskId: { type: string, format: uuid }
+        selected:
+          $ref: "#/components/schemas/AgentSubtitleCandidateSelection"
+        evidenceCodes:
+          type: array
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 128 }
+        decision: { type: string, enum: [resolved, review_required] }
     AgentProposal:
       oneOf:
         - $ref: "#/components/schemas/AgentRSSCoordinateProposal"
@@ -2923,6 +2952,7 @@ components:
         - $ref: "#/components/schemas/AgentDownloadFileResolutionProposal"
         - $ref: "#/components/schemas/AgentCatalogCandidateProposal"
         - $ref: "#/components/schemas/AgentEpisodeMappingProposal"
+        - $ref: "#/components/schemas/AgentSubtitleVideoMatchProposal"
       discriminator:
         propertyName: capability
         mapping:
@@ -2932,6 +2962,7 @@ components:
           download_file_resolution: "#/components/schemas/AgentDownloadFileResolutionProposal"
           catalog_candidate: "#/components/schemas/AgentCatalogCandidateProposal"
           episode_mapping: "#/components/schemas/AgentEpisodeMappingProposal"
+          subtitle_video_match: "#/components/schemas/AgentSubtitleVideoMatchProposal"
     AgentResolution:
       type: object
       additionalProperties: false
@@ -3312,6 +3343,12 @@ components:
           type: integer
           format: int32
           minimum: 1
+        sourceEpisodeFractionHundredths:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 99
+          default: 0
         absoluteEpisode:
           type: integer
           format: int32
@@ -3878,6 +3915,12 @@ components:
           type: integer
           format: int32
           minimum: 1
+        sourceEpisodeFractionHundredths:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 99
+          default: 0
         targetSeason:
           type: integer
           format: int32
@@ -4243,6 +4286,12 @@ components:
           type: integer
           format: int32
           minimum: 0
+        sourceEpisodeFractionHundredths:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 99
+          default: 0
         singleEpisode:
           type: boolean
         mappingProfileId:
@@ -4393,6 +4442,12 @@ components:
           type: integer
           format: int32
           minimum: 1
+        sourceEpisodeFractionHundredths:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 99
+          default: 0
         targetSeason:
           type: integer
           format: int32
@@ -4601,6 +4656,12 @@ components:
           type: integer
           format: int32
           minimum: 1
+        sourceEpisodeFractionHundredths:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 99
+          default: 0
         language:
           type: string
         exclusionReason:
@@ -4654,6 +4715,12 @@ components:
           type: integer
           format: int32
           minimum: 1
+        sourceEpisodeFractionHundredths:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 99
+          default: 0
     SaveDownloadFileResolutionRequest:
       type: object
       additionalProperties: false
@@ -4771,6 +4838,12 @@ components:
           type: integer
           format: int32
           minimum: 1
+        sourceEpisodeFractionHundredths:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 99
+          default: 0
         coordinateSource:
           type: string
           enum: [deterministic, agent_auto, agent_accepted, user]

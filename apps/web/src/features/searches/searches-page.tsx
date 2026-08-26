@@ -133,10 +133,10 @@ export function SearchesPage() {
             <LoadingState className="border-y border-zinc-200 bg-white" label="正在创建搜索" />
           ) : !liveSearchId ? (
             <EmptyState title="尚未搜索" description="输入关键词并执行搜索，结果将在此实时显示" />
-          ) : live.isPending || (live.data && live.data.candidates.length === 0 && (live.data.status === 'queued' || live.data.status === 'running')) ? (
-            <LoadingState label={`正在搜索“${currentQuery}”，请稍候...`} />
           ) : live.error ? (
             <ErrorState message={live.error.message} onRetry={() => live.refetch()} />
+          ) : live.isPending || (live.data && live.data.candidates.length === 0 && (live.data.status === 'queued' || live.data.status === 'running')) ? (
+            <LoadingState label={`正在搜索“${currentQuery}”，请稍候...`} />
           ) : !live.data || live.data.candidates.length === 0 ? (
             <EmptyState
               title={live.data?.status === 'completed' ? '未找到匹配的发布候选' : live.data?.status === 'failed' ? '搜索失败' : '搜索仍在进行中'}

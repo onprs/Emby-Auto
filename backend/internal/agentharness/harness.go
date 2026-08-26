@@ -22,7 +22,7 @@ var promptVersions = map[domain.AgentCapability]string{
 	domain.AgentCapabilityRSSCoordinate:            "rss-coordinate-v1",
 	domain.AgentCapabilityRSSReleaseAdjudication:   "rss-release-adjudication-v3",
 	domain.AgentCapabilityRSSPreacquisitionMapping: "rss-preacquisition-mapping-v1",
-	domain.AgentCapabilityDownloadFileResolution:   "download-file-resolution-v1",
+	domain.AgentCapabilityDownloadFileResolution:   "download-file-resolution-v2",
 	domain.AgentCapabilityCatalogCandidate:         "catalog-candidate-v2",
 	domain.AgentCapabilityEpisodeMapping:           "episode-mapping-v2",
 	domain.AgentCapabilitySubtitleVideoMatch:       "subtitle-video-match-v1",
@@ -190,6 +190,8 @@ func systemPrompt(capability domain.AgentCapability, promptVersion string) strin
 	switch capability {
 	case domain.AgentCapabilityRSSReleaseAdjudication:
 		capabilityInstruction = " Inspect the complete scoped batch and bounded history. Classify every scoped entry exactly once with a final select or ignore decision. For current entries that resolve to the same season and episode, select exactly one preferred release and ignore every alternative. Never select a coordinate already imported, enqueueing, or enqueued in history; ignore current conflicts instead. Select intended unique episodic releases with positive coordinates. Never request user review."
+	case domain.AgentCapabilityDownloadFileResolution:
+		capabilityInstruction = " Inspect the complete scoped download manifest. Select intended episode videos and their matching subtitles. Preserve each full parsed source coordinate, including sourceEpisodeFractionHundredths; integer and fractional episodes are distinct. Never collapse, round, or invent coordinates."
 	case domain.AgentCapabilityRSSPreacquisitionMapping:
 		capabilityInstruction = " Inspect the complete scoped RSS source coordinates and synchronized regular TMDb episodes. Select one scoped source anchor and one target anchor that establishes the intended cumulative regular-season offset. Call the backend preview tool and submit only an anchor whose complete preview is mapped. Never guess when the supplied evidence is insufficient and never request a state change outside the typed proposal."
 	case domain.AgentCapabilityEpisodeMapping:
@@ -253,6 +255,7 @@ func submissionDefinition(capability domain.AgentCapability) (string, agentapi.T
 	evidence := map[string]any{"type": "array", "maxItems": 16, "items": map[string]any{"type": "string", "maxLength": 128}}
 	uuidField := map[string]any{"type": "string", "format": "uuid"}
 	positive := map[string]any{"type": "integer", "minimum": 1, "maximum": 2147483647}
+	fractionHundredths := map[string]any{"type": "integer", "minimum": 0, "maximum": 99}
 	var name string
 	var parameters map[string]any
 	switch capability {
@@ -278,7 +281,10 @@ func submissionDefinition(capability domain.AgentCapability) (string, agentapi.T
 		}, "batchId", "scopedEntryIds", "entries", "decision")
 	case domain.AgentCapabilityDownloadFileResolution:
 		name = "submit_download_file_resolution"
-		video := object(map[string]any{"fileId": uuidField, "sourceSeason": positive, "sourceEpisode": positive}, "fileId", "sourceSeason", "sourceEpisode")
+		video := object(map[string]any{
+			"fileId": uuidField, "sourceSeason": positive, "sourceEpisode": positive,
+			"sourceEpisodeFractionHundredths": fractionHundredths,
+		}, "fileId", "sourceSeason", "sourceEpisode")
 		subtitle := object(map[string]any{"fileId": uuidField, "videoFileId": uuidField}, "fileId", "videoFileId")
 		parameters = object(map[string]any{
 			"videos":    map[string]any{"type": "array", "minItems": 1, "maxItems": 128, "items": video},

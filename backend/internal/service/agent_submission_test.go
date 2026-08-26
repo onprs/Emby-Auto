@@ -7,7 +7,9 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/domain"
+	"github.com/onprs/emby-auto/backend/internal/repository"
 )
 
 type rssPreacquisitionMappingAgentStub struct {
@@ -65,6 +67,46 @@ func TestAgentSubmissionValidatorAllowsAutomaticProposalAndCatalogConfirmation(t
 	}}
 	if err := service.agentSubmissionValidator(ctx, catalogResolution, catalogSnapshot)(catalogProposal); err != nil {
 		t.Fatalf("catalog confirmation proposal rejected: %v", err)
+	}
+}
+
+func TestAgentDownloadFileProposalPreservesFractionalCoordinates(t *testing.T) {
+	fractionalID, integerID, unselectedID := uuid.New(), uuid.New(), uuid.New()
+	proposal := domain.AgentDownloadFileResolutionProposal{
+		Videos: []domain.AgentDownloadVideoProposal{
+			{FileID: fractionalID, SourceSeason: 1, SourceEpisode: 12, SourceEpisodeFractionHundredths: 50},
+			{FileID: integerID, SourceSeason: 1, SourceEpisode: 125},
+		},
+		Decision: "resolved",
+	}
+	snapshot := agentContextSnapshot{Files: map[uuid.UUID]scopedFile{
+		fractionalID: {ID: fractionalID, MediaKind: string(domain.MediaVideo)},
+		integerID:    {ID: integerID, MediaKind: string(domain.MediaVideo)},
+		unselectedID: {ID: unselectedID, MediaKind: string(domain.MediaSubtitle)},
+	}}
+	if validation := validateDownloadFileProposal(proposal, snapshot); validation.Verdict != domain.AgentValidationAutoApplicable {
+		t.Fatalf("fractional proposal validation = %#v", validation)
+	}
+
+	season, episode := int32(1), int32(7)
+	items, err := downloadResolutionItemsFromAgentProposal([]db.DownloadFile{
+		{ID: repository.UUIDToPG(fractionalID)},
+		{ID: repository.UUIDToPG(integerID)},
+		{ID: repository.UUIDToPG(unselectedID), SourceSeason: &season, SourceEpisode: &episode, SourceEpisodeFractionHundredths: 25},
+	}, proposal)
+	if err != nil {
+		t.Fatalf("downloadResolutionItemsFromAgentProposal() error = %v", err)
+	}
+	if items[0].SourceEpisodeFractionHundredths != 50 || items[1].SourceEpisodeFractionHundredths != 0 || items[2].SourceEpisodeFractionHundredths != 25 {
+		t.Fatalf("proposal item fractions = %d/%d/%d, want 50/0/25", items[0].SourceEpisodeFractionHundredths, items[1].SourceEpisodeFractionHundredths, items[2].SourceEpisodeFractionHundredths)
+	}
+
+	duplicate := proposal
+	duplicate.Videos = append([]domain.AgentDownloadVideoProposal(nil), proposal.Videos...)
+	duplicate.Videos[1].SourceEpisode = 12
+	duplicate.Videos[1].SourceEpisodeFractionHundredths = 50
+	if validation := validateDownloadFileProposal(duplicate, snapshot); validation.Verdict != domain.AgentValidationInvalid || len(validation.ReasonCodes) != 1 || validation.ReasonCodes[0] != "download_coordinate_duplicate" {
+		t.Fatalf("duplicate proposal validation = %#v", validation)
 	}
 }
 
@@ -152,8 +194,8 @@ func TestValidateSubtitleVideoMatchProposal(t *testing.T) {
 		{
 			name: "valid selection within scope",
 			proposal: domain.AgentSubtitleVideoMatchProposal{
-				TaskID: uuid.MustParse("74000000-0000-4000-8000-000000000001"),
-				Selected: domain.SubtitleCandidateSelection{CandidateID: "stream:3"},
+				TaskID:        uuid.MustParse("74000000-0000-4000-8000-000000000001"),
+				Selected:      domain.SubtitleCandidateSelection{CandidateID: "stream:3"},
 				EvidenceCodes: []string{"subtitle_title_alignment"}, Decision: "resolved",
 			},
 			want: domain.AgentValidationAutoApplicable,
@@ -161,8 +203,8 @@ func TestValidateSubtitleVideoMatchProposal(t *testing.T) {
 		{
 			name: "candidate outside scope is invalid",
 			proposal: domain.AgentSubtitleVideoMatchProposal{
-				TaskID: uuid.MustParse("74000000-0000-4000-8000-000000000001"),
-				Selected: domain.SubtitleCandidateSelection{CandidateID: "stream:9"},
+				TaskID:        uuid.MustParse("74000000-0000-4000-8000-000000000001"),
+				Selected:      domain.SubtitleCandidateSelection{CandidateID: "stream:9"},
 				EvidenceCodes: []string{"subtitle_title_alignment"}, Decision: "resolved",
 			},
 			want: domain.AgentValidationInvalid,
@@ -170,8 +212,8 @@ func TestValidateSubtitleVideoMatchProposal(t *testing.T) {
 		{
 			name: "task mismatch is invalid",
 			proposal: domain.AgentSubtitleVideoMatchProposal{
-				TaskID: uuid.MustParse("74000000-0000-4000-8000-000000000099"),
-				Selected: domain.SubtitleCandidateSelection{CandidateID: "stream:2"},
+				TaskID:        uuid.MustParse("74000000-0000-4000-8000-000000000099"),
+				Selected:      domain.SubtitleCandidateSelection{CandidateID: "stream:2"},
 				EvidenceCodes: []string{"subtitle_title_alignment"}, Decision: "resolved",
 			},
 			want: domain.AgentValidationInvalid,
@@ -179,8 +221,8 @@ func TestValidateSubtitleVideoMatchProposal(t *testing.T) {
 		{
 			name: "review requested",
 			proposal: domain.AgentSubtitleVideoMatchProposal{
-				TaskID: uuid.MustParse("74000000-0000-4000-8000-000000000001"),
-				Selected: domain.SubtitleCandidateSelection{CandidateID: "stream:2"},
+				TaskID:        uuid.MustParse("74000000-0000-4000-8000-000000000001"),
+				Selected:      domain.SubtitleCandidateSelection{CandidateID: "stream:2"},
 				EvidenceCodes: []string{"subtitle_title_alignment"}, Decision: "review_required",
 			},
 			want: domain.AgentValidationReviewRequired,

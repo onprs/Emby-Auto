@@ -687,6 +687,17 @@ func (workflow *MediaWorkflow) CreateSubtitleVideoMatchScope(
 	if taskID == uuid.Nil || len(candidates) < 2 {
 		return uuid.Nil, mediaWorkflowError("subtitle_scope_invalid", "subtitle video match requires a task and at least two candidates", false)
 	}
+	seenCandidateIDs := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		candidateID := strings.TrimSpace(candidate.CandidateID)
+		if candidateID == "" {
+			return uuid.Nil, mediaWorkflowError("subtitle_scope_invalid", "subtitle candidates require stable identities", false)
+		}
+		if _, duplicate := seenCandidateIDs[candidateID]; duplicate {
+			return uuid.Nil, mediaWorkflowError("subtitle_scope_invalid", "subtitle candidate identities must be unique", false)
+		}
+		seenCandidateIDs[candidateID] = struct{}{}
+	}
 	scopeID := uuid.New()
 	err := workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
 		created, err := scope.Queries.CreateSubtitleVideoMatchScope(ctx, db.CreateSubtitleVideoMatchScopeParams{
@@ -724,17 +735,18 @@ func (workflow *MediaWorkflow) CreateSubtitleVideoMatchScope(
 }
 
 // GetSubtitleVideoMatchSelection returns the Agent-selected candidate for a
-// task, or an empty string when no selection has been applied.
-func (workflow *MediaWorkflow) GetSubtitleVideoMatchSelection(ctx context.Context, taskID uuid.UUID) (string, error) {
+// task, or an empty selection when no selection has been applied.
+func (workflow *MediaWorkflow) GetSubtitleVideoMatchSelection(ctx context.Context, taskID uuid.UUID) (domain.SubtitleMatchSelection, error) {
 	row, err := workflow.queries.GetSubtitleVideoMatchSelection(ctx, repository.UUIDToPG(taskID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
+		return domain.SubtitleMatchSelection{}, nil
 	}
 	if err != nil {
-		return "", mediaWorkflowError("subtitle_scope_unavailable", "the subtitle video match selection could not be loaded", true)
+		return domain.SubtitleMatchSelection{}, mediaWorkflowError("subtitle_scope_unavailable", "the subtitle video match selection could not be loaded", true)
 	}
-	if row.SelectedCandidateID == nil {
-		return "", nil
+	selection := domain.SubtitleMatchSelection{Path: stringValue(row.SelectedCandidatePath)}
+	if row.SelectedCandidateID != nil {
+		selection.CandidateID = *row.SelectedCandidateID
 	}
-	return *row.SelectedCandidateID, nil
+	return selection, nil
 }

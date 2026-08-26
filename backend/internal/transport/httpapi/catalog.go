@@ -329,6 +329,10 @@ func mappingPreviewResponse(preview domain.EpisodeMappingPreview) EpisodeMapping
 			Status:        EpisodeMappingRowStatus(row.Status),
 			MatchSource:   EpisodeMappingRowMatchSource(row.MatchSource),
 		}
+		if row.SourceEpisodeFractionHundredths > 0 {
+			fraction := int32(row.SourceEpisodeFractionHundredths)
+			mapped.SourceEpisodeFractionHundredths = &fraction
+		}
 		if row.AbsoluteEpisode > 0 {
 			value := int32(row.AbsoluteEpisode)
 			mapped.AbsoluteEpisode = &value

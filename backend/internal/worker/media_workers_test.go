@@ -59,15 +59,16 @@ func (stub *transcodeStoreStub) CompleteArtifact(_ context.Context, completion d
 }
 
 type subtitleStoreStub struct {
-	command     domain.TaskMediaCommand
-	beginErr    error
-	completion  domain.MediaArtifactCompletion
-	completeErr error
-	scopeID     uuid.UUID
-	scopeErr    error
-	selection   string
-	selErr      error
-	scopeCalls  int
+	command         domain.TaskMediaCommand
+	beginErr        error
+	completion      domain.MediaArtifactCompletion
+	completeErr     error
+	scopeID         uuid.UUID
+	scopeErr        error
+	selection       domain.SubtitleMatchSelection
+	selErr          error
+	scopeCalls      int
+	scopeCandidates []domain.SubtitleMatchCandidate
 }
 
 func (stub *subtitleStoreStub) BeginSubtitle(context.Context, uuid.UUID) (domain.TaskMediaCommand, error) {
@@ -77,11 +78,12 @@ func (stub *subtitleStoreStub) CompleteArtifact(_ context.Context, completion do
 	stub.completion = completion
 	return stub.completeErr
 }
-func (stub *subtitleStoreStub) CreateSubtitleVideoMatchScope(context.Context, uuid.UUID, []domain.SubtitleMatchCandidate) (uuid.UUID, error) {
+func (stub *subtitleStoreStub) CreateSubtitleVideoMatchScope(_ context.Context, _ uuid.UUID, candidates []domain.SubtitleMatchCandidate) (uuid.UUID, error) {
 	stub.scopeCalls++
+	stub.scopeCandidates = append([]domain.SubtitleMatchCandidate(nil), candidates...)
 	return stub.scopeID, stub.scopeErr
 }
-func (stub *subtitleStoreStub) GetSubtitleVideoMatchSelection(context.Context, uuid.UUID) (string, error) {
+func (stub *subtitleStoreStub) GetSubtitleVideoMatchSelection(context.Context, uuid.UUID) (domain.SubtitleMatchSelection, error) {
 	return stub.selection, stub.selErr
 }
 

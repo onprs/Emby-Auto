@@ -83,6 +83,15 @@ func TestResolveEpisodeMappingRejectsUnsafeAnchorInference(t *testing.T) {
 		want    EpisodeMappingResult
 	}{
 		{
+			name: "fractional source requires explicit mapping",
+			request: EpisodeMappingRequest{
+				Source:       EpisodeCoordinate{Season: 1, Episode: 12, EpisodeFractionHundredths: 50},
+				AnchorSource: EpisodeCoordinate{Season: 1, Episode: 1},
+				AnchorTarget: EpisodeCoordinate{Season: 1, Episode: 1}, TMDbSeasons: seasons,
+			},
+			want: EpisodeMappingResult{Status: MappingPending, MatchSource: MappingMatchPending, ErrorCode: "mapping_source_requires_explicit"},
+		},
+		{
 			name: "different source season",
 			request: EpisodeMappingRequest{
 				Source: EpisodeCoordinate{Season: 2, Episode: 2}, AnchorSource: EpisodeCoordinate{Season: 1, Episode: 1},

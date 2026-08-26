@@ -4,6 +4,8 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 func TestSelectSubtitleChoosesOnlyUnambiguousSimplifiedChineseSources(t *testing.T) {
@@ -329,14 +331,29 @@ func TestValidateASSRequiresScriptInfoEventsAndDialogue(t *testing.T) {
 
 func TestCandidateIDIsStableAndDistinct(t *testing.T) {
 	embedded := SubtitlePlan{Source: SubtitleSourceEmbedded, StreamIndex: 2}
-	external := SubtitlePlan{Source: SubtitleSourceExternal, InputPath: "/downloads/Show.S01E01.chs.ass"}
+	firstFileID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	secondFileID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	first := SubtitlePlan{
+		Source: SubtitleSourceExternal, SourceFileID: firstFileID,
+		InputPath: "/downloads/first/Show.S01E01.chs.ass",
+	}
+	second := SubtitlePlan{
+		Source: SubtitleSourceExternal, SourceFileID: secondFileID,
+		InputPath: "/downloads/second/Show.S01E01.chs.ass",
+	}
 	if got := CandidateID(embedded); got != "stream:2" {
 		t.Fatalf("embedded candidate id = %q", got)
 	}
-	if got := CandidateID(external); got != "file:Show.S01E01.chs.ass" {
+	if got := CandidateID(first); got != "external:"+firstFileID.String() {
 		t.Fatalf("external candidate id = %q", got)
 	}
-	if CandidateID(embedded) == CandidateID(external) {
+	if CandidateID(first) == CandidateID(second) {
+		t.Fatal("external files with the same basename must have distinct candidate ids")
+	}
+	if LegacyCandidateID(first) != "file:Show.S01E01.chs.ass" || LegacyCandidateID(first) != LegacyCandidateID(second) {
+		t.Fatalf("legacy candidate ids = %q/%q", LegacyCandidateID(first), LegacyCandidateID(second))
+	}
+	if CandidateID(embedded) == CandidateID(first) {
 		t.Fatal("embedded and external candidate ids must be distinct")
 	}
 }

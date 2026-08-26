@@ -137,15 +137,16 @@ func TestParseSourceCoordinateRecognizesSupportedFormsWithoutUsingResolution(t *
 		defaultSeason int
 		wantSeason    int
 		wantEpisode   int
+		wantFraction  int
 	}{
 		{name: "season episode token", path: "Show.S01E12.1080p.mkv", defaultSeason: 4, wantSeason: 1, wantEpisode: 12},
-		{name: "season episode decimal", path: "Show.S01E12.5.1080p.mkv", defaultSeason: 4, wantSeason: 1, wantEpisode: 125},
+		{name: "season episode decimal", path: "Show.S01E12.5.1080p.mkv", defaultSeason: 4, wantSeason: 1, wantEpisode: 12, wantFraction: 50},
 		{name: "dash episode", path: "[Group] Show - 02 [1080p].mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 2},
-		{name: "dash decimal episode", path: "[Group] Show - 14.5 [1080p].mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 145},
-		{name: "bracketed decimal episode", path: "[Synthetic-Group][Sample Show][12.5][Special][1080P].mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 125},
+		{name: "dash decimal episode", path: "[Group] Show - 14.5 [1080p].mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 14, wantFraction: 50},
+		{name: "bracketed decimal episode", path: "[Synthetic-Group][Sample Show][12.5][Special][1080P].mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 12, wantFraction: 50},
 		{name: "uppercase revision", path: "[Group] Show [02V2] [1080p].mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 2},
 		{name: "east asian episode", path: "Show 第03話.mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 3},
-		{name: "east asian decimal episode", path: "Show 第12.5话.mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 125},
+		{name: "east asian decimal episode", path: "Show 第12.5话.mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 12, wantFraction: 50},
 		{name: "season directory", path: "Season 2/Show - 04.mkv", defaultSeason: 1, wantSeason: 2, wantEpisode: 4},
 		{name: "episode token", path: "Show EP29 WEB-DL.mkv", defaultSeason: 1, wantSeason: 1, wantEpisode: 29},
 		{
@@ -159,15 +160,19 @@ func TestParseSourceCoordinateRecognizesSupportedFormsWithoutUsingResolution(t *
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			season, episode, ok := ParseSourceCoordinate(test.path, test.defaultSeason)
-			if !ok || season != test.wantSeason || episode != test.wantEpisode {
-				t.Fatalf("ParseSourceCoordinate(%q, %d) = %d/%d/%t, want %d/%d/true", test.path, test.defaultSeason, season, episode, ok, test.wantSeason, test.wantEpisode)
+			coordinate, ok := ParseSourceCoordinate(test.path, test.defaultSeason)
+			if !ok || coordinate.Season != test.wantSeason || coordinate.Episode != test.wantEpisode ||
+				coordinate.EpisodeFractionHundredths != test.wantFraction {
+				t.Fatalf(
+					"ParseSourceCoordinate(%q, %d) = %#v/%t, want S%dE%d fraction %d/true",
+					test.path, test.defaultSeason, coordinate, ok, test.wantSeason, test.wantEpisode, test.wantFraction,
+				)
 			}
 		})
 	}
 
-	if season, episode, ok := ParseSourceCoordinate("Show 1080p 2026.mkv", 1); ok || season != 0 || episode != 0 {
-		t.Fatalf("resolution-only filename parsed as %d/%d/%t, want 0/0/false", season, episode, ok)
+	if coordinate, ok := ParseSourceCoordinate("Show 1080p 2026.mkv", 1); ok || coordinate != (EpisodeCoordinate{}) {
+		t.Fatalf("resolution-only filename parsed as %#v/%t, want no coordinate", coordinate, ok)
 	}
 }
 
@@ -240,7 +245,7 @@ func TestSelectDownloadFilesPairsBilingualSubtitlesAndIgnoresCommentaryExtras(t 
 	}
 	// Episode 12.5 (distinct from 12)
 	ep125 := result.Episodes[2]
-	if ep125.SourceSeason != 1 || ep125.SourceEpisode != 125 || ep125.Video.Index != 7 || ep125.Subtitle == nil || ep125.Subtitle.Index != 8 {
+	if ep125.SourceSeason != 1 || ep125.SourceEpisode != 12 || ep125.SourceEpisodeFractionHundredths != 50 || ep125.Video.Index != 7 || ep125.Subtitle == nil || ep125.Subtitle.Index != 8 {
 		t.Fatalf("episode 12.5 = %#v, want video 7, subtitle 8", ep125)
 	}
 

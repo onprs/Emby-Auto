@@ -288,7 +288,7 @@ func TestCreateRSSSubscriptionRejectsIncompatibleExplicitProfileIntegration(t *t
 	workflow := NewRSSWorkflow(db.New(pool), database.NewTransactor(pool), nil)
 
 	actorID, seriesID, otherSeriesID := uuid.New(), uuid.New(), uuid.New()
-	otherProfileID, inactiveProfileID, incompleteProfileID := uuid.New(), uuid.New(), uuid.New()
+	otherProfileID, inactiveProfileID, incompleteProfileID, fractionalOnlyProfileID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	tmdbSeriesID := time.Now().UnixNano()
 	if _, err := pool.Exec(ctx, `INSERT INTO admin_users (id, username, password_hash) VALUES ($1, $2, 'fixture-hash')`, actorID, "rss-invalid-profile-"+actorID.String()); err != nil {
 		t.Fatal(err)
@@ -306,19 +306,26 @@ VALUES ($1, $3, 'Requested Show'), ($2, $4, 'Other Show')`, seriesID, otherSerie
 	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO episode_mapping_profiles (id, series_id, name, version, source_season_lengths, active, created_by, decision_source)
-VALUES ($1, $2, 'Incomplete S01', 1, ARRAY[2], true, $3, 'user')`, incompleteProfileID, seriesID, actorID); err != nil {
+VALUES ($1, $3, 'Incomplete S01', 1, ARRAY[2], true, $4, 'user'),
+       ($2, $3, 'Fractional-only S01', 1, ARRAY[2], true, $4, 'user')`, incompleteProfileID, fractionalOnlyProfileID, seriesID, actorID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `
-INSERT INTO episode_mappings (id, profile_id, source_season, source_episode, absolute_episode, target_episode_id, mapping_status, match_source)
-VALUES ($1, $2, 1, 1, 1, $3, 'mapped', 'absolute')`, uuid.New(), incompleteProfileID, requestedCatalog[0]); err != nil {
+INSERT INTO episode_mappings (
+    id, profile_id, source_season, source_episode, source_episode_fraction_hundredths,
+    absolute_episode, target_episode_id, mapping_status, match_source
+)
+VALUES ($1, $4, 1, 1, 0, 1, $6, 'mapped', 'absolute'),
+       ($2, $5, 1, 1, 50, NULL, $6, 'mapped', 'explicit'),
+       ($3, $5, 1, 2, 0, 2, $7, 'mapped', 'explicit')`, uuid.New(), uuid.New(), uuid.New(), incompleteProfileID, fractionalOnlyProfileID, requestedCatalog[0], requestedCatalog[1]); err != nil {
 		t.Fatal(err)
 	}
 
 	for name, profileID := range map[string]uuid.UUID{
-		"wrong series": otherProfileID,
-		"inactive":     inactiveProfileID,
-		"incomplete":   incompleteProfileID,
+		"wrong series":                        otherProfileID,
+		"inactive":                            inactiveProfileID,
+		"incomplete":                          incompleteProfileID,
+		"fractional does not replace integer": fractionalOnlyProfileID,
 	} {
 		t.Run(name, func(t *testing.T) {
 			feedURL := "https://example.test/invalid-profile-" + profileID.String() + ".xml"

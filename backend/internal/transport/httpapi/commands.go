@@ -131,6 +131,7 @@ func (server *Server) SaveDownloadFileResolution(ctx context.Context, request Sa
 		items = append(items, domain.DownloadFileResolutionItem{
 			FileID: uuid.UUID(file.FileId), Selected: file.Selected,
 			SourceSeason: int32PointerToInt(file.SourceSeason), SourceEpisode: int32PointerToInt(file.SourceEpisode),
+			SourceEpisodeFractionHundredths: int32PointerValue(file.SourceEpisodeFractionHundredths),
 		})
 	}
 	download, operation, err := server.downloadCommands.SaveFileResolution(
@@ -160,6 +161,13 @@ func int32PointerToInt(value *int32) *int {
 	}
 	converted := int(*value)
 	return &converted
+}
+
+func int32PointerValue(value *int32) int {
+	if value == nil {
+		return 0
+	}
+	return int(*value)
 }
 
 func (server *Server) SaveDownloadFileSelection(ctx context.Context, request SaveDownloadFileSelectionRequestObject) (SaveDownloadFileSelectionResponseObject, error) {

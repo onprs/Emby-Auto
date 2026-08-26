@@ -155,7 +155,12 @@ func agentProposalResponse(capability domain.AgentCapability, raw json.RawMessag
 		}
 		videos := make([]AgentDownloadVideoProposal, 0, len(value.Videos))
 		for _, item := range value.Videos {
-			videos = append(videos, AgentDownloadVideoProposal{FileId: item.FileID, SourceSeason: int32(item.SourceSeason), SourceEpisode: int32(item.SourceEpisode)})
+			video := AgentDownloadVideoProposal{FileId: item.FileID, SourceSeason: int32(item.SourceSeason), SourceEpisode: int32(item.SourceEpisode)}
+			if item.SourceEpisodeFractionHundredths > 0 {
+				fraction := int32(item.SourceEpisodeFractionHundredths)
+				video.SourceEpisodeFractionHundredths = &fraction
+			}
+			videos = append(videos, video)
 		}
 		subtitles := make([]AgentDownloadSubtitleProposal, 0, len(value.Subtitles))
 		for _, item := range value.Subtitles {

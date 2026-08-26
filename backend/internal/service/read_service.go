@@ -252,12 +252,10 @@ func downloadViewFromDB(row db.Download, files []db.DownloadFile) domain.Downloa
 	}
 	for _, file := range files {
 		item := domain.DownloadFileView{
-			ID:           repository.UUIDFromPG(file.ID),
-			FileIndex:    int(file.FileIndex),
-			RelativePath: file.RelativePath,
-			SizeBytes:    file.SizeBytes,
-			MediaKind:    file.MediaKind,
-			Selected:     file.Selected,
+			ID: repository.UUIDFromPG(file.ID), FileIndex: int(file.FileIndex),
+			RelativePath: file.RelativePath, SizeBytes: file.SizeBytes,
+			MediaKind: file.MediaKind, Selected: file.Selected,
+			SourceEpisodeFractionHundredths: int(file.SourceEpisodeFractionHundredths),
 		}
 		if file.SourceSeason != nil {
 			value := int(*file.SourceSeason)
@@ -294,7 +292,8 @@ func downloadFileExclusionReason(file db.DownloadFile, files []db.DownloadFile) 
 		if !selected.Selected || selected.MediaKind != file.MediaKind || selected.SourceSeason == nil || selected.SourceEpisode == nil {
 			continue
 		}
-		if *selected.SourceSeason == *file.SourceSeason && *selected.SourceEpisode == *file.SourceEpisode {
+		if *selected.SourceSeason == *file.SourceSeason && *selected.SourceEpisode == *file.SourceEpisode &&
+			selected.SourceEpisodeFractionHundredths == file.SourceEpisodeFractionHundredths {
 			if file.MediaKind == "video" {
 				return "alternate_video"
 			}
@@ -603,13 +602,15 @@ func (service *ReadService) acquisitionViews(ctx context.Context, rows []db.Acqu
 		}
 
 		var payload struct {
-			SourceSeason  *int  `json:"sourceSeason"`
-			SourceEpisode *int  `json:"sourceEpisode"`
-			SingleEpisode *bool `json:"singleEpisode"`
+			SourceSeason                    *int  `json:"sourceSeason"`
+			SourceEpisode                   *int  `json:"sourceEpisode"`
+			SourceEpisodeFractionHundredths int   `json:"sourceEpisodeFractionHundredths"`
+			SingleEpisode                   *bool `json:"singleEpisode"`
 		}
 		if err := json.Unmarshal(row.SourcePayload, &payload); err == nil {
 			view.SourceSeason = payload.SourceSeason
 			view.SourceEpisode = payload.SourceEpisode
+			view.SourceEpisodeFractionHundredths = payload.SourceEpisodeFractionHundredths
 			view.SingleEpisode = payload.SingleEpisode
 		}
 
@@ -669,6 +670,7 @@ func (service *ReadService) acquisitionViews(ctx context.Context, rows []db.Acqu
 			if task.SourceEpisode != nil {
 				summary.SourceEpisode = int(*task.SourceEpisode)
 			}
+			summary.SourceEpisodeFractionHundredths = int(task.SourceEpisodeFractionHundredths)
 			if task.TargetSeason != nil {
 				value := int(*task.TargetSeason)
 				summary.TargetSeason = &value
@@ -739,6 +741,7 @@ func archivedRSSAcquisitionView(row db.GetArchivedRSSAcquisitionByIDRow) domain.
 		value := int(*row.SourceEpisode)
 		view.SourceEpisode = &value
 	}
+	view.SourceEpisodeFractionHundredths = int(row.SourceEpisodeFractionHundredths)
 	view.Stages = []domain.AcquisitionStageView{
 		archivedCompletedStage("source", row.AcquisitionCreatedAt, importedAt),
 		archivedCompletedStage("download", row.TaskCreatedAt, importedAt),
@@ -1279,6 +1282,7 @@ func (service *ReadService) ListRSSEntries(ctx context.Context, subscriptionID u
 			value := int(*row.SourceEpisode)
 			view.SourceEpisode = &value
 		}
+		view.SourceEpisodeFractionHundredths = int(row.SourceEpisodeFractionHundredths)
 		if row.CoordinateSource != nil {
 			view.CoordinateSource = *row.CoordinateSource
 		}

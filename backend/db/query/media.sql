@@ -36,6 +36,7 @@ SELECT
     file.size_bytes,
     file.source_season,
     file.source_episode,
+    file.source_episode_fraction_hundredths,
     mapping.id AS mapping_id,
     mapping.mapping_status,
     mapping.error_code AS mapping_error_code,
@@ -55,12 +56,13 @@ LEFT JOIN episode_mappings AS mapping
     ON mapping.profile_id = acquisition.mapping_profile_id
    AND mapping.source_season = file.source_season
    AND mapping.source_episode = file.source_episode
+   AND mapping.source_episode_fraction_hundredths = file.source_episode_fraction_hundredths
 LEFT JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
 LEFT JOIN tmdb_seasons AS season ON season.id = episode.season_id
 WHERE file.download_id = sqlc.arg(download_id)
   AND file.selected
   AND file.media_kind = 'video'
-ORDER BY file.source_season, file.source_episode, file.file_index;
+ORDER BY file.source_season, file.source_episode, file.source_episode_fraction_hundredths, file.file_index;
 
 -- name: MarkDownloadSelectingFiles :one
 UPDATE downloads
@@ -148,6 +150,7 @@ SELECT
     video.relative_path AS source_video_relative_path,
     video.source_season,
     video.source_episode,
+    video.source_episode_fraction_hundredths,
     download.id AS download_id,
     download.save_path,
     mapping.id AS mapping_id,
@@ -192,6 +195,7 @@ JOIN download_files AS subtitle
     ON subtitle.download_id = video.download_id
    AND subtitle.source_season = video.source_season
    AND subtitle.source_episode = video.source_episode
+   AND subtitle.source_episode_fraction_hundredths = video.source_episode_fraction_hundredths
 WHERE task.id = sqlc.arg(task_id)
   AND subtitle.selected
   AND subtitle.media_kind = 'subtitle'

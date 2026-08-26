@@ -26,21 +26,21 @@ var (
 	ErrDuplicateDownloadFile = errors.New("duplicate download file")
 	ErrNoMainVideo           = errors.New("no main video found")
 
-	extraTokenPattern          = regexp.MustCompile(`(?i)(^|[^[:alnum:]])(?:ncop|nced|op[0-9]*|ed[0-9]*|pv[0-9]*|cm[0-9]*|sp[0-9]*|menu|scans?|sample|trailer|teaser|bonus|creditless|talk[0-9]*|commentary|audiocommentary|谈话|訪談|访谈|副音声|コメンタリー|オーディオコメンタリー)(?:$|[^[:alnum:]])`)
-	extraSingleTokenPattern    = regexp.MustCompile(`(?i)^(?:ncop|nced|op[0-9]*|ed[0-9]*|pv[0-9]*|cm[0-9]*|sp[0-9]*|menu|scans?|sample|trailer|teaser|bonus|creditless|talk[0-9]*|commentary|audiocommentary|谈话|訪談|访谈|副音声|コメンタリー|オーディオコメンタリー)$`)
-	extraDirectoryTokenPattern = regexp.MustCompile(`[\p{L}\p{N}]+`)
-	seasonDecimalEpisodePattern   = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])s([0-9]{1,2})[ ._-]*e([0-9]{1,3})[.]([0-9]{1,2})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
-	seasonEpisodePattern          = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])s([0-9]{1,2})[ ._-]*e([0-9]{1,3})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
-	seasonDirectoryPattern        = regexp.MustCompile(`(?i)(?:^|/)(?:season|s)[ ._-]*([0-9]{1,2})(?:/|$)`)
+	extraTokenPattern              = regexp.MustCompile(`(?i)(^|[^[:alnum:]])(?:ncop|nced|op[0-9]*|ed[0-9]*|pv[0-9]*|cm[0-9]*|sp[0-9]*|menu|scans?|sample|trailer|teaser|bonus|creditless|talk[0-9]*|commentary|audiocommentary|谈话|訪談|访谈|副音声|コメンタリー|オーディオコメンタリー)(?:$|[^[:alnum:]])`)
+	extraSingleTokenPattern        = regexp.MustCompile(`(?i)^(?:ncop|nced|op[0-9]*|ed[0-9]*|pv[0-9]*|cm[0-9]*|sp[0-9]*|menu|scans?|sample|trailer|teaser|bonus|creditless|talk[0-9]*|commentary|audiocommentary|谈话|訪談|访谈|副音声|コメンタリー|オーディオコメンタリー)$`)
+	extraDirectoryTokenPattern     = regexp.MustCompile(`[\p{L}\p{N}]+`)
+	seasonDecimalEpisodePattern    = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])s([0-9]{1,2})[ ._-]*e([0-9]{1,3})[.]([0-9]{1,2})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
+	seasonEpisodePattern           = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])s([0-9]{1,2})[ ._-]*e([0-9]{1,3})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
+	seasonDirectoryPattern         = regexp.MustCompile(`(?i)(?:^|/)(?:season|s)[ ._-]*([0-9]{1,2})(?:/|$)`)
 	eastAsianDecimalEpisodePattern = regexp.MustCompile(`(?:第[[:space:]]*)?([0-9]{1,3})[.]([0-9]{1,2})[[:space:]]*[话話集]`)
-	eastAsianEpisodePattern       = regexp.MustCompile(`(?:第[[:space:]]*)?([0-9]{1,3})[[:space:]]*[话話集]`)
-	episodeTokenDecimalPattern    = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:ep|episode|e)[ ._-]*([0-9]{1,3})[.]([0-9]{1,2})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
-	episodeTokenPattern           = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:ep|episode|e)[ ._-]*([0-9]{1,3})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
+	eastAsianEpisodePattern        = regexp.MustCompile(`(?:第[[:space:]]*)?([0-9]{1,3})[[:space:]]*[话話集]`)
+	episodeTokenDecimalPattern     = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:ep|episode|e)[ ._-]*([0-9]{1,3})[.]([0-9]{1,2})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
+	episodeTokenPattern            = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:ep|episode|e)[ ._-]*([0-9]{1,3})(?:v[0-9]+)?(?:$|[^[:alnum:]])`)
 	delimitedDecimalEpisodePattern = regexp.MustCompile(`(?i)(?:^|[[:space:]._\[\]-])([0-9]{1,3})[.]([0-9]{1,2})(?:v[0-9]+)?(?:$|[[:space:]._\]\)-])`)
-	delimitedEpisodePattern       = regexp.MustCompile(`(?i)(?:^|[[:space:]._\[\]-])([0-9]{1,3})(?:v[0-9]+)?(?:$|[[:space:]._\]\)-])`)
-	drivePathPattern              = regexp.MustCompile(`(?i)^[a-z]:/`)
-	nonNamePattern                = regexp.MustCompile(`[^[:alnum:]]+`)
-	trailingLanguagePattern       = regexp.MustCompile(`(?i)[ ._-]+(?:zh[ ._-]*(?:hans|hant|cn|sg|tw|hk|mo)|chs|cht|sc|tc|gb(?:2312|k)?|big5|scjp|tcjp|jpsc|jptc|chs[ ._-]*jp(?:n)?|cht[ ._-]*jp(?:n)?|sc[ ._-]*jp(?:n)?|tc[ ._-]*jp(?:n)?|chs[ ._-]*eng?|cht[ ._-]*eng?|sc[ ._-]*eng?|tc[ ._-]*eng?|简日(?:双语)?|繁日(?:双语)?|日简|日繁|中日(?:双语)?|中英(?:双语)?|简英|繁英|双语|简体(?:中文)?|簡體(?:中文)?|简中|簡中|繁中|简繁|繁简|ja|jpn|jp|en|eng)$`)
+	delimitedEpisodePattern        = regexp.MustCompile(`(?i)(?:^|[[:space:]._\[\]-])([0-9]{1,3})(?:v[0-9]+)?(?:$|[[:space:]._\]\)-])`)
+	drivePathPattern               = regexp.MustCompile(`(?i)^[a-z]:/`)
+	nonNamePattern                 = regexp.MustCompile(`[^[:alnum:]]+`)
+	trailingLanguagePattern        = regexp.MustCompile(`(?i)[ ._-]+(?:zh[ ._-]*(?:hans|hant|cn|sg|tw|hk|mo)|chs|cht|sc|tc|gb(?:2312|k)?|big5|scjp|tcjp|jpsc|jptc|chs[ ._-]*jp(?:n)?|cht[ ._-]*jp(?:n)?|sc[ ._-]*jp(?:n)?|tc[ ._-]*jp(?:n)?|chs[ ._-]*eng?|cht[ ._-]*eng?|sc[ ._-]*eng?|tc[ ._-]*eng?|简日(?:双语)?|繁日(?:双语)?|日简|日繁|中日(?:双语)?|中英(?:双语)?|简英|繁英|双语|简体(?:中文)?|簡體(?:中文)?|简中|簡中|繁中|简繁|繁简|ja|jpn|jp|en|eng)$`)
 )
 
 var videoExtensions = map[string]struct{}{
@@ -60,19 +60,21 @@ type DownloadFile struct {
 
 type ClassifiedDownloadFile struct {
 	DownloadFile
-	Kind          MediaKind
-	SourceSeason  int
-	SourceEpisode int
-	Language      string
-	Selected      bool
+	Kind                            MediaKind
+	SourceSeason                    int
+	SourceEpisode                   int
+	SourceEpisodeFractionHundredths int
+	Language                        string
+	Selected                        bool
 }
 
 type SelectedEpisode struct {
-	SourceSeason  int
-	SourceEpisode int
-	Video         ClassifiedDownloadFile
-	Subtitle      *ClassifiedDownloadFile
-	Subtitles     []ClassifiedDownloadFile
+	SourceSeason                    int
+	SourceEpisode                   int
+	SourceEpisodeFractionHundredths int
+	Video                           ClassifiedDownloadFile
+	Subtitle                        *ClassifiedDownloadFile
+	Subtitles                       []ClassifiedDownloadFile
 }
 
 type FileSelectionOptions struct {
@@ -84,11 +86,6 @@ type FileSelectionOptions struct {
 type FileSelectionResult struct {
 	Files    []ClassifiedDownloadFile
 	Episodes []SelectedEpisode
-}
-
-type sourceCoordinate struct {
-	season  int
-	episode int
 }
 
 // ClassifyDownloadFiles validates a qBittorrent manifest and derives only facts
@@ -120,13 +117,15 @@ func ClassifyDownloadFiles(files []DownloadFile, options FileSelectionOptions) (
 
 		classified := ClassifiedDownloadFile{DownloadFile: file, Kind: classifyDownloadPath(file.RelativePath)}
 		if classified.Kind == MediaVideo || classified.Kind == MediaSubtitle {
-			season, episode, ok := ParseSourceCoordinate(file.RelativePath, options.DefaultSeason)
+			coordinate, ok := ParseSourceCoordinate(file.RelativePath, options.DefaultSeason)
 			if options.SingleEpisode {
-				season, episode, ok = options.DefaultSeason, options.DefaultEpisode, true
+				coordinate = EpisodeCoordinate{Season: options.DefaultSeason, Episode: options.DefaultEpisode}
+				ok = true
 			}
 			if ok {
-				classified.SourceSeason = season
-				classified.SourceEpisode = episode
+				classified.SourceSeason = coordinate.Season
+				classified.SourceEpisode = coordinate.Episode
+				classified.SourceEpisodeFractionHundredths = coordinate.EpisodeFractionHundredths
 			}
 		}
 		if classified.Kind == MediaSubtitle {
@@ -146,12 +145,15 @@ func SelectDownloadFiles(files []DownloadFile, options FileSelectionOptions) (Fi
 	}
 	result := FileSelectionResult{Files: classifiedFiles}
 
-	videos := make(map[sourceCoordinate]int)
+	videos := make(map[EpisodeCoordinate]int)
 	for index, file := range result.Files {
 		if file.Kind != MediaVideo || file.SourceSeason <= 0 || file.SourceEpisode <= 0 {
 			continue
 		}
-		coordinate := sourceCoordinate{season: file.SourceSeason, episode: file.SourceEpisode}
+		coordinate := EpisodeCoordinate{
+			Season: file.SourceSeason, Episode: file.SourceEpisode,
+			EpisodeFractionHundredths: file.SourceEpisodeFractionHundredths,
+		}
 		current, exists := videos[coordinate]
 		if !exists || betterVideo(file, result.Files[current]) {
 			videos[coordinate] = index
@@ -161,15 +163,18 @@ func SelectDownloadFiles(files []DownloadFile, options FileSelectionOptions) (Fi
 		return FileSelectionResult{}, ErrNoMainVideo
 	}
 
-	coordinates := make([]sourceCoordinate, 0, len(videos))
+	coordinates := make([]EpisodeCoordinate, 0, len(videos))
 	for coordinate := range videos {
 		coordinates = append(coordinates, coordinate)
 	}
 	sort.Slice(coordinates, func(left, right int) bool {
-		if coordinates[left].season != coordinates[right].season {
-			return coordinates[left].season < coordinates[right].season
+		if coordinates[left].Season != coordinates[right].Season {
+			return coordinates[left].Season < coordinates[right].Season
 		}
-		return coordinates[left].episode < coordinates[right].episode
+		if coordinates[left].Episode != coordinates[right].Episode {
+			return coordinates[left].Episode < coordinates[right].Episode
+		}
+		return coordinates[left].EpisodeFractionHundredths < coordinates[right].EpisodeFractionHundredths
 	})
 
 	for _, coordinate := range coordinates {
@@ -187,30 +192,31 @@ func SelectDownloadFiles(files []DownloadFile, options FileSelectionOptions) (Fi
 			subtitle = &selected
 		}
 		result.Episodes = append(result.Episodes, SelectedEpisode{
-			SourceSeason: coordinate.season, SourceEpisode: coordinate.episode,
-			Video: result.Files[videoIndex], Subtitle: subtitle, Subtitles: subtitles,
+			SourceSeason: coordinate.Season, SourceEpisode: coordinate.Episode,
+			SourceEpisodeFractionHundredths: coordinate.EpisodeFractionHundredths,
+			Video:                           result.Files[videoIndex], Subtitle: subtitle, Subtitles: subtitles,
 		})
 	}
 	return result, nil
 }
 
-func ParseSourceCoordinate(filePath string, defaultSeason int) (int, int, bool) {
+func ParseSourceCoordinate(filePath string, defaultSeason int) (EpisodeCoordinate, bool) {
 	normalized := strings.ReplaceAll(strings.TrimSpace(filePath), `\`, "/")
 	base := path.Base(normalized)
 	stem := strings.TrimSuffix(base, path.Ext(base))
 	if matches := seasonDecimalEpisodePattern.FindStringSubmatch(stem); len(matches) == 4 {
 		season := decimal(matches[1])
-		major := decimal(matches[2])
-		minor := decimal(matches[3])
-		if season > 0 && (major > 0 || minor > 0) {
-			return season, decimalEpisodeCoordinate(major, minor), true
+		episode := decimal(matches[2])
+		fraction, fractionOK := episodeFractionHundredths(matches[3])
+		if season > 0 && episode > 0 && fractionOK {
+			return EpisodeCoordinate{Season: season, Episode: episode, EpisodeFractionHundredths: fraction}, true
 		}
 	}
 	if matches := seasonEpisodePattern.FindStringSubmatch(stem); len(matches) == 3 {
 		season := decimal(matches[1])
 		episode := decimal(matches[2])
 		if season > 0 && episode > 0 {
-			return season, episode, true
+			return EpisodeCoordinate{Season: season, Episode: episode}, true
 		}
 	}
 
@@ -223,10 +229,10 @@ func ParseSourceCoordinate(filePath string, defaultSeason int) (int, int, bool) 
 		if len(matches) != 3 {
 			continue
 		}
-		major := decimal(matches[1])
-		minor := decimal(matches[2])
-		if season > 0 && (major > 0 || minor > 0) {
-			return season, decimalEpisodeCoordinate(major, minor), true
+		episode := decimal(matches[1])
+		fraction, fractionOK := episodeFractionHundredths(matches[2])
+		if season > 0 && episode > 0 && fractionOK {
+			return EpisodeCoordinate{Season: season, Episode: episode, EpisodeFractionHundredths: fraction}, true
 		}
 	}
 	for _, pattern := range []*regexp.Regexp{eastAsianEpisodePattern, episodeTokenPattern, delimitedEpisodePattern} {
@@ -236,14 +242,21 @@ func ParseSourceCoordinate(filePath string, defaultSeason int) (int, int, bool) 
 		}
 		episode := decimal(matches[1])
 		if season > 0 && episode > 0 {
-			return season, episode, true
+			return EpisodeCoordinate{Season: season, Episode: episode}, true
 		}
 	}
-	return 0, 0, false
+	return EpisodeCoordinate{}, false
 }
 
-func decimalEpisodeCoordinate(major, minor int) int {
-	return major*10 + minor
+func episodeFractionHundredths(raw string) (int, bool) {
+	if len(raw) == 0 || len(raw) > 2 {
+		return 0, false
+	}
+	fraction := decimal(raw)
+	if len(raw) == 1 {
+		fraction *= 10
+	}
+	return fraction, fraction >= 0 && fraction <= 99
 }
 
 func classifyDownloadPath(filePath string) MediaKind {
@@ -349,10 +362,11 @@ type subtitleFileChoice struct {
 	score int
 }
 
-func selectSubtitles(files []ClassifiedDownloadFile, coordinate sourceCoordinate, video ClassifiedDownloadFile) []int {
+func selectSubtitles(files []ClassifiedDownloadFile, coordinate EpisodeCoordinate, video ClassifiedDownloadFile) []int {
 	choices := make([]subtitleFileChoice, 0)
 	for index, candidate := range files {
-		if candidate.Kind != MediaSubtitle || candidate.SourceSeason != coordinate.season || candidate.SourceEpisode != coordinate.episode {
+		if candidate.Kind != MediaSubtitle || candidate.SourceSeason != coordinate.Season || candidate.SourceEpisode != coordinate.Episode ||
+			candidate.SourceEpisodeFractionHundredths != coordinate.EpisodeFractionHundredths {
 			continue
 		}
 		label := path.Base(strings.ReplaceAll(candidate.RelativePath, `\`, "/"))

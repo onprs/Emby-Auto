@@ -33,6 +33,28 @@ func TestValidateDownloadFileResolutionAcceptsCompleteVideoAndSubtitleManifest(t
 	}
 }
 
+func TestValidateDownloadFileResolutionKeepsFractionalAndIntegerCoordinatesDistinct(t *testing.T) {
+	fractionalVideoID := uuid.MustParse("43000000-0000-0000-0000-000000000004")
+	integerVideoID := uuid.MustParse("43000000-0000-0000-0000-000000000005")
+	season, episodeTwelve, episodeOneHundredTwentyFive := 1, 12, 125
+	items := []domain.DownloadFileResolutionItem{
+		{FileID: fractionalVideoID, Selected: true, SourceSeason: &season, SourceEpisode: &episodeTwelve, SourceEpisodeFractionHundredths: 50},
+		{FileID: integerVideoID, Selected: true, SourceSeason: &season, SourceEpisode: &episodeOneHundredTwentyFive},
+	}
+	files := []db.DownloadFile{
+		{ID: repository.UUIDToPG(fractionalVideoID), MediaKind: "video"},
+		{ID: repository.UUIDToPG(integerVideoID), MediaKind: "video"},
+	}
+
+	result, err := validateDownloadFileResolution(files, items)
+	if err != nil {
+		t.Fatalf("validateDownloadFileResolution() error = %v", err)
+	}
+	if result[0].SourceEpisodeFractionHundredths != 50 || result[1].SourceEpisodeFractionHundredths != 0 {
+		t.Fatalf("normalized fractions = %d/%d, want 50/0", result[0].SourceEpisodeFractionHundredths, result[1].SourceEpisodeFractionHundredths)
+	}
+}
+
 func TestValidateDownloadFileResolutionRejectsUnsafeSelections(t *testing.T) {
 	video1 := uuid.MustParse("43000000-0000-0000-0000-000000000011")
 	video2 := uuid.MustParse("43000000-0000-0000-0000-000000000012")

@@ -5,6 +5,9 @@ import {
   downloadFollowupLabel,
   downloadRetryLabel,
   downloadWaitsForMapping,
+  formatSourceEpisodeInput,
+  parseSourceEpisodeInput,
+  sourceCoordinateLabel,
 } from '@/features/downloads/download-presentation';
 
 describe('download presentation', () => {
@@ -52,6 +55,16 @@ describe('download presentation', () => {
 
   it('labels file-resolution apply failures separately from transfer retries', () => {
     expect(downloadRetryLabel({ status: 'failed', progress: 0, failureStage: 'file_resolution' })).toBe('重试文件解析');
+  });
+
+  it('round-trips fractional source episode inputs without colliding with integers', () => {
+    expect(parseSourceEpisodeInput('12.5')).toEqual({ episode: 12, fractionHundredths: 50 });
+    expect(parseSourceEpisodeInput('12.05')).toEqual({ episode: 12, fractionHundredths: 5 });
+    expect(parseSourceEpisodeInput('125')).toEqual({ episode: 125, fractionHundredths: 0 });
+    expect(parseSourceEpisodeInput('12.500')).toBeUndefined();
+    expect(formatSourceEpisodeInput(12, 50)).toBe('12.5');
+    expect(formatSourceEpisodeInput(12, 5)).toBe('12.05');
+    expect(sourceCoordinateLabel(1, 12, 50)).toBe('S1E12.5');
   });
 
   it('labels non-mapping materialization errors as media preparation failures', () => {

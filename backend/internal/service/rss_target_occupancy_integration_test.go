@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/domain"
@@ -186,6 +188,210 @@ func TestRSSRealtimeChecksRemainIndependentForSameTargetIntegration(t *testing.T
 	}
 	if absent.Reason != "" || present.Reason != rssTargetInLibraryReason {
 		t.Fatalf("occupancy = absent %#v present %#v", absent, present)
+	}
+}
+
+func TestRSSOlderPresentCheckCannotCreateFulfillmentAfterNewerAbsenceIntegration(t *testing.T) {
+	fixture := newRSSTargetFixture(t)
+	entryID := uuid.New()
+	if _, err := fixture.pool.Exec(fixture.ctx, `
+INSERT INTO rss_entries (
+    id, subscription_id, identity_key, title, download_uri, downloadable,
+    rejection_reasons, source_season, source_episode
+) VALUES ($1, $2, $3, 'Target Occupancy Series - S01E01', $4, true, ARRAY[]::text[], 1, 1)
+`, entryID, fixture.subscriptionID, "guid:"+entryID.String(), "https://example.test/"+entryID.String()+".torrent"); err != nil {
+		t.Fatal(err)
+	}
+	checkedAt := time.Now().UTC()
+	presentCheckID := fixture.addRealtimeCheck(t, 0, true, checkedAt)
+	occupancy, err := loadRSSMappedTargetOccupancyWithRealtimeCheck(
+		fixture.ctx, fixture.queries, fixture.subscriptionID, 1, 1, entryID, presentCheckID,
+	)
+	if err != nil || !occupancy.Fulfilled {
+		t.Fatalf("load old present occupancy = %#v, %v", occupancy, err)
+	}
+	fixture.addRealtimeCheck(t, 0, false, checkedAt.Add(time.Millisecond))
+
+	err = database.NewTransactor(fixture.pool).WithinTx(fixture.ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+		_, markErr := markRSSEntryTargetOccupiedInTx(fixture.ctx, scope, entryID, fixture.pollOperationID, occupancy)
+		return markErr
+	})
+	var serviceErr *Error
+	if !errors.As(err, &serviceErr) || serviceErr.Code != "rss_realtime_check_superseded" {
+		t.Fatalf("stale present write error = %#v", err)
+	}
+	var activeFulfillments, occupiedEvents int
+	var downloadable bool
+	if err := fixture.pool.QueryRow(fixture.ctx, `
+SELECT
+    (SELECT count(*) FROM rss_target_fulfillments
+     WHERE rss_entry_id = $1 AND source = 'emby_catalog' AND invalidated_at IS NULL),
+    (SELECT count(*) FROM events
+     WHERE resource_type = 'rss_entry' AND resource_id = $1 AND topic = 'rss.entry.target_occupied'),
+    (SELECT downloadable FROM rss_entries WHERE id = $1)
+`, entryID).Scan(&activeFulfillments, &occupiedEvents, &downloadable); err != nil {
+		t.Fatal(err)
+	}
+	if activeFulfillments != 0 || occupiedEvents != 0 || !downloadable {
+		t.Fatalf("stale write side effects = fulfillments %d events %d downloadable %t", activeFulfillments, occupiedEvents, downloadable)
+	}
+}
+
+func TestRSSNewerAbsenceWaitsForOlderPresentWriterThenInvalidatesItIntegration(t *testing.T) {
+	fixture := newRSSTargetFixture(t)
+	entryID := uuid.New()
+	if _, err := fixture.pool.Exec(fixture.ctx, `
+INSERT INTO rss_entries (
+    id, subscription_id, identity_key, title, download_uri, downloadable,
+    rejection_reasons, source_season, source_episode
+) VALUES ($1, $2, $3, 'Target Occupancy Series - S01E01', $4, true, ARRAY[]::text[], 1, 1)
+`, entryID, fixture.subscriptionID, "guid:"+entryID.String(), "https://example.test/"+entryID.String()+".torrent"); err != nil {
+		t.Fatal(err)
+	}
+	checkedAt := time.Now().UTC()
+	presentCheckID := fixture.addRealtimeCheck(t, 0, true, checkedAt)
+	occupancy, err := loadRSSMappedTargetOccupancyWithRealtimeCheck(
+		fixture.ctx, fixture.queries, fixture.subscriptionID, 1, 1, entryID, presentCheckID,
+	)
+	if err != nil || !occupancy.Fulfilled {
+		t.Fatalf("load present occupancy = %#v, %v", occupancy, err)
+	}
+
+	oldTx, err := fixture.pool.Begin(fixture.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = oldTx.Rollback(context.Background()) }()
+	oldScope := database.TxScope{Tx: oldTx, Queries: db.New(oldTx)}
+	if err := lockEpisodeMappingTargets(fixture.ctx, oldScope, []uuid.UUID{fixture.targetEpisodeIDs[0]}); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := markRSSEntryTargetOccupiedInTx(
+		fixture.ctx, oldScope, entryID, fixture.pollOperationID, occupancy,
+	); err != nil || !changed {
+		t.Fatalf("mark older present occupancy = %t, %v", changed, err)
+	}
+
+	attempted := make(chan struct{})
+	finished := make(chan error, 1)
+	absentCheckID := uuid.New()
+	go func() {
+		close(attempted)
+		finished <- database.NewTransactor(fixture.pool).WithinTx(fixture.ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+			if err := lockEpisodeMappingTargets(fixture.ctx, scope, []uuid.UUID{fixture.targetEpisodeIDs[0]}); err != nil {
+				return err
+			}
+			params := db.UpsertRSSRealtimeTargetCheckParams{
+				TargetEpisodeID: repository.UUIDToPG(fixture.targetEpisodeIDs[0]),
+				CheckID:         repository.UUIDToPG(absentCheckID), Present: false,
+				MatchSource: "absent", CheckedAt: pgtype.Timestamptz{Time: checkedAt.Add(time.Millisecond), Valid: true},
+			}
+			if err := scope.Queries.UpsertRSSRealtimeTargetCheck(fixture.ctx, params); err != nil {
+				return err
+			}
+			return scope.Queries.RefreshRSSEmbyCatalogFulfillmentsForRealtimeTarget(
+				fixture.ctx,
+				db.RefreshRSSEmbyCatalogFulfillmentsForRealtimeTargetParams{
+					Present: params.Present, CheckedAt: params.CheckedAt, TargetEpisodeID: params.TargetEpisodeID,
+				},
+			)
+		})
+	}()
+	<-attempted
+	select {
+	case err := <-finished:
+		t.Fatalf("newer absence did not wait for target lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := oldTx.Commit(fixture.ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("record newer absence: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("newer absence remained blocked after older writer committed")
+	}
+	var active, invalidated int
+	if err := fixture.pool.QueryRow(fixture.ctx, `
+SELECT
+    count(*) FILTER (WHERE invalidated_at IS NULL),
+    count(*) FILTER (WHERE invalidated_at IS NOT NULL)
+FROM rss_target_fulfillments
+WHERE rss_entry_id = $1 AND target_episode_id = $2 AND source = 'emby_catalog'
+`, entryID, fixture.targetEpisodeIDs[0]).Scan(&active, &invalidated); err != nil {
+		t.Fatal(err)
+	}
+	if active != 0 || invalidated != 1 {
+		t.Fatalf("fulfillment after newer absence = active %d invalidated %d", active, invalidated)
+	}
+}
+
+func TestRSSLegacyGUIDEntryClaimsFirstBTIHWithoutSwallowingLaterReusedGUIDIntegration(t *testing.T) {
+	fixture := newRSSTargetFixture(t)
+	legacyEntryID := uuid.New()
+	publishedAt := time.Date(2026, time.August, 26, 12, 0, 0, 0, time.UTC)
+	const guid = "hybrid-feed-guid"
+	const title = "Target Occupancy Series - S01E01 [Hybrid]"
+	const canonicalURL = "https://example.test/releases/hybrid-item"
+	if _, err := fixture.pool.Exec(fixture.ctx, `
+INSERT INTO rss_entries (
+    id, subscription_id, identity_key, guid, canonical_url, download_uri,
+    title, published_at, downloadable, rejection_reasons, source_season, source_episode
+) VALUES ($1, $2, 'guid:' || $3, $3, $4, $5, $6, $7, true, ARRAY[]::text[], 1, 1)
+`, legacyEntryID, fixture.subscriptionID, guid, canonicalURL, "https://example.test/releases/hybrid.torrent", title, publishedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	firstBTIH := "1123456789abcdef0123456789abcdef01234567"
+	firstMagnet := "magnet:?xt=urn:btih:" + firstBTIH
+	if _, err := fixture.workflow.PersistPoll(
+		fixture.ctx,
+		fixture.pollOperationID,
+		fixture.subscriptionID,
+		domain.RSSFeed{Title: "Hybrid feed", Entries: []domain.RSSFeedEntry{{
+			GUID: guid, Title: title, URL: canonicalURL, DownloadURI: firstMagnet, PublishedAt: publishedAt,
+		}}},
+		domain.RSSPollPersistOptions{},
+	); err != nil {
+		t.Fatalf("PersistPoll(BTIH upgrade) error = %v", err)
+	}
+	var entryID uuid.UUID
+	var identity, btih, downloadURI string
+	var duplicateCount int
+	if err := fixture.pool.QueryRow(fixture.ctx, `
+SELECT id, identity_key, btih, download_uri, duplicate_count
+FROM rss_entries WHERE subscription_id = $1`, fixture.subscriptionID).Scan(
+		&entryID, &identity, &btih, &downloadURI, &duplicateCount,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if entryID != legacyEntryID || identity != "guid:"+guid || btih != firstBTIH || downloadURI != firstMagnet || duplicateCount != 1 {
+		t.Fatalf("claimed legacy entry = %s/%q/%q/%q/%d", entryID, identity, btih, downloadURI, duplicateCount)
+	}
+
+	secondBTIH := "2123456789abcdef0123456789abcdef01234567"
+	if _, err := fixture.workflow.PersistPoll(
+		fixture.ctx,
+		fixture.pollOperationID,
+		fixture.subscriptionID,
+		domain.RSSFeed{Title: "Hybrid feed", Entries: []domain.RSSFeedEntry{{
+			GUID: guid, Title: title, URL: canonicalURL,
+			DownloadURI: "magnet:?xt=urn:btih:" + secondBTIH, PublishedAt: publishedAt,
+		}}},
+		domain.RSSPollPersistOptions{},
+	); err != nil {
+		t.Fatalf("PersistPoll(reused GUID) error = %v", err)
+	}
+	var count int
+	if err := fixture.pool.QueryRow(fixture.ctx, `
+SELECT count(*) FROM rss_entries WHERE subscription_id = $1`, fixture.subscriptionID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("reused GUID entry count = %d, want two distinct BTIH releases", count)
 	}
 }
 

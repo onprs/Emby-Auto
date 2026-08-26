@@ -273,7 +273,7 @@ export type RevealedSecrets = {
 
 export type AgentResolutionStatus = 'queued' | 'running' | 'proposed' | 'review_required' | 'applied' | 'rejected' | 'failed' | 'cancelled' | 'expired';
 
-export type AgentResolutionCapability = 'rss_coordinate' | 'rss_release_adjudication' | 'rss_preacquisition_mapping' | 'download_file_resolution' | 'catalog_candidate' | 'episode_mapping';
+export type AgentResolutionCapability = 'rss_coordinate' | 'rss_release_adjudication' | 'rss_preacquisition_mapping' | 'download_file_resolution' | 'catalog_candidate' | 'episode_mapping' | 'subtitle_video_match';
 
 export type AgentProposalValidation = {
     verdict: 'auto_applicable' | 'review_required' | 'invalid';
@@ -321,6 +321,7 @@ export type AgentDownloadVideoProposal = {
     fileId: string;
     sourceSeason: number;
     sourceEpisode: number;
+    sourceEpisodeFractionHundredths?: number;
 };
 
 export type AgentDownloadSubtitleProposal = {
@@ -382,7 +383,19 @@ export type AgentEpisodeMappingExplicitProposal = {
 
 export type AgentEpisodeMappingProposal = AgentEpisodeMappingLegacyAnchorProposal | AgentEpisodeMappingAnchorProposal | AgentEpisodeMappingExplicitProposal;
 
-export type AgentProposal = AgentRssCoordinateProposal | AgentRssReleaseAdjudicationProposal | AgentRssPreacquisitionMappingProposal | AgentDownloadFileResolutionProposal | AgentCatalogCandidateProposal | AgentEpisodeMappingProposal;
+export type AgentSubtitleCandidateSelection = {
+    candidateId: string;
+};
+
+export type AgentSubtitleVideoMatchProposal = {
+    capability: 'subtitle_video_match';
+    taskId: string;
+    selected: AgentSubtitleCandidateSelection;
+    evidenceCodes: Array<string>;
+    decision: 'resolved' | 'review_required';
+};
+
+export type AgentProposal = AgentRssCoordinateProposal | AgentRssReleaseAdjudicationProposal | AgentRssPreacquisitionMappingProposal | AgentDownloadFileResolutionProposal | AgentCatalogCandidateProposal | AgentEpisodeMappingProposal | AgentSubtitleVideoMatchProposal;
 
 export type AgentResolution = {
     id: string;
@@ -560,6 +573,7 @@ export type EpisodeMappingRow = {
     relativePath: string;
     sourceSeason: number;
     sourceEpisode: number;
+    sourceEpisodeFractionHundredths?: number;
     absoluteEpisode?: number;
     status: 'mapped' | 'pending' | 'excluded';
     targetSeason?: number;
@@ -801,6 +815,7 @@ export type Task = {
     seriesTitle?: string;
     sourceSeason?: number;
     sourceEpisode?: number;
+    sourceEpisodeFractionHundredths?: number;
     targetSeason?: number;
     targetEpisode?: number;
     targetEpisodeTitle?: string;
@@ -948,6 +963,7 @@ export type Acquisition = {
     sourceTitle?: string;
     sourceSeason?: number;
     sourceEpisode?: number;
+    sourceEpisodeFractionHundredths?: number;
     singleEpisode?: boolean;
     mappingProfileId?: string;
     mappingDecisionSource?: 'deterministic' | 'user' | 'agent_auto' | 'agent_accepted' | 'legacy';
@@ -1018,6 +1034,7 @@ export type AcquisitionTaskSummary = {
     downloadId: string;
     sourceSeason?: number;
     sourceEpisode?: number;
+    sourceEpisodeFractionHundredths?: number;
     targetSeason?: number;
     targetEpisode?: number;
     targetEpisodeTitle?: string;
@@ -1095,6 +1112,7 @@ export type DownloadFile = {
     selected: boolean;
     sourceSeason?: number;
     sourceEpisode?: number;
+    sourceEpisodeFractionHundredths?: number;
     language?: string;
     exclusionReason?: 'extra_content' | 'unsupported_media' | 'episode_not_detected' | 'alternate_video' | 'alternate_subtitle' | 'no_matching_video' | 'not_selected';
 };
@@ -1117,6 +1135,7 @@ export type DownloadFileResolutionItem = {
     selected: boolean;
     sourceSeason?: number;
     sourceEpisode?: number;
+    sourceEpisodeFractionHundredths?: number;
 };
 
 export type SaveDownloadFileResolutionRequest = {
@@ -1163,6 +1182,7 @@ export type RssEntry = {
     publishedAt?: string;
     sourceSeason?: number;
     sourceEpisode?: number;
+    sourceEpisodeFractionHundredths?: number;
     coordinateSource?: 'deterministic' | 'agent_auto' | 'agent_accepted' | 'user';
     agentResolutionId?: string;
     adjudicationBatchId?: string;

@@ -41,7 +41,7 @@ SET source_season = CASE WHEN $1::text = 'selected' THEN $2 ELSE entry.source_se
 FROM decision
 WHERE entry.id = decision.entry_id
   AND entry.status IN ('discovered', 'enqueue_failed')
-RETURNING entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source
+RETURNING entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source, entry.source_episode_fraction_hundredths
 `
 
 type ApplyAgentRSSAdjudicationEntryParams struct {
@@ -98,6 +98,7 @@ func (q *Queries) ApplyAgentRSSAdjudicationEntry(ctx context.Context, arg ApplyA
 		&i.CoordinateSource,
 		&i.AgentResolutionID,
 		&i.FulfillmentSource,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }
@@ -115,7 +116,7 @@ SET source_season = $1,
     last_error_retryable = false,
     updated_at = now()
 WHERE id = $5
-RETURNING id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source
+RETURNING id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source, source_episode_fraction_hundredths
 `
 
 type ApplyAgentRSSCoordinateParams struct {
@@ -164,6 +165,7 @@ func (q *Queries) ApplyAgentRSSCoordinate(ctx context.Context, arg ApplyAgentRSS
 		&i.CoordinateSource,
 		&i.AgentResolutionID,
 		&i.FulfillmentSource,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }
@@ -1144,22 +1146,25 @@ func (q *Queries) IsCanonicalRSSAgentMappingAcquisition(ctx context.Context, acq
 }
 
 const listAgentDownloadFiles = `-- name: ListAgentDownloadFiles :many
-SELECT id, file_index, relative_path, size_bytes, media_kind, selected, source_season, source_episode, language
+SELECT
+    id, file_index, relative_path, size_bytes, media_kind, selected,
+    source_season, source_episode, source_episode_fraction_hundredths, language
 FROM download_files
 WHERE download_id = $1
 ORDER BY file_index
 `
 
 type ListAgentDownloadFilesRow struct {
-	ID            pgtype.UUID `db:"id" json:"id"`
-	FileIndex     int32       `db:"file_index" json:"file_index"`
-	RelativePath  string      `db:"relative_path" json:"relative_path"`
-	SizeBytes     int64       `db:"size_bytes" json:"size_bytes"`
-	MediaKind     string      `db:"media_kind" json:"media_kind"`
-	Selected      bool        `db:"selected" json:"selected"`
-	SourceSeason  *int32      `db:"source_season" json:"source_season"`
-	SourceEpisode *int32      `db:"source_episode" json:"source_episode"`
-	Language      *string     `db:"language" json:"language"`
+	ID                              pgtype.UUID `db:"id" json:"id"`
+	FileIndex                       int32       `db:"file_index" json:"file_index"`
+	RelativePath                    string      `db:"relative_path" json:"relative_path"`
+	SizeBytes                       int64       `db:"size_bytes" json:"size_bytes"`
+	MediaKind                       string      `db:"media_kind" json:"media_kind"`
+	Selected                        bool        `db:"selected" json:"selected"`
+	SourceSeason                    *int32      `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32      `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32       `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	Language                        *string     `db:"language" json:"language"`
 }
 
 func (q *Queries) ListAgentDownloadFiles(ctx context.Context, downloadID pgtype.UUID) ([]ListAgentDownloadFilesRow, error) {
@@ -1180,6 +1185,7 @@ func (q *Queries) ListAgentDownloadFiles(ctx context.Context, downloadID pgtype.
 			&i.Selected,
 			&i.SourceSeason,
 			&i.SourceEpisode,
+			&i.SourceEpisodeFractionHundredths,
 			&i.Language,
 		); err != nil {
 			return nil, err
@@ -1284,7 +1290,12 @@ func (q *Queries) ListAgentMappingAcquisitionsBySeries(ctx context.Context, seri
 }
 
 const listAgentMappingFiles = `-- name: ListAgentMappingFiles :many
-SELECT file.id, file.relative_path, file.source_season, file.source_episode
+SELECT
+    file.id,
+    file.relative_path,
+    file.source_season,
+    file.source_episode,
+    file.source_episode_fraction_hundredths
 FROM download_files AS file
 JOIN downloads AS download ON download.id = file.download_id
 WHERE download.id = (
@@ -1301,10 +1312,11 @@ ORDER BY file.file_index
 `
 
 type ListAgentMappingFilesRow struct {
-	ID            pgtype.UUID `db:"id" json:"id"`
-	RelativePath  string      `db:"relative_path" json:"relative_path"`
-	SourceSeason  *int32      `db:"source_season" json:"source_season"`
-	SourceEpisode *int32      `db:"source_episode" json:"source_episode"`
+	ID                              pgtype.UUID `db:"id" json:"id"`
+	RelativePath                    string      `db:"relative_path" json:"relative_path"`
+	SourceSeason                    *int32      `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32      `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32       `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
 }
 
 func (q *Queries) ListAgentMappingFiles(ctx context.Context, acquisitionID pgtype.UUID) ([]ListAgentMappingFilesRow, error) {
@@ -1321,6 +1333,7 @@ func (q *Queries) ListAgentMappingFiles(ctx context.Context, acquisitionID pgtyp
 			&i.RelativePath,
 			&i.SourceSeason,
 			&i.SourceEpisode,
+			&i.SourceEpisodeFractionHundredths,
 		); err != nil {
 			return nil, err
 		}
@@ -2029,7 +2042,7 @@ func (q *Queries) LockRSSAdjudicationBatch(ctx context.Context, id pgtype.UUID) 
 
 const lockRSSAdjudicationEntries = `-- name: LockRSSAdjudicationEntries :many
 SELECT
-    entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source,
+    entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source, entry.source_episode_fraction_hundredths,
     adjudication.state AS adjudication_state,
     adjudication.source AS adjudication_source,
     adjudication.resolution_id AS adjudication_resolution_id,
@@ -2042,38 +2055,39 @@ FOR UPDATE OF entry, adjudication
 `
 
 type LockRSSAdjudicationEntriesRow struct {
-	ID                       pgtype.UUID        `db:"id" json:"id"`
-	SubscriptionID           pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
-	ReleaseCandidateID       pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
-	IdentityKey              string             `db:"identity_key" json:"identity_key"`
-	Guid                     *string            `db:"guid" json:"guid"`
-	Btih                     *string            `db:"btih" json:"btih"`
-	CanonicalUrl             *string            `db:"canonical_url" json:"canonical_url"`
-	Title                    string             `db:"title" json:"title"`
-	PublishedAt              pgtype.Timestamptz `db:"published_at" json:"published_at"`
-	Status                   string             `db:"status" json:"status"`
-	EnqueueAttempts          int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
-	LastErrorCode            *string            `db:"last_error_code" json:"last_error_code"`
-	LastErrorMessage         *string            `db:"last_error_message" json:"last_error_message"`
-	UpstreamPayload          []byte             `db:"upstream_payload" json:"upstream_payload"`
-	DiscoveredAt             pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
-	EnqueuedAt               pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
-	UpdatedAt                pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-	DownloadUri              *string            `db:"download_uri" json:"download_uri"`
-	Downloadable             bool               `db:"downloadable" json:"downloadable"`
-	RejectionReasons         []string           `db:"rejection_reasons" json:"rejection_reasons"`
-	SourceSeason             *int32             `db:"source_season" json:"source_season"`
-	SourceEpisode            *int32             `db:"source_episode" json:"source_episode"`
-	DuplicateCount           int32              `db:"duplicate_count" json:"duplicate_count"`
-	LastErrorRetryable       bool               `db:"last_error_retryable" json:"last_error_retryable"`
-	ImportedAt               pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
-	CoordinateSource         *string            `db:"coordinate_source" json:"coordinate_source"`
-	AgentResolutionID        pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
-	FulfillmentSource        *string            `db:"fulfillment_source" json:"fulfillment_source"`
-	AdjudicationState        string             `db:"adjudication_state" json:"adjudication_state"`
-	AdjudicationSource       *string            `db:"adjudication_source" json:"adjudication_source"`
-	AdjudicationResolutionID pgtype.UUID        `db:"adjudication_resolution_id" json:"adjudication_resolution_id"`
-	RelatedEntryID           pgtype.UUID        `db:"related_entry_id" json:"related_entry_id"`
+	ID                              pgtype.UUID        `db:"id" json:"id"`
+	SubscriptionID                  pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
+	ReleaseCandidateID              pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
+	IdentityKey                     string             `db:"identity_key" json:"identity_key"`
+	Guid                            *string            `db:"guid" json:"guid"`
+	Btih                            *string            `db:"btih" json:"btih"`
+	CanonicalUrl                    *string            `db:"canonical_url" json:"canonical_url"`
+	Title                           string             `db:"title" json:"title"`
+	PublishedAt                     pgtype.Timestamptz `db:"published_at" json:"published_at"`
+	Status                          string             `db:"status" json:"status"`
+	EnqueueAttempts                 int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
+	LastErrorCode                   *string            `db:"last_error_code" json:"last_error_code"`
+	LastErrorMessage                *string            `db:"last_error_message" json:"last_error_message"`
+	UpstreamPayload                 []byte             `db:"upstream_payload" json:"upstream_payload"`
+	DiscoveredAt                    pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
+	EnqueuedAt                      pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
+	UpdatedAt                       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DownloadUri                     *string            `db:"download_uri" json:"download_uri"`
+	Downloadable                    bool               `db:"downloadable" json:"downloadable"`
+	RejectionReasons                []string           `db:"rejection_reasons" json:"rejection_reasons"`
+	SourceSeason                    *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32             `db:"source_episode" json:"source_episode"`
+	DuplicateCount                  int32              `db:"duplicate_count" json:"duplicate_count"`
+	LastErrorRetryable              bool               `db:"last_error_retryable" json:"last_error_retryable"`
+	ImportedAt                      pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
+	CoordinateSource                *string            `db:"coordinate_source" json:"coordinate_source"`
+	AgentResolutionID               pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
+	FulfillmentSource               *string            `db:"fulfillment_source" json:"fulfillment_source"`
+	SourceEpisodeFractionHundredths int32              `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	AdjudicationState               string             `db:"adjudication_state" json:"adjudication_state"`
+	AdjudicationSource              *string            `db:"adjudication_source" json:"adjudication_source"`
+	AdjudicationResolutionID        pgtype.UUID        `db:"adjudication_resolution_id" json:"adjudication_resolution_id"`
+	RelatedEntryID                  pgtype.UUID        `db:"related_entry_id" json:"related_entry_id"`
 }
 
 func (q *Queries) LockRSSAdjudicationEntries(ctx context.Context, batchID pgtype.UUID) ([]LockRSSAdjudicationEntriesRow, error) {
@@ -2114,6 +2128,7 @@ func (q *Queries) LockRSSAdjudicationEntries(ctx context.Context, batchID pgtype
 			&i.CoordinateSource,
 			&i.AgentResolutionID,
 			&i.FulfillmentSource,
+			&i.SourceEpisodeFractionHundredths,
 			&i.AdjudicationState,
 			&i.AdjudicationSource,
 			&i.AdjudicationResolutionID,
@@ -2130,7 +2145,7 @@ func (q *Queries) LockRSSAdjudicationEntries(ctx context.Context, batchID pgtype
 }
 
 const lockRSSEntryForAgentCoordinate = `-- name: LockRSSEntryForAgentCoordinate :one
-SELECT entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source
+SELECT entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source, entry.source_episode_fraction_hundredths
 FROM rss_entries AS entry
 WHERE entry.id = $1
 FOR UPDATE OF entry
@@ -2168,6 +2183,7 @@ func (q *Queries) LockRSSEntryForAgentCoordinate(ctx context.Context, id pgtype.
 		&i.CoordinateSource,
 		&i.AgentResolutionID,
 		&i.FulfillmentSource,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }

@@ -189,6 +189,13 @@ func (verifier *RSSRealtimeEmbyVerifier) verify(ctx context.Context, targets []r
 	checkID := uuid.New()
 	checkedAt := verifier.now().UTC()
 	err = verifier.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+		targetEpisodeIDs := make([]uuid.UUID, 0, len(targets))
+		for _, target := range targets {
+			targetEpisodeIDs = append(targetEpisodeIDs, target.targetEpisodeID)
+		}
+		if err := service.LockRSSTargetEpisodes(ctx, scope, targetEpisodeIDs); err != nil {
+			return err
+		}
 		if err := scope.Queries.DeleteExpiredRSSRealtimeTargetChecks(ctx); err != nil {
 			return err
 		}

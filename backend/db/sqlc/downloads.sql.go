@@ -86,6 +86,7 @@ INSERT INTO download_files (
     selected,
     source_season,
     source_episode,
+    source_episode_fraction_hundredths,
     language
 ) VALUES (
     $1,
@@ -97,22 +98,24 @@ INSERT INTO download_files (
     $7,
     $8,
     $9,
-    $10
+    $10,
+    $11
 )
-RETURNING id, download_id, file_index, relative_path, size_bytes, media_kind, selected, source_season, source_episode, language, created_at, updated_at
+RETURNING id, download_id, file_index, relative_path, size_bytes, media_kind, selected, source_season, source_episode, language, created_at, updated_at, source_episode_fraction_hundredths
 `
 
 type CreateDownloadFileParams struct {
-	ID            pgtype.UUID `db:"id" json:"id"`
-	DownloadID    pgtype.UUID `db:"download_id" json:"download_id"`
-	FileIndex     int32       `db:"file_index" json:"file_index"`
-	RelativePath  string      `db:"relative_path" json:"relative_path"`
-	SizeBytes     int64       `db:"size_bytes" json:"size_bytes"`
-	MediaKind     string      `db:"media_kind" json:"media_kind"`
-	Selected      bool        `db:"selected" json:"selected"`
-	SourceSeason  *int32      `db:"source_season" json:"source_season"`
-	SourceEpisode *int32      `db:"source_episode" json:"source_episode"`
-	Language      *string     `db:"language" json:"language"`
+	ID                              pgtype.UUID `db:"id" json:"id"`
+	DownloadID                      pgtype.UUID `db:"download_id" json:"download_id"`
+	FileIndex                       int32       `db:"file_index" json:"file_index"`
+	RelativePath                    string      `db:"relative_path" json:"relative_path"`
+	SizeBytes                       int64       `db:"size_bytes" json:"size_bytes"`
+	MediaKind                       string      `db:"media_kind" json:"media_kind"`
+	Selected                        bool        `db:"selected" json:"selected"`
+	SourceSeason                    *int32      `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32      `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32       `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	Language                        *string     `db:"language" json:"language"`
 }
 
 func (q *Queries) CreateDownloadFile(ctx context.Context, arg CreateDownloadFileParams) (DownloadFile, error) {
@@ -126,6 +129,7 @@ func (q *Queries) CreateDownloadFile(ctx context.Context, arg CreateDownloadFile
 		arg.Selected,
 		arg.SourceSeason,
 		arg.SourceEpisode,
+		arg.SourceEpisodeFractionHundredths,
 		arg.Language,
 	)
 	var i DownloadFile
@@ -142,6 +146,7 @@ func (q *Queries) CreateDownloadFile(ctx context.Context, arg CreateDownloadFile
 		&i.Language,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }
@@ -1040,18 +1045,20 @@ UPDATE download_files
 SET selected = $1,
     source_season = $2,
     source_episode = $3,
+    source_episode_fraction_hundredths = $4,
     updated_at = now()
-WHERE id = $4
-  AND download_id = $5
-RETURNING id, download_id, file_index, relative_path, size_bytes, media_kind, selected, source_season, source_episode, language, created_at, updated_at
+WHERE id = $5
+  AND download_id = $6
+RETURNING id, download_id, file_index, relative_path, size_bytes, media_kind, selected, source_season, source_episode, language, created_at, updated_at, source_episode_fraction_hundredths
 `
 
 type SetDownloadFileResolutionParams struct {
-	Selected      bool        `db:"selected" json:"selected"`
-	SourceSeason  *int32      `db:"source_season" json:"source_season"`
-	SourceEpisode *int32      `db:"source_episode" json:"source_episode"`
-	ID            pgtype.UUID `db:"id" json:"id"`
-	DownloadID    pgtype.UUID `db:"download_id" json:"download_id"`
+	Selected                        bool        `db:"selected" json:"selected"`
+	SourceSeason                    *int32      `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32      `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32       `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	ID                              pgtype.UUID `db:"id" json:"id"`
+	DownloadID                      pgtype.UUID `db:"download_id" json:"download_id"`
 }
 
 func (q *Queries) SetDownloadFileResolution(ctx context.Context, arg SetDownloadFileResolutionParams) (DownloadFile, error) {
@@ -1059,6 +1066,7 @@ func (q *Queries) SetDownloadFileResolution(ctx context.Context, arg SetDownload
 		arg.Selected,
 		arg.SourceSeason,
 		arg.SourceEpisode,
+		arg.SourceEpisodeFractionHundredths,
 		arg.ID,
 		arg.DownloadID,
 	)
@@ -1076,6 +1084,7 @@ func (q *Queries) SetDownloadFileResolution(ctx context.Context, arg SetDownload
 		&i.Language,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }
@@ -1085,7 +1094,7 @@ UPDATE download_files
 SET selected = $1,
     updated_at = now()
 WHERE id = $2
-RETURNING id, download_id, file_index, relative_path, size_bytes, media_kind, selected, source_season, source_episode, language, created_at, updated_at
+RETURNING id, download_id, file_index, relative_path, size_bytes, media_kind, selected, source_season, source_episode, language, created_at, updated_at, source_episode_fraction_hundredths
 `
 
 type SetDownloadFileSelectionParams struct {
@@ -1109,6 +1118,7 @@ func (q *Queries) SetDownloadFileSelection(ctx context.Context, arg SetDownloadF
 		&i.Language,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }

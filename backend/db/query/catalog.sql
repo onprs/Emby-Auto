@@ -179,7 +179,8 @@ SELECT
     file.id,
     file.relative_path,
     file.source_season,
-    file.source_episode
+    file.source_episode,
+    file.source_episode_fraction_hundredths
 FROM download_files AS file
 JOIN downloads AS download ON download.id = file.download_id
 WHERE download.id = (
@@ -192,7 +193,7 @@ WHERE download.id = (
   )
   AND file.selected
   AND file.media_kind = 'video'
-ORDER BY file.source_season, file.source_episode, file.file_index
+ORDER BY file.source_season, file.source_episode, file.source_episode_fraction_hundredths, file.file_index
 FOR UPDATE OF file;
 
 -- name: ListSeriesMappingCatalog :many
@@ -224,6 +225,7 @@ WHERE profile.id = sqlc.arg(profile_id)
               JOIN tmdb_seasons AS season ON season.id = episode.season_id
               WHERE mapping.profile_id = profile.id
                 AND mapping.source_season = sqlc.arg(source_season)
+                AND mapping.source_episode_fraction_hundredths = 0
                 AND mapping.mapping_status = 'mapped'
                 AND season.series_id = profile.series_id
           )
@@ -232,6 +234,7 @@ WHERE profile.id = sqlc.arg(profile_id)
               FROM episode_mappings AS mapping
               WHERE mapping.profile_id = profile.id
                 AND mapping.source_season = sqlc.arg(source_season)
+                AND mapping.source_episode_fraction_hundredths = 0
                 AND mapping.mapping_status <> 'mapped'
           )
       )
@@ -253,6 +256,7 @@ WHERE profile.id = sqlc.arg(profile_id)
                   WHERE mapping.profile_id = profile.id
                     AND mapping.source_season = sqlc.arg(source_season)
                     AND mapping.source_episode = expected.source_episode
+                    AND mapping.source_episode_fraction_hundredths = 0
                     AND mapping.mapping_status = 'mapped'
                     AND season.series_id = profile.series_id
               )
@@ -262,6 +266,7 @@ WHERE profile.id = sqlc.arg(profile_id)
               FROM episode_mappings AS mapping
               WHERE mapping.profile_id = profile.id
                 AND mapping.source_season = sqlc.arg(source_season)
+                AND mapping.source_episode_fraction_hundredths = 0
                 AND (
                     mapping.source_episode < 1
                     OR mapping.source_episode > profile.source_season_lengths[sqlc.arg(source_season)::integer]
@@ -283,6 +288,7 @@ WHERE profile.id = sqlc.arg(profile_id)
   AND profile.active
   AND mapping.source_season = sqlc.arg(source_season)
   AND mapping.source_episode = sqlc.arg(source_episode)
+  AND mapping.source_episode_fraction_hundredths = 0
   AND mapping.mapping_status = 'mapped'
   AND mapping.target_episode_id IS NOT NULL
   AND season.series_id = profile.series_id;
@@ -303,6 +309,7 @@ WHERE profile.series_id = sqlc.arg(series_id)
               JOIN tmdb_seasons AS season ON season.id = episode.season_id
               WHERE mapping.profile_id = profile.id
                 AND mapping.source_season = sqlc.arg(source_season)
+                AND mapping.source_episode_fraction_hundredths = 0
                 AND mapping.mapping_status = 'mapped'
                 AND season.series_id = profile.series_id
           )
@@ -311,6 +318,7 @@ WHERE profile.series_id = sqlc.arg(series_id)
               FROM episode_mappings AS mapping
               WHERE mapping.profile_id = profile.id
                 AND mapping.source_season = sqlc.arg(source_season)
+                AND mapping.source_episode_fraction_hundredths = 0
                 AND mapping.mapping_status <> 'mapped'
           )
       )
@@ -332,6 +340,7 @@ WHERE profile.series_id = sqlc.arg(series_id)
                   WHERE mapping.profile_id = profile.id
                     AND mapping.source_season = sqlc.arg(source_season)
                     AND mapping.source_episode = expected.source_episode
+                    AND mapping.source_episode_fraction_hundredths = 0
                     AND mapping.mapping_status = 'mapped'
                     AND season.series_id = profile.series_id
               )
@@ -341,6 +350,7 @@ WHERE profile.series_id = sqlc.arg(series_id)
               FROM episode_mappings AS mapping
               WHERE mapping.profile_id = profile.id
                 AND mapping.source_season = sqlc.arg(source_season)
+                AND mapping.source_episode_fraction_hundredths = 0
                 AND (
                     mapping.source_episode < 1
                     OR mapping.source_episode > profile.source_season_lengths[sqlc.arg(source_season)::integer]
@@ -403,6 +413,7 @@ INSERT INTO episode_mappings (
     profile_id,
     source_season,
     source_episode,
+    source_episode_fraction_hundredths,
     absolute_episode,
     target_episode_id,
     mapping_status,
@@ -413,6 +424,7 @@ INSERT INTO episode_mappings (
     sqlc.arg(profile_id),
     sqlc.arg(source_season),
     sqlc.arg(source_episode),
+    sqlc.arg(source_episode_fraction_hundredths),
     sqlc.narg(absolute_episode),
     sqlc.narg(target_episode_id),
     sqlc.arg(mapping_status),
@@ -427,7 +439,8 @@ SELECT
     file.relative_path,
     file.media_kind,
     file.source_season,
-    file.source_episode
+    file.source_episode,
+    file.source_episode_fraction_hundredths
 FROM download_files AS file
 WHERE file.download_id = sqlc.arg(download_id)
   AND file.selected
@@ -439,6 +452,7 @@ FOR UPDATE OF file;
 UPDATE download_files
 SET source_season = sqlc.arg(source_season),
     source_episode = sqlc.arg(source_episode),
+    source_episode_fraction_hundredths = sqlc.arg(source_episode_fraction_hundredths),
     updated_at = now()
 WHERE id = sqlc.arg(id)
   AND download_id = sqlc.arg(download_id)
@@ -446,6 +460,7 @@ WHERE id = sqlc.arg(id)
   AND (
       source_season IS DISTINCT FROM sqlc.arg(source_season)
       OR source_episode IS DISTINCT FROM sqlc.arg(source_episode)
+      OR source_episode_fraction_hundredths IS DISTINCT FROM sqlc.arg(source_episode_fraction_hundredths)
   );
 
 -- name: ExcludeExplicitMappingFile :execrows
@@ -575,6 +590,16 @@ SELECT
                   THEN (acquisition.source_payload->>'sourceEpisode')::bigint
               END
           )
+          AND mapping.source_episode_fraction_hundredths = COALESCE(
+              owner_entry.source_episode_fraction_hundredths,
+              CASE
+                  WHEN acquisition.rss_entry_id IS NULL
+                   AND acquisition.source_payload->'singleEpisode' = 'true'::jsonb
+                   AND COALESCE(acquisition.source_payload->>'sourceEpisodeFractionHundredths', '0') ~ '^(?:0|[1-9][0-9]?)$'
+                  THEN COALESCE((acquisition.source_payload->>'sourceEpisodeFractionHundredths')::integer, 0)
+              END,
+              0
+          )
           AND download.status <> 'cancelled'
           AND NOT EXISTS (
               SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id
@@ -598,6 +623,7 @@ SELECT
          AND source_file.media_kind = 'video'
          AND source_file.source_season = mapping.source_season
          AND source_file.source_episode = mapping.source_episode
+         AND source_file.source_episode_fraction_hundredths = mapping.source_episode_fraction_hundredths
         WHERE acquisition.id <> sqlc.arg(excluded_acquisition_id)
           AND acquisition.deletion_requested_at IS NULL
           AND mapping.mapping_status = 'mapped'
@@ -621,7 +647,11 @@ WHERE id = sqlc.arg(id);
 
 -- name: UpdateSelectedFileCoordinateFamily :execrows
 WITH source_file AS (
-    SELECT selected_file.download_id, selected_file.source_season, selected_file.source_episode
+    SELECT
+        selected_file.download_id,
+        selected_file.source_season,
+        selected_file.source_episode,
+        selected_file.source_episode_fraction_hundredths
     FROM download_files AS selected_file
     WHERE selected_file.id = sqlc.arg(source_file_id)
       AND selected_file.selected
@@ -629,16 +659,19 @@ WITH source_file AS (
 )
 UPDATE download_files AS related
 SET source_season = sqlc.arg(new_source_season),
-    source_episode = sqlc.arg(new_source_episode)
+    source_episode = sqlc.arg(new_source_episode),
+    source_episode_fraction_hundredths = sqlc.arg(new_source_episode_fraction_hundredths)
 FROM source_file
 WHERE related.download_id = source_file.download_id
   AND related.selected
   AND related.media_kind IN ('video', 'subtitle')
   AND related.source_season IS NOT DISTINCT FROM source_file.source_season
   AND related.source_episode IS NOT DISTINCT FROM source_file.source_episode
+  AND related.source_episode_fraction_hundredths = source_file.source_episode_fraction_hundredths
   AND (
       related.source_season IS DISTINCT FROM sqlc.arg(new_source_season)
       OR related.source_episode IS DISTINCT FROM sqlc.arg(new_source_episode)
+      OR related.source_episode_fraction_hundredths IS DISTINCT FROM sqlc.arg(new_source_episode_fraction_hundredths)
   );
 
 -- name: ApplyMappingProfileToRSSSubscription :one
@@ -662,7 +695,12 @@ WITH source_subscription AS (
     WHERE source_acquisition.id = sqlc.arg(acquisition_id)
       AND subscription.deleted_at IS NULL
 )
-SELECT file.id, file.relative_path, file.source_season, file.source_episode
+SELECT
+    file.id,
+    file.relative_path,
+    file.source_season,
+    file.source_episode,
+    file.source_episode_fraction_hundredths
 FROM acquisitions AS acquisition
 LEFT JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
 JOIN LATERAL (
@@ -701,8 +739,9 @@ source_facts AS (
     SELECT
         acquisition.id AS acquisition_id,
         acquisition.rss_entry_id,
-        min(file.source_season)::integer AS source_season,
-        min(file.source_episode)::integer AS source_episode
+        file.source_season::integer AS source_season,
+        file.source_episode::integer AS source_episode,
+        file.source_episode_fraction_hundredths::integer AS source_episode_fraction_hundredths
     FROM acquisitions AS acquisition
     LEFT JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
     JOIN LATERAL (
@@ -722,25 +761,39 @@ source_facts AS (
           OR entry.subscription_id = (SELECT subscription_id FROM source_subscription)
       )
       AND acquisition.deletion_requested_at IS NULL
-    GROUP BY acquisition.id, acquisition.rss_entry_id
-    HAVING count(*) = 1
-       AND min(file.source_season) IS NOT NULL
-       AND min(file.source_episode) IS NOT NULL
+      AND file.source_season IS NOT NULL
+      AND file.source_episode IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1
+          FROM download_files AS sibling
+          WHERE sibling.download_id = download.id
+            AND sibling.selected
+            AND sibling.media_kind = 'video'
+            AND sibling.id <> file.id
+      )
 ),
 updated_acquisitions AS (
     UPDATE acquisitions AS acquisition
     SET source_payload = jsonb_set(
-            jsonb_set(acquisition.source_payload, '{sourceSeason}', to_jsonb(source_facts.source_season), true),
-            '{sourceEpisode}', to_jsonb(source_facts.source_episode), true
+            jsonb_set(
+                jsonb_set(acquisition.source_payload, '{sourceSeason}', to_jsonb(source_facts.source_season), true),
+                '{sourceEpisode}', to_jsonb(source_facts.source_episode), true
+            ),
+            '{sourceEpisodeFractionHundredths}', to_jsonb(source_facts.source_episode_fraction_hundredths), true
         ),
         updated_at = now()
     FROM source_facts
     WHERE acquisition.id = source_facts.acquisition_id
-    RETURNING acquisition.rss_entry_id, source_facts.source_season, source_facts.source_episode
+    RETURNING
+        acquisition.rss_entry_id,
+        source_facts.source_season,
+        source_facts.source_episode,
+        source_facts.source_episode_fraction_hundredths
 )
 UPDATE rss_entries AS entry
 SET source_season = updated_acquisitions.source_season,
     source_episode = updated_acquisitions.source_episode,
+    source_episode_fraction_hundredths = updated_acquisitions.source_episode_fraction_hundredths,
     updated_at = now()
 FROM updated_acquisitions
 WHERE entry.id = updated_acquisitions.rss_entry_id;
@@ -806,6 +859,7 @@ WHERE (
         ON mapping.profile_id = sqlc.arg(mapping_profile_id)
        AND mapping.source_season = selected_video.source_season
        AND mapping.source_episode = selected_video.source_episode
+       AND mapping.source_episode_fraction_hundredths = selected_video.source_episode_fraction_hundredths
       WHERE selected_video.download_id = download.id
         AND selected_video.selected
         AND selected_video.media_kind = 'video'

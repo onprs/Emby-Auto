@@ -75,6 +75,8 @@ export function MappingPage({ acquisitionId }: { acquisitionId: string }) {
   });
 
   const sourceOptions = download.data?.files.filter((file) => file.selected && file.mediaKind === 'video') ?? [];
+  const hasFractionalSource = sourceOptions.some((file) => (file.sourceEpisodeFractionHundredths ?? 0) > 0);
+  const activeMode: MappingMode = hasFractionalSource ? 'explicit' : mode;
   const preferredAnchor = findAnchorSource(sourceOptions, acquisition.data?.sourceSeason, acquisition.data?.sourceEpisode);
   const anchorSourceId = selectedAnchorSource || preferredAnchor?.id || sourceOptions[0]?.id || '';
   const anchorSource = sourceOptions.find((file) => file.id === anchorSourceId);
@@ -162,7 +164,7 @@ export function MappingPage({ acquisitionId }: { acquisitionId: string }) {
   const commandPending = syncCatalog.isPending || previewMutation.isPending || saveMutation.isPending;
 
   const saveAnchor = (season: number, episode: number) => {
-    if (commandPending) return;
+    if (commandPending || hasFractionalSource) return;
     if (!anchorSource) {
       setError('请选择一个源视频作为连续映射锚点');
       return;
@@ -175,7 +177,7 @@ export function MappingPage({ acquisitionId }: { acquisitionId: string }) {
   };
 
   const changeMode = (nextMode: MappingMode) => {
-    if (commandPending) return;
+    if (commandPending || (nextMode === 'anchor' && hasFractionalSource)) return;
     setMode(nextMode);
     setPreviewResult(null);
     setError(null);
@@ -228,17 +230,17 @@ export function MappingPage({ acquisitionId }: { acquisitionId: string }) {
       <div className="mb-5 inline-flex max-w-full rounded-lg border border-zinc-300 bg-zinc-100 p-1" role="group" aria-label="映射模式">
         <button
           type="button"
-          aria-pressed={mode === 'anchor'}
-          className={modeButtonClass(mode === 'anchor')}
-          disabled={commandPending}
+          aria-pressed={activeMode === 'anchor'}
+          className={modeButtonClass(activeMode === 'anchor')}
+          disabled={commandPending || hasFractionalSource}
           onClick={() => changeMode('anchor')}
         >
           <Waypoints className="size-4" aria-hidden="true" />单点连续
         </button>
         <button
           type="button"
-          aria-pressed={mode === 'explicit'}
-          className={modeButtonClass(mode === 'explicit')}
+          aria-pressed={activeMode === 'explicit'}
+          className={modeButtonClass(activeMode === 'explicit')}
           disabled={commandPending}
           onClick={() => changeMode('explicit')}
         >
@@ -252,7 +254,7 @@ export function MappingPage({ acquisitionId }: { acquisitionId: string }) {
       {!download.isPending && !download.error && sourceOptions.length === 0 ? <ErrorState className="mb-4" message="没有可映射的已选视频。" /> : null}
       {error ? <ErrorState className="mb-4" message={error} /> : null}
 
-      {catalog.data && sourceOptions.length > 0 && mode === 'anchor' ? (
+      {catalog.data && sourceOptions.length > 0 && activeMode === 'anchor' ? (
         <AnchorMappingPanel
           files={sourceOptions}
           selectedSourceId={anchorSourceId}
@@ -270,7 +272,7 @@ export function MappingPage({ acquisitionId }: { acquisitionId: string }) {
         />
       ) : null}
 
-      {catalog.data && sourceOptions.length > 0 && mode === 'explicit' ? (
+      {catalog.data && sourceOptions.length > 0 && activeMode === 'explicit' ? (
         <ExplicitMappingPanel
           files={sourceOptions}
           drafts={explicitDrafts}
@@ -599,19 +601,22 @@ function explicitDraftComplete(draft?: ExplicitDraft): boolean {
   return Boolean(draft && (draft.action === 'exclude' || (draft.action === 'map' && draft.target)));
 }
 
-function findAnchorSource<T extends { id: string; sourceSeason?: number; sourceEpisode?: number }>(
+function findAnchorSource<T extends { id: string; sourceSeason?: number; sourceEpisode?: number; sourceEpisodeFractionHundredths?: number }>(
   files: T[],
   sourceSeason?: number,
   sourceEpisode?: number,
 ): T | undefined {
-  const matching = files.filter((file) => file.sourceSeason === sourceSeason && file.sourceEpisode === sourceEpisode);
+  const matching = files.filter((file) => file.sourceSeason === sourceSeason && file.sourceEpisode === sourceEpisode && (file.sourceEpisodeFractionHundredths ?? 0) === 0);
   if (matching.length > 0) return matching[0];
   return files.length === 1 ? files[0] : undefined;
 }
 
-function sourceCoordinate(file: Pick<DownloadFile, 'sourceSeason' | 'sourceEpisode'>): string {
+function sourceCoordinate(file: Pick<DownloadFile, 'sourceSeason' | 'sourceEpisode' | 'sourceEpisodeFractionHundredths'>): string {
   if (!file.sourceSeason || !file.sourceEpisode) return '未识别';
-  return targetCoordinate(file.sourceSeason, file.sourceEpisode);
+  const fraction = file.sourceEpisodeFractionHundredths ?? 0;
+  if (fraction === 0) return targetCoordinate(file.sourceSeason, file.sourceEpisode);
+  const decimal = String(fraction).padStart(2, '0').replace(/0$/, '');
+  return `S${String(file.sourceSeason).padStart(2, '0')}E${file.sourceEpisode}.${decimal}`;
 }
 
 function targetCoordinate(season: number, episode: number): string {

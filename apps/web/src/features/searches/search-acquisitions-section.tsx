@@ -51,7 +51,7 @@ export function SearchAcquisitionsSection() {
                     >
                       {item.mediaType === 'movie' ? `${item.movieTitle ?? '未命名电影'}${item.releaseYear ? ` (${item.releaseYear})` : ''}` : (item.seriesTitle ?? '未命名番剧')}
                     </Link>
-                    <p className="mt-1 text-sm text-zinc-500">{item.mediaType === 'episode' ? episodeLabel(item.sourceSeason, item.sourceEpisode) : sourceKindLabel(item.sourceKind)}</p>
+                    <p className="mt-1 text-sm text-zinc-500">{item.mediaType === 'episode' ? episodeLabel(item.sourceSeason, item.sourceEpisode, item.sourceEpisodeFractionHundredths) : sourceKindLabel(item.sourceKind)}</p>
                   </div>
                   <AcquisitionStageBadge value={item.aggregateStatus} />
                 </div>
@@ -87,7 +87,7 @@ export function SearchAcquisitionsSection() {
                     >
                       {item.mediaType === 'movie' ? `${item.movieTitle ?? '未命名电影'}${item.releaseYear ? ` (${item.releaseYear})` : ''}` : (item.seriesTitle ?? '未命名番剧')}
                     </Link>
-                    {item.mediaType === 'episode' ? <span className="mt-0.5 block text-xs text-zinc-500">{episodeLabel(item.sourceSeason, item.sourceEpisode)}</span> : null}
+                    {item.mediaType === 'episode' ? <span className="mt-0.5 block text-xs text-zinc-500">{episodeLabel(item.sourceSeason, item.sourceEpisode, item.sourceEpisodeFractionHundredths)}</span> : null}
                   </td>
                   <td className="min-w-52 px-4 py-3">
                     <div className="mb-2"><AcquisitionStageBadge value={item.aggregateStatus} /></div>

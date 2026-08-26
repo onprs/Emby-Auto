@@ -768,7 +768,9 @@ func taskFromGetRow(row db.GetTaskViewRow) domain.EpisodeTask {
 		id: row.ID, acquisitionID: row.AcquisitionID, downloadID: row.DownloadID, embyItemID: row.EmbyItemID, embyLibraryID: row.EmbyLibraryID,
 		state: row.State, videoState: row.VideoState, subtitleState: row.SubtitleState, mediaType: row.MediaType,
 		version: row.Version, failureStage: row.FailureStage, errorCode: row.ErrorCode, errorMessage: row.ErrorMessage, createdAt: row.CreatedAt, updatedAt: row.UpdatedAt,
-		releaseYear: row.ReleaseYear, sourceSeason: row.SourceSeason, sourceEpisode: row.SourceEpisode, seriesTitle: row.SeriesTitle, targetSeason: row.TargetSeason,
+		releaseYear: row.ReleaseYear, sourceSeason: row.SourceSeason, sourceEpisode: row.SourceEpisode,
+		sourceEpisodeFractionHundredths: row.SourceEpisodeFractionHundredths,
+		seriesTitle:                     row.SeriesTitle, targetSeason: row.TargetSeason,
 		targetEpisode: row.TargetEpisode, targetEpisodeTitle: row.TargetEpisodeTitle, artifactSetID: row.ArtifactSetID,
 		artifactBasename: row.ArtifactBasename, videoArtifactID: row.VideoArtifactID, videoFilePath: row.VideoFilePath,
 		videoFormat: row.VideoFormat, videoSizeBytes: row.VideoSizeBytes, videoChecksum: row.VideoChecksumSha256,
@@ -789,7 +791,9 @@ func taskFromListRow(row db.ListTaskViewsRow) domain.EpisodeTask {
 		id: row.ID, acquisitionID: row.AcquisitionID, downloadID: row.DownloadID, embyItemID: row.EmbyItemID, embyLibraryID: row.EmbyLibraryID,
 		state: row.State, videoState: row.VideoState, subtitleState: row.SubtitleState, mediaType: row.MediaType,
 		version: row.Version, failureStage: row.FailureStage, errorCode: row.ErrorCode, errorMessage: row.ErrorMessage, createdAt: row.CreatedAt, updatedAt: row.UpdatedAt,
-		releaseYear: row.ReleaseYear, sourceSeason: row.SourceSeason, sourceEpisode: row.SourceEpisode, seriesTitle: row.SeriesTitle, targetSeason: row.TargetSeason,
+		releaseYear: row.ReleaseYear, sourceSeason: row.SourceSeason, sourceEpisode: row.SourceEpisode,
+		sourceEpisodeFractionHundredths: row.SourceEpisodeFractionHundredths,
+		seriesTitle:                     row.SeriesTitle, targetSeason: row.TargetSeason,
 		targetEpisode: row.TargetEpisode, targetEpisodeTitle: row.TargetEpisodeTitle, artifactSetID: row.ArtifactSetID,
 		artifactBasename: row.ArtifactBasename, videoArtifactID: row.VideoArtifactID, videoFilePath: row.VideoFilePath,
 		videoFormat: row.VideoFormat, videoSizeBytes: row.VideoSizeBytes, videoChecksum: row.VideoChecksumSha256,
@@ -808,7 +812,7 @@ func taskFromListRow(row db.ListTaskViewsRow) domain.EpisodeTask {
 type taskViewValues struct {
 	id, acquisitionID, downloadID, embyItemID, embyLibraryID, artifactSetID, videoArtifactID, subtitleArtifactID, reviewID, reviewedBy, importID, cleanupID pgtype.UUID
 	state, videoState, subtitleState, importStatus, cleanupStatus, mediaType                                                                                string
-	version, importAttempt, cleanupAttempt                                                                                                                  int32
+	version, importAttempt, cleanupAttempt, sourceEpisodeFractionHundredths                                                                                 int32
 	failureStage, errorCode, errorMessage, seriesTitle, artifactBasename, videoFilePath, videoFormat, subtitleFilePath, subtitleFormat                      *string
 	sourceSeason, sourceEpisode, targetSeason, targetEpisode, releaseYear                                                                                   *int32
 	targetEpisodeTitle, reviewDecision, reviewNotes, destinationVideoPath, destinationSubtitlePath                                                          *string
@@ -826,7 +830,8 @@ func buildTaskView(value taskViewValues) domain.EpisodeTask {
 		MediaType: domain.TaskMediaType(value.mediaType), SeriesTitle: stringValue(value.seriesTitle),
 		MovieTitle: movieTitle(value.mediaType, stringValue(value.seriesTitle)), ReleaseYear: intValue(value.releaseYear),
 		SourceSeason: intValue(value.sourceSeason), SourceEpisode: intValue(value.sourceEpisode),
-		TargetSeason: intValue(value.targetSeason), TargetEpisode: intValue(value.targetEpisode), TargetEpisodeTitle: stringValue(value.targetEpisodeTitle),
+		SourceEpisodeFractionHundredths: int(value.sourceEpisodeFractionHundredths),
+		TargetSeason:                    intValue(value.targetSeason), TargetEpisode: intValue(value.targetEpisode), TargetEpisodeTitle: stringValue(value.targetEpisodeTitle),
 		State: domain.TaskState(value.state), VideoState: domain.VideoState(value.videoState), SubtitleState: domain.SubtitleState(value.subtitleState),
 		Version: value.version, FailureStage: stringValue(value.failureStage), ErrorCode: stringValue(value.errorCode), ErrorMessage: stringValue(value.errorMessage),
 		CreatedAt: value.createdAt.Time, UpdatedAt: value.updatedAt.Time,

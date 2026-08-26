@@ -371,6 +371,7 @@ SELECT
     video.relative_path AS source_video_relative_path,
     video.source_season,
     video.source_episode,
+    video.source_episode_fraction_hundredths,
     download.id AS download_id,
     download.save_path,
     mapping.id AS mapping_id,
@@ -406,38 +407,39 @@ WHERE task.id = $1
 `
 
 type GetTaskMediaCommandRow struct {
-	TaskID                  pgtype.UUID    `db:"task_id" json:"task_id"`
-	State                   string         `db:"state" json:"state"`
-	VideoState              string         `db:"video_state" json:"video_state"`
-	SubtitleState           string         `db:"subtitle_state" json:"subtitle_state"`
-	TranscodeProfileID      pgtype.UUID    `db:"transcode_profile_id" json:"transcode_profile_id"`
-	MediaType               string         `db:"media_type" json:"media_type"`
-	SourceVideoFileID       pgtype.UUID    `db:"source_video_file_id" json:"source_video_file_id"`
-	SourceVideoRelativePath string         `db:"source_video_relative_path" json:"source_video_relative_path"`
-	SourceSeason            *int32         `db:"source_season" json:"source_season"`
-	SourceEpisode           *int32         `db:"source_episode" json:"source_episode"`
-	DownloadID              pgtype.UUID    `db:"download_id" json:"download_id"`
-	SavePath                *string        `db:"save_path" json:"save_path"`
-	MappingID               pgtype.UUID    `db:"mapping_id" json:"mapping_id"`
-	TargetEpisodeNumber     *int32         `db:"target_episode_number" json:"target_episode_number"`
-	TargetEpisodeTitle      *string        `db:"target_episode_title" json:"target_episode_title"`
-	TargetSeasonNumber      *int32         `db:"target_season_number" json:"target_season_number"`
-	SeriesTitle             string         `db:"series_title" json:"series_title"`
-	ReleaseYear             *int32         `db:"release_year" json:"release_year"`
-	TmdbMovieID             *int64         `db:"tmdb_movie_id" json:"tmdb_movie_id"`
-	ProfileName             string         `db:"profile_name" json:"profile_name"`
-	VideoCodec              string         `db:"video_codec" json:"video_codec"`
-	Encoder                 string         `db:"encoder" json:"encoder"`
-	Container               string         `db:"container" json:"container"`
-	FileExtension           string         `db:"file_extension" json:"file_extension"`
-	QualityMode             string         `db:"quality_mode" json:"quality_mode"`
-	QualityValue            pgtype.Numeric `db:"quality_value" json:"quality_value"`
-	AudioPolicy             string         `db:"audio_policy" json:"audio_policy"`
-	AudioCodec              *string        `db:"audio_codec" json:"audio_codec"`
-	Preset                  string         `db:"preset" json:"preset"`
-	PixelFormat             string         `db:"pixel_format" json:"pixel_format"`
-	ThreadCount             int32          `db:"thread_count" json:"thread_count"`
-	MaxConcurrency          int32          `db:"max_concurrency" json:"max_concurrency"`
+	TaskID                          pgtype.UUID    `db:"task_id" json:"task_id"`
+	State                           string         `db:"state" json:"state"`
+	VideoState                      string         `db:"video_state" json:"video_state"`
+	SubtitleState                   string         `db:"subtitle_state" json:"subtitle_state"`
+	TranscodeProfileID              pgtype.UUID    `db:"transcode_profile_id" json:"transcode_profile_id"`
+	MediaType                       string         `db:"media_type" json:"media_type"`
+	SourceVideoFileID               pgtype.UUID    `db:"source_video_file_id" json:"source_video_file_id"`
+	SourceVideoRelativePath         string         `db:"source_video_relative_path" json:"source_video_relative_path"`
+	SourceSeason                    *int32         `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32         `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32          `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	DownloadID                      pgtype.UUID    `db:"download_id" json:"download_id"`
+	SavePath                        *string        `db:"save_path" json:"save_path"`
+	MappingID                       pgtype.UUID    `db:"mapping_id" json:"mapping_id"`
+	TargetEpisodeNumber             *int32         `db:"target_episode_number" json:"target_episode_number"`
+	TargetEpisodeTitle              *string        `db:"target_episode_title" json:"target_episode_title"`
+	TargetSeasonNumber              *int32         `db:"target_season_number" json:"target_season_number"`
+	SeriesTitle                     string         `db:"series_title" json:"series_title"`
+	ReleaseYear                     *int32         `db:"release_year" json:"release_year"`
+	TmdbMovieID                     *int64         `db:"tmdb_movie_id" json:"tmdb_movie_id"`
+	ProfileName                     string         `db:"profile_name" json:"profile_name"`
+	VideoCodec                      string         `db:"video_codec" json:"video_codec"`
+	Encoder                         string         `db:"encoder" json:"encoder"`
+	Container                       string         `db:"container" json:"container"`
+	FileExtension                   string         `db:"file_extension" json:"file_extension"`
+	QualityMode                     string         `db:"quality_mode" json:"quality_mode"`
+	QualityValue                    pgtype.Numeric `db:"quality_value" json:"quality_value"`
+	AudioPolicy                     string         `db:"audio_policy" json:"audio_policy"`
+	AudioCodec                      *string        `db:"audio_codec" json:"audio_codec"`
+	Preset                          string         `db:"preset" json:"preset"`
+	PixelFormat                     string         `db:"pixel_format" json:"pixel_format"`
+	ThreadCount                     int32          `db:"thread_count" json:"thread_count"`
+	MaxConcurrency                  int32          `db:"max_concurrency" json:"max_concurrency"`
 }
 
 func (q *Queries) GetTaskMediaCommand(ctx context.Context, id pgtype.UUID) (GetTaskMediaCommandRow, error) {
@@ -454,6 +456,7 @@ func (q *Queries) GetTaskMediaCommand(ctx context.Context, id pgtype.UUID) (GetT
 		&i.SourceVideoRelativePath,
 		&i.SourceSeason,
 		&i.SourceEpisode,
+		&i.SourceEpisodeFractionHundredths,
 		&i.DownloadID,
 		&i.SavePath,
 		&i.MappingID,
@@ -511,6 +514,7 @@ SELECT
     file.size_bytes,
     file.source_season,
     file.source_episode,
+    file.source_episode_fraction_hundredths,
     mapping.id AS mapping_id,
     mapping.mapping_status,
     mapping.error_code AS mapping_error_code,
@@ -530,31 +534,33 @@ LEFT JOIN episode_mappings AS mapping
     ON mapping.profile_id = acquisition.mapping_profile_id
    AND mapping.source_season = file.source_season
    AND mapping.source_episode = file.source_episode
+   AND mapping.source_episode_fraction_hundredths = file.source_episode_fraction_hundredths
 LEFT JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
 LEFT JOIN tmdb_seasons AS season ON season.id = episode.season_id
 WHERE file.download_id = $1
   AND file.selected
   AND file.media_kind = 'video'
-ORDER BY file.source_season, file.source_episode, file.file_index
+ORDER BY file.source_season, file.source_episode, file.source_episode_fraction_hundredths, file.file_index
 `
 
 type ListMaterializeVideosRow struct {
-	FileID              pgtype.UUID `db:"file_id" json:"file_id"`
-	RelativePath        string      `db:"relative_path" json:"relative_path"`
-	SizeBytes           int64       `db:"size_bytes" json:"size_bytes"`
-	SourceSeason        *int32      `db:"source_season" json:"source_season"`
-	SourceEpisode       *int32      `db:"source_episode" json:"source_episode"`
-	MappingID           pgtype.UUID `db:"mapping_id" json:"mapping_id"`
-	MappingStatus       *string     `db:"mapping_status" json:"mapping_status"`
-	MappingErrorCode    *string     `db:"mapping_error_code" json:"mapping_error_code"`
-	TargetEpisodeID     pgtype.UUID `db:"target_episode_id" json:"target_episode_id"`
-	TargetEpisodeNumber *int32      `db:"target_episode_number" json:"target_episode_number"`
-	TargetEpisodeTitle  *string     `db:"target_episode_title" json:"target_episode_title"`
-	TargetSeasonNumber  *int32      `db:"target_season_number" json:"target_season_number"`
-	SeriesTitle         string      `db:"series_title" json:"series_title"`
-	MediaType           string      `db:"media_type" json:"media_type"`
-	ReleaseYear         *int32      `db:"release_year" json:"release_year"`
-	TmdbMovieID         *int64      `db:"tmdb_movie_id" json:"tmdb_movie_id"`
+	FileID                          pgtype.UUID `db:"file_id" json:"file_id"`
+	RelativePath                    string      `db:"relative_path" json:"relative_path"`
+	SizeBytes                       int64       `db:"size_bytes" json:"size_bytes"`
+	SourceSeason                    *int32      `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32      `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32       `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	MappingID                       pgtype.UUID `db:"mapping_id" json:"mapping_id"`
+	MappingStatus                   *string     `db:"mapping_status" json:"mapping_status"`
+	MappingErrorCode                *string     `db:"mapping_error_code" json:"mapping_error_code"`
+	TargetEpisodeID                 pgtype.UUID `db:"target_episode_id" json:"target_episode_id"`
+	TargetEpisodeNumber             *int32      `db:"target_episode_number" json:"target_episode_number"`
+	TargetEpisodeTitle              *string     `db:"target_episode_title" json:"target_episode_title"`
+	TargetSeasonNumber              *int32      `db:"target_season_number" json:"target_season_number"`
+	SeriesTitle                     string      `db:"series_title" json:"series_title"`
+	MediaType                       string      `db:"media_type" json:"media_type"`
+	ReleaseYear                     *int32      `db:"release_year" json:"release_year"`
+	TmdbMovieID                     *int64      `db:"tmdb_movie_id" json:"tmdb_movie_id"`
 }
 
 func (q *Queries) ListMaterializeVideos(ctx context.Context, downloadID pgtype.UUID) ([]ListMaterializeVideosRow, error) {
@@ -572,6 +578,7 @@ func (q *Queries) ListMaterializeVideos(ctx context.Context, downloadID pgtype.U
 			&i.SizeBytes,
 			&i.SourceSeason,
 			&i.SourceEpisode,
+			&i.SourceEpisodeFractionHundredths,
 			&i.MappingID,
 			&i.MappingStatus,
 			&i.MappingErrorCode,
@@ -605,6 +612,7 @@ JOIN download_files AS subtitle
     ON subtitle.download_id = video.download_id
    AND subtitle.source_season = video.source_season
    AND subtitle.source_episode = video.source_episode
+   AND subtitle.source_episode_fraction_hundredths = video.source_episode_fraction_hundredths
 WHERE task.id = $1
   AND subtitle.selected
   AND subtitle.media_kind = 'subtitle'

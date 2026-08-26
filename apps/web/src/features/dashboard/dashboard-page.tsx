@@ -244,7 +244,7 @@ function AttentionRow({ item }: { item: DashboardAttentionItem }) {
   const acquisition = item.acquisition;
   const presentation = attentionPresentation(item);
   const context = [
-    acquisition.mediaType === 'episode' ? episodeLabel(acquisition.sourceSeason, acquisition.sourceEpisode) : null,
+    acquisition.mediaType === 'episode' ? episodeLabel(acquisition.sourceSeason, acquisition.sourceEpisode, acquisition.sourceEpisodeFractionHundredths) : null,
     sourceKindLabel(acquisition.sourceKind),
     acquisitionPipelineStageLabels[acquisition.currentStage],
     formatDateTime(acquisition.updatedAt),

@@ -290,6 +290,52 @@ describe('SearchesPage live and recent', () => {
     vi.useRealTimers();
   });
 
+  it('shows refetch error over a cached running search and retries successfully', async () => {
+    let shouldFail = true;
+    server.use(
+      http.get('*/api/v1/searches', () => HttpResponse.json({ items: [], nextCursor: null })),
+      http.post('*/api/v1/searches', () => HttpResponse.json({
+        search: {
+          id: SEARCH_ID,
+          query: '刷新错误',
+          status: 'running',
+          candidates: [],
+          createdAt: '2026-08-22T08:00:00Z',
+          updatedAt: '2026-08-22T08:00:00Z',
+        },
+        operationId: 'op-1',
+        status: 'queued',
+      }, { status: 202 })),
+      http.get(`*/api/v1/searches/${SEARCH_ID}`, () => {
+        if (shouldFail) {
+          return HttpResponse.json({ code: 'search_refresh_failed', message: '实时搜索刷新失败', details: {} }, { status: 500 });
+        }
+        return HttpResponse.json({
+          id: SEARCH_ID,
+          query: '刷新错误',
+          status: 'completed',
+          candidates: [],
+          createdAt: '2026-08-22T08:00:00Z',
+          updatedAt: '2026-08-22T08:01:00Z',
+        });
+      }),
+      http.get('*/api/v1/acquisitions', () => HttpResponse.json({ items: [] })),
+    );
+
+    const { queryClient } = renderWithProviders(<SearchesPage />, { routePath: '/searches', initialEntry: '/searches' });
+    await userEvent.type(await screen.findByLabelText('关键词'), '刷新错误');
+    await userEvent.click(screen.getByRole('button', { name: '搜索' }));
+
+    await screen.findByText('实时搜索刷新失败');
+    expect(queryClient.getQueryData(['search', SEARCH_ID])).toMatchObject({ status: 'running', candidates: [] });
+    expect(screen.queryByText('正在搜索“刷新错误”，请稍候...')).not.toBeInTheDocument();
+
+    shouldFail = false;
+    await userEvent.click(screen.getByRole('button', { name: '重试' }));
+    await screen.findByText('未找到匹配的发布候选');
+    expect(screen.queryByText('实时搜索刷新失败')).not.toBeInTheDocument();
+  });
+
   it('renders current without status or seeders columns, and disables non-downloadable with reason', async () => {
     const downloadable = candidateFixture({ id: CANDIDATE_NEW, title: '可下载番剧 S01E01 [1080p]', sizeBytes: 987654321, publishedAt: '2026-08-22T07:00:00Z' });
     const nondl = candidateFixture({ id: CANDIDATE_OLD, title: '不可下载番剧 S01E02', downloadable: false, unavailableReason: 'download_uri_missing' as ReleaseCandidate['unavailableReason'] });
@@ -611,6 +657,15 @@ describe('Candidate selection', () => {
 });
 
 describe('Candidate selection season pack', () => {
+  it('infers numeric Chinese season and keeps the episode token separate', async () => {
+    const candidates = [candidateFixture({ id: CANDIDATE_NEW, title: '番剧候选 第 2 季 E03 [1080p]' })];
+    renderWithProviders(<CandidateTable candidates={candidates} emptyLabel="暂无候选" />, { routePath: '/searches', initialEntry: '/searches' });
+    await userEvent.click((await screen.findAllByRole('button', { name: '选择' }))[0]);
+    await screen.findByText('创建获取');
+    expect((screen.getByLabelText('资源对应第几季') as HTMLInputElement).value).toBe('2');
+    expect((screen.getByLabelText('资源对应第几集') as HTMLInputElement).value).toBe('3');
+  });
+
   it('defaults to single, hides episode for pack and restores on single', async () => {
     const candidates = [candidateFixture({ id: CANDIDATE_NEW, title: '番剧候选 S01 [1080p]' })];
     renderWithProviders(<CandidateTable candidates={candidates} emptyLabel="暂无候选" />, { routePath: '/searches', initialEntry: '/searches' });

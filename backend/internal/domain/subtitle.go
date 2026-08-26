@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/google/uuid"
 )
 
 type SubtitleFormat string
@@ -52,9 +54,10 @@ const (
 )
 
 type SubtitleCandidate struct {
-	Path     string
-	Format   SubtitleFormat
-	Language string
+	SourceFileID uuid.UUID
+	Path         string
+	Format       SubtitleFormat
+	Language     string
 }
 
 type SubtitleStream struct {
@@ -74,13 +77,14 @@ type SubtitleSelectionRequest struct {
 }
 
 type SubtitlePlan struct {
-	Source      SubtitleSource
-	Action      SubtitleAction
-	InputPath   string
-	StreamIndex int
-	InputFormat SubtitleFormat
-	Language    string
-	Evidence    SubtitleEvidence
+	Source       SubtitleSource
+	SourceFileID uuid.UUID
+	Action       SubtitleAction
+	InputPath    string
+	StreamIndex  int
+	InputFormat  SubtitleFormat
+	Language     string
+	Evidence     SubtitleEvidence
 }
 
 type SubtitleError struct {
@@ -125,15 +129,40 @@ type SubtitleMatchCandidate struct {
 	Path        string
 }
 
+type SubtitleMatchSelection struct {
+	CandidateID string
+	Path        string
+}
+
 // CandidateID returns the stable identifier used to reference a subtitle
 // candidate across scope persistence, the Agent context, and the inspection
-// tool. Embedded streams are keyed by their stream index; external files by
-// their basename.
+// tool. Embedded streams are keyed by their stream index; external files use
+// the persisted download-file UUID.
 func CandidateID(plan SubtitlePlan) string {
 	if plan.Source == SubtitleSourceEmbedded {
 		return "stream:" + strconv.Itoa(plan.StreamIndex)
 	}
+	if plan.SourceFileID != uuid.Nil {
+		return "external:" + plan.SourceFileID.String()
+	}
+	return LegacyCandidateID(plan)
+}
+
+// LegacyCandidateID reproduces the pre-UUID external subtitle identity so
+// pending selections created before the upgrade can still be replayed.
+func LegacyCandidateID(plan SubtitlePlan) string {
+	if plan.Source == SubtitleSourceEmbedded {
+		return "stream:" + strconv.Itoa(plan.StreamIndex)
+	}
 	return "file:" + path.Base(strings.ReplaceAll(plan.InputPath, `\\`, "/"))
+}
+
+func MatchesLegacyCandidateID(plan SubtitlePlan, candidateID string) bool {
+	if LegacyCandidateID(plan) == candidateID {
+		return true
+	}
+	normalizedPath := strings.ReplaceAll(plan.InputPath, "\\", "/")
+	return candidateID == "file:"+path.Base(normalizedPath)
 }
 
 // RankSubtitleCandidates returns every potentially usable text subtitle in a
@@ -157,8 +186,9 @@ func RankSubtitleCandidates(request SubtitleSelectionRequest) ([]SubtitlePlan, e
 		}
 		choices = append(choices, subtitleChoice{
 			plan: SubtitlePlan{
-				Source: SubtitleSourceExternal, Action: SubtitleActionConvert,
-				InputPath: candidate.Path, StreamIndex: -1, InputFormat: candidate.Format,
+				Source: SubtitleSourceExternal, SourceFileID: candidate.SourceFileID,
+				Action: SubtitleActionConvert, InputPath: candidate.Path,
+				StreamIndex: -1, InputFormat: candidate.Format,
 				Language: "zh-Hans", Evidence: evidence,
 			},
 			score: subtitleEvidenceScore(evidence) + 50 + subtitleFormatScore(candidate.Format),

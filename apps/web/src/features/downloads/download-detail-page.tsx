@@ -10,7 +10,15 @@ import { ContextLink } from '@/components/context-link';
 import { deleteAcquisitionCommand, fetchAcquisition } from '@/features/acquisitions/api';
 import { DeletionFeedback, type DeletionSubmission } from '@/features/deletions/deletion-feedback';
 import { cancelDownloadCommand, fetchDownload, retryDownloadCommand, saveFileResolutionCommand, saveFileSelectionCommand } from '@/features/downloads/api';
-import { downloadDisplayStatus, downloadFollowupLabel, downloadRetryLabel, downloadWaitsForMapping } from '@/features/downloads/download-presentation';
+import {
+  downloadDisplayStatus,
+  downloadFollowupLabel,
+  downloadRetryLabel,
+  downloadWaitsForMapping,
+  formatSourceEpisodeInput,
+  parseSourceEpisodeInput,
+  sourceCoordinateLabel,
+} from '@/features/downloads/download-presentation';
 import { IdempotencyKeyHolder } from '@/lib/idempotency';
 import { EventHistory } from '@/features/events/event-history';
 import { ResourceOperationHistory } from '@/features/operations/resource-operation-history';
@@ -263,12 +271,14 @@ function FileSelection({ download, onChanged }: { download: Download; onChanged:
       const files = download.files.map((file) => {
         const coordinate = coordinates[file.id];
         const sourceSeason = positiveNumber(coordinate?.season) ?? file.sourceSeason;
-        const sourceEpisode = positiveNumber(coordinate?.episode) ?? file.sourceEpisode;
+        const parsedEpisode = parseSourceEpisodeInput(coordinate?.episode);
+        const sourceEpisode = parsedEpisode?.episode ?? file.sourceEpisode;
+        const sourceEpisodeFractionHundredths = parsedEpisode?.fractionHundredths ?? file.sourceEpisodeFractionHundredths ?? 0;
         return {
           fileId: file.id,
           selected: selection[file.id] ?? file.selected,
           ...(sourceSeason ? { sourceSeason } : {}),
-          ...(sourceEpisode ? { sourceEpisode } : {}),
+          ...(sourceEpisode ? { sourceEpisode, sourceEpisodeFractionHundredths } : {}),
         };
       });
       try {
@@ -341,18 +351,25 @@ function FileSelection({ download, onChanged }: { download: Download; onChanged:
                           type="number"
                           min={1}
                           value={coordinates[file.id]?.season ?? file.sourceSeason ?? ''}
-                          onChange={(event) => setCoordinates((previous) => ({ ...previous, [file.id]: { season: event.target.value, episode: previous[file.id]?.episode ?? String(file.sourceEpisode ?? '') } }))}
+                          onChange={(event) => setCoordinates((previous) => ({
+                            ...previous,
+                            [file.id]: {
+                              season: event.target.value,
+                              episode: previous[file.id]?.episode ?? formatSourceEpisodeInput(file.sourceEpisode, file.sourceEpisodeFractionHundredths),
+                            },
+                          }))}
                           aria-label={`${file.relativePath} 源季`}
                         />
                         <Input
                           type="number"
                           min={1}
-                          value={coordinates[file.id]?.episode ?? file.sourceEpisode ?? ''}
+                          step={0.01}
+                          value={coordinates[file.id]?.episode ?? formatSourceEpisodeInput(file.sourceEpisode, file.sourceEpisodeFractionHundredths)}
                           onChange={(event) => setCoordinates((previous) => ({ ...previous, [file.id]: { season: previous[file.id]?.season ?? String(file.sourceSeason ?? ''), episode: event.target.value } }))}
                           aria-label={`${file.relativePath} 源集`}
                         />
                       </div>
-                    ) : file.sourceSeason && file.sourceEpisode ? `S${file.sourceSeason}E${file.sourceEpisode}` : '—'}
+                    ) : file.sourceSeason && file.sourceEpisode ? sourceCoordinateLabel(file.sourceSeason, file.sourceEpisode, file.sourceEpisodeFractionHundredths) : '—'}
                   </td>
                   <td className="px-2 py-2 text-zinc-600">{reasonLabel(file.exclusionReason) || '—'}</td>
                 </tr>

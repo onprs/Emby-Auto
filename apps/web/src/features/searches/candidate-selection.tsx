@@ -83,19 +83,15 @@ function isLikelySeasonPack(title: string): boolean {
 }
 
 function guessSeasonFromTitle(title: string): string {
-  const match = title.match(/(?:season|s)\s*([0-9]{1,2})|第\s*([0-9]{1,2}|[一二三四五六七八九十]+)\s*季/i);
-  if (match) {
-    if (match[1]) return String(parseInt(match[1], 10) || 1);
-  }
-  return '1';
+  const match = title.match(/(?:season|s)\s*([0-9]{1,2})|第\s*([0-9]{1,2})\s*季/i);
+  const parsedSeason = Number.parseInt(match?.[1] ?? match?.[2] ?? '', 10);
+  return parsedSeason > 0 ? String(parsedSeason) : '1';
 }
 
 function guessEpisodeFromTitle(title: string): string {
-  const match = title.match(/(?:ep|episode|e|第)\s*([0-9]{1,3})(?:话|話|集)?/i);
-  if (match && match[1]) {
-    return String(parseInt(match[1], 10) || 1);
-  }
-  return '1';
+  const match = title.match(/(?:ep|episode|e)\s*([0-9]{1,3})|第\s*([0-9]{1,3})\s*(?:话|話|集)/i);
+  const parsedEpisode = Number.parseInt(match?.[1] ?? match?.[2] ?? '', 10);
+  return parsedEpisode > 0 ? String(parsedEpisode) : '1';
 }
 
 function CandidateForm({ candidate, onAcquired }: { candidate: ReleaseCandidate; onAcquired?: () => void }) {

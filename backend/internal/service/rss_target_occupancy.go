@@ -31,6 +31,7 @@ type rssTargetOccupancy struct {
 	Reason            string
 	Fulfilled         bool
 	FulfillmentSource string
+	RealtimeCheckID   uuid.UUID
 	CheckedAt         time.Time
 }
 
@@ -91,6 +92,7 @@ func loadRSSMappedTargetOccupancyWithRealtimeCheck(
 		TargetEpisodeID: repository.UUIDFromPG(row.TargetEpisodeID),
 		TargetSeason:    int(row.TargetSeason),
 		TargetEpisode:   int(row.TargetEpisode),
+		RealtimeCheckID: realtimeCheckID,
 	}
 	if row.RealtimeCheckedAt.Valid {
 		occupancy.CheckedAt = row.RealtimeCheckedAt.Time
@@ -148,6 +150,16 @@ func lockEpisodeMappingTargets(
 		}
 	}
 	return nil
+}
+
+// LockRSSTargetEpisodes serializes real-time observations and target-level
+// fulfillment writes in the shared RSS occupancy lock domain.
+func LockRSSTargetEpisodes(
+	ctx context.Context,
+	scope database.TxScope,
+	targetEpisodeIDs []uuid.UUID,
+) error {
+	return lockEpisodeMappingTargets(ctx, scope, targetEpisodeIDs)
 }
 
 func prepareRSSMappedTargetLocks(
@@ -238,6 +250,26 @@ func markRSSEntryTargetOccupiedInTx(
 ) (bool, error) {
 	if entryID == uuid.Nil || occupancy.Reason == "" {
 		return false, nil
+	}
+	if occupancy.FulfillmentSource == rssFulfillmentEmbyCatalog && occupancy.RealtimeCheckID != uuid.Nil {
+		if err := lockEpisodeMappingTargets(ctx, scope, []uuid.UUID{occupancy.TargetEpisodeID}); err != nil {
+			return false, err
+		}
+		authoritative, err := scope.Queries.IsRSSRealtimeTargetCheckAuthoritative(ctx, db.IsRSSRealtimeTargetCheckAuthoritativeParams{
+			TargetEpisodeID: repository.UUIDToPG(occupancy.TargetEpisodeID),
+			CheckID:         repository.UUIDToPG(occupancy.RealtimeCheckID),
+		})
+		if err != nil {
+			return false, fmt.Errorf("verify authoritative RSS real-time check: %w", err)
+		}
+		if !authoritative {
+			return false, NewError(
+				"rss_realtime_check_superseded",
+				"the real-time Emby target check was superseded before fulfillment could be recorded",
+				ErrStateConflict,
+				nil,
+			)
+		}
 	}
 	var verifiedAt pgtype.Timestamptz
 	if !occupancy.CheckedAt.IsZero() {

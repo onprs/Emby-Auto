@@ -37,10 +37,11 @@ type DownloadEnqueueCompletion struct {
 }
 
 type DownloadFileResolutionItem struct {
-	FileID        uuid.UUID
-	Selected      bool
-	SourceSeason  *int
-	SourceEpisode *int
+	FileID                          uuid.UUID
+	Selected                        bool
+	SourceSeason                    *int
+	SourceEpisode                   *int
+	SourceEpisodeFractionHundredths int
 }
 
 type DownloadSelectionApplyCommand struct {

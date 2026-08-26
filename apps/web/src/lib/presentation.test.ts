@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   acquisitionStageFilters,
   acquisitionStages,
+  episodeLabel,
   friendlyError,
   operationLabel,
   reasonLabel,
@@ -33,6 +34,14 @@ describe('acquisitionStageFilters', () => {
     expect(filters.importing).toBe(acquisitionStages.importing.label);
     expect(filters.completed).toBe(acquisitionStages.completed.label);
     expect(filters.attention).toBe('需要处理');
+  });
+});
+
+describe('episodeLabel', () => {
+  it('preserves integer and fractional source coordinates', () => {
+    expect(episodeLabel(1, 12)).toBe('第 1 季第 12 集');
+    expect(episodeLabel(1, 12, 50)).toBe('第 1 季第 12.5 集');
+    expect(episodeLabel(1, 12, 5)).toBe('第 1 季第 12.05 集');
   });
 });
 

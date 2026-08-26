@@ -42,16 +42,17 @@ type DownloadActions struct {
 }
 
 type DownloadFileView struct {
-	ID              uuid.UUID
-	FileIndex       int
-	RelativePath    string
-	SizeBytes       int64
-	MediaKind       string
-	Selected        bool
-	SourceSeason    *int
-	SourceEpisode   *int
-	Language        string
-	ExclusionReason string
+	ID                              uuid.UUID
+	FileIndex                       int
+	RelativePath                    string
+	SizeBytes                       int64
+	MediaKind                       string
+	Selected                        bool
+	SourceSeason                    *int
+	SourceEpisode                   *int
+	SourceEpisodeFractionHundredths int
+	Language                        string
+	ExclusionReason                 string
 }
 
 type DownloadPage struct {
@@ -61,36 +62,37 @@ type DownloadPage struct {
 
 // AcquisitionView is the read model for one acquisition and its relations.
 type AcquisitionView struct {
-	ID                       uuid.UUID
-	Archived                 bool
-	ArchivedAt               *time.Time
-	MediaType                TaskMediaType
-	SeriesID                 uuid.UUID
-	TMDbSeriesID             int64
-	SeriesTitle              string
-	TMDbMovieID              int64
-	MovieTitle               string
-	ReleaseYear              int
-	SourceKind               string
-	SourceTitle              string
-	SourceSeason             *int
-	SourceEpisode            *int
-	SingleEpisode            *bool
-	MappingProfileID         *uuid.UUID
-	MappingDecisionSource    string
-	MappingAgentResolutionID *uuid.UUID
-	ReleaseCandidateID       *uuid.UUID
-	RSSEntryID               *uuid.UUID
-	DownloadID               *uuid.UUID
-	Download                 *AcquisitionDownloadSummary
-	Tasks                    []AcquisitionTaskSummary
-	Mapping                  AcquisitionMappingCompleteness
-	AggregateStatus          string
-	CurrentStage             string
-	OverallProgress          float64
-	Stages                   []AcquisitionStageView
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
+	ID                              uuid.UUID
+	Archived                        bool
+	ArchivedAt                      *time.Time
+	MediaType                       TaskMediaType
+	SeriesID                        uuid.UUID
+	TMDbSeriesID                    int64
+	SeriesTitle                     string
+	TMDbMovieID                     int64
+	MovieTitle                      string
+	ReleaseYear                     int
+	SourceKind                      string
+	SourceTitle                     string
+	SourceSeason                    *int
+	SourceEpisode                   *int
+	SourceEpisodeFractionHundredths int
+	SingleEpisode                   *bool
+	MappingProfileID                *uuid.UUID
+	MappingDecisionSource           string
+	MappingAgentResolutionID        *uuid.UUID
+	ReleaseCandidateID              *uuid.UUID
+	RSSEntryID                      *uuid.UUID
+	DownloadID                      *uuid.UUID
+	Download                        *AcquisitionDownloadSummary
+	Tasks                           []AcquisitionTaskSummary
+	Mapping                         AcquisitionMappingCompleteness
+	AggregateStatus                 string
+	CurrentStage                    string
+	OverallProgress                 float64
+	Stages                          []AcquisitionStageView
+	CreatedAt                       time.Time
+	UpdatedAt                       time.Time
 }
 
 // AcquisitionProgressView is the compact lifecycle summary embedded in parent lists.
@@ -124,30 +126,31 @@ type AcquisitionDownloadSummary struct {
 }
 
 type AcquisitionTaskSummary struct {
-	ID                      uuid.UUID
-	MediaType               TaskMediaType
-	DownloadID              uuid.UUID
-	SourceSeason            int
-	SourceEpisode           int
-	TargetSeason            *int
-	TargetEpisode           *int
-	TargetEpisodeTitle      string
-	State                   string
-	VideoState              string
-	SubtitleState           string
-	ArtifactBasename        string
-	ReviewDecision          string
-	ReviewedAt              *time.Time
-	ImportStatus            string
-	DestinationVideoPath    string
-	DestinationSubtitlePath string
-	EmbyRefreshStatus       string
-	CleanupStatus           string
-	FailureStage            string
-	ErrorCode               string
-	ErrorMessage            string
-	CanRetry                bool
-	UpdatedAt               time.Time
+	ID                              uuid.UUID
+	MediaType                       TaskMediaType
+	DownloadID                      uuid.UUID
+	SourceSeason                    int
+	SourceEpisode                   int
+	SourceEpisodeFractionHundredths int
+	TargetSeason                    *int
+	TargetEpisode                   *int
+	TargetEpisodeTitle              string
+	State                           string
+	VideoState                      string
+	SubtitleState                   string
+	ArtifactBasename                string
+	ReviewDecision                  string
+	ReviewedAt                      *time.Time
+	ImportStatus                    string
+	DestinationVideoPath            string
+	DestinationSubtitlePath         string
+	EmbyRefreshStatus               string
+	CleanupStatus                   string
+	FailureStage                    string
+	ErrorCode                       string
+	ErrorMessage                    string
+	CanRetry                        bool
+	UpdatedAt                       time.Time
 }
 
 type AcquisitionMappingCompleteness struct {
@@ -163,33 +166,34 @@ type AcquisitionPage struct {
 
 // RSSEntryView is the read model for one persisted RSS entry.
 type RSSEntryView struct {
-	ID                       uuid.UUID
-	SubscriptionID           uuid.UUID
-	ReleaseCandidateID       *uuid.UUID
-	AcquisitionID            *uuid.UUID
-	AcquisitionProgress      *AcquisitionProgressView
-	DownloadID               *uuid.UUID
-	Title                    string
-	Status                   string
-	Classification           string
-	DuplicateCount           int
-	DownloadURIAvailable     bool
-	PublishedAt              *time.Time
-	SourceSeason             *int
-	SourceEpisode            *int
-	CoordinateSource         string
-	AgentResolutionID        *uuid.UUID
-	AdjudicationBatchID      *uuid.UUID
-	AdjudicationState        string
-	AdjudicationSource       string
-	AdjudicationResolutionID *uuid.UUID
-	RelatedEntryID           *uuid.UUID
-	RejectReason             string
-	ErrorCode                string
-	ErrorMessage             string
-	ImportedAt               *time.Time
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
+	ID                              uuid.UUID
+	SubscriptionID                  uuid.UUID
+	ReleaseCandidateID              *uuid.UUID
+	AcquisitionID                   *uuid.UUID
+	AcquisitionProgress             *AcquisitionProgressView
+	DownloadID                      *uuid.UUID
+	Title                           string
+	Status                          string
+	Classification                  string
+	DuplicateCount                  int
+	DownloadURIAvailable            bool
+	PublishedAt                     *time.Time
+	SourceSeason                    *int
+	SourceEpisode                   *int
+	SourceEpisodeFractionHundredths int
+	CoordinateSource                string
+	AgentResolutionID               *uuid.UUID
+	AdjudicationBatchID             *uuid.UUID
+	AdjudicationState               string
+	AdjudicationSource              string
+	AdjudicationResolutionID        *uuid.UUID
+	RelatedEntryID                  *uuid.UUID
+	RejectReason                    string
+	ErrorCode                       string
+	ErrorMessage                    string
+	ImportedAt                      *time.Time
+	CreatedAt                       time.Time
+	UpdatedAt                       time.Time
 }
 
 type RSSEntryPage struct {

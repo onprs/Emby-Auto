@@ -10,8 +10,7 @@ INSERT INTO subtitle_video_match_candidates (
 ) VALUES (
     sqlc.arg(scope_id), sqlc.arg(candidate_id), sqlc.arg(source),
     sqlc.arg(stream_index), sqlc.arg(format), sqlc.arg(language), sqlc.arg(title), sqlc.arg(path)
-)
-ON CONFLICT (scope_id, candidate_id) DO NOTHING;
+);
 
 -- name: GetSubtitleVideoMatchContext :one
 SELECT
@@ -76,8 +75,12 @@ RETURNING *;
 SELECT
     scope.task_id,
     scope.selected_candidate_id,
-    scope.status
+    scope.status,
+    selected.path AS selected_candidate_path
 FROM subtitle_video_match_scopes AS scope
+LEFT JOIN subtitle_video_match_candidates AS selected
+  ON selected.scope_id = scope.id
+ AND selected.candidate_id = scope.selected_candidate_id
 WHERE scope.task_id = sqlc.arg(task_id)
   AND scope.status = 'applied';
 

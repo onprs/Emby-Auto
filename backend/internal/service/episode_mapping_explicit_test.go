@@ -189,6 +189,30 @@ func TestPlanExplicitMappingFilesAssignsSharedPlaceholderSubtitlesByPath(t *test
 	}
 }
 
+func TestPlanExplicitMappingFilesKeepsFractionalAndIntegerEpisodesDistinct(t *testing.T) {
+	fractionalVideoID, integerVideoID := uuid.New(), uuid.New()
+	season, fractionalEpisode, integerEpisode := int32(1), int32(12), int32(125)
+	changes, excluded, err := planExplicitMappingFileChanges(
+		[]domain.EpisodeMappingRow{
+			{SourceFileID: fractionalVideoID, SourceSeason: 1, SourceEpisode: 12, SourceEpisodeFractionHundredths: 50, Status: domain.MappingMapped},
+			{SourceFileID: integerVideoID, SourceSeason: 1, SourceEpisode: 125, Status: domain.MappingMapped},
+		},
+		[]explicitMappingFile{
+			{id: fractionalVideoID, relativePath: "Pack S01E12.5.mkv", mediaKind: domain.MediaVideo, sourceSeason: &season, sourceEpisode: &fractionalEpisode, sourceEpisodeFractionHundredths: 50},
+			{id: integerVideoID, relativePath: "Pack S01E125.mkv", mediaKind: domain.MediaVideo, sourceSeason: &season, sourceEpisode: &integerEpisode},
+		},
+	)
+	if err != nil {
+		t.Fatalf("planExplicitMappingFileChanges() error = %v", err)
+	}
+	if excluded != 0 || len(changes) != 2 {
+		t.Fatalf("planned changes/excluded = %d/%d, want 2/0", len(changes), excluded)
+	}
+	if changes[0].coordinate == changes[1].coordinate {
+		t.Fatalf("fractional and integer coordinates collided: %#v", changes)
+	}
+}
+
 func TestPlanExplicitMappingFilesRejectsAmbiguousStoredSubtitleCoordinate(t *testing.T) {
 	firstVideoID, secondVideoID, subtitleID := uuid.New(), uuid.New(), uuid.New()
 	season, placeholderEpisode := int32(1), int32(1)

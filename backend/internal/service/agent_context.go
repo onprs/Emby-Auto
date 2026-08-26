@@ -90,14 +90,15 @@ type scopedRSSMappingSource struct {
 }
 
 type scopedFile struct {
-	ID            uuid.UUID `json:"fileId"`
-	RelativePath  string    `json:"relativePath"`
-	SizeBytes     int64     `json:"sizeBytes,omitempty"`
-	MediaKind     string    `json:"mediaKind,omitempty"`
-	Selected      bool      `json:"selected,omitempty"`
-	SourceSeason  *int      `json:"sourceSeason,omitempty"`
-	SourceEpisode *int      `json:"sourceEpisode,omitempty"`
-	Language      string    `json:"language,omitempty"`
+	ID                              uuid.UUID `json:"fileId"`
+	RelativePath                    string    `json:"relativePath"`
+	SizeBytes                       int64     `json:"sizeBytes,omitempty"`
+	MediaKind                       string    `json:"mediaKind,omitempty"`
+	Selected                        bool      `json:"selected,omitempty"`
+	SourceSeason                    *int      `json:"sourceSeason,omitempty"`
+	SourceEpisode                   *int      `json:"sourceEpisode,omitempty"`
+	SourceEpisodeFractionHundredths int       `json:"sourceEpisodeFractionHundredths,omitempty"`
+	Language                        string    `json:"language,omitempty"`
 }
 
 type scopedEpisode struct {
@@ -297,7 +298,9 @@ func (service *AgentResolutionService) buildDownloadAgentContext(ctx context.Con
 		values = append(values, scopedFile{
 			ID: repository.UUIDFromPG(file.ID), RelativePath: file.RelativePath, SizeBytes: file.SizeBytes,
 			MediaKind: file.MediaKind, Selected: file.Selected, SourceSeason: int32PointerToInt(file.SourceSeason),
-			SourceEpisode: int32PointerToInt(file.SourceEpisode), Language: stringValue(file.Language),
+			SourceEpisode:                   int32PointerToInt(file.SourceEpisode),
+			SourceEpisodeFractionHundredths: int(file.SourceEpisodeFractionHundredths),
+			Language:                        stringValue(file.Language),
 		})
 	}
 	resource := struct {
@@ -428,19 +431,21 @@ func (service *AgentResolutionService) buildMappingAgentContext(ctx context.Cont
 	}
 	files := make([]scopedFile, 0, len(fileRows))
 	filesByID := make(map[uuid.UUID]scopedFile, len(fileRows))
-	seen := map[[2]int]struct{}{}
+	seen := map[[3]int]struct{}{}
 	for _, file := range fileRows {
 		value := scopedFile{
 			ID: repository.UUIDFromPG(file.ID), RelativePath: file.RelativePath,
 			SourceSeason: int32PointerToInt(file.SourceSeason), SourceEpisode: int32PointerToInt(file.SourceEpisode),
+			SourceEpisodeFractionHundredths: int(file.SourceEpisodeFractionHundredths),
 		}
-		if season, episode, ok := domain.ParseSourceCoordinate(value.RelativePath, pointerIntValue(value.SourceSeason)); ok {
-			value.SourceSeason, value.SourceEpisode = &season, &episode
+		if parsed, ok := domain.ParseSourceCoordinate(value.RelativePath, pointerIntValue(value.SourceSeason)); ok {
+			value.SourceSeason, value.SourceEpisode = &parsed.Season, &parsed.Episode
+			value.SourceEpisodeFractionHundredths = parsed.EpisodeFractionHundredths
 		}
 		if value.SourceSeason == nil || value.SourceEpisode == nil || *value.SourceSeason <= 0 || *value.SourceEpisode <= 0 {
 			return agentContextSnapshot{}, NewError("mapping_source_invalid", "every selected video needs a valid source coordinate before Agent Mapping", ErrStateConflict, map[string]any{"fileId": value.ID})
 		}
-		coordinate := [2]int{*value.SourceSeason, *value.SourceEpisode}
+		coordinate := [3]int{*value.SourceSeason, *value.SourceEpisode, value.SourceEpisodeFractionHundredths}
 		if _, duplicate := seen[coordinate]; duplicate {
 			return agentContextSnapshot{}, NewError("mapping_source_duplicate", "selected videos have duplicate source coordinates", ErrStateConflict, nil)
 		}
@@ -777,8 +782,13 @@ func parseFileCoordinateTool(files map[uuid.UUID]scopedFile, defaultSeason int) 
 			if !ok {
 				return nil, fmt.Errorf("file is outside this resolution scope")
 			}
-			season, episode, matched := domain.ParseSourceCoordinate(file.RelativePath, defaultSeason)
-			return json.Marshal(map[string]any{"matched": matched, "sourceSeason": season, "sourceEpisode": episode})
+			coordinate, matched := domain.ParseSourceCoordinate(file.RelativePath, defaultSeason)
+			return json.Marshal(map[string]any{
+				"matched":                         matched,
+				"sourceSeason":                    coordinate.Season,
+				"sourceEpisode":                   coordinate.Episode,
+				"sourceEpisodeFractionHundredths": coordinate.EpisodeFractionHundredths,
+			})
 		},
 	}
 }

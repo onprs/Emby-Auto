@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/onprs/emby-auto/backend/internal/domain"
@@ -21,7 +23,7 @@ type SubtitleStore interface {
 	BeginSubtitle(context.Context, uuid.UUID) (domain.TaskMediaCommand, error)
 	CompleteArtifact(context.Context, domain.MediaArtifactCompletion) error
 	CreateSubtitleVideoMatchScope(context.Context, uuid.UUID, []domain.SubtitleMatchCandidate) (uuid.UUID, error)
-	GetSubtitleVideoMatchSelection(context.Context, uuid.UUID) (string, error)
+	GetSubtitleVideoMatchSelection(context.Context, uuid.UUID) (domain.SubtitleMatchSelection, error)
 }
 
 type SubtitleMatchAgentResolutionCreator interface {
@@ -30,9 +32,9 @@ type SubtitleMatchAgentResolutionCreator interface {
 }
 
 type SubtitlePrepareHandler struct {
-	configuration MediaConfiguration
-	tools         MediaTools
-	store         SubtitleStore
+	configuration    MediaConfiguration
+	tools            MediaTools
+	store            SubtitleStore
 	agentResolutions SubtitleMatchAgentResolutionCreator
 }
 
@@ -75,14 +77,15 @@ func (handler *SubtitlePrepareHandler) Handle(ctx context.Context, operation dom
 	}
 
 	external := make([]domain.SubtitleCandidate, 0, len(command.ExternalSubtitles))
-	externalIDs := make(map[string]uuid.UUID, len(command.ExternalSubtitles))
 	for _, subtitle := range command.ExternalSubtitles {
 		filePath, err := secureJoin(command.SavePath, subtitle.RelativePath)
 		if err != nil {
 			return permanentFailure("external_subtitle_path_invalid", "an external subtitle path is unsafe", err)
 		}
-		external = append(external, domain.SubtitleCandidate{Path: filePath, Format: subtitle.Format, Language: subtitle.Language})
-		externalIDs[filePath] = subtitle.SourceFileID
+		external = append(external, domain.SubtitleCandidate{
+			SourceFileID: subtitle.SourceFileID,
+			Path:         filePath, Format: subtitle.Format, Language: subtitle.Language,
+		})
 	}
 	paths, err := buildMediaOutputPaths(settings.Paths.StagingRoot, command.TaskID, operation.ID, taskMediaOutputPath(command, command.Names.SubtitleName))
 	if err != nil {
@@ -125,14 +128,14 @@ func (handler *SubtitlePrepareHandler) Handle(ctx context.Context, operation dom
 				if selectionErr != nil {
 					return mediaStoreFailure("subtitle", selectionErr)
 				}
-				if applied != "" {
-					plans = filterPlansByCandidate(plans, applied)
+				if applied.CandidateID != "" {
+					plans = filterPlansBySelection(plans, applied)
 					if len(plans) == 0 {
 						return permanentFailure("subtitle_agent_selection_invalid", "the Agent-selected subtitle candidate is no longer available", nil)
 					}
 				} else {
 					// No selection yet: persist scope + candidates and ask the Agent.
-						scopeID, scopeErr := handler.store.CreateSubtitleVideoMatchScope(ctx, command.TaskID, subtitleMatchCandidates(plans, probe.SubtitleStreams(), external))
+					scopeID, scopeErr := handler.store.CreateSubtitleVideoMatchScope(ctx, command.TaskID, subtitleMatchCandidates(plans, probe.SubtitleStreams(), external))
 					if scopeErr != nil {
 						var mediaErr *domain.MediaWorkflowError
 						if errors.As(scopeErr, &mediaErr) && mediaErr.Code == "subtitle_scope_conflict" {
@@ -181,9 +184,8 @@ func (handler *SubtitlePrepareHandler) Handle(ctx context.Context, operation dom
 
 	sourceFileID := command.SourceVideoFileID
 	if selected.Source == domain.SubtitleSourceExternal {
-		var ok bool
-		sourceFileID, ok = externalIDs[selected.InputPath]
-		if !ok {
+		sourceFileID = selected.SourceFileID
+		if sourceFileID == uuid.Nil {
 			return permanentFailure("subtitle_plan_invalid", "the selected external subtitle has no source identity", nil)
 		}
 	}
@@ -356,12 +358,27 @@ func subtitleMatchCandidates(plans []domain.SubtitlePlan, embedded []domain.Subt
 	return candidates
 }
 
-func filterPlansByCandidate(plans []domain.SubtitlePlan, candidateID string) []domain.SubtitlePlan {
-	filtered := make([]domain.SubtitlePlan, 0, 1)
+func filterPlansBySelection(plans []domain.SubtitlePlan, selection domain.SubtitleMatchSelection) []domain.SubtitlePlan {
 	for _, plan := range plans {
-		if domain.CandidateID(plan) == candidateID {
-			filtered = append(filtered, plan)
+		if domain.CandidateID(plan) == selection.CandidateID {
+			return []domain.SubtitlePlan{plan}
 		}
 	}
-	return filtered
+	if !strings.HasPrefix(selection.CandidateID, "file:") {
+		return nil
+	}
+	legacyMatches := make([]domain.SubtitlePlan, 0, 1)
+	for _, plan := range plans {
+		if !domain.MatchesLegacyCandidateID(plan, selection.CandidateID) {
+			continue
+		}
+		if selection.Path != "" && filepath.Clean(plan.InputPath) == filepath.Clean(selection.Path) {
+			return []domain.SubtitlePlan{plan}
+		}
+		legacyMatches = append(legacyMatches, plan)
+	}
+	if len(legacyMatches) == 1 {
+		return legacyMatches
+	}
+	return nil
 }

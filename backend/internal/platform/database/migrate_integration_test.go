@@ -66,8 +66,8 @@ WHERE NOT tgisinternal
 `).Scan(&triggerCount); err != nil {
 		t.Fatal(err)
 	}
-	if triggerCount != 13 {
-		t.Fatalf("progress dependency trigger count = %d, want 13", triggerCount)
+	if triggerCount != 15 {
+		t.Fatalf("progress dependency trigger count = %d, want 15", triggerCount)
 	}
 	var sortIndex, dirtyIndex string
 	if err := pool.QueryRow(ctx, `
@@ -108,6 +108,127 @@ WHERE subscription_id = $1
 	replayed, err := workflow.ReconcileSubscriptionProgress(ctx)
 	if err != nil || replayed != 0 {
 		t.Fatalf("replayed ReconcileSubscriptionProgress() = %d, %v, want 0, nil", replayed, err)
+	}
+}
+
+func TestSourceEpisodeFractionMigrationPreservesIntegerRowsAndGuardsRollbackIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	databaseURL, pool := testutil.NewMigratedPostgres(t)
+	downgradeApplication(t, ctx, pool, 41)
+
+	seriesID, profileID := uuid.New(), uuid.New()
+	acquisitionID, downloadID, integerFileID := uuid.New(), uuid.New(), uuid.New()
+	subscriptionID, integerEntryID := uuid.New(), uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, title) VALUES ($1, 'Source fraction migration')`, seriesID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testutil.ExecFixture(ctx, pool, `
+INSERT INTO episode_mapping_profiles (id, series_id, name, version, active, decision_source)
+VALUES ($1, $2, $3, 1, true, 'deterministic');
+INSERT INTO episode_mappings (
+    id, profile_id, source_season, source_episode, mapping_status, match_source, error_code
+) VALUES ($4, $1, 1, 12, 'pending', 'pending', 'mapping_target_out_of_range');
+INSERT INTO acquisitions (id, series_id, source_kind, source_uri)
+VALUES ($5, $2, 'manual', 'https://example.test/manual.torrent');
+INSERT INTO downloads (id, acquisition_id, status) VALUES ($6, $5, 'completed');
+INSERT INTO download_files (
+    id, download_id, file_index, relative_path, size_bytes, media_kind,
+    selected, source_season, source_episode
+) VALUES ($7, $6, 0, 'Show.S01E12.mkv', 1024, 'video', true, 1, 12);
+INSERT INTO rss_subscriptions (
+    id, series_id, name, feed_url, enabled, poll_interval_seconds, source_season
+) VALUES ($8, $2, 'Source fraction migration', $9, false, 900, 1);
+INSERT INTO rss_entries (
+    id, subscription_id, identity_key, title, downloadable, rejection_reasons,
+    source_season, source_episode
+) VALUES ($10, $8, $11, 'Show S01E12', false, ARRAY['download_uri_missing']::text[], 1, 12)
+`, profileID, seriesID, "source-fraction-"+profileID.String(), uuid.New(), acquisitionID, downloadID, integerFileID,
+		subscriptionID, "https://example.test/"+subscriptionID.String()+".xml", integerEntryID, "guid:"+integerEntryID.String()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.NewMigrator().Migrate(ctx, databaseURL); err != nil {
+		t.Fatalf("Migrate() from v41 error = %v", err)
+	}
+	var mappingFraction, fileFraction, entryFraction int
+	if err := pool.QueryRow(ctx, `
+SELECT mapping.source_episode_fraction_hundredths,
+       file.source_episode_fraction_hundredths,
+       entry.source_episode_fraction_hundredths
+FROM episode_mappings AS mapping
+JOIN download_files AS file ON file.id = $1
+JOIN rss_entries AS entry ON entry.id = $2
+WHERE mapping.profile_id = $3 AND mapping.source_episode = 12`, integerFileID, integerEntryID, profileID).Scan(
+		&mappingFraction, &fileFraction, &entryFraction,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if mappingFraction != 0 || fileFraction != 0 || entryFraction != 0 {
+		t.Fatalf("integer backfill fractions = %d/%d/%d, want 0/0/0", mappingFraction, fileFraction, entryFraction)
+	}
+
+	fractionalMappingID, fractionalFileID, fractionalEntryID := uuid.New(), uuid.New(), uuid.New()
+	if _, err := testutil.ExecFixture(ctx, pool, `
+INSERT INTO episode_mappings (
+    id, profile_id, source_season, source_episode, source_episode_fraction_hundredths,
+    mapping_status, match_source, error_code
+) VALUES ($1, $2, 1, 12, 50, 'pending', 'pending', 'mapping_target_out_of_range');
+INSERT INTO download_files (
+    id, download_id, file_index, relative_path, size_bytes, media_kind,
+    selected, source_season, source_episode, source_episode_fraction_hundredths
+) VALUES ($3, $4, 1, 'Show.S01E12.5.mkv', 1024, 'video', true, 1, 12, 50);
+INSERT INTO rss_entries (
+    id, subscription_id, identity_key, title, downloadable, rejection_reasons,
+    source_season, source_episode, source_episode_fraction_hundredths
+) VALUES ($5, $6, $7, 'Show S01E12.5', false, ARRAY['download_uri_missing']::text[], 1, 12, 50)
+`, fractionalMappingID, profileID, fractionalFileID, downloadID, fractionalEntryID, subscriptionID, "guid:"+fractionalEntryID.String()); err != nil {
+		t.Fatalf("insert fractional coordinate next to integer coordinate: %v", err)
+	}
+	var mappingCount int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM episode_mappings
+WHERE profile_id = $1 AND source_season = 1 AND source_episode = 12`, profileID).Scan(&mappingCount); err != nil {
+		t.Fatal(err)
+	}
+	if mappingCount != 2 {
+		t.Fatalf("mapping coordinate count = %d, want integer 12 and fractional 12.5", mappingCount)
+	}
+
+	downSQL, err := appmigrations.Files.ReadFile("000042_source_episode_fraction.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, string(downSQL)); err == nil || !strings.Contains(err.Error(), "fractional coordinates exist") {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("fractional rollback guard error = %v", err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := testutil.ExecFixture(ctx, pool, `
+DELETE FROM episode_mappings WHERE id = $1;
+UPDATE download_files SET source_episode_fraction_hundredths = 0 WHERE id = $2;
+UPDATE rss_entries SET source_episode_fraction_hundredths = 0 WHERE id = $3
+`, fractionalMappingID, fractionalFileID, fractionalEntryID); err != nil {
+		t.Fatal(err)
+	}
+	downgradeApplication(t, ctx, pool, 41)
+	var fractionColumns int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM information_schema.columns
+WHERE table_schema = current_schema()
+  AND column_name = 'source_episode_fraction_hundredths'
+  AND table_name IN ('download_files', 'episode_mappings', 'rss_entries')`).Scan(&fractionColumns); err != nil {
+		t.Fatal(err)
+	}
+	if fractionColumns != 0 {
+		t.Fatalf("fraction columns after rollback = %d, want 0", fractionColumns)
 	}
 }
 

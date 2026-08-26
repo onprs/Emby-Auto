@@ -1,6 +1,7 @@
 package agentharness
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -67,6 +68,43 @@ func TestRunnerExecutesScopedToolAndPersistsOnlyTypedProposalDigests(t *testing.
 	var proposal domain.AgentRSSCoordinateProposal
 	if err := json.Unmarshal(result.Proposal, &proposal); err != nil || proposal.SourceEpisode != 12 {
 		t.Fatalf("proposal = %s, err = %v", result.Proposal, err)
+	}
+}
+
+func TestRunnerNormalizesFractionalDownloadFileResolution(t *testing.T) {
+	fractionalID := "46000000-0000-4000-8000-000000000011"
+	integerID := "46000000-0000-4000-8000-000000000012"
+	client := &harnessClientStub{run: func(_ context.Context, request agentapi.ToolLoopRequest) (agentapi.ToolLoopResult, error) {
+		schema, err := json.Marshal(request.Tools[len(request.Tools)-1].Parameters)
+		if err != nil || !bytes.Contains(schema, []byte(`"sourceEpisodeFractionHundredths"`)) {
+			t.Fatalf("submission schema = %s, err = %v", schema, err)
+		}
+		submitted, err := request.Submit("submit_download_file_resolution", json.RawMessage(`{
+			"videos":[
+				{"fileId":"`+fractionalID+`","sourceSeason":1,"sourceEpisode":12,"sourceEpisodeFractionHundredths":50},
+				{"fileId":"`+integerID+`","sourceSeason":1,"sourceEpisode":125}
+			],
+			"subtitles":[],
+			"decision":"resolved"
+		}`))
+		if err != nil || !submitted {
+			t.Fatalf("submission = %t, err = %v", submitted, err)
+		}
+		return agentapi.ToolLoopResult{}, nil
+	}}
+	result, err := (Runner{}).Run(context.Background(), client, Context{
+		Capability: domain.AgentCapabilityDownloadFileResolution,
+		Resource:   json.RawMessage(`{"downloadId":"46000000-0000-4000-8000-000000000013"}`),
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var proposal domain.AgentDownloadFileResolutionProposal
+	if err := json.Unmarshal(result.Proposal, &proposal); err != nil {
+		t.Fatal(err)
+	}
+	if len(proposal.Videos) != 2 || proposal.Videos[0].SourceEpisodeFractionHundredths != 50 || proposal.Videos[1].SourceEpisodeFractionHundredths != 0 {
+		t.Fatalf("proposal = %#v", proposal)
 	}
 }
 

@@ -166,22 +166,32 @@ const getSubtitleVideoMatchSelection = `-- name: GetSubtitleVideoMatchSelection 
 SELECT
     scope.task_id,
     scope.selected_candidate_id,
-    scope.status
+    scope.status,
+    selected.path AS selected_candidate_path
 FROM subtitle_video_match_scopes AS scope
+LEFT JOIN subtitle_video_match_candidates AS selected
+  ON selected.scope_id = scope.id
+ AND selected.candidate_id = scope.selected_candidate_id
 WHERE scope.task_id = $1
   AND scope.status = 'applied'
 `
 
 type GetSubtitleVideoMatchSelectionRow struct {
-	TaskID              pgtype.UUID `db:"task_id" json:"task_id"`
-	SelectedCandidateID *string     `db:"selected_candidate_id" json:"selected_candidate_id"`
-	Status              string      `db:"status" json:"status"`
+	TaskID                pgtype.UUID `db:"task_id" json:"task_id"`
+	SelectedCandidateID   *string     `db:"selected_candidate_id" json:"selected_candidate_id"`
+	Status                string      `db:"status" json:"status"`
+	SelectedCandidatePath *string     `db:"selected_candidate_path" json:"selected_candidate_path"`
 }
 
 func (q *Queries) GetSubtitleVideoMatchSelection(ctx context.Context, taskID pgtype.UUID) (GetSubtitleVideoMatchSelectionRow, error) {
 	row := q.db.QueryRow(ctx, getSubtitleVideoMatchSelection, taskID)
 	var i GetSubtitleVideoMatchSelectionRow
-	err := row.Scan(&i.TaskID, &i.SelectedCandidateID, &i.Status)
+	err := row.Scan(
+		&i.TaskID,
+		&i.SelectedCandidateID,
+		&i.Status,
+		&i.SelectedCandidatePath,
+	)
 	return i, err
 }
 
@@ -192,7 +202,6 @@ INSERT INTO subtitle_video_match_candidates (
     $1, $2, $3,
     $4, $5, $6, $7, $8
 )
-ON CONFLICT (scope_id, candidate_id) DO NOTHING
 `
 
 type InsertSubtitleVideoMatchCandidateParams struct {

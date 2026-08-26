@@ -23,7 +23,7 @@ import { ErrorState } from '@/components/ui/feedback';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { formatBytes, formatDateTime } from '@/lib/format';
-import { failureStageLabel, friendlyError, operationLabel } from '@/lib/presentation';
+import { episodeLabel, failureStageLabel, friendlyError, operationLabel } from '@/lib/presentation';
 
 export function TaskDetailPage({ taskId }: { taskId: string }) {
   const queryClient = useQueryClient();
@@ -49,7 +49,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const title = isMovie ? (value.movieTitle ?? '未命名电影') : (value.seriesTitle ?? '未命名番剧');
   const mediaDescription = isMovie
     ? `电影${value.releaseYear ? ` · ${value.releaseYear}` : ''}`
-    : `第 ${value.targetSeason ?? value.sourceSeason} 季第 ${value.targetEpisode ?? value.sourceEpisode} 集${value.targetEpisodeTitle ? ` · ${value.targetEpisodeTitle}` : ''}`;
+    : `${episodeLabel(
+      value.targetSeason ?? value.sourceSeason,
+      value.targetEpisode ?? value.sourceEpisode,
+      value.targetEpisode ? 0 : value.sourceEpisodeFractionHundredths,
+    )}${value.targetEpisodeTitle ? ` · ${value.targetEpisodeTitle}` : ''}`;
 
   return (
     <PageBody>

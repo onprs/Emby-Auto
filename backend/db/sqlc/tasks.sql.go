@@ -597,6 +597,7 @@ SELECT
     source_file.download_id,
     source_file.source_season,
     source_file.source_episode,
+    source_file.source_episode_fraction_hundredths,
     series.title AS series_title,
     series.release_year,
     season.season_number AS target_season,
@@ -696,72 +697,73 @@ WHERE task.id = $1
 `
 
 type GetTaskViewRow struct {
-	ID                      pgtype.UUID        `db:"id" json:"id"`
-	AcquisitionID           pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
-	SourceVideoFileID       pgtype.UUID        `db:"source_video_file_id" json:"source_video_file_id"`
-	MappingID               pgtype.UUID        `db:"mapping_id" json:"mapping_id"`
-	TranscodeProfileID      pgtype.UUID        `db:"transcode_profile_id" json:"transcode_profile_id"`
-	State                   string             `db:"state" json:"state"`
-	VideoState              string             `db:"video_state" json:"video_state"`
-	SubtitleState           string             `db:"subtitle_state" json:"subtitle_state"`
-	Version                 int32              `db:"version" json:"version"`
-	ErrorCode               *string            `db:"error_code" json:"error_code"`
-	ErrorMessage            *string            `db:"error_message" json:"error_message"`
-	LegacyID                *string            `db:"legacy_id" json:"legacy_id"`
-	CreatedAt               pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-	FailureStage            *string            `db:"failure_stage" json:"failure_stage"`
-	MediaType               string             `db:"media_type" json:"media_type"`
-	WorkflowAcquisitionID   pgtype.UUID        `db:"workflow_acquisition_id" json:"workflow_acquisition_id"`
-	DownloadID              pgtype.UUID        `db:"download_id" json:"download_id"`
-	SourceSeason            *int32             `db:"source_season" json:"source_season"`
-	SourceEpisode           *int32             `db:"source_episode" json:"source_episode"`
-	SeriesTitle             *string            `db:"series_title" json:"series_title"`
-	ReleaseYear             *int32             `db:"release_year" json:"release_year"`
-	TargetSeason            *int32             `db:"target_season" json:"target_season"`
-	TargetEpisode           *int32             `db:"target_episode" json:"target_episode"`
-	TargetEpisodeTitle      *string            `db:"target_episode_title" json:"target_episode_title"`
-	ArtifactSetID           pgtype.UUID        `db:"artifact_set_id" json:"artifact_set_id"`
-	ArtifactBasename        *string            `db:"artifact_basename" json:"artifact_basename"`
-	VideoArtifactID         pgtype.UUID        `db:"video_artifact_id" json:"video_artifact_id"`
-	VideoFilePath           *string            `db:"video_file_path" json:"video_file_path"`
-	VideoFormat             *string            `db:"video_format" json:"video_format"`
-	VideoSizeBytes          *int64             `db:"video_size_bytes" json:"video_size_bytes"`
-	VideoChecksumSha256     []byte             `db:"video_checksum_sha256" json:"video_checksum_sha256"`
-	SubtitleArtifactID      pgtype.UUID        `db:"subtitle_artifact_id" json:"subtitle_artifact_id"`
-	SubtitleFilePath        *string            `db:"subtitle_file_path" json:"subtitle_file_path"`
-	SubtitleFormat          *string            `db:"subtitle_format" json:"subtitle_format"`
-	SubtitleSizeBytes       *int64             `db:"subtitle_size_bytes" json:"subtitle_size_bytes"`
-	SubtitleChecksumSha256  []byte             `db:"subtitle_checksum_sha256" json:"subtitle_checksum_sha256"`
-	ReviewID                pgtype.UUID        `db:"review_id" json:"review_id"`
-	ReviewDecision          *string            `db:"review_decision" json:"review_decision"`
-	ReviewNotes             *string            `db:"review_notes" json:"review_notes"`
-	ReviewedBy              pgtype.UUID        `db:"reviewed_by" json:"reviewed_by"`
-	ReviewedAt              pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
-	ImportID                pgtype.UUID        `db:"import_id" json:"import_id"`
-	ImportAttempt           int32              `db:"import_attempt" json:"import_attempt"`
-	ImportStatus            string             `db:"import_status" json:"import_status"`
-	DestinationVideoPath    *string            `db:"destination_video_path" json:"destination_video_path"`
-	DestinationSubtitlePath *string            `db:"destination_subtitle_path" json:"destination_subtitle_path"`
-	ImportErrorCode         *string            `db:"import_error_code" json:"import_error_code"`
-	ImportErrorMessage      *string            `db:"import_error_message" json:"import_error_message"`
-	ImportStartedAt         pgtype.Timestamptz `db:"import_started_at" json:"import_started_at"`
-	ImportCompletedAt       pgtype.Timestamptz `db:"import_completed_at" json:"import_completed_at"`
-	ImportCreatedAt         pgtype.Timestamptz `db:"import_created_at" json:"import_created_at"`
-	ImportUpdatedAt         pgtype.Timestamptz `db:"import_updated_at" json:"import_updated_at"`
-	CleanupID               pgtype.UUID        `db:"cleanup_id" json:"cleanup_id"`
-	CleanupAttempt          int32              `db:"cleanup_attempt" json:"cleanup_attempt"`
-	CleanupStatus           string             `db:"cleanup_status" json:"cleanup_status"`
-	TorrentRemoved          bool               `db:"torrent_removed" json:"torrent_removed"`
-	StagedFilesRemoved      bool               `db:"staged_files_removed" json:"staged_files_removed"`
-	CleanupErrorCode        *string            `db:"cleanup_error_code" json:"cleanup_error_code"`
-	CleanupErrorMessage     *string            `db:"cleanup_error_message" json:"cleanup_error_message"`
-	CleanupStartedAt        pgtype.Timestamptz `db:"cleanup_started_at" json:"cleanup_started_at"`
-	CleanupCompletedAt      pgtype.Timestamptz `db:"cleanup_completed_at" json:"cleanup_completed_at"`
-	CleanupCreatedAt        pgtype.Timestamptz `db:"cleanup_created_at" json:"cleanup_created_at"`
-	CleanupUpdatedAt        pgtype.Timestamptz `db:"cleanup_updated_at" json:"cleanup_updated_at"`
-	EmbyItemID              pgtype.UUID        `db:"emby_item_id" json:"emby_item_id"`
-	EmbyLibraryID           pgtype.UUID        `db:"emby_library_id" json:"emby_library_id"`
+	ID                              pgtype.UUID        `db:"id" json:"id"`
+	AcquisitionID                   pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
+	SourceVideoFileID               pgtype.UUID        `db:"source_video_file_id" json:"source_video_file_id"`
+	MappingID                       pgtype.UUID        `db:"mapping_id" json:"mapping_id"`
+	TranscodeProfileID              pgtype.UUID        `db:"transcode_profile_id" json:"transcode_profile_id"`
+	State                           string             `db:"state" json:"state"`
+	VideoState                      string             `db:"video_state" json:"video_state"`
+	SubtitleState                   string             `db:"subtitle_state" json:"subtitle_state"`
+	Version                         int32              `db:"version" json:"version"`
+	ErrorCode                       *string            `db:"error_code" json:"error_code"`
+	ErrorMessage                    *string            `db:"error_message" json:"error_message"`
+	LegacyID                        *string            `db:"legacy_id" json:"legacy_id"`
+	CreatedAt                       pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt                       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	FailureStage                    *string            `db:"failure_stage" json:"failure_stage"`
+	MediaType                       string             `db:"media_type" json:"media_type"`
+	WorkflowAcquisitionID           pgtype.UUID        `db:"workflow_acquisition_id" json:"workflow_acquisition_id"`
+	DownloadID                      pgtype.UUID        `db:"download_id" json:"download_id"`
+	SourceSeason                    *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32             `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32              `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	SeriesTitle                     *string            `db:"series_title" json:"series_title"`
+	ReleaseYear                     *int32             `db:"release_year" json:"release_year"`
+	TargetSeason                    *int32             `db:"target_season" json:"target_season"`
+	TargetEpisode                   *int32             `db:"target_episode" json:"target_episode"`
+	TargetEpisodeTitle              *string            `db:"target_episode_title" json:"target_episode_title"`
+	ArtifactSetID                   pgtype.UUID        `db:"artifact_set_id" json:"artifact_set_id"`
+	ArtifactBasename                *string            `db:"artifact_basename" json:"artifact_basename"`
+	VideoArtifactID                 pgtype.UUID        `db:"video_artifact_id" json:"video_artifact_id"`
+	VideoFilePath                   *string            `db:"video_file_path" json:"video_file_path"`
+	VideoFormat                     *string            `db:"video_format" json:"video_format"`
+	VideoSizeBytes                  *int64             `db:"video_size_bytes" json:"video_size_bytes"`
+	VideoChecksumSha256             []byte             `db:"video_checksum_sha256" json:"video_checksum_sha256"`
+	SubtitleArtifactID              pgtype.UUID        `db:"subtitle_artifact_id" json:"subtitle_artifact_id"`
+	SubtitleFilePath                *string            `db:"subtitle_file_path" json:"subtitle_file_path"`
+	SubtitleFormat                  *string            `db:"subtitle_format" json:"subtitle_format"`
+	SubtitleSizeBytes               *int64             `db:"subtitle_size_bytes" json:"subtitle_size_bytes"`
+	SubtitleChecksumSha256          []byte             `db:"subtitle_checksum_sha256" json:"subtitle_checksum_sha256"`
+	ReviewID                        pgtype.UUID        `db:"review_id" json:"review_id"`
+	ReviewDecision                  *string            `db:"review_decision" json:"review_decision"`
+	ReviewNotes                     *string            `db:"review_notes" json:"review_notes"`
+	ReviewedBy                      pgtype.UUID        `db:"reviewed_by" json:"reviewed_by"`
+	ReviewedAt                      pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
+	ImportID                        pgtype.UUID        `db:"import_id" json:"import_id"`
+	ImportAttempt                   int32              `db:"import_attempt" json:"import_attempt"`
+	ImportStatus                    string             `db:"import_status" json:"import_status"`
+	DestinationVideoPath            *string            `db:"destination_video_path" json:"destination_video_path"`
+	DestinationSubtitlePath         *string            `db:"destination_subtitle_path" json:"destination_subtitle_path"`
+	ImportErrorCode                 *string            `db:"import_error_code" json:"import_error_code"`
+	ImportErrorMessage              *string            `db:"import_error_message" json:"import_error_message"`
+	ImportStartedAt                 pgtype.Timestamptz `db:"import_started_at" json:"import_started_at"`
+	ImportCompletedAt               pgtype.Timestamptz `db:"import_completed_at" json:"import_completed_at"`
+	ImportCreatedAt                 pgtype.Timestamptz `db:"import_created_at" json:"import_created_at"`
+	ImportUpdatedAt                 pgtype.Timestamptz `db:"import_updated_at" json:"import_updated_at"`
+	CleanupID                       pgtype.UUID        `db:"cleanup_id" json:"cleanup_id"`
+	CleanupAttempt                  int32              `db:"cleanup_attempt" json:"cleanup_attempt"`
+	CleanupStatus                   string             `db:"cleanup_status" json:"cleanup_status"`
+	TorrentRemoved                  bool               `db:"torrent_removed" json:"torrent_removed"`
+	StagedFilesRemoved              bool               `db:"staged_files_removed" json:"staged_files_removed"`
+	CleanupErrorCode                *string            `db:"cleanup_error_code" json:"cleanup_error_code"`
+	CleanupErrorMessage             *string            `db:"cleanup_error_message" json:"cleanup_error_message"`
+	CleanupStartedAt                pgtype.Timestamptz `db:"cleanup_started_at" json:"cleanup_started_at"`
+	CleanupCompletedAt              pgtype.Timestamptz `db:"cleanup_completed_at" json:"cleanup_completed_at"`
+	CleanupCreatedAt                pgtype.Timestamptz `db:"cleanup_created_at" json:"cleanup_created_at"`
+	CleanupUpdatedAt                pgtype.Timestamptz `db:"cleanup_updated_at" json:"cleanup_updated_at"`
+	EmbyItemID                      pgtype.UUID        `db:"emby_item_id" json:"emby_item_id"`
+	EmbyLibraryID                   pgtype.UUID        `db:"emby_library_id" json:"emby_library_id"`
 }
 
 // sqlc nullable projection: optional workflow rows use zero scalar sentinels.
@@ -789,6 +791,7 @@ func (q *Queries) GetTaskView(ctx context.Context, id pgtype.UUID) (GetTaskViewR
 		&i.DownloadID,
 		&i.SourceSeason,
 		&i.SourceEpisode,
+		&i.SourceEpisodeFractionHundredths,
 		&i.SeriesTitle,
 		&i.ReleaseYear,
 		&i.TargetSeason,
@@ -922,6 +925,7 @@ SELECT
     source_file.download_id,
     source_file.source_season,
     source_file.source_episode,
+    source_file.source_episode_fraction_hundredths,
     series.title AS series_title,
     series.release_year,
     season.season_number AS target_season,
@@ -1050,72 +1054,73 @@ type ListTaskViewsParams struct {
 }
 
 type ListTaskViewsRow struct {
-	ID                      pgtype.UUID        `db:"id" json:"id"`
-	AcquisitionID           pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
-	SourceVideoFileID       pgtype.UUID        `db:"source_video_file_id" json:"source_video_file_id"`
-	MappingID               pgtype.UUID        `db:"mapping_id" json:"mapping_id"`
-	TranscodeProfileID      pgtype.UUID        `db:"transcode_profile_id" json:"transcode_profile_id"`
-	State                   string             `db:"state" json:"state"`
-	VideoState              string             `db:"video_state" json:"video_state"`
-	SubtitleState           string             `db:"subtitle_state" json:"subtitle_state"`
-	Version                 int32              `db:"version" json:"version"`
-	ErrorCode               *string            `db:"error_code" json:"error_code"`
-	ErrorMessage            *string            `db:"error_message" json:"error_message"`
-	LegacyID                *string            `db:"legacy_id" json:"legacy_id"`
-	CreatedAt               pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-	FailureStage            *string            `db:"failure_stage" json:"failure_stage"`
-	MediaType               string             `db:"media_type" json:"media_type"`
-	WorkflowAcquisitionID   pgtype.UUID        `db:"workflow_acquisition_id" json:"workflow_acquisition_id"`
-	DownloadID              pgtype.UUID        `db:"download_id" json:"download_id"`
-	SourceSeason            *int32             `db:"source_season" json:"source_season"`
-	SourceEpisode           *int32             `db:"source_episode" json:"source_episode"`
-	SeriesTitle             *string            `db:"series_title" json:"series_title"`
-	ReleaseYear             *int32             `db:"release_year" json:"release_year"`
-	TargetSeason            *int32             `db:"target_season" json:"target_season"`
-	TargetEpisode           *int32             `db:"target_episode" json:"target_episode"`
-	TargetEpisodeTitle      *string            `db:"target_episode_title" json:"target_episode_title"`
-	ArtifactSetID           pgtype.UUID        `db:"artifact_set_id" json:"artifact_set_id"`
-	ArtifactBasename        *string            `db:"artifact_basename" json:"artifact_basename"`
-	VideoArtifactID         pgtype.UUID        `db:"video_artifact_id" json:"video_artifact_id"`
-	VideoFilePath           *string            `db:"video_file_path" json:"video_file_path"`
-	VideoFormat             *string            `db:"video_format" json:"video_format"`
-	VideoSizeBytes          *int64             `db:"video_size_bytes" json:"video_size_bytes"`
-	VideoChecksumSha256     []byte             `db:"video_checksum_sha256" json:"video_checksum_sha256"`
-	SubtitleArtifactID      pgtype.UUID        `db:"subtitle_artifact_id" json:"subtitle_artifact_id"`
-	SubtitleFilePath        *string            `db:"subtitle_file_path" json:"subtitle_file_path"`
-	SubtitleFormat          *string            `db:"subtitle_format" json:"subtitle_format"`
-	SubtitleSizeBytes       *int64             `db:"subtitle_size_bytes" json:"subtitle_size_bytes"`
-	SubtitleChecksumSha256  []byte             `db:"subtitle_checksum_sha256" json:"subtitle_checksum_sha256"`
-	ReviewID                pgtype.UUID        `db:"review_id" json:"review_id"`
-	ReviewDecision          *string            `db:"review_decision" json:"review_decision"`
-	ReviewNotes             *string            `db:"review_notes" json:"review_notes"`
-	ReviewedBy              pgtype.UUID        `db:"reviewed_by" json:"reviewed_by"`
-	ReviewedAt              pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
-	ImportID                pgtype.UUID        `db:"import_id" json:"import_id"`
-	ImportAttempt           int32              `db:"import_attempt" json:"import_attempt"`
-	ImportStatus            string             `db:"import_status" json:"import_status"`
-	DestinationVideoPath    *string            `db:"destination_video_path" json:"destination_video_path"`
-	DestinationSubtitlePath *string            `db:"destination_subtitle_path" json:"destination_subtitle_path"`
-	ImportErrorCode         *string            `db:"import_error_code" json:"import_error_code"`
-	ImportErrorMessage      *string            `db:"import_error_message" json:"import_error_message"`
-	ImportStartedAt         pgtype.Timestamptz `db:"import_started_at" json:"import_started_at"`
-	ImportCompletedAt       pgtype.Timestamptz `db:"import_completed_at" json:"import_completed_at"`
-	ImportCreatedAt         pgtype.Timestamptz `db:"import_created_at" json:"import_created_at"`
-	ImportUpdatedAt         pgtype.Timestamptz `db:"import_updated_at" json:"import_updated_at"`
-	CleanupID               pgtype.UUID        `db:"cleanup_id" json:"cleanup_id"`
-	CleanupAttempt          int32              `db:"cleanup_attempt" json:"cleanup_attempt"`
-	CleanupStatus           string             `db:"cleanup_status" json:"cleanup_status"`
-	TorrentRemoved          bool               `db:"torrent_removed" json:"torrent_removed"`
-	StagedFilesRemoved      bool               `db:"staged_files_removed" json:"staged_files_removed"`
-	CleanupErrorCode        *string            `db:"cleanup_error_code" json:"cleanup_error_code"`
-	CleanupErrorMessage     *string            `db:"cleanup_error_message" json:"cleanup_error_message"`
-	CleanupStartedAt        pgtype.Timestamptz `db:"cleanup_started_at" json:"cleanup_started_at"`
-	CleanupCompletedAt      pgtype.Timestamptz `db:"cleanup_completed_at" json:"cleanup_completed_at"`
-	CleanupCreatedAt        pgtype.Timestamptz `db:"cleanup_created_at" json:"cleanup_created_at"`
-	CleanupUpdatedAt        pgtype.Timestamptz `db:"cleanup_updated_at" json:"cleanup_updated_at"`
-	EmbyItemID              pgtype.UUID        `db:"emby_item_id" json:"emby_item_id"`
-	EmbyLibraryID           pgtype.UUID        `db:"emby_library_id" json:"emby_library_id"`
+	ID                              pgtype.UUID        `db:"id" json:"id"`
+	AcquisitionID                   pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
+	SourceVideoFileID               pgtype.UUID        `db:"source_video_file_id" json:"source_video_file_id"`
+	MappingID                       pgtype.UUID        `db:"mapping_id" json:"mapping_id"`
+	TranscodeProfileID              pgtype.UUID        `db:"transcode_profile_id" json:"transcode_profile_id"`
+	State                           string             `db:"state" json:"state"`
+	VideoState                      string             `db:"video_state" json:"video_state"`
+	SubtitleState                   string             `db:"subtitle_state" json:"subtitle_state"`
+	Version                         int32              `db:"version" json:"version"`
+	ErrorCode                       *string            `db:"error_code" json:"error_code"`
+	ErrorMessage                    *string            `db:"error_message" json:"error_message"`
+	LegacyID                        *string            `db:"legacy_id" json:"legacy_id"`
+	CreatedAt                       pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt                       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	FailureStage                    *string            `db:"failure_stage" json:"failure_stage"`
+	MediaType                       string             `db:"media_type" json:"media_type"`
+	WorkflowAcquisitionID           pgtype.UUID        `db:"workflow_acquisition_id" json:"workflow_acquisition_id"`
+	DownloadID                      pgtype.UUID        `db:"download_id" json:"download_id"`
+	SourceSeason                    *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32             `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32              `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	SeriesTitle                     *string            `db:"series_title" json:"series_title"`
+	ReleaseYear                     *int32             `db:"release_year" json:"release_year"`
+	TargetSeason                    *int32             `db:"target_season" json:"target_season"`
+	TargetEpisode                   *int32             `db:"target_episode" json:"target_episode"`
+	TargetEpisodeTitle              *string            `db:"target_episode_title" json:"target_episode_title"`
+	ArtifactSetID                   pgtype.UUID        `db:"artifact_set_id" json:"artifact_set_id"`
+	ArtifactBasename                *string            `db:"artifact_basename" json:"artifact_basename"`
+	VideoArtifactID                 pgtype.UUID        `db:"video_artifact_id" json:"video_artifact_id"`
+	VideoFilePath                   *string            `db:"video_file_path" json:"video_file_path"`
+	VideoFormat                     *string            `db:"video_format" json:"video_format"`
+	VideoSizeBytes                  *int64             `db:"video_size_bytes" json:"video_size_bytes"`
+	VideoChecksumSha256             []byte             `db:"video_checksum_sha256" json:"video_checksum_sha256"`
+	SubtitleArtifactID              pgtype.UUID        `db:"subtitle_artifact_id" json:"subtitle_artifact_id"`
+	SubtitleFilePath                *string            `db:"subtitle_file_path" json:"subtitle_file_path"`
+	SubtitleFormat                  *string            `db:"subtitle_format" json:"subtitle_format"`
+	SubtitleSizeBytes               *int64             `db:"subtitle_size_bytes" json:"subtitle_size_bytes"`
+	SubtitleChecksumSha256          []byte             `db:"subtitle_checksum_sha256" json:"subtitle_checksum_sha256"`
+	ReviewID                        pgtype.UUID        `db:"review_id" json:"review_id"`
+	ReviewDecision                  *string            `db:"review_decision" json:"review_decision"`
+	ReviewNotes                     *string            `db:"review_notes" json:"review_notes"`
+	ReviewedBy                      pgtype.UUID        `db:"reviewed_by" json:"reviewed_by"`
+	ReviewedAt                      pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
+	ImportID                        pgtype.UUID        `db:"import_id" json:"import_id"`
+	ImportAttempt                   int32              `db:"import_attempt" json:"import_attempt"`
+	ImportStatus                    string             `db:"import_status" json:"import_status"`
+	DestinationVideoPath            *string            `db:"destination_video_path" json:"destination_video_path"`
+	DestinationSubtitlePath         *string            `db:"destination_subtitle_path" json:"destination_subtitle_path"`
+	ImportErrorCode                 *string            `db:"import_error_code" json:"import_error_code"`
+	ImportErrorMessage              *string            `db:"import_error_message" json:"import_error_message"`
+	ImportStartedAt                 pgtype.Timestamptz `db:"import_started_at" json:"import_started_at"`
+	ImportCompletedAt               pgtype.Timestamptz `db:"import_completed_at" json:"import_completed_at"`
+	ImportCreatedAt                 pgtype.Timestamptz `db:"import_created_at" json:"import_created_at"`
+	ImportUpdatedAt                 pgtype.Timestamptz `db:"import_updated_at" json:"import_updated_at"`
+	CleanupID                       pgtype.UUID        `db:"cleanup_id" json:"cleanup_id"`
+	CleanupAttempt                  int32              `db:"cleanup_attempt" json:"cleanup_attempt"`
+	CleanupStatus                   string             `db:"cleanup_status" json:"cleanup_status"`
+	TorrentRemoved                  bool               `db:"torrent_removed" json:"torrent_removed"`
+	StagedFilesRemoved              bool               `db:"staged_files_removed" json:"staged_files_removed"`
+	CleanupErrorCode                *string            `db:"cleanup_error_code" json:"cleanup_error_code"`
+	CleanupErrorMessage             *string            `db:"cleanup_error_message" json:"cleanup_error_message"`
+	CleanupStartedAt                pgtype.Timestamptz `db:"cleanup_started_at" json:"cleanup_started_at"`
+	CleanupCompletedAt              pgtype.Timestamptz `db:"cleanup_completed_at" json:"cleanup_completed_at"`
+	CleanupCreatedAt                pgtype.Timestamptz `db:"cleanup_created_at" json:"cleanup_created_at"`
+	CleanupUpdatedAt                pgtype.Timestamptz `db:"cleanup_updated_at" json:"cleanup_updated_at"`
+	EmbyItemID                      pgtype.UUID        `db:"emby_item_id" json:"emby_item_id"`
+	EmbyLibraryID                   pgtype.UUID        `db:"emby_library_id" json:"emby_library_id"`
 }
 
 // sqlc nullable projection: optional workflow rows use zero scalar sentinels.
@@ -1154,6 +1159,7 @@ func (q *Queries) ListTaskViews(ctx context.Context, arg ListTaskViewsParams) ([
 			&i.DownloadID,
 			&i.SourceSeason,
 			&i.SourceEpisode,
+			&i.SourceEpisodeFractionHundredths,
 			&i.SeriesTitle,
 			&i.ReleaseYear,
 			&i.TargetSeason,

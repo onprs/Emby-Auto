@@ -201,6 +201,7 @@ WHERE acquisitions.deletion_requested_at IS NULL
                               WHERE mapping.profile_id = acquisitions.mapping_profile_id
                                 AND mapping.source_season = file.source_season
                                 AND mapping.source_episode = file.source_episode
+                                AND mapping.source_episode_fraction_hundredths = file.source_episode_fraction_hundredths
                                 AND mapping.mapping_status = 'mapped'
                                 AND mapping.target_episode_id IS NOT NULL
                           )
@@ -279,6 +280,7 @@ SELECT
     history.download_id,
     entry.source_season,
     entry.source_episode,
+    entry.source_episode_fraction_hundredths,
     target_season.season_number AS target_season,
     target_episode.episode_number AS target_episode,
     target_episode.title AS target_episode_title,
@@ -298,6 +300,7 @@ LEFT JOIN episode_mappings AS mapping
   ON mapping.profile_id = subscription.mapping_profile_id
  AND mapping.source_season = entry.source_season
  AND mapping.source_episode = entry.source_episode
+ AND mapping.source_episode_fraction_hundredths = entry.source_episode_fraction_hundredths
  AND mapping.mapping_status = 'mapped'
 LEFT JOIN media_episodes AS target_episode ON target_episode.id = mapping.target_episode_id
 LEFT JOIN tmdb_seasons AS target_season ON target_season.id = target_episode.season_id
@@ -310,6 +313,7 @@ SELECT
     source_file.download_id,
     source_file.source_season,
     source_file.source_episode,
+    source_file.source_episode_fraction_hundredths,
     season.season_number AS target_season,
     episode.episode_number AS target_episode,
     episode.title AS target_episode_title,
@@ -366,7 +370,7 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) AS latest_cleanup ON true
 WHERE task.acquisition_id = sqlc.arg(acquisition_id)
-ORDER BY source_file.source_season, source_file.source_episode, task.id;
+ORDER BY source_file.source_season, source_file.source_episode, source_file.source_episode_fraction_hundredths, task.id;
 
 -- name: ListAcquisitionTaskSummariesByAcquisitionIDs :many
 SELECT
@@ -376,6 +380,7 @@ SELECT
     source_file.download_id,
     source_file.source_season,
     source_file.source_episode,
+    source_file.source_episode_fraction_hundredths,
     season.season_number AS target_season,
     episode.episode_number AS target_episode,
     episode.title AS target_episode_title,
@@ -432,7 +437,7 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) AS latest_cleanup ON true
 WHERE task.acquisition_id = ANY(sqlc.arg(acquisition_ids)::uuid[])
-ORDER BY task.acquisition_id, source_file.source_season, source_file.source_episode, task.id;
+ORDER BY task.acquisition_id, source_file.source_season, source_file.source_episode, source_file.source_episode_fraction_hundredths, task.id;
 
 -- name: GetAcquisitionMappingCompleteness :one
 SELECT
@@ -461,6 +466,7 @@ LEFT JOIN episode_mappings AS mapping
     ON mapping.profile_id = acquisition.mapping_profile_id
    AND mapping.source_season = file.source_season
    AND mapping.source_episode = file.source_episode
+   AND mapping.source_episode_fraction_hundredths = file.source_episode_fraction_hundredths
 WHERE acquisition.id = sqlc.arg(acquisition_id)
 GROUP BY media.media_type;
 
@@ -492,6 +498,7 @@ LEFT JOIN episode_mappings AS mapping
     ON mapping.profile_id = acquisition.mapping_profile_id
    AND mapping.source_season = file.source_season
    AND mapping.source_episode = file.source_episode
+   AND mapping.source_episode_fraction_hundredths = file.source_episode_fraction_hundredths
 WHERE acquisition.id = ANY(sqlc.arg(acquisition_ids)::uuid[])
 GROUP BY acquisition.id, media.media_type;
 
@@ -686,6 +693,7 @@ WHERE EXISTS (
                     WHERE mapping.profile_id = acquisition.mapping_profile_id
                       AND mapping.source_season = file.source_season
                       AND mapping.source_episode = file.source_episode
+                      AND mapping.source_episode_fraction_hundredths = file.source_episode_fraction_hundredths
                       AND mapping.mapping_status = 'mapped'
                       AND mapping.target_episode_id IS NOT NULL
                 )

@@ -44,3 +44,22 @@ export function downloadRetryLabel(download: DownloadPresentationSource): '重�
   if (download.failureStage === 'file_resolution') return '重试文件解析';
   return download.failureStage === 'materialize' ? '重试准备处理' : '重试下载';
 }
+
+export function parseSourceEpisodeInput(value: string | undefined): { episode: number; fractionHundredths: number } | undefined {
+  const match = value?.trim().match(/^([1-9][0-9]*)(?:\.([0-9]{1,2}))?$/);
+  if (!match) return undefined;
+  const episode = Number(match[1]);
+  const fractionHundredths = Number((match[2] ?? '').padEnd(2, '0'));
+  if (!Number.isSafeInteger(episode) || episode <= 0 || fractionHundredths < 0 || fractionHundredths > 99) return undefined;
+  return { episode, fractionHundredths };
+}
+
+export function formatSourceEpisodeInput(episode?: number, fractionHundredths = 0): string {
+  if (!episode) return '';
+  if (fractionHundredths <= 0) return String(episode);
+  return `${episode}.${String(fractionHundredths).padStart(2, '0').replace(/0$/, '')}`;
+}
+
+export function sourceCoordinateLabel(season: number, episode: number, fractionHundredths = 0): string {
+  return `S${season}E${formatSourceEpisodeInput(episode, fractionHundredths)}`;
+}

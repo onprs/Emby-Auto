@@ -123,7 +123,8 @@ func (workflow *DownloadWorkflow) CompleteEnqueue(
 				FileIndex: int32(file.Index), RelativePath: file.RelativePath, SizeBytes: file.SizeBytes,
 				MediaKind: string(file.Kind), Selected: file.Selected,
 				SourceSeason: optionalInt32(file.SourceSeason), SourceEpisode: optionalInt32(file.SourceEpisode),
-				Language: optionalString(file.Language),
+				SourceEpisodeFractionHundredths: int32(file.SourceEpisodeFractionHundredths),
+				Language:                        optionalString(file.Language),
 			}); err != nil {
 				return fmt.Errorf("persist download file %d: %w", file.Index, err)
 			}
@@ -222,7 +223,8 @@ func (workflow *DownloadWorkflow) CompleteLegacyEnqueue(ctx context.Context, com
 				FileIndex: int32(file.Index), RelativePath: file.RelativePath, SizeBytes: file.SizeBytes,
 				MediaKind: string(file.Kind), Selected: file.Selected,
 				SourceSeason: optionalInt32(file.SourceSeason), SourceEpisode: optionalInt32(file.SourceEpisode),
-				Language: optionalString(file.Language),
+				SourceEpisodeFractionHundredths: int32(file.SourceEpisodeFractionHundredths),
+				Language:                        optionalString(file.Language),
 			}); err != nil {
 				return fmt.Errorf("persist legacy download file %d: %w", file.Index, err)
 			}

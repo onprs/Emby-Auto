@@ -163,6 +163,7 @@ INSERT INTO episode_mappings (
     profile_id,
     source_season,
     source_episode,
+    source_episode_fraction_hundredths,
     absolute_episode,
     target_episode_id,
     mapping_status,
@@ -177,21 +178,23 @@ INSERT INTO episode_mappings (
     $6,
     $7,
     $8,
-    $9
+    $9,
+    $10
 )
-RETURNING id, profile_id, source_season, source_episode, absolute_episode, target_episode_id, mapping_status, match_source, error_code, created_at, updated_at
+RETURNING id, profile_id, source_season, source_episode, absolute_episode, target_episode_id, mapping_status, match_source, error_code, created_at, updated_at, source_episode_fraction_hundredths
 `
 
 type CreateEpisodeMappingParams struct {
-	ID              pgtype.UUID `db:"id" json:"id"`
-	ProfileID       pgtype.UUID `db:"profile_id" json:"profile_id"`
-	SourceSeason    int32       `db:"source_season" json:"source_season"`
-	SourceEpisode   int32       `db:"source_episode" json:"source_episode"`
-	AbsoluteEpisode *int32      `db:"absolute_episode" json:"absolute_episode"`
-	TargetEpisodeID pgtype.UUID `db:"target_episode_id" json:"target_episode_id"`
-	MappingStatus   string      `db:"mapping_status" json:"mapping_status"`
-	MatchSource     string      `db:"match_source" json:"match_source"`
-	ErrorCode       *string     `db:"error_code" json:"error_code"`
+	ID                              pgtype.UUID `db:"id" json:"id"`
+	ProfileID                       pgtype.UUID `db:"profile_id" json:"profile_id"`
+	SourceSeason                    int32       `db:"source_season" json:"source_season"`
+	SourceEpisode                   int32       `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32       `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	AbsoluteEpisode                 *int32      `db:"absolute_episode" json:"absolute_episode"`
+	TargetEpisodeID                 pgtype.UUID `db:"target_episode_id" json:"target_episode_id"`
+	MappingStatus                   string      `db:"mapping_status" json:"mapping_status"`
+	MatchSource                     string      `db:"match_source" json:"match_source"`
+	ErrorCode                       *string     `db:"error_code" json:"error_code"`
 }
 
 func (q *Queries) CreateEpisodeMapping(ctx context.Context, arg CreateEpisodeMappingParams) (EpisodeMapping, error) {
@@ -200,6 +203,7 @@ func (q *Queries) CreateEpisodeMapping(ctx context.Context, arg CreateEpisodeMap
 		arg.ProfileID,
 		arg.SourceSeason,
 		arg.SourceEpisode,
+		arg.SourceEpisodeFractionHundredths,
 		arg.AbsoluteEpisode,
 		arg.TargetEpisodeID,
 		arg.MappingStatus,
@@ -219,6 +223,7 @@ func (q *Queries) CreateEpisodeMapping(ctx context.Context, arg CreateEpisodeMap
 		&i.ErrorCode,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }
@@ -560,6 +565,7 @@ WHERE profile.id = $1
               JOIN tmdb_seasons AS season ON season.id = episode.season_id
               WHERE mapping.profile_id = profile.id
                 AND mapping.source_season = $3
+                AND mapping.source_episode_fraction_hundredths = 0
                 AND mapping.mapping_status = 'mapped'
                 AND season.series_id = profile.series_id
           )
@@ -568,6 +574,7 @@ WHERE profile.id = $1
               FROM episode_mappings AS mapping
               WHERE mapping.profile_id = profile.id
                 AND mapping.source_season = $3
+                AND mapping.source_episode_fraction_hundredths = 0
                 AND mapping.mapping_status <> 'mapped'
           )
       )
@@ -589,6 +596,7 @@ WHERE profile.id = $1
                   WHERE mapping.profile_id = profile.id
                     AND mapping.source_season = $3
                     AND mapping.source_episode = expected.source_episode
+                    AND mapping.source_episode_fraction_hundredths = 0
                     AND mapping.mapping_status = 'mapped'
                     AND season.series_id = profile.series_id
               )
@@ -598,6 +606,7 @@ WHERE profile.id = $1
               FROM episode_mappings AS mapping
               WHERE mapping.profile_id = profile.id
                 AND mapping.source_season = $3
+                AND mapping.source_episode_fraction_hundredths = 0
                 AND (
                     mapping.source_episode < 1
                     OR mapping.source_episode > profile.source_season_lengths[$3::integer]
@@ -817,6 +826,16 @@ SELECT
                   THEN (acquisition.source_payload->>'sourceEpisode')::bigint
               END
           )
+          AND mapping.source_episode_fraction_hundredths = COALESCE(
+              owner_entry.source_episode_fraction_hundredths,
+              CASE
+                  WHEN acquisition.rss_entry_id IS NULL
+                   AND acquisition.source_payload->'singleEpisode' = 'true'::jsonb
+                   AND COALESCE(acquisition.source_payload->>'sourceEpisodeFractionHundredths', '0') ~ '^(?:0|[1-9][0-9]?)$'
+                  THEN COALESCE((acquisition.source_payload->>'sourceEpisodeFractionHundredths')::integer, 0)
+              END,
+              0
+          )
           AND download.status <> 'cancelled'
           AND NOT EXISTS (
               SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id
@@ -840,6 +859,7 @@ SELECT
          AND source_file.media_kind = 'video'
          AND source_file.source_season = mapping.source_season
          AND source_file.source_episode = mapping.source_episode
+         AND source_file.source_episode_fraction_hundredths = mapping.source_episode_fraction_hundredths
         WHERE acquisition.id <> $1
           AND acquisition.deletion_requested_at IS NULL
           AND mapping.mapping_status = 'mapped'
@@ -953,6 +973,7 @@ WHERE profile.id = $1
   AND profile.active
   AND mapping.source_season = $3
   AND mapping.source_episode = $4
+  AND mapping.source_episode_fraction_hundredths = 0
   AND mapping.mapping_status = 'mapped'
   AND mapping.target_episode_id IS NOT NULL
   AND season.series_id = profile.series_id
@@ -1108,7 +1129,8 @@ SELECT
     file.id,
     file.relative_path,
     file.source_season,
-    file.source_episode
+    file.source_episode,
+    file.source_episode_fraction_hundredths
 FROM download_files AS file
 JOIN downloads AS download ON download.id = file.download_id
 WHERE download.id = (
@@ -1121,15 +1143,16 @@ WHERE download.id = (
   )
   AND file.selected
   AND file.media_kind = 'video'
-ORDER BY file.source_season, file.source_episode, file.file_index
+ORDER BY file.source_season, file.source_episode, file.source_episode_fraction_hundredths, file.file_index
 FOR UPDATE OF file
 `
 
 type ListAcquisitionSelectedVideosRow struct {
-	ID            pgtype.UUID `db:"id" json:"id"`
-	RelativePath  string      `db:"relative_path" json:"relative_path"`
-	SourceSeason  *int32      `db:"source_season" json:"source_season"`
-	SourceEpisode *int32      `db:"source_episode" json:"source_episode"`
+	ID                              pgtype.UUID `db:"id" json:"id"`
+	RelativePath                    string      `db:"relative_path" json:"relative_path"`
+	SourceSeason                    *int32      `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32      `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32       `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
 }
 
 func (q *Queries) ListAcquisitionSelectedVideos(ctx context.Context, acquisitionID pgtype.UUID) ([]ListAcquisitionSelectedVideosRow, error) {
@@ -1146,6 +1169,7 @@ func (q *Queries) ListAcquisitionSelectedVideos(ctx context.Context, acquisition
 			&i.RelativePath,
 			&i.SourceSeason,
 			&i.SourceEpisode,
+			&i.SourceEpisodeFractionHundredths,
 		); err != nil {
 			return nil, err
 		}
@@ -1173,6 +1197,7 @@ WHERE profile.series_id = $1
               JOIN tmdb_seasons AS season ON season.id = episode.season_id
               WHERE mapping.profile_id = profile.id
                 AND mapping.source_season = $2
+                AND mapping.source_episode_fraction_hundredths = 0
                 AND mapping.mapping_status = 'mapped'
                 AND season.series_id = profile.series_id
           )
@@ -1181,6 +1206,7 @@ WHERE profile.series_id = $1
               FROM episode_mappings AS mapping
               WHERE mapping.profile_id = profile.id
                 AND mapping.source_season = $2
+                AND mapping.source_episode_fraction_hundredths = 0
                 AND mapping.mapping_status <> 'mapped'
           )
       )
@@ -1202,6 +1228,7 @@ WHERE profile.series_id = $1
                   WHERE mapping.profile_id = profile.id
                     AND mapping.source_season = $2
                     AND mapping.source_episode = expected.source_episode
+                    AND mapping.source_episode_fraction_hundredths = 0
                     AND mapping.mapping_status = 'mapped'
                     AND season.series_id = profile.series_id
               )
@@ -1211,6 +1238,7 @@ WHERE profile.series_id = $1
               FROM episode_mappings AS mapping
               WHERE mapping.profile_id = profile.id
                 AND mapping.source_season = $2
+                AND mapping.source_episode_fraction_hundredths = 0
                 AND (
                     mapping.source_episode < 1
                     OR mapping.source_episode > profile.source_season_lengths[$2::integer]
@@ -1467,7 +1495,8 @@ SELECT
     file.relative_path,
     file.media_kind,
     file.source_season,
-    file.source_episode
+    file.source_episode,
+    file.source_episode_fraction_hundredths
 FROM download_files AS file
 WHERE file.download_id = $1
   AND file.selected
@@ -1477,11 +1506,12 @@ FOR UPDATE OF file
 `
 
 type ListExplicitMappingFilesForDownloadRow struct {
-	ID            pgtype.UUID `db:"id" json:"id"`
-	RelativePath  string      `db:"relative_path" json:"relative_path"`
-	MediaKind     string      `db:"media_kind" json:"media_kind"`
-	SourceSeason  *int32      `db:"source_season" json:"source_season"`
-	SourceEpisode *int32      `db:"source_episode" json:"source_episode"`
+	ID                              pgtype.UUID `db:"id" json:"id"`
+	RelativePath                    string      `db:"relative_path" json:"relative_path"`
+	MediaKind                       string      `db:"media_kind" json:"media_kind"`
+	SourceSeason                    *int32      `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32      `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32       `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
 }
 
 func (q *Queries) ListExplicitMappingFilesForDownload(ctx context.Context, downloadID pgtype.UUID) ([]ListExplicitMappingFilesForDownloadRow, error) {
@@ -1499,6 +1529,7 @@ func (q *Queries) ListExplicitMappingFilesForDownload(ctx context.Context, downl
 			&i.MediaKind,
 			&i.SourceSeason,
 			&i.SourceEpisode,
+			&i.SourceEpisodeFractionHundredths,
 		); err != nil {
 			return nil, err
 		}
@@ -1571,6 +1602,7 @@ WHERE (
         ON mapping.profile_id = $2
        AND mapping.source_season = selected_video.source_season
        AND mapping.source_episode = selected_video.source_episode
+       AND mapping.source_episode_fraction_hundredths = selected_video.source_episode_fraction_hundredths
       WHERE selected_video.download_id = download.id
         AND selected_video.selected
         AND selected_video.media_kind = 'video'
@@ -1627,7 +1659,12 @@ WITH source_subscription AS (
     WHERE source_acquisition.id = $1
       AND subscription.deleted_at IS NULL
 )
-SELECT file.id, file.relative_path, file.source_season, file.source_episode
+SELECT
+    file.id,
+    file.relative_path,
+    file.source_season,
+    file.source_episode,
+    file.source_episode_fraction_hundredths
 FROM acquisitions AS acquisition
 LEFT JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
 JOIN LATERAL (
@@ -1655,10 +1692,11 @@ ORDER BY acquisition.created_at, acquisition.id, file.file_index
 `
 
 type ListMappingScopeSelectedVideosRow struct {
-	ID            pgtype.UUID `db:"id" json:"id"`
-	RelativePath  string      `db:"relative_path" json:"relative_path"`
-	SourceSeason  *int32      `db:"source_season" json:"source_season"`
-	SourceEpisode *int32      `db:"source_episode" json:"source_episode"`
+	ID                              pgtype.UUID `db:"id" json:"id"`
+	RelativePath                    string      `db:"relative_path" json:"relative_path"`
+	SourceSeason                    *int32      `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32      `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32       `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
 }
 
 func (q *Queries) ListMappingScopeSelectedVideos(ctx context.Context, acquisitionID pgtype.UUID) ([]ListMappingScopeSelectedVideosRow, error) {
@@ -1675,6 +1713,7 @@ func (q *Queries) ListMappingScopeSelectedVideos(ctx context.Context, acquisitio
 			&i.RelativePath,
 			&i.SourceSeason,
 			&i.SourceEpisode,
+			&i.SourceEpisodeFractionHundredths,
 		); err != nil {
 			return nil, err
 		}
@@ -2133,8 +2172,9 @@ source_facts AS (
     SELECT
         acquisition.id AS acquisition_id,
         acquisition.rss_entry_id,
-        min(file.source_season)::integer AS source_season,
-        min(file.source_episode)::integer AS source_episode
+        file.source_season::integer AS source_season,
+        file.source_episode::integer AS source_episode,
+        file.source_episode_fraction_hundredths::integer AS source_episode_fraction_hundredths
     FROM acquisitions AS acquisition
     LEFT JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
     JOIN LATERAL (
@@ -2154,25 +2194,39 @@ source_facts AS (
           OR entry.subscription_id = (SELECT subscription_id FROM source_subscription)
       )
       AND acquisition.deletion_requested_at IS NULL
-    GROUP BY acquisition.id, acquisition.rss_entry_id
-    HAVING count(*) = 1
-       AND min(file.source_season) IS NOT NULL
-       AND min(file.source_episode) IS NOT NULL
+      AND file.source_season IS NOT NULL
+      AND file.source_episode IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1
+          FROM download_files AS sibling
+          WHERE sibling.download_id = download.id
+            AND sibling.selected
+            AND sibling.media_kind = 'video'
+            AND sibling.id <> file.id
+      )
 ),
 updated_acquisitions AS (
     UPDATE acquisitions AS acquisition
     SET source_payload = jsonb_set(
-            jsonb_set(acquisition.source_payload, '{sourceSeason}', to_jsonb(source_facts.source_season), true),
-            '{sourceEpisode}', to_jsonb(source_facts.source_episode), true
+            jsonb_set(
+                jsonb_set(acquisition.source_payload, '{sourceSeason}', to_jsonb(source_facts.source_season), true),
+                '{sourceEpisode}', to_jsonb(source_facts.source_episode), true
+            ),
+            '{sourceEpisodeFractionHundredths}', to_jsonb(source_facts.source_episode_fraction_hundredths), true
         ),
         updated_at = now()
     FROM source_facts
     WHERE acquisition.id = source_facts.acquisition_id
-    RETURNING acquisition.rss_entry_id, source_facts.source_season, source_facts.source_episode
+    RETURNING
+        acquisition.rss_entry_id,
+        source_facts.source_season,
+        source_facts.source_episode,
+        source_facts.source_episode_fraction_hundredths
 )
 UPDATE rss_entries AS entry
 SET source_season = updated_acquisitions.source_season,
     source_episode = updated_acquisitions.source_episode,
+    source_episode_fraction_hundredths = updated_acquisitions.source_episode_fraction_hundredths,
     updated_at = now()
 FROM updated_acquisitions
 WHERE entry.id = updated_acquisitions.rss_entry_id
@@ -2224,27 +2278,31 @@ const updateExplicitMappingFileCoordinate = `-- name: UpdateExplicitMappingFileC
 UPDATE download_files
 SET source_season = $1,
     source_episode = $2,
+    source_episode_fraction_hundredths = $3,
     updated_at = now()
-WHERE id = $3
-  AND download_id = $4
+WHERE id = $4
+  AND download_id = $5
   AND selected
   AND (
       source_season IS DISTINCT FROM $1
       OR source_episode IS DISTINCT FROM $2
+      OR source_episode_fraction_hundredths IS DISTINCT FROM $3
   )
 `
 
 type UpdateExplicitMappingFileCoordinateParams struct {
-	SourceSeason  *int32      `db:"source_season" json:"source_season"`
-	SourceEpisode *int32      `db:"source_episode" json:"source_episode"`
-	ID            pgtype.UUID `db:"id" json:"id"`
-	DownloadID    pgtype.UUID `db:"download_id" json:"download_id"`
+	SourceSeason                    *int32      `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32      `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32       `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	ID                              pgtype.UUID `db:"id" json:"id"`
+	DownloadID                      pgtype.UUID `db:"download_id" json:"download_id"`
 }
 
 func (q *Queries) UpdateExplicitMappingFileCoordinate(ctx context.Context, arg UpdateExplicitMappingFileCoordinateParams) (int64, error) {
 	result, err := q.db.Exec(ctx, updateExplicitMappingFileCoordinate,
 		arg.SourceSeason,
 		arg.SourceEpisode,
+		arg.SourceEpisodeFractionHundredths,
 		arg.ID,
 		arg.DownloadID,
 	)
@@ -2256,35 +2314,48 @@ func (q *Queries) UpdateExplicitMappingFileCoordinate(ctx context.Context, arg U
 
 const updateSelectedFileCoordinateFamily = `-- name: UpdateSelectedFileCoordinateFamily :execrows
 WITH source_file AS (
-    SELECT selected_file.download_id, selected_file.source_season, selected_file.source_episode
+    SELECT
+        selected_file.download_id,
+        selected_file.source_season,
+        selected_file.source_episode,
+        selected_file.source_episode_fraction_hundredths
     FROM download_files AS selected_file
-    WHERE selected_file.id = $3
+    WHERE selected_file.id = $4
       AND selected_file.selected
       AND selected_file.media_kind = 'video'
 )
 UPDATE download_files AS related
 SET source_season = $1,
-    source_episode = $2
+    source_episode = $2,
+    source_episode_fraction_hundredths = $3
 FROM source_file
 WHERE related.download_id = source_file.download_id
   AND related.selected
   AND related.media_kind IN ('video', 'subtitle')
   AND related.source_season IS NOT DISTINCT FROM source_file.source_season
   AND related.source_episode IS NOT DISTINCT FROM source_file.source_episode
+  AND related.source_episode_fraction_hundredths = source_file.source_episode_fraction_hundredths
   AND (
       related.source_season IS DISTINCT FROM $1
       OR related.source_episode IS DISTINCT FROM $2
+      OR related.source_episode_fraction_hundredths IS DISTINCT FROM $3
   )
 `
 
 type UpdateSelectedFileCoordinateFamilyParams struct {
-	NewSourceSeason  *int32      `db:"new_source_season" json:"new_source_season"`
-	NewSourceEpisode *int32      `db:"new_source_episode" json:"new_source_episode"`
-	SourceFileID     pgtype.UUID `db:"source_file_id" json:"source_file_id"`
+	NewSourceSeason                    *int32      `db:"new_source_season" json:"new_source_season"`
+	NewSourceEpisode                   *int32      `db:"new_source_episode" json:"new_source_episode"`
+	NewSourceEpisodeFractionHundredths int32       `db:"new_source_episode_fraction_hundredths" json:"new_source_episode_fraction_hundredths"`
+	SourceFileID                       pgtype.UUID `db:"source_file_id" json:"source_file_id"`
 }
 
 func (q *Queries) UpdateSelectedFileCoordinateFamily(ctx context.Context, arg UpdateSelectedFileCoordinateFamilyParams) (int64, error) {
-	result, err := q.db.Exec(ctx, updateSelectedFileCoordinateFamily, arg.NewSourceSeason, arg.NewSourceEpisode, arg.SourceFileID)
+	result, err := q.db.Exec(ctx, updateSelectedFileCoordinateFamily,
+		arg.NewSourceSeason,
+		arg.NewSourceEpisode,
+		arg.NewSourceEpisodeFractionHundredths,
+		arg.SourceFileID,
+	)
 	if err != nil {
 		return 0, err
 	}

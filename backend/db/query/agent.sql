@@ -234,7 +234,9 @@ WHERE download.id = sqlc.arg(id)
   AND download.deleted_at IS NULL;
 
 -- name: ListAgentDownloadFiles :many
-SELECT id, file_index, relative_path, size_bytes, media_kind, selected, source_season, source_episode, language
+SELECT
+    id, file_index, relative_path, size_bytes, media_kind, selected,
+    source_season, source_episode, source_episode_fraction_hundredths, language
 FROM download_files
 WHERE download_id = sqlc.arg(download_id)
 ORDER BY file_index;
@@ -426,7 +428,12 @@ LEFT JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
 WHERE acquisition.id = sqlc.arg(id);
 
 -- name: ListAgentMappingFiles :many
-SELECT file.id, file.relative_path, file.source_season, file.source_episode
+SELECT
+    file.id,
+    file.relative_path,
+    file.source_season,
+    file.source_episode,
+    file.source_episode_fraction_hundredths
 FROM download_files AS file
 JOIN downloads AS download ON download.id = file.download_id
 WHERE download.id = (

@@ -71,18 +71,19 @@ type EpisodeMappingPlanInput struct {
 }
 
 type EpisodeMappingRow struct {
-	SourceFileID    uuid.UUID
-	RelativePath    string
-	SourceSeason    int
-	SourceEpisode   int
-	AbsoluteEpisode int
-	Status          MappingStatus
-	TargetSeason    int
-	TargetEpisode   int
-	TargetEpisodeID uuid.UUID
-	TargetTitle     string
-	MatchSource     MappingMatchSource
-	ErrorCode       string
+	SourceFileID                    uuid.UUID
+	RelativePath                    string
+	SourceSeason                    int
+	SourceEpisode                   int
+	SourceEpisodeFractionHundredths int
+	AbsoluteEpisode                 int
+	Status                          MappingStatus
+	TargetSeason                    int
+	TargetEpisode                   int
+	TargetEpisodeID                 uuid.UUID
+	TargetTitle                     string
+	MatchSource                     MappingMatchSource
+	ErrorCode                       string
 }
 
 type EpisodeMappingPreview struct {

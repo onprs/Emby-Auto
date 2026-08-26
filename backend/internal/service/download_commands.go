@@ -426,8 +426,9 @@ func (workflow *DownloadCommandWorkflow) SaveFileResolution(
 		for _, item := range normalized {
 			if _, err := scope.Queries.SetDownloadFileResolution(ctx, db.SetDownloadFileResolutionParams{
 				Selected: item.Selected, SourceSeason: optionalResolutionInt32(item.SourceSeason),
-				SourceEpisode: optionalResolutionInt32(item.SourceEpisode), ID: repository.UUIDToPG(item.FileID),
-				DownloadID: repository.UUIDToPG(downloadID),
+				SourceEpisode:                   optionalResolutionInt32(item.SourceEpisode),
+				SourceEpisodeFractionHundredths: int32(item.SourceEpisodeFractionHundredths),
+				ID:                              repository.UUIDToPG(item.FileID), DownloadID: repository.UUIDToPG(downloadID),
 			}); err != nil {
 				return fmt.Errorf("save download file resolution: %w", err)
 			}
@@ -479,8 +480,8 @@ func validateDownloadFileResolution(files []db.DownloadFile, items []domain.Down
 		known[repository.UUIDFromPG(file.ID)] = file
 	}
 	seen := make(map[uuid.UUID]struct{}, len(items))
-	videoCoordinates := make(map[[2]int]uuid.UUID)
-	subtitleCoordinates := make([][2]int, 0)
+	videoCoordinates := make(map[[3]int]uuid.UUID)
+	subtitleCoordinates := make([][3]int, 0)
 	selectedVideos := 0
 	for _, item := range items {
 		file, ok := known[item.FileID]
@@ -491,8 +492,11 @@ func validateDownloadFileResolution(files []db.DownloadFile, items []domain.Down
 			return nil, NewError("download_file_duplicate", "a file appears more than once", ErrInvalidInput, map[string]any{"fileId": item.FileID})
 		}
 		seen[item.FileID] = struct{}{}
-		if (item.SourceSeason == nil) != (item.SourceEpisode == nil) || (item.SourceSeason != nil && (*item.SourceSeason <= 0 || *item.SourceEpisode <= 0 || *item.SourceSeason > math.MaxInt32 || *item.SourceEpisode > math.MaxInt32)) {
-			return nil, NewError("download_coordinate_invalid", "source season and episode must be positive and supplied together", ErrInvalidInput, map[string]any{"fileId": item.FileID})
+		if (item.SourceSeason == nil) != (item.SourceEpisode == nil) ||
+			item.SourceEpisodeFractionHundredths < 0 || item.SourceEpisodeFractionHundredths > 99 ||
+			(item.SourceEpisode == nil && item.SourceEpisodeFractionHundredths != 0) ||
+			(item.SourceSeason != nil && (*item.SourceSeason <= 0 || *item.SourceEpisode <= 0 || *item.SourceSeason > math.MaxInt32 || *item.SourceEpisode > math.MaxInt32)) {
+			return nil, NewError("download_coordinate_invalid", "source season, episode, and fraction must form a valid coordinate", ErrInvalidInput, map[string]any{"fileId": item.FileID})
 		}
 		if !item.Selected {
 			continue
@@ -500,11 +504,14 @@ func validateDownloadFileResolution(files []db.DownloadFile, items []domain.Down
 		if item.SourceSeason == nil {
 			return nil, NewError("download_coordinate_invalid", "selected media files require source coordinates", ErrInvalidInput, map[string]any{"fileId": item.FileID})
 		}
-		coordinate := [2]int{*item.SourceSeason, *item.SourceEpisode}
+		coordinate := [3]int{*item.SourceSeason, *item.SourceEpisode, item.SourceEpisodeFractionHundredths}
 		switch file.MediaKind {
 		case string(domain.MediaVideo):
 			if _, duplicate := videoCoordinates[coordinate]; duplicate {
-				return nil, NewError("download_coordinate_duplicate", "only one video can be selected for each source coordinate", ErrInvalidInput, map[string]any{"sourceSeason": coordinate[0], "sourceEpisode": coordinate[1]})
+				return nil, NewError("download_coordinate_duplicate", "only one video can be selected for each source coordinate", ErrInvalidInput, map[string]any{
+					"sourceSeason": coordinate[0], "sourceEpisode": coordinate[1],
+					"sourceEpisodeFractionHundredths": coordinate[2],
+				})
 			}
 			videoCoordinates[coordinate] = item.FileID
 			selectedVideos++
@@ -517,7 +524,7 @@ func validateDownloadFileResolution(files []db.DownloadFile, items []domain.Down
 	if selectedVideos == 0 {
 		return nil, NewError("download_no_main_video", "at least one video file must be selected", ErrInvalidInput, nil)
 	}
-	subtitleCount := make(map[[2]int]int)
+	subtitleCount := make(map[[3]int]int)
 	for _, coordinate := range subtitleCoordinates {
 		if _, ok := videoCoordinates[coordinate]; !ok {
 			return nil, NewError("download_subtitle_video_invalid", "each selected subtitle must match a selected video coordinate", ErrInvalidInput, map[string]any{"sourceSeason": coordinate[0], "sourceEpisode": coordinate[1]})
@@ -542,7 +549,7 @@ func validateSingleEpisodeFileResolution(files []db.DownloadFile, items []domain
 		if !item.Selected || kinds[item.FileID] != string(domain.MediaVideo) {
 			continue
 		}
-		if item.SourceSeason == nil || item.SourceEpisode == nil || *item.SourceSeason != season || *item.SourceEpisode != *episode {
+		if item.SourceSeason == nil || item.SourceEpisode == nil || *item.SourceSeason != season || *item.SourceEpisode != *episode || item.SourceEpisodeFractionHundredths != 0 {
 			return NewError("download_single_episode_coordinate_mismatch", "a single-episode acquisition must keep its requested source coordinate", ErrInvalidInput, map[string]any{
 				"sourceSeason": season, "sourceEpisode": *episode,
 			})

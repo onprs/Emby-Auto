@@ -188,7 +188,7 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
                 {entries.data.items.map((entry) => (
                   <div key={entry.id} className="py-4">
                     <EntryTitle entry={entry} className="block break-words font-medium text-zinc-900" />
-                    <p className="mt-1 text-sm text-zinc-500">{episodeLabel(entry.sourceSeason, entry.sourceEpisode)} · {formatDateTime(entry.createdAt)}</p>
+                    <p className="mt-1 text-sm text-zinc-500">{episodeLabel(entry.sourceSeason, entry.sourceEpisode, entry.sourceEpisodeFractionHundredths)} · {formatDateTime(entry.createdAt)}</p>
                     {entry.coordinateSource ? <p className="mt-1 text-xs text-zinc-500">{decisionSourceLabel(entry.coordinateSource)}</p> : null}
                     {entryWasSkipped(entry) ? (
                       <p className="mt-2 text-sm text-zinc-500">已跳过{entry.rejectReason ? `：${reasonLabel(entry.rejectReason)}` : ''}</p>
@@ -211,7 +211,7 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
                       <EntryTitle entry={entry} className="block truncate font-medium text-zinc-900" />
                       {entryWasSkipped(entry) && entry.rejectReason ? <p className="mt-0.5 truncate text-xs text-zinc-500">已跳过：{reasonLabel(entry.rejectReason)}</p> : null}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-zinc-600">{episodeLabel(entry.sourceSeason, entry.sourceEpisode)}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-zinc-600">{episodeLabel(entry.sourceSeason, entry.sourceEpisode, entry.sourceEpisodeFractionHundredths)}</td>
                     <td className="w-64 px-4 py-3">
                       <EntryProgress entry={entry} />
                     </td>
@@ -295,7 +295,7 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
                 {skippedEntries.data.items.map((entry) => (
                   <div key={entry.id} className="py-4">
                     <EntryTitle entry={entry} className="block break-words font-medium text-zinc-900" />
-                    <p className="mt-1 text-sm text-zinc-500">{episodeLabel(entry.sourceSeason, entry.sourceEpisode)} · {formatDateTime(entry.createdAt)}</p>
+                    <p className="mt-1 text-sm text-zinc-500">{episodeLabel(entry.sourceSeason, entry.sourceEpisode, entry.sourceEpisodeFractionHundredths)} · {formatDateTime(entry.createdAt)}</p>
                     {entry.coordinateSource ? <p className="mt-1 text-xs text-zinc-500">{decisionSourceLabel(entry.coordinateSource)}</p> : null}
                     <p className="mt-2 text-sm text-zinc-600">{reasonLabel(entry.rejectReason) || '不符合自动获取规则'}</p>
                   </div>
@@ -312,7 +312,7 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
                   {skippedEntries.data.items.map((entry) => (
                     <tr key={entry.id}>
                       <td className="max-w-0 px-4 py-3"><EntryTitle entry={entry} className="block truncate font-medium text-zinc-900" /></td>
-                      <td className="whitespace-nowrap px-4 py-3 text-zinc-600">{episodeLabel(entry.sourceSeason, entry.sourceEpisode)}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-zinc-600">{episodeLabel(entry.sourceSeason, entry.sourceEpisode, entry.sourceEpisodeFractionHundredths)}</td>
                       <td className="w-64 px-4 py-3 text-zinc-600">已跳过</td>
                       <td className="px-4 py-3 text-zinc-600">
                         {reasonLabel(entry.rejectReason) || '不符合自动获取规则'}

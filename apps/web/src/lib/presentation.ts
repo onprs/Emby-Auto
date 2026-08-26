@@ -317,7 +317,10 @@ export function reasonLabel(reason?: string | null): string {
     .join('、');
 }
 
-export function episodeLabel(season?: number | null, episode?: number | null): string {
+export function episodeLabel(season?: number | null, episode?: number | null, fractionHundredths = 0): string {
   if (!season || !episode) return '集数待识别';
-  return `第 ${season} 季第 ${episode} 集`;
+  const fraction = fractionHundredths > 0
+    ? `.${String(fractionHundredths).padStart(2, '0').replace(/0$/, '')}`
+    : '';
+  return `第 ${season} 季第 ${episode}${fraction} 集`;
 }

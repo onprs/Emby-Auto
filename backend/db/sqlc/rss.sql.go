@@ -176,9 +176,9 @@ cleared AS (
         updated_at = now()
     WHERE entry.id IN (SELECT rss_entry_id FROM removed)
       AND entry.fulfillment_source = 'emby_catalog'
-    RETURNING entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source
+    RETURNING entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source, entry.source_episode_fraction_hundredths
 )
-SELECT id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source FROM cleared
+SELECT id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source, source_episode_fraction_hundredths FROM cleared
 `
 
 type ClearRSSEmbyCatalogFulfillmentParams struct {
@@ -187,34 +187,35 @@ type ClearRSSEmbyCatalogFulfillmentParams struct {
 }
 
 type ClearRSSEmbyCatalogFulfillmentRow struct {
-	ID                 pgtype.UUID        `db:"id" json:"id"`
-	SubscriptionID     pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
-	ReleaseCandidateID pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
-	IdentityKey        string             `db:"identity_key" json:"identity_key"`
-	Guid               *string            `db:"guid" json:"guid"`
-	Btih               *string            `db:"btih" json:"btih"`
-	CanonicalUrl       *string            `db:"canonical_url" json:"canonical_url"`
-	Title              string             `db:"title" json:"title"`
-	PublishedAt        pgtype.Timestamptz `db:"published_at" json:"published_at"`
-	Status             string             `db:"status" json:"status"`
-	EnqueueAttempts    int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
-	LastErrorCode      *string            `db:"last_error_code" json:"last_error_code"`
-	LastErrorMessage   *string            `db:"last_error_message" json:"last_error_message"`
-	UpstreamPayload    []byte             `db:"upstream_payload" json:"upstream_payload"`
-	DiscoveredAt       pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
-	EnqueuedAt         pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
-	UpdatedAt          pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-	DownloadUri        *string            `db:"download_uri" json:"download_uri"`
-	Downloadable       bool               `db:"downloadable" json:"downloadable"`
-	RejectionReasons   []string           `db:"rejection_reasons" json:"rejection_reasons"`
-	SourceSeason       *int32             `db:"source_season" json:"source_season"`
-	SourceEpisode      *int32             `db:"source_episode" json:"source_episode"`
-	DuplicateCount     int32              `db:"duplicate_count" json:"duplicate_count"`
-	LastErrorRetryable bool               `db:"last_error_retryable" json:"last_error_retryable"`
-	ImportedAt         pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
-	CoordinateSource   *string            `db:"coordinate_source" json:"coordinate_source"`
-	AgentResolutionID  pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
-	FulfillmentSource  *string            `db:"fulfillment_source" json:"fulfillment_source"`
+	ID                              pgtype.UUID        `db:"id" json:"id"`
+	SubscriptionID                  pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
+	ReleaseCandidateID              pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
+	IdentityKey                     string             `db:"identity_key" json:"identity_key"`
+	Guid                            *string            `db:"guid" json:"guid"`
+	Btih                            *string            `db:"btih" json:"btih"`
+	CanonicalUrl                    *string            `db:"canonical_url" json:"canonical_url"`
+	Title                           string             `db:"title" json:"title"`
+	PublishedAt                     pgtype.Timestamptz `db:"published_at" json:"published_at"`
+	Status                          string             `db:"status" json:"status"`
+	EnqueueAttempts                 int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
+	LastErrorCode                   *string            `db:"last_error_code" json:"last_error_code"`
+	LastErrorMessage                *string            `db:"last_error_message" json:"last_error_message"`
+	UpstreamPayload                 []byte             `db:"upstream_payload" json:"upstream_payload"`
+	DiscoveredAt                    pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
+	EnqueuedAt                      pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
+	UpdatedAt                       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DownloadUri                     *string            `db:"download_uri" json:"download_uri"`
+	Downloadable                    bool               `db:"downloadable" json:"downloadable"`
+	RejectionReasons                []string           `db:"rejection_reasons" json:"rejection_reasons"`
+	SourceSeason                    *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32             `db:"source_episode" json:"source_episode"`
+	DuplicateCount                  int32              `db:"duplicate_count" json:"duplicate_count"`
+	LastErrorRetryable              bool               `db:"last_error_retryable" json:"last_error_retryable"`
+	ImportedAt                      pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
+	CoordinateSource                *string            `db:"coordinate_source" json:"coordinate_source"`
+	AgentResolutionID               pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
+	FulfillmentSource               *string            `db:"fulfillment_source" json:"fulfillment_source"`
+	SourceEpisodeFractionHundredths int32              `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
 }
 
 func (q *Queries) ClearRSSEmbyCatalogFulfillment(ctx context.Context, arg ClearRSSEmbyCatalogFulfillmentParams) (ClearRSSEmbyCatalogFulfillmentRow, error) {
@@ -249,6 +250,7 @@ func (q *Queries) ClearRSSEmbyCatalogFulfillment(ctx context.Context, arg ClearR
 		&i.CoordinateSource,
 		&i.AgentResolutionID,
 		&i.FulfillmentSource,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }
@@ -715,8 +717,82 @@ func (q *Queries) FinalizeRSSAdjudicationBatch(ctx context.Context, arg Finalize
 	return i, err
 }
 
+const getLegacyRSSEntryForBTIHUpgrade = `-- name: GetLegacyRSSEntryForBTIHUpgrade :one
+SELECT legacy.id, legacy.subscription_id, legacy.release_candidate_id, legacy.identity_key, legacy.guid, legacy.btih, legacy.canonical_url, legacy.title, legacy.published_at, legacy.status, legacy.enqueue_attempts, legacy.last_error_code, legacy.last_error_message, legacy.upstream_payload, legacy.discovered_at, legacy.enqueued_at, legacy.updated_at, legacy.download_uri, legacy.downloadable, legacy.rejection_reasons, legacy.source_season, legacy.source_episode, legacy.duplicate_count, legacy.last_error_retryable, legacy.imported_at, legacy.coordinate_source, legacy.agent_resolution_id, legacy.fulfillment_source, legacy.source_episode_fraction_hundredths
+FROM rss_entries AS legacy
+WHERE legacy.subscription_id = $1
+  AND legacy.guid = $2
+  AND legacy.identity_key = 'guid:' || $2
+  AND legacy.btih IS NULL
+  AND legacy.canonical_url IS NOT DISTINCT FROM $3::text
+  AND legacy.title = $4
+  AND legacy.published_at IS NOT DISTINCT FROM $5::timestamptz
+  AND NOT EXISTS (
+      SELECT 1
+      FROM rss_entries AS exact_btih
+      WHERE exact_btih.subscription_id = legacy.subscription_id
+        AND lower(exact_btih.btih) = lower($6)
+  )
+ORDER BY legacy.discovered_at, legacy.id
+LIMIT 1
+FOR UPDATE OF legacy
+`
+
+type GetLegacyRSSEntryForBTIHUpgradeParams struct {
+	SubscriptionID pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
+	Guid           *string            `db:"guid" json:"guid"`
+	CanonicalUrl   *string            `db:"canonical_url" json:"canonical_url"`
+	Title          string             `db:"title" json:"title"`
+	PublishedAt    pgtype.Timestamptz `db:"published_at" json:"published_at"`
+	Btih           string             `db:"btih" json:"btih"`
+}
+
+func (q *Queries) GetLegacyRSSEntryForBTIHUpgrade(ctx context.Context, arg GetLegacyRSSEntryForBTIHUpgradeParams) (RssEntry, error) {
+	row := q.db.QueryRow(ctx, getLegacyRSSEntryForBTIHUpgrade,
+		arg.SubscriptionID,
+		arg.Guid,
+		arg.CanonicalUrl,
+		arg.Title,
+		arg.PublishedAt,
+		arg.Btih,
+	)
+	var i RssEntry
+	err := row.Scan(
+		&i.ID,
+		&i.SubscriptionID,
+		&i.ReleaseCandidateID,
+		&i.IdentityKey,
+		&i.Guid,
+		&i.Btih,
+		&i.CanonicalUrl,
+		&i.Title,
+		&i.PublishedAt,
+		&i.Status,
+		&i.EnqueueAttempts,
+		&i.LastErrorCode,
+		&i.LastErrorMessage,
+		&i.UpstreamPayload,
+		&i.DiscoveredAt,
+		&i.EnqueuedAt,
+		&i.UpdatedAt,
+		&i.DownloadUri,
+		&i.Downloadable,
+		&i.RejectionReasons,
+		&i.SourceSeason,
+		&i.SourceEpisode,
+		&i.DuplicateCount,
+		&i.LastErrorRetryable,
+		&i.ImportedAt,
+		&i.CoordinateSource,
+		&i.AgentResolutionID,
+		&i.FulfillmentSource,
+		&i.SourceEpisodeFractionHundredths,
+	)
+	return i, err
+}
+
 const getRSSEntryBySignals = `-- name: GetRSSEntryBySignals :one
-SELECT id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source
+SELECT id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source, source_episode_fraction_hundredths
 FROM rss_entries
 WHERE subscription_id = $1
   AND (
@@ -768,6 +844,7 @@ func (q *Queries) GetRSSEntryBySignals(ctx context.Context, arg GetRSSEntryBySig
 		&i.CoordinateSource,
 		&i.AgentResolutionID,
 		&i.FulfillmentSource,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }
@@ -777,6 +854,7 @@ SELECT
     entry.subscription_id,
     mapping.source_season,
     mapping.source_episode,
+    mapping.source_episode_fraction_hundredths,
     mapping.target_episode_id,
     season.season_number AS target_season,
     episode.episode_number AS target_episode,
@@ -789,6 +867,7 @@ JOIN episode_mappings AS mapping
   ON mapping.profile_id = subscription.mapping_profile_id
  AND mapping.source_season = entry.source_season
  AND mapping.source_episode = entry.source_episode
+ AND mapping.source_episode_fraction_hundredths = entry.source_episode_fraction_hundredths
  AND mapping.mapping_status = 'mapped'
 JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
 JOIN tmdb_seasons AS season ON season.id = episode.season_id
@@ -797,14 +876,15 @@ WHERE entry.id = $1
 `
 
 type GetRSSEntryMappedRealtimeTargetRow struct {
-	SubscriptionID  pgtype.UUID `db:"subscription_id" json:"subscription_id"`
-	SourceSeason    int32       `db:"source_season" json:"source_season"`
-	SourceEpisode   int32       `db:"source_episode" json:"source_episode"`
-	TargetEpisodeID pgtype.UUID `db:"target_episode_id" json:"target_episode_id"`
-	TargetSeason    int32       `db:"target_season" json:"target_season"`
-	TargetEpisode   int32       `db:"target_episode" json:"target_episode"`
-	TmdbEpisodeID   *int64      `db:"tmdb_episode_id" json:"tmdb_episode_id"`
-	TmdbSeriesID    *int64      `db:"tmdb_series_id" json:"tmdb_series_id"`
+	SubscriptionID                  pgtype.UUID `db:"subscription_id" json:"subscription_id"`
+	SourceSeason                    int32       `db:"source_season" json:"source_season"`
+	SourceEpisode                   int32       `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32       `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	TargetEpisodeID                 pgtype.UUID `db:"target_episode_id" json:"target_episode_id"`
+	TargetSeason                    int32       `db:"target_season" json:"target_season"`
+	TargetEpisode                   int32       `db:"target_episode" json:"target_episode"`
+	TmdbEpisodeID                   *int64      `db:"tmdb_episode_id" json:"tmdb_episode_id"`
+	TmdbSeriesID                    *int64      `db:"tmdb_series_id" json:"tmdb_series_id"`
 }
 
 func (q *Queries) GetRSSEntryMappedRealtimeTarget(ctx context.Context, entryID pgtype.UUID) (GetRSSEntryMappedRealtimeTargetRow, error) {
@@ -814,6 +894,7 @@ func (q *Queries) GetRSSEntryMappedRealtimeTarget(ctx context.Context, entryID p
 		&i.SubscriptionID,
 		&i.SourceSeason,
 		&i.SourceEpisode,
+		&i.SourceEpisodeFractionHundredths,
 		&i.TargetEpisodeID,
 		&i.TargetSeason,
 		&i.TargetEpisode,
@@ -837,6 +918,7 @@ WITH target AS (
       ON mapping.profile_id = subscription.mapping_profile_id
      AND mapping.source_season = $3
      AND mapping.source_episode = $4
+     AND mapping.source_episode_fraction_hundredths = 0
      AND mapping.mapping_status = 'mapped'
     JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
     JOIN tmdb_seasons AS season ON season.id = episode.season_id
@@ -985,6 +1067,16 @@ SELECT
                             THEN (acquisition.source_payload->>'sourceEpisode')::bigint
                         END
                     )
+                    AND owner_mapping.source_episode_fraction_hundredths = COALESCE(
+                        owner_entry.source_episode_fraction_hundredths,
+                        CASE
+                            WHEN acquisition.rss_entry_id IS NULL
+                             AND acquisition.source_payload->'singleEpisode' = 'true'::jsonb
+                             AND COALESCE(acquisition.source_payload->>'sourceEpisodeFractionHundredths', '0') ~ '^(?:0|[1-9][0-9]?)$'
+                            THEN COALESCE((acquisition.source_payload->>'sourceEpisodeFractionHundredths')::integer, 0)
+                        END,
+                        0
+                    )
                     AND download.status <> 'cancelled'
                     AND NOT EXISTS (
                         SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id
@@ -1007,6 +1099,7 @@ SELECT
                    AND source_file.media_kind = 'video'
                    AND source_file.source_season = owner_mapping.source_season
                    AND source_file.source_episode = owner_mapping.source_episode
+                   AND source_file.source_episode_fraction_hundredths = owner_mapping.source_episode_fraction_hundredths
                   WHERE owner_mapping.profile_id = acquisition.mapping_profile_id
                     AND owner_mapping.target_episode_id = target.target_episode_id
                     AND owner_mapping.mapping_status = 'mapped'
@@ -1299,7 +1392,7 @@ INSERT INTO rss_entries (
     $14
 )
 ON CONFLICT DO NOTHING
-RETURNING id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source
+RETURNING id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source, source_episode_fraction_hundredths
 `
 
 type InsertRSSEntryParams struct {
@@ -1366,6 +1459,7 @@ func (q *Queries) InsertRSSEntry(ctx context.Context, arg InsertRSSEntryParams) 
 		&i.CoordinateSource,
 		&i.AgentResolutionID,
 		&i.FulfillmentSource,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }
@@ -1406,6 +1500,42 @@ func (q *Queries) IsRSSPreacquisitionMappingEnabled(ctx context.Context, scopeID
 	var enabled *bool
 	err := row.Scan(&enabled)
 	return enabled, err
+}
+
+const isRSSRealtimeTargetCheckAuthoritative = `-- name: IsRSSRealtimeTargetCheckAuthoritative :one
+SELECT EXISTS (
+    SELECT 1
+    FROM rss_target_realtime_checks AS current_check
+    WHERE current_check.target_episode_id = $1
+      AND current_check.check_id = $2
+      AND current_check.present
+      AND current_check.checked_at >= now() - interval '30 seconds'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM rss_target_realtime_checks AS newer_check
+          WHERE newer_check.target_episode_id = current_check.target_episode_id
+            AND newer_check.check_id <> current_check.check_id
+            AND (
+                newer_check.checked_at > current_check.checked_at
+                OR (
+                    newer_check.checked_at = current_check.checked_at
+                    AND newer_check.present IS DISTINCT FROM current_check.present
+                )
+            )
+      )
+)::boolean
+`
+
+type IsRSSRealtimeTargetCheckAuthoritativeParams struct {
+	TargetEpisodeID pgtype.UUID `db:"target_episode_id" json:"target_episode_id"`
+	CheckID         pgtype.UUID `db:"check_id" json:"check_id"`
+}
+
+func (q *Queries) IsRSSRealtimeTargetCheckAuthoritative(ctx context.Context, arg IsRSSRealtimeTargetCheckAuthoritativeParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isRSSRealtimeTargetCheckAuthoritative, arg.TargetEpisodeID, arg.CheckID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const listAutomaticRSSAdjudicationBatches = `-- name: ListAutomaticRSSAdjudicationBatches :many
@@ -1861,6 +1991,7 @@ const listRSSMappedRealtimeTargets = `-- name: ListRSSMappedRealtimeTargets :man
 SELECT
     mapping.source_season,
     mapping.source_episode,
+    mapping.source_episode_fraction_hundredths,
     mapping.target_episode_id,
     season.season_number AS target_season,
     episode.episode_number AS target_episode,
@@ -1874,18 +2005,20 @@ JOIN episode_mappings AS mapping
 JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
 JOIN tmdb_seasons AS season ON season.id = episode.season_id
 WHERE subscription.id = $1
+  AND mapping.source_episode_fraction_hundredths = 0
   AND season.season_number > 0
-ORDER BY mapping.source_season, mapping.source_episode
+ORDER BY mapping.source_season, mapping.source_episode, mapping.source_episode_fraction_hundredths
 `
 
 type ListRSSMappedRealtimeTargetsRow struct {
-	SourceSeason    int32       `db:"source_season" json:"source_season"`
-	SourceEpisode   int32       `db:"source_episode" json:"source_episode"`
-	TargetEpisodeID pgtype.UUID `db:"target_episode_id" json:"target_episode_id"`
-	TargetSeason    int32       `db:"target_season" json:"target_season"`
-	TargetEpisode   int32       `db:"target_episode" json:"target_episode"`
-	TmdbEpisodeID   *int64      `db:"tmdb_episode_id" json:"tmdb_episode_id"`
-	TmdbSeriesID    *int64      `db:"tmdb_series_id" json:"tmdb_series_id"`
+	SourceSeason                    int32       `db:"source_season" json:"source_season"`
+	SourceEpisode                   int32       `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32       `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	TargetEpisodeID                 pgtype.UUID `db:"target_episode_id" json:"target_episode_id"`
+	TargetSeason                    int32       `db:"target_season" json:"target_season"`
+	TargetEpisode                   int32       `db:"target_episode" json:"target_episode"`
+	TmdbEpisodeID                   *int64      `db:"tmdb_episode_id" json:"tmdb_episode_id"`
+	TmdbSeriesID                    *int64      `db:"tmdb_series_id" json:"tmdb_series_id"`
 }
 
 func (q *Queries) ListRSSMappedRealtimeTargets(ctx context.Context, subscriptionID pgtype.UUID) ([]ListRSSMappedRealtimeTargetsRow, error) {
@@ -1900,6 +2033,7 @@ func (q *Queries) ListRSSMappedRealtimeTargets(ctx context.Context, subscription
 		if err := rows.Scan(
 			&i.SourceSeason,
 			&i.SourceEpisode,
+			&i.SourceEpisodeFractionHundredths,
 			&i.TargetEpisodeID,
 			&i.TargetSeason,
 			&i.TargetEpisode,
@@ -1990,6 +2124,7 @@ WHERE entry.subscription_id = $1
   AND entry.source_episode IS NOT NULL
   AND entry.source_season > 0
   AND entry.source_episode > 0
+  AND entry.source_episode_fraction_hundredths = 0
   AND NOT EXISTS (
       SELECT 1
       FROM rss_entry_adjudications AS adjudication
@@ -2842,7 +2977,7 @@ func (q *Queries) ListUnresolvedRSSAdjudicationBatches(ctx context.Context, subs
 }
 
 const lockRSSEntryForEnqueue = `-- name: LockRSSEntryForEnqueue :one
-SELECT entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source
+SELECT entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source, entry.source_episode_fraction_hundredths
 FROM rss_entries AS entry
 WHERE entry.id = $1
 FOR UPDATE OF entry
@@ -2880,13 +3015,14 @@ func (q *Queries) LockRSSEntryForEnqueue(ctx context.Context, id pgtype.UUID) (R
 		&i.CoordinateSource,
 		&i.AgentResolutionID,
 		&i.FulfillmentSource,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }
 
 const lockRSSIncompleteRecoveryEntries = `-- name: LockRSSIncompleteRecoveryEntries :many
 SELECT
-    entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source,
+    entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source, entry.source_episode_fraction_hundredths,
     acquisition.id AS acquisition_id
 FROM rss_entries AS entry
 JOIN rss_subscriptions AS subscription ON subscription.id = entry.subscription_id
@@ -2904,6 +3040,7 @@ WHERE subscription.id = $1
   AND subscription.completed_at IS NULL
   AND entry.source_season = subscription.source_season
   AND entry.source_episode = ANY($2::integer[])
+  AND entry.source_episode_fraction_hundredths = 0
 FOR UPDATE OF entry, subscription
 `
 
@@ -2913,35 +3050,36 @@ type LockRSSIncompleteRecoveryEntriesParams struct {
 }
 
 type LockRSSIncompleteRecoveryEntriesRow struct {
-	ID                 pgtype.UUID        `db:"id" json:"id"`
-	SubscriptionID     pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
-	ReleaseCandidateID pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
-	IdentityKey        string             `db:"identity_key" json:"identity_key"`
-	Guid               *string            `db:"guid" json:"guid"`
-	Btih               *string            `db:"btih" json:"btih"`
-	CanonicalUrl       *string            `db:"canonical_url" json:"canonical_url"`
-	Title              string             `db:"title" json:"title"`
-	PublishedAt        pgtype.Timestamptz `db:"published_at" json:"published_at"`
-	Status             string             `db:"status" json:"status"`
-	EnqueueAttempts    int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
-	LastErrorCode      *string            `db:"last_error_code" json:"last_error_code"`
-	LastErrorMessage   *string            `db:"last_error_message" json:"last_error_message"`
-	UpstreamPayload    []byte             `db:"upstream_payload" json:"upstream_payload"`
-	DiscoveredAt       pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
-	EnqueuedAt         pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
-	UpdatedAt          pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-	DownloadUri        *string            `db:"download_uri" json:"download_uri"`
-	Downloadable       bool               `db:"downloadable" json:"downloadable"`
-	RejectionReasons   []string           `db:"rejection_reasons" json:"rejection_reasons"`
-	SourceSeason       *int32             `db:"source_season" json:"source_season"`
-	SourceEpisode      *int32             `db:"source_episode" json:"source_episode"`
-	DuplicateCount     int32              `db:"duplicate_count" json:"duplicate_count"`
-	LastErrorRetryable bool               `db:"last_error_retryable" json:"last_error_retryable"`
-	ImportedAt         pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
-	CoordinateSource   *string            `db:"coordinate_source" json:"coordinate_source"`
-	AgentResolutionID  pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
-	FulfillmentSource  *string            `db:"fulfillment_source" json:"fulfillment_source"`
-	AcquisitionID      pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
+	ID                              pgtype.UUID        `db:"id" json:"id"`
+	SubscriptionID                  pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
+	ReleaseCandidateID              pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
+	IdentityKey                     string             `db:"identity_key" json:"identity_key"`
+	Guid                            *string            `db:"guid" json:"guid"`
+	Btih                            *string            `db:"btih" json:"btih"`
+	CanonicalUrl                    *string            `db:"canonical_url" json:"canonical_url"`
+	Title                           string             `db:"title" json:"title"`
+	PublishedAt                     pgtype.Timestamptz `db:"published_at" json:"published_at"`
+	Status                          string             `db:"status" json:"status"`
+	EnqueueAttempts                 int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
+	LastErrorCode                   *string            `db:"last_error_code" json:"last_error_code"`
+	LastErrorMessage                *string            `db:"last_error_message" json:"last_error_message"`
+	UpstreamPayload                 []byte             `db:"upstream_payload" json:"upstream_payload"`
+	DiscoveredAt                    pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
+	EnqueuedAt                      pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
+	UpdatedAt                       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DownloadUri                     *string            `db:"download_uri" json:"download_uri"`
+	Downloadable                    bool               `db:"downloadable" json:"downloadable"`
+	RejectionReasons                []string           `db:"rejection_reasons" json:"rejection_reasons"`
+	SourceSeason                    *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32             `db:"source_episode" json:"source_episode"`
+	DuplicateCount                  int32              `db:"duplicate_count" json:"duplicate_count"`
+	LastErrorRetryable              bool               `db:"last_error_retryable" json:"last_error_retryable"`
+	ImportedAt                      pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
+	CoordinateSource                *string            `db:"coordinate_source" json:"coordinate_source"`
+	AgentResolutionID               pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
+	FulfillmentSource               *string            `db:"fulfillment_source" json:"fulfillment_source"`
+	SourceEpisodeFractionHundredths int32              `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	AcquisitionID                   pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
 }
 
 func (q *Queries) LockRSSIncompleteRecoveryEntries(ctx context.Context, arg LockRSSIncompleteRecoveryEntriesParams) ([]LockRSSIncompleteRecoveryEntriesRow, error) {
@@ -2982,6 +3120,7 @@ func (q *Queries) LockRSSIncompleteRecoveryEntries(ctx context.Context, arg Lock
 			&i.CoordinateSource,
 			&i.AgentResolutionID,
 			&i.FulfillmentSource,
+			&i.SourceEpisodeFractionHundredths,
 			&i.AcquisitionID,
 		); err != nil {
 			return nil, err
@@ -3125,6 +3264,7 @@ CROSS JOIN LATERAL (
             FROM episode_mappings AS mapping
             WHERE mapping.profile_id = profile.id
               AND mapping.source_season = subscription.source_season
+              AND mapping.source_episode_fraction_hundredths = 0
               AND mapping.mapping_status = 'mapped'
         )
         ELSE profile.source_season_lengths[subscription.source_season]
@@ -3144,6 +3284,7 @@ WHERE task.id = $1
         ON expected_mapping.profile_id = subscription.mapping_profile_id
        AND expected_mapping.source_season = subscription.source_season
        AND expected_mapping.source_episode = expected.source_episode
+       AND expected_mapping.source_episode_fraction_hundredths = 0
        AND expected_mapping.mapping_status = 'mapped'
       WHERE expected_mapping.target_episode_id IS NULL
          OR NOT EXISTS (
@@ -3204,6 +3345,7 @@ CROSS JOIN LATERAL (
             FROM episode_mappings AS mapping
             WHERE mapping.profile_id = profile.id
               AND mapping.source_season = subscription.source_season
+              AND mapping.source_episode_fraction_hundredths = 0
               AND mapping.mapping_status = 'mapped'
         )
         ELSE profile.source_season_lengths[subscription.source_season]
@@ -3221,6 +3363,7 @@ WHERE subscription.id = $1
         ON expected_mapping.profile_id = subscription.mapping_profile_id
        AND expected_mapping.source_season = subscription.source_season
        AND expected_mapping.source_episode = expected.source_episode
+       AND expected_mapping.source_episode_fraction_hundredths = 0
        AND expected_mapping.mapping_status = 'mapped'
       WHERE expected_mapping.target_episode_id IS NULL
          OR NOT EXISTS (
@@ -3413,7 +3556,7 @@ SET status = 'enqueueing',
 WHERE id = $1
   AND downloadable
   AND status IN ('discovered', 'enqueue_failed')
-RETURNING id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source
+RETURNING id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source, source_episode_fraction_hundredths
 `
 
 func (q *Queries) MarkRSSEntryEnqueueing(ctx context.Context, id pgtype.UUID) (RssEntry, error) {
@@ -3448,6 +3591,7 @@ func (q *Queries) MarkRSSEntryEnqueueing(ctx context.Context, id pgtype.UUID) (R
 		&i.CoordinateSource,
 		&i.AgentResolutionID,
 		&i.FulfillmentSource,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }
@@ -3463,7 +3607,7 @@ WITH updated AS (
     WHERE task.id = $1
       AND task.state = 'imported'
       AND entry.id = acquisition.rss_entry_id
-    RETURNING entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source
+    RETURNING entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source, entry.source_episode_fraction_hundredths
 ),
 recorded AS (
     INSERT INTO rss_target_fulfillments (
@@ -3492,38 +3636,39 @@ recorded AS (
         updated_at = now()
     RETURNING rss_entry_id
 )
-SELECT id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source FROM updated
+SELECT id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source, source_episode_fraction_hundredths FROM updated
 `
 
 type MarkRSSEntryImportedForTaskRow struct {
-	ID                 pgtype.UUID        `db:"id" json:"id"`
-	SubscriptionID     pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
-	ReleaseCandidateID pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
-	IdentityKey        string             `db:"identity_key" json:"identity_key"`
-	Guid               *string            `db:"guid" json:"guid"`
-	Btih               *string            `db:"btih" json:"btih"`
-	CanonicalUrl       *string            `db:"canonical_url" json:"canonical_url"`
-	Title              string             `db:"title" json:"title"`
-	PublishedAt        pgtype.Timestamptz `db:"published_at" json:"published_at"`
-	Status             string             `db:"status" json:"status"`
-	EnqueueAttempts    int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
-	LastErrorCode      *string            `db:"last_error_code" json:"last_error_code"`
-	LastErrorMessage   *string            `db:"last_error_message" json:"last_error_message"`
-	UpstreamPayload    []byte             `db:"upstream_payload" json:"upstream_payload"`
-	DiscoveredAt       pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
-	EnqueuedAt         pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
-	UpdatedAt          pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-	DownloadUri        *string            `db:"download_uri" json:"download_uri"`
-	Downloadable       bool               `db:"downloadable" json:"downloadable"`
-	RejectionReasons   []string           `db:"rejection_reasons" json:"rejection_reasons"`
-	SourceSeason       *int32             `db:"source_season" json:"source_season"`
-	SourceEpisode      *int32             `db:"source_episode" json:"source_episode"`
-	DuplicateCount     int32              `db:"duplicate_count" json:"duplicate_count"`
-	LastErrorRetryable bool               `db:"last_error_retryable" json:"last_error_retryable"`
-	ImportedAt         pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
-	CoordinateSource   *string            `db:"coordinate_source" json:"coordinate_source"`
-	AgentResolutionID  pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
-	FulfillmentSource  *string            `db:"fulfillment_source" json:"fulfillment_source"`
+	ID                              pgtype.UUID        `db:"id" json:"id"`
+	SubscriptionID                  pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
+	ReleaseCandidateID              pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
+	IdentityKey                     string             `db:"identity_key" json:"identity_key"`
+	Guid                            *string            `db:"guid" json:"guid"`
+	Btih                            *string            `db:"btih" json:"btih"`
+	CanonicalUrl                    *string            `db:"canonical_url" json:"canonical_url"`
+	Title                           string             `db:"title" json:"title"`
+	PublishedAt                     pgtype.Timestamptz `db:"published_at" json:"published_at"`
+	Status                          string             `db:"status" json:"status"`
+	EnqueueAttempts                 int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
+	LastErrorCode                   *string            `db:"last_error_code" json:"last_error_code"`
+	LastErrorMessage                *string            `db:"last_error_message" json:"last_error_message"`
+	UpstreamPayload                 []byte             `db:"upstream_payload" json:"upstream_payload"`
+	DiscoveredAt                    pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
+	EnqueuedAt                      pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
+	UpdatedAt                       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DownloadUri                     *string            `db:"download_uri" json:"download_uri"`
+	Downloadable                    bool               `db:"downloadable" json:"downloadable"`
+	RejectionReasons                []string           `db:"rejection_reasons" json:"rejection_reasons"`
+	SourceSeason                    *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32             `db:"source_episode" json:"source_episode"`
+	DuplicateCount                  int32              `db:"duplicate_count" json:"duplicate_count"`
+	LastErrorRetryable              bool               `db:"last_error_retryable" json:"last_error_retryable"`
+	ImportedAt                      pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
+	CoordinateSource                *string            `db:"coordinate_source" json:"coordinate_source"`
+	AgentResolutionID               pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
+	FulfillmentSource               *string            `db:"fulfillment_source" json:"fulfillment_source"`
+	SourceEpisodeFractionHundredths int32              `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
 }
 
 func (q *Queries) MarkRSSEntryImportedForTask(ctx context.Context, taskID pgtype.UUID) (MarkRSSEntryImportedForTaskRow, error) {
@@ -3558,6 +3703,7 @@ func (q *Queries) MarkRSSEntryImportedForTask(ctx context.Context, taskID pgtype
 		&i.CoordinateSource,
 		&i.AgentResolutionID,
 		&i.FulfillmentSource,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }
@@ -3572,7 +3718,7 @@ SET status = 'enqueue_failed',
     updated_at = now()
 WHERE id = $3
   AND status IN ('discovered', 'enqueueing', 'enqueue_failed')
-RETURNING id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source
+RETURNING id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source, source_episode_fraction_hundredths
 `
 
 type MarkRSSEntryScheduleFailedParams struct {
@@ -3613,6 +3759,7 @@ func (q *Queries) MarkRSSEntryScheduleFailed(ctx context.Context, arg MarkRSSEnt
 		&i.CoordinateSource,
 		&i.AgentResolutionID,
 		&i.FulfillmentSource,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }
@@ -3666,7 +3813,7 @@ updated AS (
               AND fulfillment_source IS DISTINCT FROM 'managed_import'
           )
       )
-    RETURNING id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source
+    RETURNING id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source, source_episode_fraction_hundredths
 ),
 recorded AS (
     INSERT INTO rss_target_fulfillments (
@@ -3695,7 +3842,7 @@ recorded AS (
         updated_at = now()
     RETURNING rss_entry_id
 )
-SELECT id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source FROM updated
+SELECT id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source, source_episode_fraction_hundredths FROM updated
 `
 
 type MarkRSSEntryTargetOccupiedParams struct {
@@ -3708,34 +3855,35 @@ type MarkRSSEntryTargetOccupiedParams struct {
 }
 
 type MarkRSSEntryTargetOccupiedRow struct {
-	ID                 pgtype.UUID        `db:"id" json:"id"`
-	SubscriptionID     pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
-	ReleaseCandidateID pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
-	IdentityKey        string             `db:"identity_key" json:"identity_key"`
-	Guid               *string            `db:"guid" json:"guid"`
-	Btih               *string            `db:"btih" json:"btih"`
-	CanonicalUrl       *string            `db:"canonical_url" json:"canonical_url"`
-	Title              string             `db:"title" json:"title"`
-	PublishedAt        pgtype.Timestamptz `db:"published_at" json:"published_at"`
-	Status             string             `db:"status" json:"status"`
-	EnqueueAttempts    int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
-	LastErrorCode      *string            `db:"last_error_code" json:"last_error_code"`
-	LastErrorMessage   *string            `db:"last_error_message" json:"last_error_message"`
-	UpstreamPayload    []byte             `db:"upstream_payload" json:"upstream_payload"`
-	DiscoveredAt       pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
-	EnqueuedAt         pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
-	UpdatedAt          pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-	DownloadUri        *string            `db:"download_uri" json:"download_uri"`
-	Downloadable       bool               `db:"downloadable" json:"downloadable"`
-	RejectionReasons   []string           `db:"rejection_reasons" json:"rejection_reasons"`
-	SourceSeason       *int32             `db:"source_season" json:"source_season"`
-	SourceEpisode      *int32             `db:"source_episode" json:"source_episode"`
-	DuplicateCount     int32              `db:"duplicate_count" json:"duplicate_count"`
-	LastErrorRetryable bool               `db:"last_error_retryable" json:"last_error_retryable"`
-	ImportedAt         pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
-	CoordinateSource   *string            `db:"coordinate_source" json:"coordinate_source"`
-	AgentResolutionID  pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
-	FulfillmentSource  *string            `db:"fulfillment_source" json:"fulfillment_source"`
+	ID                              pgtype.UUID        `db:"id" json:"id"`
+	SubscriptionID                  pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
+	ReleaseCandidateID              pgtype.UUID        `db:"release_candidate_id" json:"release_candidate_id"`
+	IdentityKey                     string             `db:"identity_key" json:"identity_key"`
+	Guid                            *string            `db:"guid" json:"guid"`
+	Btih                            *string            `db:"btih" json:"btih"`
+	CanonicalUrl                    *string            `db:"canonical_url" json:"canonical_url"`
+	Title                           string             `db:"title" json:"title"`
+	PublishedAt                     pgtype.Timestamptz `db:"published_at" json:"published_at"`
+	Status                          string             `db:"status" json:"status"`
+	EnqueueAttempts                 int32              `db:"enqueue_attempts" json:"enqueue_attempts"`
+	LastErrorCode                   *string            `db:"last_error_code" json:"last_error_code"`
+	LastErrorMessage                *string            `db:"last_error_message" json:"last_error_message"`
+	UpstreamPayload                 []byte             `db:"upstream_payload" json:"upstream_payload"`
+	DiscoveredAt                    pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
+	EnqueuedAt                      pgtype.Timestamptz `db:"enqueued_at" json:"enqueued_at"`
+	UpdatedAt                       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DownloadUri                     *string            `db:"download_uri" json:"download_uri"`
+	Downloadable                    bool               `db:"downloadable" json:"downloadable"`
+	RejectionReasons                []string           `db:"rejection_reasons" json:"rejection_reasons"`
+	SourceSeason                    *int32             `db:"source_season" json:"source_season"`
+	SourceEpisode                   *int32             `db:"source_episode" json:"source_episode"`
+	DuplicateCount                  int32              `db:"duplicate_count" json:"duplicate_count"`
+	LastErrorRetryable              bool               `db:"last_error_retryable" json:"last_error_retryable"`
+	ImportedAt                      pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
+	CoordinateSource                *string            `db:"coordinate_source" json:"coordinate_source"`
+	AgentResolutionID               pgtype.UUID        `db:"agent_resolution_id" json:"agent_resolution_id"`
+	FulfillmentSource               *string            `db:"fulfillment_source" json:"fulfillment_source"`
+	SourceEpisodeFractionHundredths int32              `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
 }
 
 func (q *Queries) MarkRSSEntryTargetOccupied(ctx context.Context, arg MarkRSSEntryTargetOccupiedParams) (MarkRSSEntryTargetOccupiedRow, error) {
@@ -3777,6 +3925,7 @@ func (q *Queries) MarkRSSEntryTargetOccupied(ctx context.Context, arg MarkRSSEnt
 		&i.CoordinateSource,
 		&i.AgentResolutionID,
 		&i.FulfillmentSource,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }
@@ -4001,6 +4150,7 @@ WHERE subscription.id = $1
   AND entry.subscription_id = subscription.id
   AND entry.source_season = subscription.source_season
   AND entry.source_episode = ANY($2::integer[])
+  AND entry.source_episode_fraction_hundredths = 0
   AND entry.imported_at IS NULL
   AND entry.downloadable
   AND entry.status IN ('enqueued', 'enqueue_failed')
@@ -4010,7 +4160,7 @@ WHERE subscription.id = $1
       WHERE acquisition.rss_entry_id = entry.id
         AND acquisition.deletion_requested_at IS NULL
   )
-RETURNING entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source
+RETURNING entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source, entry.source_episode_fraction_hundredths
 `
 
 type ResetRSSIncompleteRecoveryEntriesParams struct {
@@ -4056,6 +4206,7 @@ func (q *Queries) ResetRSSIncompleteRecoveryEntries(ctx context.Context, arg Res
 			&i.CoordinateSource,
 			&i.AgentResolutionID,
 			&i.FulfillmentSource,
+			&i.SourceEpisodeFractionHundredths,
 		); err != nil {
 			return nil, err
 		}
@@ -4117,7 +4268,7 @@ INSERT INTO rss_entries (
     $14,
     $15
 )
-RETURNING id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source
+RETURNING id, subscription_id, release_candidate_id, identity_key, guid, btih, canonical_url, title, published_at, status, enqueue_attempts, last_error_code, last_error_message, upstream_payload, discovered_at, enqueued_at, updated_at, download_uri, downloadable, rejection_reasons, source_season, source_episode, duplicate_count, last_error_retryable, imported_at, coordinate_source, agent_resolution_id, fulfillment_source, source_episode_fraction_hundredths
 `
 
 type RestoreCompletedRSSEntryParams struct {
@@ -4186,6 +4337,7 @@ func (q *Queries) RestoreCompletedRSSEntry(ctx context.Context, arg RestoreCompl
 		&i.CoordinateSource,
 		&i.AgentResolutionID,
 		&i.FulfillmentSource,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }
@@ -4368,7 +4520,7 @@ SET guid = COALESCE($1, entry.guid),
     duplicate_count = entry.duplicate_count + 1,
     updated_at = now()
 WHERE entry.id = $12
-RETURNING entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source
+RETURNING entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source, entry.source_episode_fraction_hundredths
 `
 
 type UpdateRSSEntryMetadataParams struct {
@@ -4431,6 +4583,7 @@ func (q *Queries) UpdateRSSEntryMetadata(ctx context.Context, arg UpdateRSSEntry
 		&i.CoordinateSource,
 		&i.AgentResolutionID,
 		&i.FulfillmentSource,
+		&i.SourceEpisodeFractionHundredths,
 	)
 	return i, err
 }
