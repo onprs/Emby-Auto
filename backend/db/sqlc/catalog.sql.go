@@ -1130,7 +1130,8 @@ SELECT
     file.relative_path,
     file.source_season,
     file.source_episode,
-    file.source_episode_fraction_hundredths
+    file.source_episode_fraction_hundredths,
+    download.file_resolution_source
 FROM download_files AS file
 JOIN downloads AS download ON download.id = file.download_id
 WHERE download.id = (
@@ -1153,6 +1154,7 @@ type ListAcquisitionSelectedVideosRow struct {
 	SourceSeason                    *int32      `db:"source_season" json:"source_season"`
 	SourceEpisode                   *int32      `db:"source_episode" json:"source_episode"`
 	SourceEpisodeFractionHundredths int32       `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	FileResolutionSource            *string     `db:"file_resolution_source" json:"file_resolution_source"`
 }
 
 func (q *Queries) ListAcquisitionSelectedVideos(ctx context.Context, acquisitionID pgtype.UUID) ([]ListAcquisitionSelectedVideosRow, error) {
@@ -1170,6 +1172,7 @@ func (q *Queries) ListAcquisitionSelectedVideos(ctx context.Context, acquisition
 			&i.SourceSeason,
 			&i.SourceEpisode,
 			&i.SourceEpisodeFractionHundredths,
+			&i.FileResolutionSource,
 		); err != nil {
 			return nil, err
 		}
@@ -1496,8 +1499,10 @@ SELECT
     file.media_kind,
     file.source_season,
     file.source_episode,
-    file.source_episode_fraction_hundredths
+    file.source_episode_fraction_hundredths,
+    download.file_resolution_source
 FROM download_files AS file
+JOIN downloads AS download ON download.id = file.download_id
 WHERE file.download_id = $1
   AND file.selected
   AND file.media_kind IN ('video', 'subtitle')
@@ -1512,6 +1517,7 @@ type ListExplicitMappingFilesForDownloadRow struct {
 	SourceSeason                    *int32      `db:"source_season" json:"source_season"`
 	SourceEpisode                   *int32      `db:"source_episode" json:"source_episode"`
 	SourceEpisodeFractionHundredths int32       `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	FileResolutionSource            *string     `db:"file_resolution_source" json:"file_resolution_source"`
 }
 
 func (q *Queries) ListExplicitMappingFilesForDownload(ctx context.Context, downloadID pgtype.UUID) ([]ListExplicitMappingFilesForDownloadRow, error) {
@@ -1530,6 +1536,7 @@ func (q *Queries) ListExplicitMappingFilesForDownload(ctx context.Context, downl
 			&i.SourceSeason,
 			&i.SourceEpisode,
 			&i.SourceEpisodeFractionHundredths,
+			&i.FileResolutionSource,
 		); err != nil {
 			return nil, err
 		}
@@ -1664,7 +1671,8 @@ SELECT
     file.relative_path,
     file.source_season,
     file.source_episode,
-    file.source_episode_fraction_hundredths
+    file.source_episode_fraction_hundredths,
+    download.file_resolution_source
 FROM acquisitions AS acquisition
 LEFT JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
 JOIN LATERAL (
@@ -1697,6 +1705,7 @@ type ListMappingScopeSelectedVideosRow struct {
 	SourceSeason                    *int32      `db:"source_season" json:"source_season"`
 	SourceEpisode                   *int32      `db:"source_episode" json:"source_episode"`
 	SourceEpisodeFractionHundredths int32       `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+	FileResolutionSource            *string     `db:"file_resolution_source" json:"file_resolution_source"`
 }
 
 func (q *Queries) ListMappingScopeSelectedVideos(ctx context.Context, acquisitionID pgtype.UUID) ([]ListMappingScopeSelectedVideosRow, error) {
@@ -1714,6 +1723,7 @@ func (q *Queries) ListMappingScopeSelectedVideos(ctx context.Context, acquisitio
 			&i.SourceSeason,
 			&i.SourceEpisode,
 			&i.SourceEpisodeFractionHundredths,
+			&i.FileResolutionSource,
 		); err != nil {
 			return nil, err
 		}

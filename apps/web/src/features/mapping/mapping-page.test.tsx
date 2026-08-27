@@ -262,8 +262,16 @@ describe('MappingPage', () => {
       http.get(`*/api/v1/downloads/${downloadId}`, () => HttpResponse.json({
         ...download,
         files: [
-          { ...download.files[0], relativePath: 'Show - 12.5.mkv', sourceEpisode: 12, sourceEpisodeFractionHundredths: 50 },
-          { ...download.files[1], relativePath: 'Show - 125.mkv', sourceEpisode: 125, sourceEpisodeFractionHundredths: 0 },
+          { ...download.files[0], fileIndex: 2, relativePath: 'Show - 12.5.mkv', sourceEpisode: 12, sourceEpisodeFractionHundredths: 50 },
+          { ...download.files[1], fileIndex: 1, relativePath: 'Show - 125.mkv', sourceEpisode: 125, sourceEpisodeFractionHundredths: 0 },
+          {
+            ...download.files[1],
+            id: '91000000-0000-4000-8000-000000000008',
+            fileIndex: 0,
+            relativePath: 'Show - 12.mkv',
+            sourceEpisode: 12,
+            sourceEpisodeFractionHundredths: 0,
+          },
         ],
       })),
     );
@@ -271,8 +279,11 @@ describe('MappingPage', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: '单点连续' })).toBeDisabled());
     expect(screen.getByRole('button', { name: '逐个文件' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByText('S01E12.5')).toBeInTheDocument();
-    expect(screen.getByText('S01E125')).toBeInTheDocument();
+    const integerTwelve = screen.getByText('S01E12');
+    const fractionalTwelve = screen.getByText('S01E12.5');
+    const integerOneTwentyFive = screen.getByText('S01E125');
+    expect(integerTwelve.compareDocumentPosition(fractionalTwelve) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(fractionalTwelve.compareDocumentPosition(integerOneTwentyFive) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(screen.queryByRole('button', { name: /映射到 S01E01/ })).not.toBeInTheDocument();
   });
 

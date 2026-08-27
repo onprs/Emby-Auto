@@ -10,6 +10,41 @@ import (
 	"github.com/onprs/emby-auto/backend/internal/domain"
 )
 
+func TestEffectiveDownloadFileSourceCoordinateUsesResolutionProvenance(t *testing.T) {
+	season, collapsedEpisode := int32(1), int32(125)
+	file := db.DownloadFile{
+		RelativePath: "Sample.Show.12.5.mkv", SourceSeason: &season, SourceEpisode: &collapsedEpisode,
+	}
+	deterministic := string(domain.DecisionSourceDeterministic)
+	coordinate, ok := effectiveDownloadFileSourceCoordinate(file, deterministic)
+	want := domain.EpisodeCoordinate{Season: 1, Episode: 12, EpisodeFractionHundredths: 50}
+	if !ok || coordinate != want {
+		t.Fatalf("deterministic coordinate = %#v/%t, want %#v/true", coordinate, ok, want)
+	}
+	view := downloadViewFromDB(db.Download{FileResolutionSource: &deterministic}, []db.DownloadFile{file})
+	if len(view.Files) != 1 || view.Files[0].SourceEpisode == nil || *view.Files[0].SourceEpisode != 12 || view.Files[0].SourceEpisodeFractionHundredths != 50 {
+		t.Fatalf("deterministic DownloadFileView = %#v", view.Files)
+	}
+
+	user := string(domain.DecisionSourceUser)
+	coordinate, ok = effectiveDownloadFileSourceCoordinate(file, user)
+	want = domain.EpisodeCoordinate{Season: 1, Episode: 125}
+	if !ok || coordinate != want {
+		t.Fatalf("user coordinate = %#v/%t, want %#v/true", coordinate, ok, want)
+	}
+	view = downloadViewFromDB(db.Download{FileResolutionSource: &user}, []db.DownloadFile{file})
+	if len(view.Files) != 1 || view.Files[0].SourceEpisode == nil || *view.Files[0].SourceEpisode != 125 || view.Files[0].SourceEpisodeFractionHundredths != 0 {
+		t.Fatalf("user DownloadFileView = %#v", view.Files)
+	}
+
+	integer, ok := effectiveDownloadFileSourceCoordinate(db.DownloadFile{
+		RelativePath: "Sample.Show.125.mkv", SourceSeason: &season, SourceEpisode: &collapsedEpisode,
+	}, deterministic)
+	if !ok || integer != (domain.EpisodeCoordinate{Season: 1, Episode: 125}) {
+		t.Fatalf("integer coordinate = %#v/%t", integer, ok)
+	}
+}
+
 func TestRSSEntryGroupsHidePendingBackgroundAdjudication(t *testing.T) {
 	pending := domain.RSSEntryView{Classification: "pending", AdjudicationState: "pending"}
 	if rssEntryMatchesGroup(pending, "confirmed") || rssEntryMatchesGroup(pending, "skipped") {

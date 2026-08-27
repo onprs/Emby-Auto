@@ -74,7 +74,9 @@ export function MappingPage({ acquisitionId }: { acquisitionId: string }) {
     retry: false,
   });
 
-  const sourceOptions = download.data?.files.filter((file) => file.selected && file.mediaKind === 'video') ?? [];
+  const sourceOptions = (download.data?.files.filter((file) => file.selected && file.mediaKind === 'video') ?? [])
+    .slice()
+    .sort(compareSourceFiles);
   const hasFractionalSource = sourceOptions.some((file) => (file.sourceEpisodeFractionHundredths ?? 0) > 0);
   const activeMode: MappingMode = hasFractionalSource ? 'explicit' : mode;
   const preferredAnchor = findAnchorSource(sourceOptions, acquisition.data?.sourceSeason, acquisition.data?.sourceEpisode);
@@ -609,6 +611,25 @@ function findAnchorSource<T extends { id: string; sourceSeason?: number; sourceE
   const matching = files.filter((file) => file.sourceSeason === sourceSeason && file.sourceEpisode === sourceEpisode && (file.sourceEpisodeFractionHundredths ?? 0) === 0);
   if (matching.length > 0) return matching[0];
   return files.length === 1 ? files[0] : undefined;
+}
+
+function compareSourceFiles(left: DownloadFile, right: DownloadFile): number {
+  const leftCoordinate = [
+    left.sourceSeason ?? Number.MAX_SAFE_INTEGER,
+    left.sourceEpisode ?? Number.MAX_SAFE_INTEGER,
+    left.sourceEpisodeFractionHundredths ?? 0,
+  ];
+  const rightCoordinate = [
+    right.sourceSeason ?? Number.MAX_SAFE_INTEGER,
+    right.sourceEpisode ?? Number.MAX_SAFE_INTEGER,
+    right.sourceEpisodeFractionHundredths ?? 0,
+  ];
+  for (let index = 0; index < leftCoordinate.length; index++) {
+    const difference = leftCoordinate[index] - rightCoordinate[index];
+    if (difference !== 0) return difference;
+  }
+  if (left.fileIndex !== right.fileIndex) return left.fileIndex - right.fileIndex;
+  return left.relativePath.localeCompare(right.relativePath);
 }
 
 function sourceCoordinate(file: Pick<DownloadFile, 'sourceSeason' | 'sourceEpisode' | 'sourceEpisodeFractionHundredths'>): string {

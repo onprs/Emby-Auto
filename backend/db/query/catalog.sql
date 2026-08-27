@@ -180,7 +180,8 @@ SELECT
     file.relative_path,
     file.source_season,
     file.source_episode,
-    file.source_episode_fraction_hundredths
+    file.source_episode_fraction_hundredths,
+    download.file_resolution_source
 FROM download_files AS file
 JOIN downloads AS download ON download.id = file.download_id
 WHERE download.id = (
@@ -440,8 +441,10 @@ SELECT
     file.media_kind,
     file.source_season,
     file.source_episode,
-    file.source_episode_fraction_hundredths
+    file.source_episode_fraction_hundredths,
+    download.file_resolution_source
 FROM download_files AS file
+JOIN downloads AS download ON download.id = file.download_id
 WHERE file.download_id = sqlc.arg(download_id)
   AND file.selected
   AND file.media_kind IN ('video', 'subtitle')
@@ -700,7 +703,8 @@ SELECT
     file.relative_path,
     file.source_season,
     file.source_episode,
-    file.source_episode_fraction_hundredths
+    file.source_episode_fraction_hundredths,
+    download.file_resolution_source
 FROM acquisitions AS acquisition
 LEFT JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
 JOIN LATERAL (

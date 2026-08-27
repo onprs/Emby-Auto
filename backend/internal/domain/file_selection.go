@@ -200,23 +200,42 @@ func SelectDownloadFiles(files []DownloadFile, options FileSelectionOptions) (Fi
 	return result, nil
 }
 
+type parsedSourceCoordinate struct {
+	coordinate             EpisodeCoordinate
+	legacyCollapsedEpisode int
+	fractional             bool
+}
+
 func ParseSourceCoordinate(filePath string, defaultSeason int) (EpisodeCoordinate, bool) {
+	parsed, ok := parseSourceCoordinate(filePath, defaultSeason)
+	return parsed.coordinate, ok
+}
+
+func RecoverLegacyFractionalSourceCoordinate(filePath string, persisted EpisodeCoordinate) (EpisodeCoordinate, bool) {
+	if persisted.Season <= 0 || persisted.Episode <= 0 || persisted.EpisodeFractionHundredths != 0 {
+		return persisted, false
+	}
+	parsed, ok := parseSourceCoordinate(filePath, persisted.Season)
+	if !ok || !parsed.fractional || parsed.coordinate.Season != persisted.Season || parsed.legacyCollapsedEpisode != persisted.Episode {
+		return persisted, false
+	}
+	return parsed.coordinate, true
+}
+
+func parseSourceCoordinate(filePath string, defaultSeason int) (parsedSourceCoordinate, bool) {
 	normalized := strings.ReplaceAll(strings.TrimSpace(filePath), `\`, "/")
 	base := path.Base(normalized)
 	stem := strings.TrimSuffix(base, path.Ext(base))
 	if matches := seasonDecimalEpisodePattern.FindStringSubmatch(stem); len(matches) == 4 {
-		season := decimal(matches[1])
-		episode := decimal(matches[2])
-		fraction, fractionOK := episodeFractionHundredths(matches[3])
-		if season > 0 && episode > 0 && fractionOK {
-			return EpisodeCoordinate{Season: season, Episode: episode, EpisodeFractionHundredths: fraction}, true
+		if parsed, ok := parseDecimalSourceCoordinate(decimal(matches[1]), matches[2], matches[3]); ok {
+			return parsed, true
 		}
 	}
 	if matches := seasonEpisodePattern.FindStringSubmatch(stem); len(matches) == 3 {
 		season := decimal(matches[1])
 		episode := decimal(matches[2])
 		if season > 0 && episode > 0 {
-			return EpisodeCoordinate{Season: season, Episode: episode}, true
+			return parsedSourceCoordinate{coordinate: EpisodeCoordinate{Season: season, Episode: episode}}, true
 		}
 	}
 
@@ -229,10 +248,8 @@ func ParseSourceCoordinate(filePath string, defaultSeason int) (EpisodeCoordinat
 		if len(matches) != 3 {
 			continue
 		}
-		episode := decimal(matches[1])
-		fraction, fractionOK := episodeFractionHundredths(matches[2])
-		if season > 0 && episode > 0 && fractionOK {
-			return EpisodeCoordinate{Season: season, Episode: episode, EpisodeFractionHundredths: fraction}, true
+		if parsed, ok := parseDecimalSourceCoordinate(season, matches[1], matches[2]); ok {
+			return parsed, true
 		}
 	}
 	for _, pattern := range []*regexp.Regexp{eastAsianEpisodePattern, episodeTokenPattern, delimitedEpisodePattern} {
@@ -242,10 +259,25 @@ func ParseSourceCoordinate(filePath string, defaultSeason int) (EpisodeCoordinat
 		}
 		episode := decimal(matches[1])
 		if season > 0 && episode > 0 {
-			return EpisodeCoordinate{Season: season, Episode: episode}, true
+			return parsedSourceCoordinate{coordinate: EpisodeCoordinate{Season: season, Episode: episode}}, true
 		}
 	}
-	return EpisodeCoordinate{}, false
+	return parsedSourceCoordinate{}, false
+}
+
+func parseDecimalSourceCoordinate(season int, episodeRaw, fractionRaw string) (parsedSourceCoordinate, bool) {
+	episode := decimal(episodeRaw)
+	fraction, fractionOK := episodeFractionHundredths(fractionRaw)
+	if season <= 0 || episode <= 0 || !fractionOK {
+		return parsedSourceCoordinate{}, false
+	}
+	return parsedSourceCoordinate{
+		coordinate: EpisodeCoordinate{
+			Season: season, Episode: episode, EpisodeFractionHundredths: fraction,
+		},
+		legacyCollapsedEpisode: episode*10 + decimal(fractionRaw),
+		fractional:             true,
+	}, true
 }
 
 func episodeFractionHundredths(raw string) (int, bool) {

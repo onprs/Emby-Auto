@@ -176,6 +176,50 @@ func TestParseSourceCoordinateRecognizesSupportedFormsWithoutUsingResolution(t *
 	}
 }
 
+func TestRecoverLegacyFractionalSourceCoordinateRequiresExactCollapsedIdentity(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		persisted  EpisodeCoordinate
+		want       EpisodeCoordinate
+		wantChange bool
+	}{
+		{
+			name: "single digit fraction", path: "Sample.Show.12.5.mkv",
+			persisted: EpisodeCoordinate{Season: 1, Episode: 125},
+			want:      EpisodeCoordinate{Season: 1, Episode: 12, EpisodeFractionHundredths: 50}, wantChange: true,
+		},
+		{
+			name: "two digit fraction", path: "Sample.Show.12.05.mkv",
+			persisted: EpisodeCoordinate{Season: 1, Episode: 125},
+			want:      EpisodeCoordinate{Season: 1, Episode: 12, EpisodeFractionHundredths: 5}, wantChange: true,
+		},
+		{
+			name: "integer identity", path: "Sample.Show.125.mkv",
+			persisted: EpisodeCoordinate{Season: 1, Episode: 125},
+			want:      EpisodeCoordinate{Season: 1, Episode: 125},
+		},
+		{
+			name: "already structured", path: "Sample.Show.12.5.mkv",
+			persisted: EpisodeCoordinate{Season: 1, Episode: 12, EpisodeFractionHundredths: 50},
+			want:      EpisodeCoordinate{Season: 1, Episode: 12, EpisodeFractionHundredths: 50},
+		},
+		{
+			name: "manual coordinate does not match legacy collapse", path: "Sample.Show.12.5.mkv",
+			persisted: EpisodeCoordinate{Season: 1, Episode: 12},
+			want:      EpisodeCoordinate{Season: 1, Episode: 12},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, changed := RecoverLegacyFractionalSourceCoordinate(test.path, test.persisted)
+			if got != test.want || changed != test.wantChange {
+				t.Fatalf("RecoverLegacyFractionalSourceCoordinate() = %#v/%t, want %#v/%t", got, changed, test.want, test.wantChange)
+			}
+		})
+	}
+}
+
 func TestSelectDownloadFilesRejectsUnsafeOrAmbiguousInput(t *testing.T) {
 	tests := []struct {
 		name  string

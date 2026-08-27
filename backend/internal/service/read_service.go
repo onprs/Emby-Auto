@@ -250,31 +250,37 @@ func downloadViewFromDB(row db.Download, files []db.DownloadFile) domain.Downloa
 		value := row.CompletedAt.Time
 		view.CompletedAt = &value
 	}
+	resolutionSource := stringValue(row.FileResolutionSource)
 	for _, file := range files {
 		item := domain.DownloadFileView{
 			ID: repository.UUIDFromPG(file.ID), FileIndex: int(file.FileIndex),
 			RelativePath: file.RelativePath, SizeBytes: file.SizeBytes,
 			MediaKind: file.MediaKind, Selected: file.Selected,
-			SourceEpisodeFractionHundredths: int(file.SourceEpisodeFractionHundredths),
 		}
-		if file.SourceSeason != nil {
-			value := int(*file.SourceSeason)
-			item.SourceSeason = &value
-		}
-		if file.SourceEpisode != nil {
-			value := int(*file.SourceEpisode)
-			item.SourceEpisode = &value
+		if coordinate, ok := effectiveDownloadFileSourceCoordinate(file, resolutionSource); ok {
+			season, episode := coordinate.Season, coordinate.Episode
+			item.SourceSeason = &season
+			item.SourceEpisode = &episode
+			item.SourceEpisodeFractionHundredths = coordinate.EpisodeFractionHundredths
 		}
 		if file.Language != nil {
 			item.Language = *file.Language
 		}
-		item.ExclusionReason = downloadFileExclusionReason(file, files)
+		item.ExclusionReason = downloadFileExclusionReason(file, files, resolutionSource)
 		view.Files = append(view.Files, item)
 	}
 	return view
 }
 
-func downloadFileExclusionReason(file db.DownloadFile, files []db.DownloadFile) string {
+func effectiveDownloadFileSourceCoordinate(file db.DownloadFile, resolutionSource string) (domain.EpisodeCoordinate, bool) {
+	resolved := resolveSourceCoordinate(
+		file.RelativePath, file.SourceSeason, file.SourceEpisode,
+		file.SourceEpisodeFractionHundredths, resolutionSource,
+	)
+	return resolved.coordinate, resolved.valid
+}
+
+func downloadFileExclusionReason(file db.DownloadFile, files []db.DownloadFile, resolutionSource string) string {
 	if file.Selected {
 		return ""
 	}
@@ -284,16 +290,17 @@ func downloadFileExclusionReason(file db.DownloadFile, files []db.DownloadFile) 
 	case "unknown", "other":
 		return "unsupported_media"
 	case "video", "subtitle":
-		if file.SourceSeason == nil || file.SourceEpisode == nil {
+		if _, ok := effectiveDownloadFileSourceCoordinate(file, resolutionSource); !ok {
 			return "episode_not_detected"
 		}
 	}
+	coordinate, coordinateOK := effectiveDownloadFileSourceCoordinate(file, resolutionSource)
 	for _, selected := range files {
-		if !selected.Selected || selected.MediaKind != file.MediaKind || selected.SourceSeason == nil || selected.SourceEpisode == nil {
+		if !selected.Selected || selected.MediaKind != file.MediaKind {
 			continue
 		}
-		if *selected.SourceSeason == *file.SourceSeason && *selected.SourceEpisode == *file.SourceEpisode &&
-			selected.SourceEpisodeFractionHundredths == file.SourceEpisodeFractionHundredths {
+		selectedCoordinate, selectedCoordinateOK := effectiveDownloadFileSourceCoordinate(selected, resolutionSource)
+		if coordinateOK && selectedCoordinateOK && selectedCoordinate == coordinate {
 			if file.MediaKind == "video" {
 				return "alternate_video"
 			}

@@ -796,6 +796,7 @@ type explicitMappingFile struct {
 	sourceSeason                    *int32
 	sourceEpisode                   *int32
 	sourceEpisodeFractionHundredths int32
+	resolutionSource                string
 }
 
 type explicitMappingFileChange struct {
@@ -823,6 +824,7 @@ func applyExplicitMappingFilePlan(
 			sourceSeason:                    file.SourceSeason,
 			sourceEpisode:                   file.SourceEpisode,
 			sourceEpisodeFractionHundredths: file.SourceEpisodeFractionHundredths,
+			resolutionSource:                stringValue(file.FileResolutionSource),
 		})
 	}
 	changes, excluded, err := planExplicitMappingFileChanges(rows, files)
@@ -889,7 +891,7 @@ func planExplicitMappingFileChanges(
 			EpisodeFractionHundredths: row.SourceEpisodeFractionHundredths,
 		}
 		if mappingSourceCoordinate(
-			file.relativePath, file.sourceSeason, file.sourceEpisode, file.sourceEpisodeFractionHundredths,
+			file.relativePath, file.sourceSeason, file.sourceEpisode, file.sourceEpisodeFractionHundredths, file.resolutionSource,
 		) != desired {
 			return nil, 0, NewError("mapping_source_changed", "a source video coordinate changed before the explicit mapping was saved", ErrStateConflict, map[string]any{"sourceFileId": file.id})
 		}
@@ -917,10 +919,12 @@ func planExplicitMappingFileChanges(
 			continue
 		}
 		stored := persistedSourceCoordinate(file.sourceSeason, file.sourceEpisode, file.sourceEpisodeFractionHundredths)
-		desired := stored
+		resolved := resolveSourceCoordinate(
+			file.relativePath, file.sourceSeason, file.sourceEpisode, file.sourceEpisodeFractionHundredths, file.resolutionSource,
+		)
+		desired := resolved.coordinate
 		ownerID := uuid.Nil
-		if parsed, matched := domain.ParseSourceCoordinate(file.relativePath, stored.Season); matched {
-			desired = parsed
+		if resolved.fromPath {
 			ownerID = videoByCoordinate[desired]
 		} else {
 			owners := videosByStoredCoordinate[stored]
@@ -955,6 +959,42 @@ func persistedSourceCoordinate(sourceSeason, sourceEpisode *int32, sourceEpisode
 	return coordinate
 }
 
+type sourceCoordinateResolution struct {
+	coordinate domain.EpisodeCoordinate
+	valid      bool
+	fromPath   bool
+}
+
+func resolveSourceCoordinate(
+	relativePath string,
+	sourceSeason, sourceEpisode *int32,
+	sourceEpisodeFractionHundredths int32,
+	resolutionSource string,
+) sourceCoordinateResolution {
+	persisted := persistedSourceCoordinate(sourceSeason, sourceEpisode, sourceEpisodeFractionHundredths)
+	persistedValid := persisted.Season > 0 && persisted.Episode > 0
+	if persistedValid {
+		if resolutionSource != "" && resolutionSource != string(domain.DecisionSourceDeterministic) {
+			return sourceCoordinateResolution{coordinate: persisted, valid: true}
+		}
+		if persisted.EpisodeFractionHundredths != 0 {
+			return sourceCoordinateResolution{coordinate: persisted, valid: true}
+		}
+	}
+
+	parsed, parsedOK := domain.ParseSourceCoordinate(relativePath, persisted.Season)
+	if !parsedOK {
+		return sourceCoordinateResolution{coordinate: persisted, valid: persistedValid}
+	}
+	if !persistedValid || resolutionSource == "" || parsed.EpisodeFractionHundredths == 0 {
+		return sourceCoordinateResolution{coordinate: parsed, valid: true, fromPath: true}
+	}
+	if recovered, ok := domain.RecoverLegacyFractionalSourceCoordinate(relativePath, persisted); ok {
+		return sourceCoordinateResolution{coordinate: recovered, valid: true, fromPath: true}
+	}
+	return sourceCoordinateResolution{coordinate: persisted, valid: true}
+}
+
 func repairMappingScopeCoordinates(ctx context.Context, queries *db.Queries, acquisitionID uuid.UUID) (int64, error) {
 	files, err := queries.ListMappingScopeSelectedVideos(ctx, repository.UUIDToPG(acquisitionID))
 	if err != nil {
@@ -964,6 +1004,7 @@ func repairMappingScopeCoordinates(ctx context.Context, queries *db.Queries, acq
 	for _, file := range files {
 		coordinate := mappingSourceCoordinate(
 			file.RelativePath, file.SourceSeason, file.SourceEpisode, file.SourceEpisodeFractionHundredths,
+			stringValue(file.FileResolutionSource),
 		)
 		if coordinate.Season <= 0 || coordinate.Episode <= 0 {
 			continue
@@ -1047,18 +1088,11 @@ func mappingSourceCoordinate(
 	relativePath string,
 	sourceSeason, sourceEpisode *int32,
 	sourceEpisodeFractionHundredths int32,
+	resolutionSource string,
 ) domain.EpisodeCoordinate {
-	coordinate := domain.EpisodeCoordinate{EpisodeFractionHundredths: int(sourceEpisodeFractionHundredths)}
-	if sourceSeason != nil {
-		coordinate.Season = int(*sourceSeason)
-	}
-	if sourceEpisode != nil {
-		coordinate.Episode = int(*sourceEpisode)
-	}
-	if parsed, ok := domain.ParseSourceCoordinate(relativePath, coordinate.Season); ok {
-		coordinate = parsed
-	}
-	return coordinate
+	return resolveSourceCoordinate(
+		relativePath, sourceSeason, sourceEpisode, sourceEpisodeFractionHundredths, resolutionSource,
+	).coordinate
 }
 
 type mappingPreviewSource struct {
@@ -1130,6 +1164,7 @@ func (workflow *CatalogWorkflow) buildMappingPreview(
 		fileID := repository.UUIDFromPG(file.ID)
 		source := mappingSourceCoordinate(
 			file.RelativePath, file.SourceSeason, file.SourceEpisode, file.SourceEpisodeFractionHundredths,
+			stringValue(file.FileResolutionSource),
 		)
 		if source.Season <= 0 || source.Episode <= 0 {
 			return domain.EpisodeMappingPreview{}, NewError("mapping_source_invalid", "a selected video file has no valid episode coordinate", ErrStateConflict, map[string]any{"fileId": fileID})

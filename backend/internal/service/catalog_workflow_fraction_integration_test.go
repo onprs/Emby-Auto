@@ -40,12 +40,12 @@ INSERT INTO rss_entries (
 ) VALUES ($9, $7, $10, 'Fractional explicit RSS 12.5', $11, true, ARRAY[]::text[], 1, 12, 0, 'enqueued');
 INSERT INTO acquisitions (id, series_id, source_kind, rss_entry_id, created_by)
 VALUES ($12, $3, 'rss', $9, $1);
-INSERT INTO downloads (id, acquisition_id, status, progress)
-VALUES ($13, $12, 'completed', 1);
+INSERT INTO downloads (id, acquisition_id, status, progress, file_resolution_source)
+VALUES ($13, $12, 'completed', 1, 'deterministic');
 INSERT INTO download_files (
     id, download_id, file_index, relative_path, size_bytes, media_kind, selected,
     source_season, source_episode, source_episode_fraction_hundredths
-) VALUES ($14, $13, 0, 'Show.S01E12.5.mkv', 1000, 'video', true, 1, 12, 0)
+) VALUES ($14, $13, 0, 'Show.S01E12.5.mkv', 1000, 'video', true, 1, 125, 0)
 `, actorID, "fractional-explicit-"+actorID.String(), seriesID, time.Now().UnixNano(), seasonID,
 		targetEpisodeID, subscriptionID, "https://example.test/"+subscriptionID.String()+".xml",
 		entryID, "guid:"+entryID.String(), "https://example.test/12.5.torrent",
@@ -92,5 +92,70 @@ WHERE file.id = $1
 	}
 	if fileEpisode != 12 || payloadEpisode != 12 || entryEpisode != 12 || fileFraction != 50 || payloadFraction != 50 || entryFraction != 50 {
 		t.Fatalf("fractional source facts = file %d.%02d payload %d.%02d entry %d.%02d", fileEpisode, fileFraction, payloadEpisode, payloadFraction, entryEpisode, entryFraction)
+	}
+}
+
+func TestUserSourceCoordinateRemainsAuthoritativeAcrossAnchorPreviewAndSaveIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, pool := testutil.NewMigratedPostgres(t)
+
+	actorID, seriesID, seasonID, targetEpisodeID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	acquisitionID, downloadID, sourceFileID := uuid.New(), uuid.New(), uuid.New()
+	if _, err := testutil.ExecFixture(ctx, pool, `
+INSERT INTO admin_users (id, username, password_hash)
+VALUES ($1, $2, 'fixture-hash');
+INSERT INTO media_series (id, tmdb_series_id, title)
+VALUES ($3, $4, 'User coordinate authority');
+INSERT INTO tmdb_seasons (id, series_id, season_number, episode_count)
+VALUES ($5, $3, 1, 1);
+INSERT INTO media_episodes (id, season_id, episode_number, title)
+VALUES ($6, $5, 1, 'Episode 1');
+INSERT INTO acquisitions (id, series_id, source_kind, source_uri, created_by)
+VALUES ($7, $3, 'manual', $8, $1);
+INSERT INTO downloads (id, acquisition_id, status, progress, file_resolution_source)
+VALUES ($9, $7, 'completed', 1, 'user');
+INSERT INTO download_files (
+    id, download_id, file_index, relative_path, size_bytes, media_kind, selected,
+    source_season, source_episode, source_episode_fraction_hundredths
+) VALUES ($10, $9, 0, 'Show.S01E12.5.mkv', 1000, 'video', true, 1, 12, 0)
+`, actorID, "user-coordinate-"+actorID.String(), seriesID, time.Now().UnixNano(), seasonID,
+		targetEpisodeID, acquisitionID, "https://example.test/"+acquisitionID.String()+".torrent", downloadID, sourceFileID); err != nil {
+		t.Fatal(err)
+	}
+
+	transactor := database.NewTransactor(pool)
+	workflow := NewCatalogWorkflow(db.New(pool), transactor, NewOperationScheduler(transactor, &integrationJobInserter{}))
+	input := domain.EpisodeMappingPlanInput{
+		AcquisitionID: acquisitionID,
+		Mode:          domain.EpisodeMappingModeAnchor,
+		Anchor: domain.EpisodeMappingAnchorInput{
+			SourceFileID: sourceFileID,
+			Target:       domain.EpisodeCoordinate{Season: 1, Episode: 1},
+		},
+		IdempotencyKey: "user-coordinate-anchor",
+		ActorUserID:    actorID,
+	}
+	preview, err := workflow.PreviewEpisodeMapping(ctx, input)
+	if err != nil {
+		t.Fatalf("PreviewEpisodeMapping() error = %v", err)
+	}
+	if len(preview.Rows) != 1 || preview.Rows[0].SourceEpisode != 12 || preview.Rows[0].SourceEpisodeFractionHundredths != 0 {
+		t.Fatalf("preview rows = %#v", preview.Rows)
+	}
+	if _, err := workflow.SaveEpisodeMapping(ctx, input); err != nil {
+		t.Fatalf("SaveEpisodeMapping() error = %v", err)
+	}
+
+	var episode, fraction int
+	if err := pool.QueryRow(ctx, `
+SELECT source_episode, source_episode_fraction_hundredths
+FROM download_files
+WHERE id = $1
+`, sourceFileID).Scan(&episode, &fraction); err != nil {
+		t.Fatal(err)
+	}
+	if episode != 12 || fraction != 0 {
+		t.Fatalf("saved source coordinate = %d.%02d, want 12.00", episode, fraction)
 	}
 }

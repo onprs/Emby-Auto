@@ -213,6 +213,71 @@ func TestPlanExplicitMappingFilesKeepsFractionalAndIntegerEpisodesDistinct(t *te
 	}
 }
 
+func TestResolveSourceCoordinateHonorsPersistedProvenance(t *testing.T) {
+	season, collapsed, twelve := int32(1), int32(125), int32(12)
+	tests := []struct {
+		name             string
+		path             string
+		episode          *int32
+		fraction         int32
+		resolutionSource string
+		want             domain.EpisodeCoordinate
+		wantFromPath     bool
+	}{
+		{
+			name: "deterministic legacy fraction", path: "Pack S01E12.5.mkv", episode: &collapsed,
+			resolutionSource: string(domain.DecisionSourceDeterministic),
+			want:             domain.EpisodeCoordinate{Season: 1, Episode: 12, EpisodeFractionHundredths: 50}, wantFromPath: true,
+		},
+		{
+			name: "deterministic fractional mismatch", path: "Pack S01E12.5.mkv", episode: &twelve,
+			resolutionSource: string(domain.DecisionSourceDeterministic),
+			want:             domain.EpisodeCoordinate{Season: 1, Episode: 12},
+		},
+		{
+			name: "user collision", path: "Pack S01E12.5.mkv", episode: &collapsed,
+			resolutionSource: string(domain.DecisionSourceUser),
+			want:             domain.EpisodeCoordinate{Season: 1, Episode: 125},
+		},
+		{
+			name: "agent collision", path: "Pack S01E12.5.mkv", episode: &collapsed,
+			resolutionSource: string(domain.DecisionSourceAgentAuto),
+			want:             domain.EpisodeCoordinate{Season: 1, Episode: 125},
+		},
+		{
+			name: "structured fraction stays authoritative", path: "Pack S01E12.05.mkv", episode: &twelve, fraction: 50,
+			resolutionSource: string(domain.DecisionSourceDeterministic),
+			want:             domain.EpisodeCoordinate{Season: 1, Episode: 12, EpisodeFractionHundredths: 50},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resolved := resolveSourceCoordinate(test.path, &season, test.episode, test.fraction, test.resolutionSource)
+			if !resolved.valid || resolved.coordinate != test.want || resolved.fromPath != test.wantFromPath {
+				t.Fatalf("resolveSourceCoordinate() = %#v, want coordinate %#v fromPath %t", resolved, test.want, test.wantFromPath)
+			}
+		})
+	}
+}
+
+func TestPlanExplicitMappingFilesPreservesUserCoordinateDespiteDecimalPath(t *testing.T) {
+	videoID := uuid.New()
+	season, episode := int32(1), int32(125)
+	changes, excluded, err := planExplicitMappingFileChanges(
+		[]domain.EpisodeMappingRow{{SourceFileID: videoID, SourceSeason: 1, SourceEpisode: 125, Status: domain.MappingMapped}},
+		[]explicitMappingFile{{
+			id: videoID, relativePath: "Pack S01E12.5.mkv", mediaKind: domain.MediaVideo,
+			sourceSeason: &season, sourceEpisode: &episode, resolutionSource: string(domain.DecisionSourceUser),
+		}},
+	)
+	if err != nil {
+		t.Fatalf("planExplicitMappingFileChanges() error = %v", err)
+	}
+	if excluded != 0 || len(changes) != 1 || changes[0].coordinate != (domain.EpisodeCoordinate{Season: 1, Episode: 125}) {
+		t.Fatalf("planned changes/excluded = %#v/%d", changes, excluded)
+	}
+}
+
 func TestPlanExplicitMappingFilesRejectsAmbiguousStoredSubtitleCoordinate(t *testing.T) {
 	firstVideoID, secondVideoID, subtitleID := uuid.New(), uuid.New(), uuid.New()
 	season, placeholderEpisode := int32(1), int32(1)
