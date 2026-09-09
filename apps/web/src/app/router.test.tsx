@@ -99,6 +99,31 @@ beforeEach(() => {
 });
 
 describe('application router lazy boundaries', () => {
+  it('并行读取启动状态，但初始化完成前不展示受保护页面', async () => {
+    let finishSetup!: (response: Response) => void;
+    const sessionRead = vi.fn(() => HttpResponse.json(session));
+    server.use(
+      http.get('*/api/v1/setup/status', () => new Promise<Response>((resolve) => { finishSetup = resolve; })),
+      http.get('*/api/v1/auth/session', sessionRead),
+    );
+    renderApp('/');
+    await waitFor(() => expect(sessionRead).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('app-shell')).not.toBeInTheDocument();
+    expect(stream.start).not.toHaveBeenCalled();
+    await act(async () => { finishSetup(HttpResponse.json(completedSetup)); });
+    expect(await screen.findByRole('heading', { name: 'lazy dashboard' })).toBeVisible();
+    expect(sessionRead).toHaveBeenCalledTimes(1);
+  });
+
+  it('首次安装时登录状态读取失败仍可进入初始化向导', async () => {
+    useSetupResponse('required');
+    server.use(http.get('*/api/v1/auth/session', () => HttpResponse.json(
+      { code: 'service_unavailable', message: '认证尚未就绪', details: {} }, { status: 503 },
+    )));
+    renderApp('/');
+    expect(await screen.findByRole('heading', { name: 'lazy setup' })).toBeVisible();
+    expect(stream.start).not.toHaveBeenCalled();
+  });
   it('loads a direct detail route and forwards its path parameter', async () => {
     useSetupResponse();
     useSessionResponse(true);

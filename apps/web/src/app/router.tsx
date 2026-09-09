@@ -97,6 +97,9 @@ export const queryClient = new QueryClient({
       refetchOnWindowFocus: false,
       staleTime: 15_000,
       retry: (failureCount, error) => {
+        if (error instanceof ApiFailure && error.code === 'request_timeout') {
+          return false;
+        }
         if (error instanceof Error && 'status' in error) {
           const status = (error as { status?: number }).status;
           if (status === 401 || status === 404) {
@@ -416,13 +419,12 @@ function ApplicationGate() {
   const setup = useQuery({
     queryKey: ['setup-status'],
     queryFn: fetchSetupStatus,
-    retry: 1,
+    retry: false,
     refetchInterval: (query) => (query.state.data?.state === 'initializing' ? 1_000 : false),
   });
   const session = useQuery({
     queryKey: ['session'],
     queryFn: fetchSession,
-    enabled: setup.data?.state === 'completed',
     retry: false,
   });
 

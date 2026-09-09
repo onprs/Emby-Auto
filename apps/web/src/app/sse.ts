@@ -1,4 +1,4 @@
-import type { QueryClient, QueryKey } from '@tanstack/react-query';
+import type { Query, QueryClient, QueryFilters, QueryKey } from '@tanstack/react-query';
 
 import { reportSessionLoss } from '@/app/session-runtime';
 
@@ -18,6 +18,8 @@ type EventStreamOptions = {
   fetch?: typeof globalThis.fetch;
   reconnectBaseMs?: number;
   inactivityTimeoutMs?: number;
+  connectionTimeoutMs?: number;
+  refreshIntervalMs?: number;
 };
 
 type ParsedFrame = {
@@ -48,6 +50,10 @@ export class EventStream {
   private readonly fetcher: typeof globalThis.fetch;
   private readonly reconnectBaseMs: number;
   private readonly inactivityTimeoutMs: number;
+  private readonly connectionTimeoutMs: number;
+  private readonly refreshIntervalMs: number;
+  private readonly pendingQueries = new Set<Query>();
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly listeners = new Set<StatusListener>();
   private abortController: AbortController | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -61,6 +67,8 @@ export class EventStream {
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.reconnectBaseMs = options.reconnectBaseMs ?? 1_000;
     this.inactivityTimeoutMs = options.inactivityTimeoutMs ?? DEFAULT_INACTIVITY_TIMEOUT_MS;
+    this.connectionTimeoutMs = options.connectionTimeoutMs ?? 15_000;
+    this.refreshIntervalMs = options.refreshIntervalMs ?? 1_000;
   }
 
   start(): void {
@@ -83,6 +91,20 @@ export class EventStream {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    if (this.refreshTimer !== null) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+    // 页面离开时保留失效标记，下一次挂载仍会获取最新数据。
+    for (const query of this.pendingQueries) {
+      const markStale = () => {
+        if (this.queryClient.getQueryCache().get(query.queryHash) === query) query.invalidate();
+      };
+      markStale();
+      // 已开始的读取仍可能返回事件发生前的数据，不能覆盖离开时的失效标记。
+      if (query.state.fetchStatus === 'fetching') void query.promise?.then(markStale, markStale);
+    }
+    this.pendingQueries.clear();
     if (options.clearCursor ?? true) {
       this.lastEventId = null;
       this.clearCursor();
@@ -107,51 +129,66 @@ export class EventStream {
       headers.set('Last-Event-ID', this.lastEventId);
     }
 
+    const connectionTimer = setTimeout(() => controller.abort(), this.connectionTimeoutMs);
     try {
       const response = await this.fetcher('/api/v1/events', {
         credentials: 'include',
         headers,
         signal: controller.signal,
       });
+      if (!this.running || generation !== this.generation) {
+        await response.body?.cancel();
+        return;
+      }
       if (response.status === 401) {
         reportSessionLoss('unauthorized');
         this.stop();
         return;
       }
       if (response.status === 409 && this.lastEventId && (await isCursorConflict(response))) {
+        if (!this.running || generation !== this.generation) return;
         this.lastEventId = null;
         this.clearCursor();
-        await this.invalidateProtectedQueries();
+        this.queueRefresh({
+          predicate: (query) => query.queryKey[0] !== 'setup-status' && query.queryKey[0] !== 'session',
+        });
         this.scheduleReconnect(generation, 0);
         return;
       }
       if (!response.ok || !response.body) {
         throw new Error(`event stream returned HTTP ${response.status}`);
       }
+      clearTimeout(connectionTimer);
       this.reconnectAttempt = 0;
       this.emit('open');
-      await this.consume(response.body, generation);
+      await this.consume(response.body, generation, controller.signal);
       if (this.running && generation === this.generation) {
         this.scheduleReconnect(generation);
       }
-    } catch (error) {
-      if (!controller.signal.aborted && this.running && generation === this.generation) {
+    } catch {
+      if (this.running && generation === this.generation) {
         this.scheduleReconnect(generation);
       }
     } finally {
+      clearTimeout(connectionTimer);
+      controller.abort();
       if (this.abortController === controller) {
         this.abortController = null;
       }
     }
   }
 
-  private async consume(body: ReadableStream<Uint8Array>, generation: number): Promise<void> {
+  private async consume(body: ReadableStream<Uint8Array>, generation: number, signal: AbortSignal): Promise<void> {
     const reader = body.getReader();
+    const cancel = () => { void reader.cancel().catch(() => undefined); };
+    signal.addEventListener('abort', cancel, { once: true });
+    if (signal.aborted) cancel();
     const decoder = new TextDecoder();
     let buffer = '';
     try {
       while (this.running && generation === this.generation) {
         const result = await readWithInactivityTimeout(reader, this.inactivityTimeoutMs);
+        if (!this.running || generation !== this.generation) break;
         if (result === null) {
           await reader.cancel('event stream heartbeat timed out');
           throw new Error('event stream heartbeat timed out');
@@ -168,6 +205,7 @@ export class EventStream {
         }
       }
     } finally {
+      signal.removeEventListener('abort', cancel);
       reader.releaseLock();
     }
   }
@@ -187,7 +225,7 @@ export class EventStream {
     if (parsed?.topic) {
       this.invalidate(parsed);
       if (parsed.topic.startsWith('agent.')) {
-        void this.queryClient.invalidateQueries({ queryKey: ['agent-resolutions'], exact: false });
+        this.queueRefresh({ queryKey: ['agent-resolutions'], exact: false });
       }
     }
   }
@@ -198,21 +236,46 @@ export class EventStream {
     if (resourceType && resourceId) {
       const keys = resourceQueryKeys[resourceType]?.(resourceId) ?? [[resourceType, resourceId], [resourceType]];
       for (const queryKey of keys) {
-        void this.queryClient.invalidateQueries({ queryKey, exact: false });
+        this.queueRefresh({ queryKey, exact: false });
       }
-      void this.queryClient.invalidateQueries({ queryKey: ['events', resourceType, resourceId], exact: false });
+      this.queueRefresh({ queryKey: ['events', resourceType, resourceId], exact: false });
     }
     if (event.operationId) {
-      void this.queryClient.invalidateQueries({ queryKey: ['operation', event.operationId] });
-      void this.queryClient.invalidateQueries({ queryKey: ['operations'], exact: false });
+      this.queueRefresh({ queryKey: ['operation', event.operationId] });
+      this.queueRefresh({ queryKey: ['operations'], exact: false });
     }
-    void this.queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] });
+    this.queueRefresh({ queryKey: ['dashboard'], exact: true });
   }
 
-  private async invalidateProtectedQueries(): Promise<void> {
-    await this.queryClient.invalidateQueries({
-      predicate: (query) => query.queryKey[0] !== 'setup-status' && query.queryKey[0] !== 'session',
-    });
+  private queueRefresh(filters: QueryFilters): void {
+    for (const query of this.queryClient.getQueryCache().findAll(filters)) {
+      this.pendingQueries.add(query);
+    }
+    this.scheduleRefresh();
+  }
+
+  private scheduleRefresh(): void {
+    if (!this.running || this.refreshTimer !== null || this.pendingQueries.size === 0) return;
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
+      const ready = new Set<Query>();
+      for (const query of this.pendingQueries) {
+        if (this.queryClient.getQueryCache().get(query.queryHash) !== query) {
+          this.pendingQueries.delete(query);
+        } else if (query.state.fetchStatus !== 'fetching') {
+          ready.add(query);
+          this.pendingQueries.delete(query);
+        }
+      }
+      // 等待慢请求完成后补取一次，避免连续事件取消请求或漏掉最终状态。
+      if (ready.size > 0) {
+        void this.queryClient.invalidateQueries(
+          { predicate: (query) => ready.has(query) },
+          { cancelRefetch: false },
+        );
+      }
+      this.scheduleRefresh();
+    }, this.refreshIntervalMs);
   }
 
   private scheduleReconnect(generation: number, explicitDelay?: number): void {
@@ -267,11 +330,13 @@ async function readWithInactivityTimeout(
   const timedOut = new Promise<null>((resolve) => {
     timer = setTimeout(() => resolve(null), timeoutMs);
   });
-  const result = await Promise.race([reader.read(), timedOut]);
-  if (timer !== null) {
-    clearTimeout(timer);
+  try {
+    return await Promise.race([reader.read(), timedOut]);
+  } finally {
+    if (timer !== null) {
+      clearTimeout(timer);
+    }
   }
-  return result;
 }
 
 function extractFrames(input: string): { frames: ParsedFrame[]; remainder: string } {

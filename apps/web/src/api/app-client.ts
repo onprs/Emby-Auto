@@ -1,3 +1,4 @@
+import { withReadDeadline } from '@/api/read-deadline';
 import { client } from '@/api/generated/client.gen';
 import { getSession, getSetupStatus, initializeSetup, login, logout } from '@/api/generated/sdk.gen';
 import type { ApiError, InitializeSetupRequest, Session, SetupStatus } from '@/api/generated/types.gen';
@@ -10,8 +11,14 @@ import {
 } from '@/app/session-runtime';
 
 client.setConfig({ credentials: 'include' });
-client.interceptors.request.use((request) => guardProtectedRequest(request));
+client.interceptors.request.use((request) => withReadDeadline(guardProtectedRequest(request)));
 client.interceptors.response.use((response, request) => observeApiResponse(response, request));
+client.interceptors.error.use((error, _response, request) => {
+  if (request?.signal.aborted && request.signal.reason?.name === 'TimeoutError') {
+    return { code: 'request_timeout', message: '读取超时，请检查网络后重试', details: {} };
+  }
+  return error;
+});
 
 /**
  * Unified API failure. Carries the stable server error code, HTTP status and
