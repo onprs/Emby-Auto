@@ -1,22 +1,29 @@
 import { ApiFailure, unwrap } from '@/api/app-client';
 import {
   createRssSubscription,
+  createRssSubtitleGroup,
   deleteRssSubscription,
+  deleteRssSubtitleGroup,
   getRssSubscription,
   listRssEntries,
   listRssSubscriptions,
+  listRssSubtitleGroups,
   lookupRssFeed,
   pollRssSubscription,
   updateRssSubscription,
+  updateRssSubtitleGroup,
 } from '@/api/generated/sdk.gen';
 import type {
   CommandAccepted,
   CreateRssSubscriptionRequest,
   RssFeedLookup,
+  RssSubtitleGroup,
+  RssSubtitleGroupPage,
   RssSubscription,
   RssSubscriptionPage,
   RssEntryPage,
   UpdateRssSubscriptionRequest,
+  UpdateRssSubtitleGroupRequest,
 } from '@/api/generated/types.gen';
 
 export type RssSubscriptionSortBy = 'name' | 'series_title' | 'source_season' | 'enabled' | 'progress' | 'next_poll_at';
@@ -65,6 +72,22 @@ export function createSubscription(body: CreateRssSubscriptionRequest): Promise<
 
 export function lookupFeed(feedUrl: string): Promise<RssFeedLookup> {
   return unwrap<RssFeedLookup>(lookupRssFeed({ body: { feedUrl } }), '无法识别 RSS 内容');
+}
+
+export function fetchSubtitleGroups(): Promise<RssSubtitleGroupPage> {
+  return unwrap<RssSubtitleGroupPage>(listRssSubtitleGroups(), '无法读取字幕组列表');
+}
+
+export function createSubtitleGroup(name: string): Promise<RssSubtitleGroup> {
+  return unwrap<RssSubtitleGroup>(createRssSubtitleGroup({ body: { name } }), '添加字幕组失败');
+}
+
+export function updateSubtitleGroup(groupId: string, body: UpdateRssSubtitleGroupRequest): Promise<RssSubtitleGroup> {
+  return unwrap<RssSubtitleGroup>(updateRssSubtitleGroup({ path: { groupId }, body }), '更新字幕组失败');
+}
+
+export function deleteSubtitleGroup(groupId: string): Promise<void> {
+  return unwrap<void>(deleteRssSubtitleGroup({ path: { groupId } }), '删除字幕组失败');
 }
 
 export function updateSubscription(subscriptionId: string, body: UpdateRssSubscriptionRequest): Promise<RssSubscription> {

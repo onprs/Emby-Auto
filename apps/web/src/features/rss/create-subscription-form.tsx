@@ -1,3 +1,4 @@
+import { Link } from '@tanstack/react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { LoaderCircle, SearchCheck } from 'lucide-react';
 import { useRef, useState } from 'react';
@@ -25,6 +26,7 @@ export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
   const queryClient = useQueryClient();
   const [feedUrl, setFeedUrl] = useState('');
   const [subscriptionName, setSubscriptionName] = useState('');
+  const [subtitleGroupCandidates, setSubtitleGroupCandidates] = useState<string[]>([]);
   const [series, setSeries] = useState<SeriesSelection | null>(null);
   const [mode, setMode] = useState<MatchMode>('idle');
   const [keyword, setKeyword] = useState('');
@@ -47,11 +49,12 @@ export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
       const suggestion = result.suggestedQuery || result.feedTitle || '';
       setKeyword(suggestion);
       setAutomaticCandidates(result.candidates);
+      setSubtitleGroupCandidates(result.subtitleGroupCandidates ?? []);
       setAgentResolutionId(result.agentResolutionId ?? '');
       setSubmitted('');
-      if (result.feedTitle && !subscriptionName) {
-        const groupMatch = result.feedTitle.match(/^\[([^\]]+)\]/);
-        setSubscriptionName(groupMatch ? groupMatch[1] : result.feedTitle);
+      const detectedName = result.subtitleGroup || result.feedTitle || '';
+      if (detectedName && !subscriptionName.trim()) {
+        setSubscriptionName(detectedName);
       }
       if (result.candidates.length > 0) {
         setMode('auto');
@@ -141,6 +144,7 @@ export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
     setSeries(null);
     setSubmitted('');
     setAutomaticCandidates([]);
+    setSubtitleGroupCandidates([]);
     setAgentResolutionId('');
     setMode('idle');
     lookup.mutate(trimmed);
@@ -185,6 +189,7 @@ export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
                 setMode('idle');
                 setSubmitted('');
                 setAutomaticCandidates([]);
+                setSubtitleGroupCandidates([]);
                 setAgentResolutionId('');
               }}
               onBlur={identify}
@@ -290,13 +295,22 @@ export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
         )}
 
         <div className="space-y-2">
-          <Label htmlFor="rss-subscription-name">订阅源名称（如字幕组名）</Label>
+          <div className="flex items-center justify-between gap-3">
+            <Label htmlFor="rss-subscription-name">订阅源名称（字幕组）</Label>
+            <Link to="/settings/subtitle-groups" className="text-xs font-medium text-emerald-700 hover:underline">维护字幕组列表</Link>
+          </div>
           <Input
             id="rss-subscription-name"
+            list="rss-subtitle-group-options"
             value={subscriptionName}
             onChange={(event) => setSubscriptionName(event.target.value)}
             placeholder="例如：字幕组名称或发布版本（留空默认使用番剧名）"
           />
+          {subtitleGroupCandidates.length > 0 ? (
+            <datalist id="rss-subtitle-group-options">
+              {subtitleGroupCandidates.map((candidate) => <option key={candidate} value={candidate} />)}
+            </datalist>
+          ) : null}
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">

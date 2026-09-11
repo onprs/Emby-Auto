@@ -51,6 +51,13 @@ type RSSFeedLookupService interface {
 	Lookup(context.Context, string) (domain.RSSFeedLookup, error)
 }
 
+type RSSSubtitleGroupService interface {
+	List(context.Context) (domain.RSSSubtitleGroupPage, error)
+	Create(context.Context, domain.CreateRSSSubtitleGroup) (domain.RSSSubtitleGroup, error)
+	Update(context.Context, domain.UpdateRSSSubtitleGroup) (domain.RSSSubtitleGroup, error)
+	Delete(context.Context, uuid.UUID, uuid.UUID) error
+}
+
 type CatalogService interface {
 	ScheduleTMDbSync(context.Context, domain.SyncTMDbSeries) (domain.CatalogCommandResult, error)
 	PreviewEpisodeMapping(context.Context, domain.EpisodeMappingPlanInput) (domain.EpisodeMappingPreview, error)
@@ -176,6 +183,12 @@ func WithRSSSubscriptions(subscriptions RSSSubscriptionService) ServerOption {
 func WithRSSFeedLookup(lookup RSSFeedLookupService) ServerOption {
 	return func(server *Server) {
 		server.rssFeedLookup = lookup
+	}
+}
+
+func WithRSSSubtitleGroups(groups RSSSubtitleGroupService) ServerOption {
+	return func(server *Server) {
+		server.rssSubtitleGroups = groups
 	}
 }
 

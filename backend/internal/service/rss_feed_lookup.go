@@ -52,12 +52,13 @@ type RSSFeedCatalogLookupStore interface {
 // RSSFeedLookup fetches a candidate RSS feed, performs bounded deterministic
 // TMDb searches, and schedules catalog Agent fallback only after a clean miss.
 type RSSFeedLookup struct {
-	configuration RSSFeedLookupConfiguration
-	catalogSearch RSSFeedCatalogSearcher
-	queries       RSSFeedCatalogLookupStore
-	agent         RSSFeedCatalogAgent
-	newClient     func(httpClient *http.Client) (RSSFeedFetcher, error)
-	now           func() time.Time
+	configuration  RSSFeedLookupConfiguration
+	catalogSearch  RSSFeedCatalogSearcher
+	queries        RSSFeedCatalogLookupStore
+	agent          RSSFeedCatalogAgent
+	subtitleGroups RSSSubtitleGroupSource
+	newClient      func(httpClient *http.Client) (RSSFeedFetcher, error)
+	now            func() time.Time
 }
 
 func NewRSSFeedLookup(configuration RSSFeedLookupConfiguration) *RSSFeedLookup {
@@ -74,6 +75,11 @@ func (service *RSSFeedLookup) WithCatalogMatching(searcher RSSFeedCatalogSearche
 	service.catalogSearch = searcher
 	service.queries = queries
 	service.agent = agent
+	return service
+}
+
+func (service *RSSFeedLookup) WithSubtitleGroups(source RSSSubtitleGroupSource) *RSSFeedLookup {
+	service.subtitleGroups = source
 	return service
 }
 
@@ -114,13 +120,30 @@ func (service *RSSFeedLookup) Lookup(ctx context.Context, feedURL string) (domai
 	}
 
 	queries := SuggestRSSFeedQueries(feed)
+	maintainedGroups := []string{}
+	if service.subtitleGroups != nil {
+		maintainedGroups, err = service.subtitleGroups.ListRSSSubtitleGroupNames(ctx)
+		if err != nil {
+			return domain.RSSFeedLookup{}, NewError(
+				"rss_subtitle_groups_load_failed",
+				"the RSS subtitle group list could not be loaded",
+				err,
+				map[string]any{"dependency": "postgresql"},
+			)
+		}
+	}
+	subtitleGroupCandidates := domain.ExtractRSSSubtitleGroupCandidates(feed, maintainedGroups)
 	lookup := domain.RSSFeedLookup{
-		FeedURL:            trimmed,
-		FeedTitle:          strings.TrimSpace(feed.Title),
-		SuggestedQueries:   queries,
-		SampleTitles:       sampleRSSFeedTitles(feed),
-		Candidates:         []domain.TMDbSeriesSearchResult{},
-		CatalogMatchSource: "none",
+		FeedURL:                 trimmed,
+		FeedTitle:               strings.TrimSpace(feed.Title),
+		SuggestedQueries:        queries,
+		SubtitleGroupCandidates: subtitleGroupCandidates,
+		Candidates:              []domain.TMDbSeriesSearchResult{},
+		CatalogMatchSource:      "none",
+	}
+	lookup.SampleTitles = sampleRSSFeedTitles(feed)
+	if len(subtitleGroupCandidates) > 0 {
+		lookup.SubtitleGroup = subtitleGroupCandidates[0]
 	}
 	if len(queries) > 0 {
 		lookup.SuggestedQuery = queries[0]

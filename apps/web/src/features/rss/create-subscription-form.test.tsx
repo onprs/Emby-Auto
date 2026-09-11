@@ -85,6 +85,28 @@ describe('CreateSubscriptionForm', () => {
     await waitFor(() => expect(onDone).toHaveBeenCalled());
   });
 
+  it('uses the structured subtitle group extracted from the feed', async () => {
+    mockLookup(() => HttpResponse.json({
+      feedUrl,
+      feedTitle: 'Fixture Show RSS',
+      subtitleGroup: 'LoliHouse',
+      subtitleGroupCandidates: ['LoliHouse', 'Other Group'],
+      suggestedQuery: 'Fixture Show',
+      suggestedQueries: ['Fixture Show'],
+      sampleTitles: ['【LoliHouse】 Fixture Show - 01'],
+      catalogMatchSource: 'deterministic',
+      candidates: [{ tmdbSeriesId: 100, name: 'Fixture Show' }],
+    }));
+    renderWithProviders(<CreateSubscriptionForm onDone={() => {}} />);
+
+    await userEvent.type(await screen.findByLabelText('RSS 地址'), feedUrl);
+    await userEvent.click(screen.getByRole('button', { name: /识别作品/ }));
+
+    expect(await screen.findByRole('button', { name: /Fixture Show/ })).toBeInTheDocument();
+    expect(screen.getByLabelText('订阅源名称（字幕组）')).toHaveValue('LoliHouse');
+    expect(screen.getByDisplayValue('LoliHouse')).toHaveAttribute('list', 'rss-subtitle-group-options');
+  });
+
   it('shows a loading state while identifying the feed', async () => {
     let release!: () => void;
     mockLookup(

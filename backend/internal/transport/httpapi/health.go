@@ -24,6 +24,7 @@ type Server struct {
 	embyCatalog         EmbyCatalogService
 	rssSubscriptions    RSSSubscriptionService
 	rssFeedLookup       RSSFeedLookupService
+	rssSubtitleGroups   RSSSubtitleGroupService
 	tasks               TaskService
 	read                ReadModelService
 	tmdbSearch          TMDbSearchService

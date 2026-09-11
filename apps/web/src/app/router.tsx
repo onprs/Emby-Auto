@@ -73,6 +73,10 @@ const SettingsStoragePage = lazyRouteComponent(
   () => import('@/features/configuration/settings-storage-page'),
   'SettingsStoragePage',
 );
+const SettingsSubtitleGroupsPage = lazyRouteComponent(
+  () => import('@/features/configuration/settings-subtitle-groups-page'),
+  'SettingsSubtitleGroupsPage',
+);
 const SettingsTranscodePage = lazyRouteComponent(
   () => import('@/features/configuration/settings-transcode-page'),
   'SettingsTranscodePage',
@@ -357,6 +361,12 @@ const settingsStorageRoute = createRoute({
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: SettingsStoragePage,
 });
+const settingsSubtitleGroupsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/settings/subtitle-groups',
+  validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
+  component: SettingsSubtitleGroupsPage,
+});
 const settingsTranscodeRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/settings/transcode',
@@ -388,6 +398,7 @@ const routeTree = rootRoute.addChildren([
     settingsServicesRoute,
     settingsAgentRoute,
     settingsStorageRoute,
+    settingsSubtitleGroupsRoute,
     settingsTranscodeRoute,
     forbiddenRoute,
   ]),

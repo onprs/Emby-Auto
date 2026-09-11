@@ -28,6 +28,7 @@ func TestLookupRSSFeedReturnsSuggestion(t *testing.T) {
 	stub := &rssFeedLookupStub{lookup: domain.RSSFeedLookup{
 		FeedURL: "https://example.test/feed.xml", FeedTitle: "孤独摇滚", SuggestedQuery: "孤独摇滚",
 		SuggestedQueries: []string{"孤独摇滚", "Bocchi the Rock"}, SampleTitles: []string{"第 01 集"},
+		SubtitleGroup: "LoliHouse", SubtitleGroupCandidates: []string{"LoliHouse"},
 		Candidates: []domain.TMDbSeriesSearchResult{{TMDbSeriesID: 119100, Name: "孤独摇滚！"}}, CatalogMatchSource: "deterministic",
 	}}
 	handler := NewHandler(NewServer(readinessStub{}, WithRSSFeedLookup(stub)))
@@ -51,12 +52,14 @@ func TestLookupRSSFeedReturnsSuggestion(t *testing.T) {
 		Candidates       []struct {
 			TMDbSeriesID int64 `json:"tmdbSeriesId"`
 		} `json:"candidates"`
-		CatalogMatchSource string `json:"catalogMatchSource"`
+		CatalogMatchSource      string   `json:"catalogMatchSource"`
+		SubtitleGroup           string   `json:"subtitleGroup"`
+		SubtitleGroupCandidates []string `json:"subtitleGroupCandidates"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.FeedTitle != "孤独摇滚" || body.SuggestedQuery != "孤独摇滚" || len(body.SuggestedQueries) != 2 || len(body.SampleTitles) != 1 || len(body.Candidates) != 1 || body.Candidates[0].TMDbSeriesID != 119100 || body.CatalogMatchSource != "deterministic" {
+	if body.FeedTitle != "孤独摇滚" || body.SuggestedQuery != "孤独摇滚" || len(body.SuggestedQueries) != 2 || len(body.SampleTitles) != 1 || len(body.Candidates) != 1 || body.Candidates[0].TMDbSeriesID != 119100 || body.CatalogMatchSource != "deterministic" || body.SubtitleGroup != "LoliHouse" || len(body.SubtitleGroupCandidates) != 1 || body.SubtitleGroupCandidates[0] != "LoliHouse" {
 		t.Fatalf("unexpected response body: %+v", body)
 	}
 }

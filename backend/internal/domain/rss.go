@@ -39,14 +39,16 @@ type RSSFeed struct {
 // RSSFeedLookup describes a fetched RSS feed and the bounded catalog lookup
 // performed before subscription creation.
 type RSSFeedLookup struct {
-	FeedURL            string
-	FeedTitle          string
-	SuggestedQuery     string
-	SuggestedQueries   []string
-	SampleTitles       []string
-	Candidates         []TMDbSeriesSearchResult
-	CatalogMatchSource string
-	AgentResolutionID  *uuid.UUID
+	FeedURL                 string
+	FeedTitle               string
+	SuggestedQuery          string
+	SuggestedQueries        []string
+	SampleTitles            []string
+	Candidates              []TMDbSeriesSearchResult
+	CatalogMatchSource      string
+	SubtitleGroup           string
+	SubtitleGroupCandidates []string
+	AgentResolutionID       *uuid.UUID
 }
 
 type RSSFeedEntry struct {

@@ -677,9 +677,36 @@ export type RssFeedLookup = {
     candidates: Array<TmDbSeriesSearchResult>;
     catalogMatchSource: 'deterministic' | 'agent_pending' | 'none';
     /**
+     * The highest-ranked subtitle group extracted from the feed title and release titles.
+     */
+    subtitleGroup: string;
+    /**
+     * Ordered subtitle group candidates extracted from the feed title and release titles.
+     */
+    subtitleGroupCandidates: Array<string>;
+    /**
      * Catalog Agent resolution scheduled after every deterministic query returned no candidates.
      */
     agentResolutionId?: string;
+};
+
+export type RssSubtitleGroup = {
+    id: string;
+    name: string;
+    createdAt: string;
+    updatedAt: string;
+};
+
+export type RssSubtitleGroupPage = {
+    items: Array<RssSubtitleGroup>;
+};
+
+export type CreateRssSubtitleGroupRequest = {
+    name: string;
+};
+
+export type UpdateRssSubtitleGroupRequest = {
+    name: string;
 };
 
 export type RssSubscription = {
@@ -2445,6 +2472,150 @@ export type LookupRssFeedResponses = {
 };
 
 export type LookupRssFeedResponse = LookupRssFeedResponses[keyof LookupRssFeedResponses];
+
+export type ListRssSubtitleGroupsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/rss/subtitle-groups';
+};
+
+export type ListRssSubtitleGroupsErrors = {
+    /**
+     * Authentication is required or failed.
+     */
+    401: ApiError;
+    /**
+     * A required dependency is unavailable.
+     */
+    503: ApiError;
+};
+
+export type ListRssSubtitleGroupsError = ListRssSubtitleGroupsErrors[keyof ListRssSubtitleGroupsErrors];
+
+export type ListRssSubtitleGroupsResponses = {
+    /**
+     * The maintained RSS subtitle groups.
+     */
+    200: RssSubtitleGroupPage;
+};
+
+export type ListRssSubtitleGroupsResponse = ListRssSubtitleGroupsResponses[keyof ListRssSubtitleGroupsResponses];
+
+export type CreateRssSubtitleGroupData = {
+    body: CreateRssSubtitleGroupRequest;
+    path?: never;
+    query?: never;
+    url: '/api/v1/rss/subtitle-groups';
+};
+
+export type CreateRssSubtitleGroupErrors = {
+    /**
+     * The request is invalid.
+     */
+    400: ApiError;
+    /**
+     * Authentication is required or failed.
+     */
+    401: ApiError;
+    /**
+     * The command conflicts with current resource state.
+     */
+    409: ApiError;
+    /**
+     * A required dependency is unavailable.
+     */
+    503: ApiError;
+};
+
+export type CreateRssSubtitleGroupError = CreateRssSubtitleGroupErrors[keyof CreateRssSubtitleGroupErrors];
+
+export type CreateRssSubtitleGroupResponses = {
+    /**
+     * The RSS subtitle group was created.
+     */
+    201: RssSubtitleGroup;
+};
+
+export type CreateRssSubtitleGroupResponse = CreateRssSubtitleGroupResponses[keyof CreateRssSubtitleGroupResponses];
+
+export type DeleteRssSubtitleGroupData = {
+    body?: never;
+    path: {
+        groupId: string;
+    };
+    query?: never;
+    url: '/api/v1/rss/subtitle-groups/{groupId}';
+};
+
+export type DeleteRssSubtitleGroupErrors = {
+    /**
+     * Authentication is required or failed.
+     */
+    401: ApiError;
+    /**
+     * The requested resource was not found.
+     */
+    404: ApiError;
+    /**
+     * A required dependency is unavailable.
+     */
+    503: ApiError;
+};
+
+export type DeleteRssSubtitleGroupError = DeleteRssSubtitleGroupErrors[keyof DeleteRssSubtitleGroupErrors];
+
+export type DeleteRssSubtitleGroupResponses = {
+    /**
+     * The RSS subtitle group was removed.
+     */
+    204: void;
+};
+
+export type DeleteRssSubtitleGroupResponse = DeleteRssSubtitleGroupResponses[keyof DeleteRssSubtitleGroupResponses];
+
+export type UpdateRssSubtitleGroupData = {
+    body: UpdateRssSubtitleGroupRequest;
+    path: {
+        groupId: string;
+    };
+    query?: never;
+    url: '/api/v1/rss/subtitle-groups/{groupId}';
+};
+
+export type UpdateRssSubtitleGroupErrors = {
+    /**
+     * The request is invalid.
+     */
+    400: ApiError;
+    /**
+     * Authentication is required or failed.
+     */
+    401: ApiError;
+    /**
+     * The requested resource was not found.
+     */
+    404: ApiError;
+    /**
+     * The command conflicts with current resource state.
+     */
+    409: ApiError;
+    /**
+     * A required dependency is unavailable.
+     */
+    503: ApiError;
+};
+
+export type UpdateRssSubtitleGroupError = UpdateRssSubtitleGroupErrors[keyof UpdateRssSubtitleGroupErrors];
+
+export type UpdateRssSubtitleGroupResponses = {
+    /**
+     * The RSS subtitle group was updated.
+     */
+    200: RssSubtitleGroup;
+};
+
+export type UpdateRssSubtitleGroupResponse = UpdateRssSubtitleGroupResponses[keyof UpdateRssSubtitleGroupResponses];
 
 export type ListRssSubscriptionsData = {
     body?: never;

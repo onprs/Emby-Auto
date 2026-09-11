@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router';
-import { ArrowRight, Bot, Download, FileCog, Film, FolderCog, Globe, Plug, Rss } from 'lucide-react';
+import { ArrowRight, Bot, Download, FileCog, Film, FolderCog, Globe, Plug, Rss, Tags } from 'lucide-react';
 
 import { PageBody, PageHeader, DetailErrorState, DetailLoadingState } from '@/components/resource';
 import { Badge } from '@/components/ui/badge';
@@ -67,6 +67,13 @@ export function SettingsHubPage() {
           title="存储与媒体工具"
           status={{ tone: 'neutral', label: `${configuration.paths.ffmpegPath ? 'FFmpeg 已设置' : '未设置'}` }}
           description="下载、工作、暂存与媒体库目录"
+        />
+        <HubCard
+          to="/settings/subtitle-groups"
+          icon={Tags}
+          title="字幕组"
+          status={{ tone: 'info', label: 'RSS' }}
+          description="订阅名称识别"
         />
         <HubCard
           to="/settings/transcode"

@@ -214,6 +214,7 @@ func buildRuntimeHandler(
 	operationScheduler := service.NewOperationScheduler(transactor, jobClient)
 	searchWorkflow := service.NewSearchWorkflow(queries, transactor, operationScheduler)
 	rssWorkflow := service.NewRSSWorkflow(queries, transactor, operationScheduler)
+	rssSubtitleGroups := service.NewRSSSubtitleGroupWorkflow(queries, transactor)
 	if _, err := rssWorkflow.ReconcileSubscriptionProgress(ctx); err != nil {
 		pool.Close()
 		return nil, nil, fmt.Errorf("reconcile RSS subscription progress: %w", err)
@@ -233,7 +234,7 @@ func buildRuntimeHandler(
 		queries, transactor, operationScheduler, configuration, catalogWorkflow, tmdbSearcher,
 	)
 	readService := service.NewReadService(queries)
-	rssFeedLookup := service.NewRSSFeedLookup(configuration).WithCatalogMatching(tmdbSearcher, queries, agentResolutions)
+	rssFeedLookup := service.NewRSSFeedLookup(configuration).WithCatalogMatching(tmdbSearcher, queries, agentResolutions).WithSubtitleGroups(rssSubtitleGroups)
 	tmdbQuery := service.NewTMDbQueryService(queries, tmdbSearcher)
 	mediaTools := mediatools.New(mediatools.OSExecutor{})
 	connectivity := service.NewConnectivityService(configuration, mediaTools, queries, cfg.TMDbBaseURL)
@@ -272,6 +273,7 @@ func buildRuntimeHandler(
 		httpapi.WithSearch(searchWorkflow),
 		httpapi.WithRSSSubscriptions(rssWorkflow),
 		httpapi.WithRSSFeedLookup(rssFeedLookup),
+		httpapi.WithRSSSubtitleGroups(rssSubtitleGroups),
 		httpapi.WithTasks(taskWorkflow),
 		httpapi.WithCatalog(catalogWorkflow),
 		httpapi.WithEmbyCatalog(embyCatalogWorkflow),

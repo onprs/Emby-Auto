@@ -804,6 +804,95 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/rss/subtitle-groups:
+    get:
+      operationId: listRSSSubtitleGroups
+      summary: List maintained RSS subtitle groups
+      tags: [RSS]
+      responses:
+        "200":
+          description: The maintained RSS subtitle groups.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RSSSubtitleGroupPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      operationId: createRSSSubtitleGroup
+      summary: Add an RSS subtitle group
+      tags: [RSS]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRSSSubtitleGroupRequest"
+      responses:
+        "201":
+          description: The RSS subtitle group was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RSSSubtitleGroup"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/rss/subtitle-groups/{groupId}:
+    parameters:
+      - name: groupId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    put:
+      operationId: updateRSSSubtitleGroup
+      summary: Rename an RSS subtitle group
+      tags: [RSS]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRSSSubtitleGroupRequest"
+      responses:
+        "200":
+          description: The RSS subtitle group was updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RSSSubtitleGroup"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      operationId: deleteRSSSubtitleGroup
+      summary: Remove an RSS subtitle group
+      tags: [RSS]
+      responses:
+        "204":
+          description: The RSS subtitle group was removed.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /api/v1/rss/subscriptions:
     get:
       operationId: listRSSSubscriptions
@@ -3556,7 +3645,7 @@ components:
     RSSFeedLookup:
       type: object
       additionalProperties: false
-      required: [feedUrl, suggestedQuery, suggestedQueries, sampleTitles, candidates, catalogMatchSource]
+      required: [feedUrl, suggestedQuery, suggestedQueries, sampleTitles, candidates, catalogMatchSource, subtitleGroup, subtitleGroupCandidates]
       properties:
         feedUrl:
           type: string
@@ -3590,10 +3679,67 @@ components:
         catalogMatchSource:
           type: string
           enum: [deterministic, agent_pending, none]
+        subtitleGroup:
+          type: string
+          description: The highest-ranked subtitle group extracted from the feed title and release titles.
+        subtitleGroupCandidates:
+          type: array
+          maxItems: 8
+          uniqueItems: true
+          description: Ordered subtitle group candidates extracted from the feed title and release titles.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 128
         agentResolutionId:
           type: string
           format: uuid
           description: Catalog Agent resolution scheduled after every deterministic query returned no candidates.
+    RSSSubtitleGroup:
+      type: object
+      additionalProperties: false
+      required: [id, name, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    RSSSubtitleGroupPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RSSSubtitleGroup"
+    CreateRSSSubtitleGroupRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+    UpdateRSSSubtitleGroupRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
     RSSSubscription:
       type: object
       additionalProperties: false

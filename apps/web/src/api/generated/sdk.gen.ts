@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, ServerSentEventsResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { CancelDownloadData, CancelDownloadErrors, CancelDownloadResponses, CancelTaskData, CancelTaskErrors, CancelTaskResponses, CreateAcquisitionData, CreateAcquisitionErrors, CreateAcquisitionResponses, CreateEmbyScanData, CreateEmbyScanErrors, CreateEmbyScanResponses, CreateRssSubscriptionData, CreateRssSubscriptionErrors, CreateRssSubscriptionResponses, CreateSearchData, CreateSearchErrors, CreateSearchResponses, DeleteAcquisitionData, DeleteAcquisitionErrors, DeleteAcquisitionResponses, DeleteDownloadData, DeleteDownloadErrors, DeleteDownloadResponses, DeleteRssSubscriptionData, DeleteRssSubscriptionErrors, DeleteRssSubscriptionResponses, GetAcquisitionData, GetAcquisitionErrors, GetAcquisitionResponses, GetAgentResolutionData, GetAgentResolutionErrors, GetAgentResolutionResponses, GetBackgroundRuntimeData, GetBackgroundRuntimeErrors, GetBackgroundRuntimeResponses, GetConfigurationData, GetConfigurationErrors, GetConfigurationResponses, GetDashboardSummaryData, GetDashboardSummaryErrors, GetDashboardSummaryResponses, GetDashboardSystemMetricsData, GetDashboardSystemMetricsErrors, GetDashboardSystemMetricsResponses, GetDownloadData, GetDownloadErrors, GetDownloadResponses, GetEmbyScanData, GetEmbyScanErrors, GetEmbyScanResponses, GetEventStatsData, GetEventStatsErrors, GetEventStatsResponses, GetHealthLiveData, GetHealthLiveResponses, GetHealthReadyData, GetHealthReadyErrors, GetHealthReadyResponses, GetOperationData, GetOperationErrors, GetOperationResponses, GetRssSubscriptionData, GetRssSubscriptionErrors, GetRssSubscriptionResponses, GetSearchData, GetSearchErrors, GetSearchResponses, GetSessionData, GetSessionErrors, GetSessionResponses, GetSetupStatusData, GetSetupStatusErrors, GetSetupStatusResponses, GetTaskArtifactContentData, GetTaskArtifactContentErrors, GetTaskArtifactContentResponses, GetTaskData, GetTaskErrors, GetTaskResponses, GetTmDbSeriesCatalogData, GetTmDbSeriesCatalogErrors, GetTmDbSeriesCatalogResponses, ImportTaskData, ImportTaskErrors, ImportTaskResponses, InitializeSetupData, InitializeSetupErrors, InitializeSetupResponses, ListAcquisitionsData, ListAcquisitionsErrors, ListAcquisitionsResponses, ListAgentResolutionsData, ListAgentResolutionsErrors, ListAgentResolutionsResponses, ListDownloadsData, ListDownloadsErrors, ListDownloadsResponses, ListEmbyLibrariesData, ListEmbyLibrariesErrors, ListEmbyLibrariesResponses, ListEmbyLibraryItemsData, ListEmbyLibraryItemsErrors, ListEmbyLibraryItemsResponses, ListEmbyScansData, ListEmbyScansErrors, ListEmbyScansResponses, ListEventsData, ListEventsErrors, ListEventsResponses, ListOperationsData, ListOperationsErrors, ListOperationsResponses, ListRecentSearchCandidatesData, ListRecentSearchCandidatesErrors, ListRecentSearchCandidatesResponses, ListRssEntriesData, ListRssEntriesErrors, ListRssEntriesResponses, ListRssSubscriptionsData, ListRssSubscriptionsErrors, ListRssSubscriptionsResponses, ListSearchesData, ListSearchesErrors, ListSearchesResponses, ListTasksData, ListTasksErrors, ListTasksResponses, LoginData, LoginErrors, LoginResponses, LogoutData, LogoutErrors, LogoutResponses, LookupRssFeedData, LookupRssFeedErrors, LookupRssFeedResponses, PollRssSubscriptionData, PollRssSubscriptionErrors, PollRssSubscriptionResponses, PreviewAcquisitionEpisodeMappingData, PreviewAcquisitionEpisodeMappingErrors, PreviewAcquisitionEpisodeMappingResponses, RefreshEmbyLibraryData, RefreshEmbyLibraryErrors, RefreshEmbyLibraryResponses, RetryDownloadData, RetryDownloadErrors, RetryDownloadResponses, RetryTaskData, RetryTaskErrors, RetryTaskResponses, RevealConfigurationSecretsData, RevealConfigurationSecretsErrors, RevealConfigurationSecretsResponses, ReviewTaskData, ReviewTaskErrors, ReviewTaskResponses, SaveAcquisitionEpisodeMappingData, SaveAcquisitionEpisodeMappingErrors, SaveAcquisitionEpisodeMappingResponses, SaveDownloadFileResolutionData, SaveDownloadFileResolutionErrors, SaveDownloadFileResolutionResponses, SaveDownloadFileSelectionData, SaveDownloadFileSelectionErrors, SaveDownloadFileSelectionResponses, SearchTmDbMoviesData, SearchTmDbMoviesErrors, SearchTmDbMoviesResponses, SearchTmDbSeriesData, SearchTmDbSeriesErrors, SearchTmDbSeriesResponses, StreamEventsData, StreamEventsErrors, StreamEventsResponse, StreamEventsResponses, SyncTmDbSeriesData, SyncTmDbSeriesErrors, SyncTmDbSeriesResponses, TestConnectivityData, TestConnectivityErrors, TestConnectivityResponses, UpdateBackgroundRuntimeData, UpdateBackgroundRuntimeErrors, UpdateBackgroundRuntimeResponses, UpdateConfigurationData, UpdateConfigurationErrors, UpdateConfigurationResponses, UpdateRssSubscriptionData, UpdateRssSubscriptionErrors, UpdateRssSubscriptionResponses } from './types.gen';
+import type { CancelDownloadData, CancelDownloadErrors, CancelDownloadResponses, CancelTaskData, CancelTaskErrors, CancelTaskResponses, CreateAcquisitionData, CreateAcquisitionErrors, CreateAcquisitionResponses, CreateEmbyScanData, CreateEmbyScanErrors, CreateEmbyScanResponses, CreateRssSubscriptionData, CreateRssSubscriptionErrors, CreateRssSubscriptionResponses, CreateRssSubtitleGroupData, CreateRssSubtitleGroupErrors, CreateRssSubtitleGroupResponses, CreateSearchData, CreateSearchErrors, CreateSearchResponses, DeleteAcquisitionData, DeleteAcquisitionErrors, DeleteAcquisitionResponses, DeleteDownloadData, DeleteDownloadErrors, DeleteDownloadResponses, DeleteRssSubscriptionData, DeleteRssSubscriptionErrors, DeleteRssSubscriptionResponses, DeleteRssSubtitleGroupData, DeleteRssSubtitleGroupErrors, DeleteRssSubtitleGroupResponses, GetAcquisitionData, GetAcquisitionErrors, GetAcquisitionResponses, GetAgentResolutionData, GetAgentResolutionErrors, GetAgentResolutionResponses, GetBackgroundRuntimeData, GetBackgroundRuntimeErrors, GetBackgroundRuntimeResponses, GetConfigurationData, GetConfigurationErrors, GetConfigurationResponses, GetDashboardSummaryData, GetDashboardSummaryErrors, GetDashboardSummaryResponses, GetDashboardSystemMetricsData, GetDashboardSystemMetricsErrors, GetDashboardSystemMetricsResponses, GetDownloadData, GetDownloadErrors, GetDownloadResponses, GetEmbyScanData, GetEmbyScanErrors, GetEmbyScanResponses, GetEventStatsData, GetEventStatsErrors, GetEventStatsResponses, GetHealthLiveData, GetHealthLiveResponses, GetHealthReadyData, GetHealthReadyErrors, GetHealthReadyResponses, GetOperationData, GetOperationErrors, GetOperationResponses, GetRssSubscriptionData, GetRssSubscriptionErrors, GetRssSubscriptionResponses, GetSearchData, GetSearchErrors, GetSearchResponses, GetSessionData, GetSessionErrors, GetSessionResponses, GetSetupStatusData, GetSetupStatusErrors, GetSetupStatusResponses, GetTaskArtifactContentData, GetTaskArtifactContentErrors, GetTaskArtifactContentResponses, GetTaskData, GetTaskErrors, GetTaskResponses, GetTmDbSeriesCatalogData, GetTmDbSeriesCatalogErrors, GetTmDbSeriesCatalogResponses, ImportTaskData, ImportTaskErrors, ImportTaskResponses, InitializeSetupData, InitializeSetupErrors, InitializeSetupResponses, ListAcquisitionsData, ListAcquisitionsErrors, ListAcquisitionsResponses, ListAgentResolutionsData, ListAgentResolutionsErrors, ListAgentResolutionsResponses, ListDownloadsData, ListDownloadsErrors, ListDownloadsResponses, ListEmbyLibrariesData, ListEmbyLibrariesErrors, ListEmbyLibrariesResponses, ListEmbyLibraryItemsData, ListEmbyLibraryItemsErrors, ListEmbyLibraryItemsResponses, ListEmbyScansData, ListEmbyScansErrors, ListEmbyScansResponses, ListEventsData, ListEventsErrors, ListEventsResponses, ListOperationsData, ListOperationsErrors, ListOperationsResponses, ListRecentSearchCandidatesData, ListRecentSearchCandidatesErrors, ListRecentSearchCandidatesResponses, ListRssEntriesData, ListRssEntriesErrors, ListRssEntriesResponses, ListRssSubscriptionsData, ListRssSubscriptionsErrors, ListRssSubscriptionsResponses, ListRssSubtitleGroupsData, ListRssSubtitleGroupsErrors, ListRssSubtitleGroupsResponses, ListSearchesData, ListSearchesErrors, ListSearchesResponses, ListTasksData, ListTasksErrors, ListTasksResponses, LoginData, LoginErrors, LoginResponses, LogoutData, LogoutErrors, LogoutResponses, LookupRssFeedData, LookupRssFeedErrors, LookupRssFeedResponses, PollRssSubscriptionData, PollRssSubscriptionErrors, PollRssSubscriptionResponses, PreviewAcquisitionEpisodeMappingData, PreviewAcquisitionEpisodeMappingErrors, PreviewAcquisitionEpisodeMappingResponses, RefreshEmbyLibraryData, RefreshEmbyLibraryErrors, RefreshEmbyLibraryResponses, RetryDownloadData, RetryDownloadErrors, RetryDownloadResponses, RetryTaskData, RetryTaskErrors, RetryTaskResponses, RevealConfigurationSecretsData, RevealConfigurationSecretsErrors, RevealConfigurationSecretsResponses, ReviewTaskData, ReviewTaskErrors, ReviewTaskResponses, SaveAcquisitionEpisodeMappingData, SaveAcquisitionEpisodeMappingErrors, SaveAcquisitionEpisodeMappingResponses, SaveDownloadFileResolutionData, SaveDownloadFileResolutionErrors, SaveDownloadFileResolutionResponses, SaveDownloadFileSelectionData, SaveDownloadFileSelectionErrors, SaveDownloadFileSelectionResponses, SearchTmDbMoviesData, SearchTmDbMoviesErrors, SearchTmDbMoviesResponses, SearchTmDbSeriesData, SearchTmDbSeriesErrors, SearchTmDbSeriesResponses, StreamEventsData, StreamEventsErrors, StreamEventsResponse, StreamEventsResponses, SyncTmDbSeriesData, SyncTmDbSeriesErrors, SyncTmDbSeriesResponses, TestConnectivityData, TestConnectivityErrors, TestConnectivityResponses, UpdateBackgroundRuntimeData, UpdateBackgroundRuntimeErrors, UpdateBackgroundRuntimeResponses, UpdateConfigurationData, UpdateConfigurationErrors, UpdateConfigurationResponses, UpdateRssSubscriptionData, UpdateRssSubscriptionErrors, UpdateRssSubscriptionResponses, UpdateRssSubtitleGroupData, UpdateRssSubtitleGroupErrors, UpdateRssSubtitleGroupResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -372,6 +372,66 @@ export const lookupRssFeed = <ThrowOnError extends boolean = false>(options: Opt
             type: 'apiKey'
         }],
     url: '/api/v1/rss/feed-lookup',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List maintained RSS subtitle groups
+ */
+export const listRssSubtitleGroups = <ThrowOnError extends boolean = false>(options?: Options<ListRssSubtitleGroupsData, ThrowOnError>): RequestResult<ListRssSubtitleGroupsResponses, ListRssSubtitleGroupsErrors, ThrowOnError> => (options?.client ?? client).get<ListRssSubtitleGroupsResponses, ListRssSubtitleGroupsErrors, ThrowOnError>({
+    security: [{
+            in: 'cookie',
+            name: 'emby_auto_session',
+            type: 'apiKey'
+        }],
+    url: '/api/v1/rss/subtitle-groups',
+    ...options
+});
+
+/**
+ * Add an RSS subtitle group
+ */
+export const createRssSubtitleGroup = <ThrowOnError extends boolean = false>(options: Options<CreateRssSubtitleGroupData, ThrowOnError>): RequestResult<CreateRssSubtitleGroupResponses, CreateRssSubtitleGroupErrors, ThrowOnError> => (options.client ?? client).post<CreateRssSubtitleGroupResponses, CreateRssSubtitleGroupErrors, ThrowOnError>({
+    security: [{
+            in: 'cookie',
+            name: 'emby_auto_session',
+            type: 'apiKey'
+        }],
+    url: '/api/v1/rss/subtitle-groups',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Remove an RSS subtitle group
+ */
+export const deleteRssSubtitleGroup = <ThrowOnError extends boolean = false>(options: Options<DeleteRssSubtitleGroupData, ThrowOnError>): RequestResult<DeleteRssSubtitleGroupResponses, DeleteRssSubtitleGroupErrors, ThrowOnError> => (options.client ?? client).delete<DeleteRssSubtitleGroupResponses, DeleteRssSubtitleGroupErrors, ThrowOnError>({
+    security: [{
+            in: 'cookie',
+            name: 'emby_auto_session',
+            type: 'apiKey'
+        }],
+    url: '/api/v1/rss/subtitle-groups/{groupId}',
+    ...options
+});
+
+/**
+ * Rename an RSS subtitle group
+ */
+export const updateRssSubtitleGroup = <ThrowOnError extends boolean = false>(options: Options<UpdateRssSubtitleGroupData, ThrowOnError>): RequestResult<UpdateRssSubtitleGroupResponses, UpdateRssSubtitleGroupErrors, ThrowOnError> => (options.client ?? client).put<UpdateRssSubtitleGroupResponses, UpdateRssSubtitleGroupErrors, ThrowOnError>({
+    security: [{
+            in: 'cookie',
+            name: 'emby_auto_session',
+            type: 'apiKey'
+        }],
+    url: '/api/v1/rss/subtitle-groups/{groupId}',
     ...options,
     headers: {
         'Content-Type': 'application/json',

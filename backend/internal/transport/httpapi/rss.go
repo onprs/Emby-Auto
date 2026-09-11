@@ -33,12 +33,14 @@ func (server *Server) LookupRSSFeed(
 		return LookupRSSFeed503JSONResponse{ServiceUnavailableJSONResponse: serviceUnavailableError(ctx, "rss")}, nil
 	default:
 		response := LookupRSSFeed200JSONResponse{
-			FeedUrl:            lookup.FeedURL,
-			SuggestedQuery:     lookup.SuggestedQuery,
-			SuggestedQueries:   lookup.SuggestedQueries,
-			SampleTitles:       lookup.SampleTitles,
-			Candidates:         make([]TMDbSeriesSearchResult, 0, len(lookup.Candidates)),
-			CatalogMatchSource: RSSFeedLookupCatalogMatchSource(lookup.CatalogMatchSource),
+			FeedUrl:                 lookup.FeedURL,
+			SuggestedQuery:          lookup.SuggestedQuery,
+			SuggestedQueries:        lookup.SuggestedQueries,
+			SampleTitles:            lookup.SampleTitles,
+			Candidates:              make([]TMDbSeriesSearchResult, 0, len(lookup.Candidates)),
+			CatalogMatchSource:      RSSFeedLookupCatalogMatchSource(lookup.CatalogMatchSource),
+			SubtitleGroup:           lookup.SubtitleGroup,
+			SubtitleGroupCandidates: lookup.SubtitleGroupCandidates,
 		}
 		for _, item := range lookup.Candidates {
 			candidate := TMDbSeriesSearchResult{TmdbSeriesId: item.TMDbSeriesID, Name: item.Name}
