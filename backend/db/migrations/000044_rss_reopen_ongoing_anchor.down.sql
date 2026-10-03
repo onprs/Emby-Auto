@@ -1,0 +1,2 @@
+-- This is a data repair migration. Re-closing the subscriptions would restore
+-- the incorrect completion state, so the down migration is intentionally empty.

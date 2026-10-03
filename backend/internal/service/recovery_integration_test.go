@@ -55,7 +55,7 @@ func newRecoveryFixture(t *testing.T) recoveryFixture {
 	if _, err := pool.Exec(ctx, `INSERT INTO admin_users (id, username, password_hash) VALUES ($1, $2, 'fixture-hash')`, fixture.actorID, "recovery-"+fixture.actorID.String()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, title) VALUES ($1, 'Recovery Series')`, fixture.seriesID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, title, metadata) VALUES ($1, 'Recovery Series', '{"status":"Ended","in_production":false}'::jsonb)`, fixture.seriesID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `

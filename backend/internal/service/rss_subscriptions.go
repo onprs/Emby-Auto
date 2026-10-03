@@ -803,6 +803,106 @@ func (workflow *RSSWorkflow) ScheduleManualPoll(
 	return result.Operation, nil
 }
 
+func (workflow *RSSWorkflow) RetryEntry(
+	ctx context.Context,
+	subscriptionID uuid.UUID,
+	entryID uuid.UUID,
+	expectedVersion int32,
+	idempotencyKey string,
+	actorUserID uuid.UUID,
+) (domain.Operation, error) {
+	if subscriptionID == uuid.Nil || entryID == uuid.Nil {
+		return domain.Operation{}, NewError("invalid_rss_entry", "the RSS subscription and entry are required", ErrInvalidInput, map[string]any{})
+	}
+	if expectedVersion <= 0 {
+		return domain.Operation{}, NewError("invalid_expected_version", "expectedVersion must be positive", ErrInvalidInput, map[string]any{})
+	}
+	rawKey := strings.TrimSpace(idempotencyKey)
+	if rawKey == "" {
+		return domain.Operation{}, NewError("invalid_idempotency_key", "Idempotency-Key must not be blank", ErrInvalidInput, map[string]any{})
+	}
+	if workflow.operations == nil {
+		return domain.Operation{}, errors.New("RSS entry retry operation scheduler is unavailable")
+	}
+
+	operationKey := fmt.Sprintf("rss.entry.retry:%s:%s:%s", subscriptionID, entryID, rawKey)
+	var result domain.Operation
+	err := workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+		existing, replayed, err := findIdempotentResourceCommand(
+			ctx, scope, operationKey, "rss_subscription", subscriptionID, "retry-entry", appqueue.KindRSSPoll,
+		)
+		if err != nil {
+			return err
+		}
+		if replayed {
+			result = existing
+			return nil
+		}
+
+		subscription, err := scope.Queries.LockRSSSubscriptionForEntryReservation(ctx, repository.UUIDToPG(entryID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock RSS subscription for entry retry: %w", err)
+		}
+		if subscription.ID != repository.UUIDToPG(subscriptionID) {
+			return domain.ErrNotFound
+		}
+		if subscription.DeletedAt.Valid || subscription.CompletedAt.Valid || !subscription.Enabled {
+			return NewError("state_conflict", "the RSS subscription is not available for entry retry", ErrStateConflict, map[string]any{})
+		}
+
+		entry, err := scope.Queries.LockRSSEntryForEnqueue(ctx, repository.UUIDToPG(entryID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock RSS entry for retry: %w", err)
+		}
+		if entry.SubscriptionID != subscription.ID {
+			return domain.ErrNotFound
+		}
+		if rssEntryVersion(entry.EnqueueAttempts) != int(expectedVersion) {
+			return NewError("state_conflict", "the RSS entry was modified by another request", ErrStateConflict, map[string]any{"expectedVersion": expectedVersion})
+		}
+		if !entry.Downloadable || entry.Status != string(domain.RSSEnqueueFailed) || !entry.LastErrorRetryable {
+			return NewError("invalid_state", "only a retryable RSS enqueue failure can be retried", ErrStateConflict, map[string]any{"status": entry.Status})
+		}
+		if _, err := scope.Queries.GetRSSEntryRelations(ctx, entry.ID); err == nil {
+			return NewError("state_conflict", "the RSS entry already has an acquisition; retry its download or media task", ErrStateConflict, map[string]any{})
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("check RSS entry retry relations: %w", err)
+		}
+
+		scheduled, err := workflow.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
+			Kind:           appqueue.KindRSSPoll,
+			ResourceType:   "rss_subscription",
+			ResourceID:     subscriptionID,
+			IdempotencyKey: operationKey,
+			MaxAttempts:    5,
+			Timeout:        30 * time.Second,
+			Payload: map[string]any{
+				"command":             "retry-entry",
+				"continuous":          false,
+				"entryId":             entryID,
+				"expectedVersion":     expectedVersion,
+				"subscriptionVersion": subscription.Version,
+			},
+			ActorUserID: actorUserID,
+		})
+		if err != nil {
+			return fmt.Errorf("schedule RSS entry retry: %w", err)
+		}
+		result = scheduled.Operation
+		return nil
+	})
+	if err != nil {
+		return domain.Operation{}, err
+	}
+	return result, nil
+}
+
 func (workflow *RSSWorkflow) scheduleContinuousPoll(
 	ctx context.Context,
 	scope database.TxScope,

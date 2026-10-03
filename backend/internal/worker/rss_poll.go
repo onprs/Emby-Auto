@@ -45,8 +45,10 @@ type RSSPollHandler struct {
 }
 
 type rssPollPayload struct {
-	Continuous          bool  `json:"continuous"`
-	SubscriptionVersion int32 `json:"subscriptionVersion"`
+	Continuous          bool       `json:"continuous"`
+	SubscriptionVersion int32      `json:"subscriptionVersion"`
+	EntryID             *uuid.UUID `json:"entryId,omitempty"`
+	ExpectedVersion     int32      `json:"expectedVersion,omitempty"`
 }
 
 func NewRSSPollHandler(feeds RSSFeedClient, store RSSPollStore, maxConcurrency int, agentResolutions ...RSSAgentResolutionService) *RSSPollHandler {
@@ -103,6 +105,9 @@ func (handler *RSSPollHandler) Handle(ctx context.Context, operation domain.Oper
 		defer func() {
 			handleErr = handler.snoozeRetryableContinuousFailure(ctx, operation.ID, command, handleErr)
 		}()
+	}
+	if payload.EntryID != nil {
+		return handler.retryEntry(ctx, *payload.EntryID, payload.ExpectedVersion)
 	}
 
 	feeds := handler.feeds
@@ -209,15 +214,9 @@ func (handler *RSSPollHandler) Handle(ctx context.Context, operation domain.Oper
 	if err := handler.schedulePendingEpisodeMappings(ctx, command); err != nil {
 		return err
 	}
-	scheduler := service.RSSEntryScheduler(handler.store)
-	if handler.realtimeVerifier != nil {
-		realtimeStore, ok := handler.store.(interface {
-			ScheduleRSSDownloadWithRealtimeCheck(context.Context, domain.RSSEnqueueCandidate, uuid.UUID) error
-		})
-		if !ok {
-			return permanentFailure("rss_realtime_not_configured", "RSS enqueue does not accept real-time Emby checks", nil)
-		}
-		scheduler = &rssRealtimeEntryScheduler{verifier: handler.realtimeVerifier, store: realtimeStore}
+	scheduler, err := handler.entryScheduler()
+	if err != nil {
+		return permanentFailure("rss_realtime_not_configured", "RSS enqueue does not accept real-time Emby checks", err)
 	}
 	batch, err := service.ScheduleRSSBatch(ctx, persisted.Candidates, handler.maxConcurrency, scheduler)
 	if err != nil {
@@ -250,6 +249,40 @@ func (handler *RSSPollHandler) Handle(ctx context.Context, operation domain.Oper
 	}
 	if payload.Continuous {
 		return river.JobSnooze(command.PollInterval)
+	}
+	return nil
+}
+
+func (handler *RSSPollHandler) entryScheduler() (service.RSSEntryScheduler, error) {
+	scheduler := service.RSSEntryScheduler(handler.store)
+	if handler.realtimeVerifier == nil {
+		return scheduler, nil
+	}
+	realtimeStore, ok := handler.store.(interface {
+		ScheduleRSSDownloadWithRealtimeCheck(context.Context, domain.RSSEnqueueCandidate, uuid.UUID) error
+	})
+	if !ok {
+		return nil, errors.New("RSS enqueue does not accept real-time Emby checks")
+	}
+	return &rssRealtimeEntryScheduler{verifier: handler.realtimeVerifier, store: realtimeStore}, nil
+}
+
+func (handler *RSSPollHandler) retryEntry(ctx context.Context, entryID uuid.UUID, expectedVersion int32) error {
+	scheduler, err := handler.entryScheduler()
+	if err != nil {
+		return permanentFailure("rss_realtime_not_configured", "RSS enqueue does not accept real-time Emby checks", err)
+	}
+	if err := scheduler.ScheduleRSSDownload(ctx, domain.RSSEnqueueCandidate{EntryID: entryID, ExpectedVersion: expectedVersion}); err != nil {
+		var verificationErr *service.RSSRealtimeVerificationError
+		var serviceErr *service.Error
+		if errors.As(err, &verificationErr) ||
+			(errors.As(err, &serviceErr) && strings.HasPrefix(serviceErr.Code, "rss_realtime_")) {
+			return rssRealtimeWorkerFailure(err)
+		}
+		if errors.As(err, &serviceErr) && errors.Is(err, service.ErrStateConflict) {
+			return nil
+		}
+		return retryableFailure("rss_entry_retry_failed", "RSS entry retry could not be scheduled", err)
 	}
 	return nil
 }

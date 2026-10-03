@@ -18,9 +18,10 @@ var btihPattern = regexp.MustCompile(`(?i)^[0-9a-f]{40}$`)
 
 // RSSEnqueueCandidate is an entry that may produce an independent download job.
 type RSSEnqueueCandidate struct {
-	EntryID      uuid.UUID
-	Status       RSSState
-	Downloadable bool
+	EntryID         uuid.UUID
+	Status          RSSState
+	Downloadable    bool
+	ExpectedVersion int32
 }
 
 type RSSIdentityInput struct {

@@ -308,6 +308,46 @@ func (server *Server) PollRSSSubscription(
 	}
 }
 
+func (server *Server) RetryRSSEntry(
+	ctx context.Context,
+	request RetryRSSEntryRequestObject,
+) (RetryRSSEntryResponseObject, error) {
+	if server.rssSubscriptions == nil {
+		return RetryRSSEntry503JSONResponse{ServiceUnavailableJSONResponse: serviceUnavailableError(ctx, "rss")}, nil
+	}
+	authenticated, ok := authenticationFromContext(ctx)
+	if !ok {
+		return RetryRSSEntry401JSONResponse{UnauthorizedJSONResponse: unauthorizedError(ctx, "authentication is required")}, nil
+	}
+	if request.Body == nil {
+		return RetryRSSEntry400JSONResponse{BadRequestJSONResponse: badRequestError(ctx, "request body is required")}, nil
+	}
+	operation, err := server.rssSubscriptions.RetryEntry(
+		ctx,
+		uuid.UUID(request.SubscriptionId),
+		uuid.UUID(request.EntryId),
+		request.Body.ExpectedVersion,
+		request.Params.IdempotencyKey,
+		authenticated.session.User.ID,
+	)
+	var serviceErr *service.Error
+	switch {
+	case errors.As(err, &serviceErr) && errors.Is(err, service.ErrInvalidInput):
+		return RetryRSSEntry400JSONResponse{BadRequestJSONResponse: BadRequestJSONResponse(apiErrorFromService(ctx, serviceErr))}, nil
+	case errors.Is(err, domain.ErrNotFound):
+		return RetryRSSEntry404JSONResponse{NotFoundJSONResponse: rssNotFoundError(ctx)}, nil
+	case errors.As(err, &serviceErr) && errors.Is(err, service.ErrStateConflict):
+		return RetryRSSEntry409JSONResponse{ConflictJSONResponse: ConflictJSONResponse(apiErrorFromService(ctx, serviceErr))}, nil
+	case err != nil:
+		return RetryRSSEntry503JSONResponse{ServiceUnavailableJSONResponse: serviceUnavailableError(ctx, "postgresql")}, nil
+	default:
+		return RetryRSSEntry202JSONResponse(CommandAccepted{
+			OperationId: operation.ID,
+			Status:      CommandAcceptedStatus(operation.Status),
+		}), nil
+	}
+}
+
 func rssSubscriptionResponse(subscription domain.RSSSubscription) RSSSubscription {
 	response := RSSSubscription{
 		Id:                        subscription.ID,

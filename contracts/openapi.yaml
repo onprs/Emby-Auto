@@ -1781,6 +1781,48 @@ paths:
           $ref: "#/components/responses/NotFound"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/rss/subscriptions/{subscriptionId}/entries/{entryId}/retry:
+    post:
+      operationId: retryRSSEntry
+      summary: Retry one recoverable RSS entry enqueue
+      tags: [RSS]
+      parameters:
+        - name: subscriptionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: entryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetryRSSEntryRequest"
+      responses:
+        "202":
+          description: The RSS entry retry operation was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /api/v1/tmdb/series/search:
     get:
       operationId: searchTMDbSeries
@@ -4937,10 +4979,19 @@ components:
           type: integer
           format: int32
           minimum: 1
+    RetryRSSEntryRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion]
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+          minimum: 1
     RSSEntry:
       type: object
       additionalProperties: false
-      required: [id, subscriptionId, title, status, classification, duplicateCount, downloadUriAvailable, adjudicationState, createdAt, updatedAt]
+      required: [id, subscriptionId, title, status, classification, duplicateCount, version, downloadUriAvailable, canRetry, adjudicationState, createdAt, updatedAt]
       properties:
         id:
           type: string
@@ -4971,7 +5022,13 @@ components:
           type: integer
           format: int32
           minimum: 0
+        version:
+          type: integer
+          format: int32
+          minimum: 1
         downloadUriAvailable:
+          type: boolean
+        canRetry:
           type: boolean
         publishedAt:
           type: string

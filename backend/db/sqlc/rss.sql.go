@@ -2050,6 +2050,40 @@ func (q *Queries) ListRSSMappedRealtimeTargets(ctx context.Context, subscription
 	return items, nil
 }
 
+const listRSSMappingProfileCoordinates = `-- name: ListRSSMappingProfileCoordinates :many
+SELECT source_season, source_episode, source_episode_fraction_hundredths
+FROM episode_mappings
+WHERE profile_id = $1
+ORDER BY source_season, source_episode, source_episode_fraction_hundredths
+FOR UPDATE
+`
+
+type ListRSSMappingProfileCoordinatesRow struct {
+	SourceSeason                    int32 `db:"source_season" json:"source_season"`
+	SourceEpisode                   int32 `db:"source_episode" json:"source_episode"`
+	SourceEpisodeFractionHundredths int32 `db:"source_episode_fraction_hundredths" json:"source_episode_fraction_hundredths"`
+}
+
+func (q *Queries) ListRSSMappingProfileCoordinates(ctx context.Context, profileID pgtype.UUID) ([]ListRSSMappingProfileCoordinatesRow, error) {
+	rows, err := q.db.Query(ctx, listRSSMappingProfileCoordinates, profileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRSSMappingProfileCoordinatesRow{}
+	for rows.Next() {
+		var i ListRSSMappingProfileCoordinatesRow
+		if err := rows.Scan(&i.SourceSeason, &i.SourceEpisode, &i.SourceEpisodeFractionHundredths); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRSSPreAcquisitionMappingRecoveryCandidates = `-- name: ListRSSPreAcquisitionMappingRecoveryCandidates :many
 SELECT subscription.id, subscription.version
 FROM rss_subscriptions AS subscription
@@ -2976,6 +3010,46 @@ func (q *Queries) ListUnresolvedRSSAdjudicationBatches(ctx context.Context, subs
 	return items, nil
 }
 
+const lockRSSAnchorMappingProfile = `-- name: LockRSSAnchorMappingProfile :one
+SELECT
+    profile.id,
+    profile.series_id,
+    COALESCE(profile.anchor_source_season, 0)::integer AS anchor_source_season,
+    COALESCE(profile.anchor_source_episode, 0)::integer AS anchor_source_episode,
+    target_season.season_number AS anchor_target_season,
+    target_episode.episode_number AS anchor_target_episode
+FROM rss_subscriptions AS subscription
+JOIN episode_mapping_profiles AS profile ON profile.id = subscription.mapping_profile_id
+JOIN media_episodes AS target_episode ON target_episode.id = profile.anchor_target_episode_id
+JOIN tmdb_seasons AS target_season ON target_season.id = target_episode.season_id
+WHERE subscription.id = $1
+  AND profile.anchor_source_season IS NOT NULL
+FOR UPDATE OF profile
+`
+
+type LockRSSAnchorMappingProfileRow struct {
+	ID                  pgtype.UUID `db:"id" json:"id"`
+	SeriesID            pgtype.UUID `db:"series_id" json:"series_id"`
+	AnchorSourceSeason  int32       `db:"anchor_source_season" json:"anchor_source_season"`
+	AnchorSourceEpisode int32       `db:"anchor_source_episode" json:"anchor_source_episode"`
+	AnchorTargetSeason  int32       `db:"anchor_target_season" json:"anchor_target_season"`
+	AnchorTargetEpisode int32       `db:"anchor_target_episode" json:"anchor_target_episode"`
+}
+
+func (q *Queries) LockRSSAnchorMappingProfile(ctx context.Context, subscriptionID pgtype.UUID) (LockRSSAnchorMappingProfileRow, error) {
+	row := q.db.QueryRow(ctx, lockRSSAnchorMappingProfile, subscriptionID)
+	var i LockRSSAnchorMappingProfileRow
+	err := row.Scan(
+		&i.ID,
+		&i.SeriesID,
+		&i.AnchorSourceSeason,
+		&i.AnchorSourceEpisode,
+		&i.AnchorTargetSeason,
+		&i.AnchorTargetEpisode,
+	)
+	return i, err
+}
+
 const lockRSSEntryForEnqueue = `-- name: LockRSSEntryForEnqueue :one
 SELECT entry.id, entry.subscription_id, entry.release_candidate_id, entry.identity_key, entry.guid, entry.btih, entry.canonical_url, entry.title, entry.published_at, entry.status, entry.enqueue_attempts, entry.last_error_code, entry.last_error_message, entry.upstream_payload, entry.discovered_at, entry.enqueued_at, entry.updated_at, entry.download_uri, entry.downloadable, entry.rejection_reasons, entry.source_season, entry.source_episode, entry.duplicate_count, entry.last_error_retryable, entry.imported_at, entry.coordinate_source, entry.agent_resolution_id, entry.fulfillment_source, entry.source_episode_fraction_hundredths
 FROM rss_entries AS entry
@@ -3257,6 +3331,7 @@ JOIN acquisitions AS acquisition ON acquisition.id = task.acquisition_id
 JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
 JOIN rss_subscriptions AS subscription ON subscription.id = entry.subscription_id
 JOIN episode_mapping_profiles AS profile ON profile.id = subscription.mapping_profile_id
+JOIN media_series AS series ON series.id = subscription.series_id
 CROSS JOIN LATERAL (
     SELECT CASE
         WHEN profile.anchor_source_season IS NOT NULL THEN (
@@ -3275,6 +3350,10 @@ WHERE task.id = $1
   AND entry.imported_at IS NOT NULL
   AND subscription.deleted_at IS NULL
   AND subscription.completed_at IS NULL
+  AND (
+      profile.anchor_source_season IS NULL
+      OR lower(series.metadata->>'status') IN ('ended', 'canceled')
+  )
   AND completion.final_source_episode IS NOT NULL
   AND completion.final_source_episode > 0
   AND NOT EXISTS (
@@ -3338,6 +3417,7 @@ SELECT
     completion.final_source_episode::integer AS source_episode
 FROM rss_subscriptions AS subscription
 JOIN episode_mapping_profiles AS profile ON profile.id = subscription.mapping_profile_id
+JOIN media_series AS series ON series.id = subscription.series_id
 CROSS JOIN LATERAL (
     SELECT CASE
         WHEN profile.anchor_source_season IS NOT NULL THEN (
@@ -3354,6 +3434,10 @@ CROSS JOIN LATERAL (
 WHERE subscription.id = $1
   AND subscription.deleted_at IS NULL
   AND subscription.completed_at IS NULL
+  AND (
+      profile.anchor_source_season IS NULL
+      OR lower(series.metadata->>'status') IN ('ended', 'canceled')
+  )
   AND completion.final_source_episode IS NOT NULL
   AND completion.final_source_episode > 0
   AND NOT EXISTS (

@@ -7,8 +7,11 @@ import { ApiFailure } from '@/api/app-client';
 import type { RssEntry, RssSubscription } from '@/api/generated/types.gen';
 import { appNavigationState, currentAppLocation, useListScrollRestoration } from '@/app/navigation-context';
 import { ContextLink } from '@/components/context-link';
+import { RecordActions, type RecordAction } from '@/components/record-actions';
 import { TaskProgress } from '@/features/acquisitions/task-progress';
-import { archiveSubscription, fetchEntries, fetchSubscription, pollSubscription, updateSubscription, type RssEntrySortBy, type SortOrder } from '@/features/rss/api';
+import { fetchAcquisition } from '@/features/acquisitions/api';
+import { retryAcquisition } from '@/features/acquisitions/acquisition-actions';
+import { archiveSubscription, fetchEntries, fetchSubscription, pollSubscription, retryEntryCommand, updateSubscription, type RssEntrySortBy, type SortOrder } from '@/features/rss/api';
 import { formatKeywordInput, parseKeywordInput } from '@/features/rss/keyword-input';
 import { SubscriptionProgress } from '@/features/rss/subscription-progress';
 import { DeletionFeedback, type DeletionSubmission } from '@/features/deletions/deletion-feedback';
@@ -41,6 +44,7 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
   const sortBy = search.sortBy ?? 'discovered_at';
   const sortOrder = search.sortOrder ?? 'desc';
   const [queryInput, setQueryInput] = useState(search.query ?? '');
+  const retryHolder = useState(() => new IdempotencyKeyHolder())[0];
   useEffect(() => setQueryInput(search.query ?? ''), [search.query]);
   const subscription = useQuery({
     queryKey: ['rss', subscriptionId],
@@ -66,6 +70,43 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['rss', subscriptionId] });
+    void queryClient.invalidateQueries({ queryKey: ['acquisitions'] });
+    void queryClient.invalidateQueries({ queryKey: ['tasks'] });
+    void queryClient.invalidateQueries({ queryKey: ['downloads'] });
+    void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+  };
+  const retryEntry = async (entry: RssEntry): Promise<string | null> => {
+    try {
+      const key = retryHolder.get();
+      if (!entry.acquisitionId) {
+        await retryEntryCommand(subscriptionId, entry.id, key, entry.version);
+        retryHolder.reset();
+        return null;
+      }
+      const acquisition = await fetchAcquisition(entry.acquisitionId);
+      const result = await retryAcquisition(acquisition, `${key}:${entry.id}`);
+      retryHolder.reset();
+      if (!result.ok) {
+        refresh();
+        return result.error ?? '重试失败';
+      }
+      return null;
+    } catch (cause) {
+      retryHolder.reset();
+      refresh();
+      return cause instanceof ApiFailure ? friendlyError(cause.code, cause.message) : cause instanceof Error ? cause.message : '重试失败';
+    }
+  };
+  const entryActions = (entry: RssEntry): RecordAction[] => {
+    if (!entry.canRetry || entryWasSkipped(entry)) {
+      return [];
+    }
+    return [{
+      key: 'retry',
+      label: '重试任务',
+      title: '重新执行失败的下载或媒体处理任务',
+      run: () => retryEntry(entry),
+    }];
   };
   const changeSort = (field: RssEntrySortBy) => {
     const nextOrder: SortOrder = sortBy === field && sortOrder === 'asc' ? 'desc' : 'asc';
@@ -195,6 +236,9 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
                     ) : (
                       <div className="mt-3"><EntryProgress entry={entry} /></div>
                     )}
+                    {entry.canRetry ? (
+                      <div className="mt-2 flex justify-end"><RecordActions actions={entryActions(entry)} onChanged={refresh} /></div>
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -204,6 +248,7 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
                 sortHeader('集数', 'episode'),
                 sortHeader('处理进度', 'progress'),
                 sortHeader('发现时间', 'discovered_at'),
+                '操作',
               ]}>
                 {entries.data.items.map((entry) => (
                   <tr key={entry.id}>
@@ -216,6 +261,9 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
                       <EntryProgress entry={entry} />
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-zinc-600">{formatDateTime(entry.createdAt)}</td>
+                    <td className="w-12 px-2 py-3 text-right">
+                      {entry.canRetry ? <RecordActions actions={entryActions(entry)} onChanged={refresh} /> : null}
+                    </td>
                   </tr>
                 ))}
               </DataTable>

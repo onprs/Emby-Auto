@@ -92,6 +92,33 @@ func TestRSSManualPollRejectsBlankIdempotencyKeyBeforeLookup(t *testing.T) {
 	}
 }
 
+func TestRSSRetryEntryValidatesCommandBeforeDatabaseAccess(t *testing.T) {
+	workflow := NewRSSWorkflow(nil, nil, nil)
+	entryID := uuid.MustParse("70000000-0000-0000-0000-000000000002")
+	subscriptionID := uuid.MustParse("70000000-0000-0000-0000-000000000003")
+	cases := []struct {
+		name            string
+		subscriptionID  uuid.UUID
+		entryID         uuid.UUID
+		expectedVersion int32
+		key             string
+		code            string
+	}{
+		{name: "missing IDs", code: "invalid_rss_entry"},
+		{name: "invalid version", subscriptionID: subscriptionID, entryID: entryID, expectedVersion: 0, key: "retry", code: "invalid_expected_version"},
+		{name: "blank idempotency key", subscriptionID: subscriptionID, entryID: entryID, expectedVersion: 1, key: " ", code: "invalid_idempotency_key"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := workflow.RetryEntry(context.Background(), test.subscriptionID, test.entryID, test.expectedVersion, test.key, uuid.Nil)
+			var serviceErr *Error
+			if !errors.As(err, &serviceErr) || serviceErr.Code != test.code || !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("RetryEntry() error = %#v, want %s", err, test.code)
+			}
+		})
+	}
+}
+
 func TestSummarizeRSSSubscriptionProgressAggregatesEffectiveTasks(t *testing.T) {
 	views := []domain.AcquisitionView{
 		{OverallProgress: 0.16, AggregateStatus: "downloading"},

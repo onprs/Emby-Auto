@@ -45,6 +45,7 @@ type RSSSubscriptionService interface {
 	ArchiveSubscription(context.Context, uuid.UUID, int32, uuid.UUID) error
 	RequestSubscriptionDeletion(context.Context, uuid.UUID, int32, string, bool, uuid.UUID) (domain.Operation, error)
 	ScheduleManualPoll(context.Context, uuid.UUID, string, uuid.UUID) (domain.Operation, error)
+	RetryEntry(context.Context, uuid.UUID, uuid.UUID, int32, string, uuid.UUID) (domain.Operation, error)
 }
 
 type RSSFeedLookupService interface {

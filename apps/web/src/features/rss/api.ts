@@ -10,6 +10,7 @@ import {
   listRssSubtitleGroups,
   lookupRssFeed,
   pollRssSubscription,
+  retryRssEntry,
   updateRssSubscription,
   updateRssSubtitleGroup,
 } from '@/api/generated/sdk.gen';
@@ -105,6 +106,13 @@ export function pollSubscription(subscriptionId: string, key: string): Promise<C
   return unwrap<CommandAccepted>(pollRssSubscription({ path: { subscriptionId }, headers: { 'Idempotency-Key': key } }), '触发轮询失败');
 }
 
+export function retryEntryCommand(subscriptionId: string, entryId: string, key: string, expectedVersion: number): Promise<CommandAccepted> {
+  return unwrap<CommandAccepted>(
+    retryRssEntry({ path: { subscriptionId, entryId }, headers: { 'Idempotency-Key': key }, body: { expectedVersion } }),
+    '重试 RSS 条目失败',
+  );
+}
+
 function assertSubscriptionProgress(value: unknown): asserts value is RssSubscription {
   if (
     !isRecord(value)
@@ -127,6 +135,9 @@ function assertSubscriptionProgress(value: unknown): asserts value is RssSubscri
 
 function assertEntryProgress(value: unknown): void {
   if (!isRecord(value)) {
+    throwContractMismatch();
+  }
+  if (typeof value.canRetry !== 'boolean' || !validCount(value.version) || value.version < 1) {
     throwContractMismatch();
   }
   if (typeof value.acquisitionId !== 'string') {

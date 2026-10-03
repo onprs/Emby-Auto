@@ -121,6 +121,72 @@ WHERE resource_id = $1 AND kind = 'rss.poll' AND idempotency_key = $2`, subscrip
 	}
 }
 
+func TestPreparePollMappingExtendsExistingAnchorProfileAfterCatalogGrowthIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, pool := testutil.NewMigratedPostgres(t)
+	transactor := database.NewTransactor(pool)
+	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := NewRSSWorkflow(db.New(pool), transactor, NewOperationScheduler(transactor, riverClient))
+
+	seriesID, seasonID, subscriptionID := uuid.New(), uuid.New(), uuid.New()
+	episodeIDs := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
+	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, tmdb_series_id, title, metadata) VALUES ($1, $2, 'Growing Subscription', '{"status":"Returning Series","in_production":true}'::jsonb)`, seriesID, time.Now().UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tmdb_seasons (id, series_id, season_number, episode_count) VALUES ($1, $2, 1, 2)`, seasonID, seriesID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO media_episodes (id, season_id, episode_number, title)
+VALUES ($1, $3, 1, 'Episode 1'), ($2, $3, 2, 'Episode 2')`, episodeIDs[0], episodeIDs[1], seasonID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO rss_subscriptions (
+  id, series_id, name, feed_url, enabled, auto_episode_mapping, poll_interval_seconds, source_season
+) VALUES ($1, $2, 'Growing Subscription', 'https://example.test/growing.xml', true, false, 900, 1)`, subscriptionID, seriesID); err != nil {
+		t.Fatal(err)
+	}
+	feed := domain.RSSFeed{Entries: []domain.RSSFeedEntry{
+		{Title: "Growing Subscription S01E01", DownloadURI: "https://example.test/e01.torrent"},
+		{Title: "Growing Subscription S01E02", DownloadURI: "https://example.test/e02.torrent"},
+	}}
+	ready, err := workflow.EnsureDeterministicPollMapping(ctx, uuid.Nil, subscriptionID, feed)
+	if err != nil || !ready {
+		t.Fatalf("EnsureDeterministicPollMapping() = %t, %v", ready, err)
+	}
+	var profileID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT mapping_profile_id FROM rss_subscriptions WHERE id = $1`, subscriptionID).Scan(&profileID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE tmdb_seasons SET episode_count = 3 WHERE id = $1`, seasonID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO media_episodes (id, season_id, episode_number, title)
+VALUES ($1, $2, 3, 'Episode 3')`, episodeIDs[2], seasonID); err != nil {
+		t.Fatal(err)
+	}
+	preparation, err := workflow.PreparePollMapping(ctx, uuid.Nil, subscriptionID, domain.RSSFeed{
+		Entries: append(feed.Entries, domain.RSSFeedEntry{Title: "Growing Subscription S01E03", DownloadURI: "https://example.test/e03.torrent"}),
+	})
+	if err != nil || !preparation.Ready {
+		t.Fatalf("PreparePollMapping(grown catalog) = %#v, %v", preparation, err)
+	}
+	var mapped int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM episode_mappings WHERE profile_id = $1 AND mapping_status = 'mapped'`, profileID).Scan(&mapped); err != nil {
+		t.Fatal(err)
+	}
+	if mapped != 3 {
+		t.Fatalf("mapped episode count = %d, want 3", mapped)
+	}
+}
+
 func TestReconcilePreAcquisitionMappingPollsIsNarrowAndIdempotentIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

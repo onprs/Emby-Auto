@@ -245,6 +245,8 @@ test.describe('application shell', () => {
           status: 'enqueued',
           classification: 'enqueued',
           duplicateCount: 0,
+          version: 1,
+          canRetry: false,
           downloadUriAvailable: true,
           sourceSeason: 1,
           sourceEpisode: 1,

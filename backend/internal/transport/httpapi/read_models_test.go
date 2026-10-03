@@ -211,12 +211,15 @@ func TestRSSEntryResponseIncludesAcquisitionProgress(t *testing.T) {
 			CurrentStage:    "transcode",
 			OverallProgress: 0.473,
 		},
-		Title: "Progress E02", Status: "enqueued", Classification: "enqueued",
+		Title: "Progress E02", Status: "enqueued", Classification: "enqueued", CanRetry: true, Version: 4,
 		RejectReason: "title_excluded,target_episode_processing",
 	})
 
 	if response.AcquisitionId == nil || *response.AcquisitionId != acquisitionID || response.AcquisitionProgress == nil || response.ImportedAt == nil || !response.ImportedAt.Equal(importedAt) {
 		t.Fatalf("RSS acquisition progress = %#v", response)
+	}
+	if response.CanRetry != true || response.Version != 4 {
+		t.Fatalf("RSS retry metadata = canRetry:%v version:%d", response.CanRetry, response.Version)
 	}
 	if response.RejectReason == nil || *response.RejectReason != "title_excluded,target_episode_processing" {
 		t.Fatalf("RSS rejection reasons = %#v, want the complete reason list", response.RejectReason)

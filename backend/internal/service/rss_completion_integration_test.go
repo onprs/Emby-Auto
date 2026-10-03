@@ -64,6 +64,36 @@ func TestFinalRSSImportDisablesAndRetainsHistoryWithOptionalSourceCleanupIntegra
 	assertRSSCompletionState(t, fixture, anchoredSubscriptionID, false, true, 0)
 }
 
+func TestRSSAnchorSubscriptionStaysActiveWhileSeriesIsOngoingIntegration(t *testing.T) {
+	fixture := newRecoveryFixture(t)
+	ctx := context.Background()
+	if _, err := fixture.pool.Exec(ctx, `
+UPDATE media_series
+SET metadata = '{"status":"Returning Series","in_production":true}'::jsonb
+WHERE id = $1`, fixture.seriesID); err != nil {
+		t.Fatal(err)
+	}
+
+	taskWorkflow := NewTaskWorkflow(db.New(fixture.pool), fixture.transactor, fixture.scheduler)
+	rssWorkflow := NewRSSWorkflow(db.New(fixture.pool), fixture.transactor, fixture.scheduler)
+	subscriptionID, taskID, importID, operationID := createRSSImportingTask(t, fixture, 2, 2, false, true)
+	if err := taskWorkflow.CompleteImport(ctx, domain.ImportCompletion{
+		TaskID: taskID, ImportID: importID, OperationID: operationID,
+		DestinationVideoPath:    "/library/Ongoing/Season1/Ongoing - S01E02.mkv",
+		DestinationSubtitlePath: "/library/Ongoing/Season1/Ongoing - S01E02.ass",
+	}); err != nil {
+		t.Fatalf("CompleteImport(ongoing anchor) error = %v", err)
+	}
+	assertRSSCompletionState(t, fixture, subscriptionID, true, false, 0)
+
+	if err := fixture.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+		return rssWorkflow.completeRSSSubscriptionAtFulfillmentInTx(ctx, scope, subscriptionID, operationID, "ongoing_guard")
+	}); err != nil {
+		t.Fatalf("completeRSSSubscriptionAtFulfillmentInTx(ongoing anchor) error = %v", err)
+	}
+	assertRSSCompletionState(t, fixture, subscriptionID, true, false, 0)
+}
+
 func TestLegacyFinalImportDeletionKeyDoesNotBlockRetainedCompletionIntegration(t *testing.T) {
 	fixture := newRecoveryFixture(t)
 	workflow := NewTaskWorkflow(db.New(fixture.pool), fixture.transactor, fixture.scheduler)

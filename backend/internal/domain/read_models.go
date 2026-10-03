@@ -172,6 +172,8 @@ type RSSEntryView struct {
 	AcquisitionID                   *uuid.UUID
 	AcquisitionProgress             *AcquisitionProgressView
 	DownloadID                      *uuid.UUID
+	CanRetry                        bool
+	Version                         int
 	Title                           string
 	Status                          string
 	Classification                  string

@@ -614,6 +614,29 @@ FROM rss_subscriptions AS subscription
 WHERE subscription.id = sqlc.arg(id)
 FOR UPDATE OF subscription;
 
+-- name: LockRSSAnchorMappingProfile :one
+SELECT
+    profile.id,
+    profile.series_id,
+    COALESCE(profile.anchor_source_season, 0)::integer AS anchor_source_season,
+    COALESCE(profile.anchor_source_episode, 0)::integer AS anchor_source_episode,
+    target_season.season_number AS anchor_target_season,
+    target_episode.episode_number AS anchor_target_episode
+FROM rss_subscriptions AS subscription
+JOIN episode_mapping_profiles AS profile ON profile.id = subscription.mapping_profile_id
+JOIN media_episodes AS target_episode ON target_episode.id = profile.anchor_target_episode_id
+JOIN tmdb_seasons AS target_season ON target_season.id = target_episode.season_id
+WHERE subscription.id = sqlc.arg(subscription_id)
+  AND profile.anchor_source_season IS NOT NULL
+FOR UPDATE OF profile;
+
+-- name: ListRSSMappingProfileCoordinates :many
+SELECT source_season, source_episode, source_episode_fraction_hundredths
+FROM episode_mappings
+WHERE profile_id = sqlc.arg(profile_id)
+ORDER BY source_season, source_episode, source_episode_fraction_hundredths
+FOR UPDATE;
+
 -- name: ApplyDeterministicRSSPollMappingProfile :one
 UPDATE rss_subscriptions
 SET mapping_profile_id = sqlc.arg(mapping_profile_id),
@@ -1282,6 +1305,7 @@ JOIN acquisitions AS acquisition ON acquisition.id = task.acquisition_id
 JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
 JOIN rss_subscriptions AS subscription ON subscription.id = entry.subscription_id
 JOIN episode_mapping_profiles AS profile ON profile.id = subscription.mapping_profile_id
+JOIN media_series AS series ON series.id = subscription.series_id
 CROSS JOIN LATERAL (
     SELECT CASE
         WHEN profile.anchor_source_season IS NOT NULL THEN (
@@ -1300,6 +1324,10 @@ WHERE task.id = sqlc.arg(task_id)
   AND entry.imported_at IS NOT NULL
   AND subscription.deleted_at IS NULL
   AND subscription.completed_at IS NULL
+  AND (
+      profile.anchor_source_season IS NULL
+      OR lower(series.metadata->>'status') IN ('ended', 'canceled')
+  )
   AND completion.final_source_episode IS NOT NULL
   AND completion.final_source_episode > 0
   AND NOT EXISTS (
@@ -1341,6 +1369,7 @@ SELECT
     completion.final_source_episode::integer AS source_episode
 FROM rss_subscriptions AS subscription
 JOIN episode_mapping_profiles AS profile ON profile.id = subscription.mapping_profile_id
+JOIN media_series AS series ON series.id = subscription.series_id
 CROSS JOIN LATERAL (
     SELECT CASE
         WHEN profile.anchor_source_season IS NOT NULL THEN (
@@ -1357,6 +1386,10 @@ CROSS JOIN LATERAL (
 WHERE subscription.id = sqlc.arg(subscription_id)
   AND subscription.deleted_at IS NULL
   AND subscription.completed_at IS NULL
+  AND (
+      profile.anchor_source_season IS NULL
+      OR lower(series.metadata->>'status') IN ('ended', 'canceled')
+  )
   AND completion.final_source_episode IS NOT NULL
   AND completion.final_source_episode > 0
   AND NOT EXISTS (

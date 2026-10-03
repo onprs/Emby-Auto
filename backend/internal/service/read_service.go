@@ -1149,6 +1149,28 @@ func isMappingMaterializationFailure(status, failureStage, errorCode string) boo
 	return ok
 }
 
+func rssEntryVersion(enqueueAttempts int32) int {
+	if enqueueAttempts < 1 {
+		return 1
+	}
+	return int(enqueueAttempts)
+}
+
+func rssEntryCanRetry(acquisition domain.AcquisitionView) bool {
+	if acquisition.Download != nil &&
+		acquisition.Download.Status == "failed" &&
+		acquisition.Download.FailureStage != "" &&
+		!isMappingMaterializationFailure(acquisition.Download.Status, acquisition.Download.FailureStage, acquisition.Download.ErrorCode) {
+		return true
+	}
+	for _, task := range acquisition.Tasks {
+		if task.CanRetry {
+			return true
+		}
+	}
+	return false
+}
+
 func acquisitionWaitsForMapping(view domain.AcquisitionView) bool {
 	return view.MediaType == domain.TaskMediaEpisode && !view.Mapping.Complete && view.Download != nil &&
 		isMappingMaterializationFailure(view.Download.Status, view.Download.FailureStage, view.Download.ErrorCode)
@@ -1281,6 +1303,10 @@ func (service *ReadService) ListRSSEntries(ctx context.Context, subscriptionID u
 			view.ErrorMessage = *row.LastErrorMessage
 		}
 		view.DownloadURIAvailable = row.Downloadable
+		view.Version = rssEntryVersion(row.EnqueueAttempts)
+		if row.LastErrorRetryable {
+			view.CanRetry = true
+		}
 		if row.SourceSeason != nil {
 			value := int(*row.SourceSeason)
 			view.SourceSeason = &value
@@ -1326,12 +1352,14 @@ func (service *ReadService) ListRSSEntries(ctx context.Context, subscriptionID u
 			acquisitionID := acquisition.ID
 			view.AcquisitionID = &acquisitionID
 			view.DownloadID = acquisition.DownloadID
+			view.CanRetry = rssEntryCanRetry(acquisition)
 			view.AcquisitionProgress = &domain.AcquisitionProgressView{
 				AggregateStatus: acquisition.AggregateStatus,
 				CurrentStage:    acquisition.CurrentStage,
 				OverallProgress: acquisition.OverallProgress,
 			}
 		} else if archived, ok := archivedByEntry[view.ID]; ok {
+			view.CanRetry = false
 			acquisitionID := repository.UUIDFromPG(archived.AcquisitionID)
 			view.AcquisitionID = &acquisitionID
 			view.AcquisitionProgress = &domain.AcquisitionProgressView{
@@ -1339,6 +1367,9 @@ func (service *ReadService) ListRSSEntries(ctx context.Context, subscriptionID u
 				CurrentStage:    "import",
 				OverallProgress: 1,
 			}
+		}
+		if view.Classification == "rejected" || view.Classification == "unconsumable" {
+			view.CanRetry = false
 		}
 		views = append(views, view)
 	}

@@ -525,6 +525,7 @@ func rssEntryResponse(view domain.RSSEntryView) RSSEntry {
 	response := RSSEntry{
 		Id: view.ID, SubscriptionId: view.SubscriptionID, Title: view.Title, Status: RSSEntryStatus(view.Status),
 		Classification: RSSEntryClassification(view.Classification), DuplicateCount: int32(view.DuplicateCount), DownloadUriAvailable: view.DownloadURIAvailable,
+		CanRetry: view.CanRetry, Version: int32(view.Version),
 		AdjudicationState: RSSEntryAdjudicationState(view.AdjudicationState), CreatedAt: view.CreatedAt, UpdatedAt: view.UpdatedAt,
 	}
 	response.ReleaseCandidateId = view.ReleaseCandidateID

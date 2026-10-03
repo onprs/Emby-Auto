@@ -90,6 +90,9 @@ func (workflow *RSSWorkflow) PreparePollMapping(
 			return fmt.Errorf("lock RSS poll mapping context: %w", err)
 		}
 		if mappingContext.MappingProfileID.Valid {
+			if _, err := workflow.extendRSSAnchorMapping(ctx, scope, repository.UUIDFromPG(mappingContext.ID)); err != nil {
+				return err
+			}
 			result.Ready = true
 			return nil
 		}
@@ -214,6 +217,83 @@ func (workflow *RSSWorkflow) PreparePollMapping(
 		return result, nil
 	}
 	return workflow.prepareAgentPollMapping(ctx, operationID, subscriptionID, feed)
+}
+
+func (workflow *RSSWorkflow) extendRSSAnchorMapping(
+	ctx context.Context,
+	scope database.TxScope,
+	subscriptionID uuid.UUID,
+) (int, error) {
+	profile, err := scope.Queries.LockRSSAnchorMappingProfile(ctx, repository.UUIDToPG(subscriptionID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("lock RSS anchor mapping profile: %w", err)
+	}
+	if profile.AnchorSourceSeason <= 0 || profile.AnchorSourceEpisode <= 0 ||
+		profile.AnchorTargetSeason <= 0 || profile.AnchorTargetEpisode <= 0 {
+		return 0, NewError("rss_mapping_profile_invalid", "the RSS anchor mapping profile is incomplete", ErrStateConflict, map[string]any{})
+	}
+	if _, err := scope.Queries.LockMediaSeries(ctx, profile.SeriesID); err != nil {
+		return 0, fmt.Errorf("lock RSS anchor mapping series: %w", err)
+	}
+	seriesID := repository.UUIDFromPG(profile.SeriesID)
+	seasons, targetIDs, err := loadSeriesMappingCatalog(ctx, scope.Queries, seriesID)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := mappingProfileRowsFromAnchor(
+		seasons,
+		targetIDs,
+		domain.EpisodeCoordinate{Season: int(profile.AnchorSourceSeason), Episode: int(profile.AnchorSourceEpisode)},
+		domain.EpisodeCoordinate{Season: int(profile.AnchorTargetSeason), Episode: int(profile.AnchorTargetEpisode)},
+	)
+	if err != nil {
+		return 0, err
+	}
+	existing, err := scope.Queries.ListRSSMappingProfileCoordinates(ctx, profile.ID)
+	if err != nil {
+		return 0, fmt.Errorf("list RSS anchor mapping coordinates: %w", err)
+	}
+	existingCoordinates := make(map[domain.EpisodeCoordinate]struct{}, len(existing))
+	for _, coordinate := range existing {
+		existingCoordinates[domain.EpisodeCoordinate{
+			Season:                    int(coordinate.SourceSeason),
+			Episode:                   int(coordinate.SourceEpisode),
+			EpisodeFractionHundredths: int(coordinate.SourceEpisodeFractionHundredths),
+		}] = struct{}{}
+	}
+
+	added := 0
+	for _, row := range rows {
+		coordinate := domain.EpisodeCoordinate{
+			Season:                    row.SourceSeason,
+			Episode:                   row.SourceEpisode,
+			EpisodeFractionHundredths: row.SourceEpisodeFractionHundredths,
+		}
+		if _, ok := existingCoordinates[coordinate]; ok {
+			continue
+		}
+		absoluteEpisode := int32(row.AbsoluteEpisode)
+		if _, err := scope.Queries.CreateEpisodeMapping(ctx, db.CreateEpisodeMappingParams{
+			ID:                              repository.UUIDToPG(uuid.New()),
+			ProfileID:                       profile.ID,
+			SourceSeason:                    int32(row.SourceSeason),
+			SourceEpisode:                   int32(row.SourceEpisode),
+			SourceEpisodeFractionHundredths: int32(row.SourceEpisodeFractionHundredths),
+			AbsoluteEpisode:                 &absoluteEpisode,
+			TargetEpisodeID:                 repository.UUIDToPG(row.TargetEpisodeID),
+			MappingStatus:                   string(row.Status),
+			MatchSource:                     string(row.MatchSource),
+			ErrorCode:                       optionalString(row.ErrorCode),
+		}); err != nil {
+			return 0, fmt.Errorf("append RSS anchor episode mapping: %w", err)
+		}
+		existingCoordinates[coordinate] = struct{}{}
+		added++
+	}
+	return added, nil
 }
 
 // EnsureDeterministicPollMapping remains the narrow compatibility surface used
@@ -1146,6 +1226,9 @@ func (workflow *RSSWorkflow) scheduleRSSDownload(
 		if entry.SubscriptionID != subscription.ID {
 			return NewError("state_conflict", "the RSS entry subscription changed before enqueue", ErrStateConflict, nil)
 		}
+		if candidate.ExpectedVersion > 0 && rssEntryVersion(entry.EnqueueAttempts) != int(candidate.ExpectedVersion) {
+			return NewError("state_conflict", "the RSS entry was modified before enqueue", ErrStateConflict, map[string]any{"expectedVersion": candidate.ExpectedVersion})
+		}
 		if !entry.Downloadable || (entry.Status != string(domain.RSSDiscovered) && entry.Status != string(domain.RSSEnqueueFailed)) {
 			return nil
 		}
@@ -1234,7 +1317,7 @@ func (workflow *RSSWorkflow) scheduleRSSDownload(
 		return nil
 	}
 	var serviceErr *Error
-	if errors.As(err, &serviceErr) && strings.HasPrefix(serviceErr.Code, "rss_realtime_") {
+	if errors.As(err, &serviceErr) && (strings.HasPrefix(serviceErr.Code, "rss_realtime_") || errors.Is(err, ErrStateConflict)) {
 		return err
 	}
 	if failureErr := workflow.recordScheduleFailure(ctx, candidate.EntryID, "rss_schedule_failed", err.Error()); failureErr != nil {

@@ -15,29 +15,36 @@ import (
 )
 
 type rssSubscriptionServiceStub struct {
-	createdInput    domain.CreateRSSSubscription
-	created         domain.RSSSubscription
-	createErr       error
-	updatedInput    domain.UpdateRSSSubscription
-	updated         domain.RSSSubscription
-	updateErr       error
-	page            domain.RSSSubscriptionPage
-	listErr         error
-	listQuery       *string
-	listSortBy      *string
-	listSortOrder   *string
-	manualID        uuid.UUID
-	manualKey       string
-	manualActor     uuid.UUID
-	manualOperation domain.Operation
-	manualErr       error
-	deleteID        uuid.UUID
-	deleteVersion   int32
-	deleteKey       string
-	deleteImported  bool
-	deleteActor     uuid.UUID
-	deleteOperation domain.Operation
-	deleteErr       error
+	createdInput        domain.CreateRSSSubscription
+	created             domain.RSSSubscription
+	createErr           error
+	updatedInput        domain.UpdateRSSSubscription
+	updated             domain.RSSSubscription
+	updateErr           error
+	page                domain.RSSSubscriptionPage
+	listErr             error
+	listQuery           *string
+	listSortBy          *string
+	listSortOrder       *string
+	manualID            uuid.UUID
+	manualKey           string
+	manualActor         uuid.UUID
+	manualOperation     domain.Operation
+	manualErr           error
+	retrySubscriptionID uuid.UUID
+	retryEntryID        uuid.UUID
+	retryVersion        int32
+	retryKey            string
+	retryActor          uuid.UUID
+	retryOperation      domain.Operation
+	retryErr            error
+	deleteID            uuid.UUID
+	deleteVersion       int32
+	deleteKey           string
+	deleteImported      bool
+	deleteActor         uuid.UUID
+	deleteOperation     domain.Operation
+	deleteErr           error
 }
 
 func (stub *rssSubscriptionServiceStub) CreateSubscription(_ context.Context, input domain.CreateRSSSubscription) (domain.RSSSubscription, error) {
@@ -72,6 +79,15 @@ func (stub *rssSubscriptionServiceStub) ScheduleManualPoll(_ context.Context, id
 	stub.manualKey = key
 	stub.manualActor = actor
 	return stub.manualOperation, stub.manualErr
+}
+
+func (stub *rssSubscriptionServiceStub) RetryEntry(_ context.Context, subscriptionID, entryID uuid.UUID, version int32, key string, actor uuid.UUID) (domain.Operation, error) {
+	stub.retrySubscriptionID = subscriptionID
+	stub.retryEntryID = entryID
+	stub.retryVersion = version
+	stub.retryKey = key
+	stub.retryActor = actor
+	return stub.retryOperation, stub.retryErr
 }
 
 func TestListRSSSubscriptionsForwardsColumnSort(t *testing.T) {
@@ -269,6 +285,48 @@ func TestPollRSSSubscriptionRequiresAndForwardsIdempotencyKey(t *testing.T) {
 	}
 	if stub.manualID != subscriptionID || stub.manualKey != "manual-poll-7" || stub.manualActor != userID {
 		t.Fatalf("manual poll input = id %s key %q actor %s", stub.manualID, stub.manualKey, stub.manualActor)
+	}
+	var body CommandAccepted
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.OperationId != operationID || body.Status != CommandAcceptedStatusQueued {
+		t.Fatalf("response = %#v", body)
+	}
+}
+
+func TestRetryRSSEntryRequiresAndForwardsVersionAndIdempotencyKey(t *testing.T) {
+	userID := uuid.MustParse("60000000-0000-0000-0000-000000000014")
+	subscriptionID := uuid.MustParse("60000000-0000-0000-0000-000000000015")
+	entryID := uuid.MustParse("60000000-0000-0000-0000-000000000016")
+	operationID := uuid.MustParse("60000000-0000-0000-0000-000000000017")
+	stub := &rssSubscriptionServiceStub{retryOperation: domain.Operation{ID: operationID, Status: "queued"}}
+	authentication := &authenticationStub{authenticated: domain.Session{
+		User:      domain.AdminUser{ID: userID, Username: "admin"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}}
+	handler := NewHandler(NewServer(readinessStub{}, WithAuthentication(authentication, false), WithRSSSubscriptions(stub)))
+
+	missingRequest := httptest.NewRequest(http.MethodPost, "/api/v1/rss/subscriptions/"+subscriptionID.String()+"/entries/"+entryID.String()+"/retry", nil)
+	missingRequest.Header.Set("Idempotency-Key", "rss-entry-retry-1")
+	missingRequest.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "valid-token"})
+	missingResponse := httptest.NewRecorder()
+	handler.ServeHTTP(missingResponse, missingRequest)
+	if missingResponse.Code != http.StatusBadRequest {
+		t.Fatalf("missing body status = %d, want 400", missingResponse.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/rss/subscriptions/"+subscriptionID.String()+"/entries/"+entryID.String()+"/retry", strings.NewReader(`{"expectedVersion":3}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "rss-entry-retry-2")
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "valid-token"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if stub.retrySubscriptionID != subscriptionID || stub.retryEntryID != entryID || stub.retryVersion != 3 || stub.retryKey != "rss-entry-retry-2" || stub.retryActor != userID {
+		t.Fatalf("retry input = subscription %s entry %s version %d key %q actor %s", stub.retrySubscriptionID, stub.retryEntryID, stub.retryVersion, stub.retryKey, stub.retryActor)
 	}
 	var body CommandAccepted
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {

@@ -145,6 +145,40 @@ func TestClassifyRSSEntryTargetOccupancyOverridesHistoricalEnqueueStatus(t *test
 	}
 }
 
+func TestRSSEntryCanRetryUsesAcquisitionRecoveryCapabilities(t *testing.T) {
+	failedDownload := domain.AcquisitionView{
+		Download: &domain.AcquisitionDownloadSummary{Status: "failed", FailureStage: "sync"},
+	}
+	if !rssEntryCanRetry(failedDownload) {
+		t.Fatal("a retryable download failure should expose RSS retry")
+	}
+
+	mappingPending := domain.AcquisitionView{
+		Download: &domain.AcquisitionDownloadSummary{
+			Status: "failed", FailureStage: "materialize", ErrorCode: "mapping_profile_required",
+		},
+	}
+	if rssEntryCanRetry(mappingPending) {
+		t.Fatal("a mapping wait should not expose RSS retry")
+	}
+
+	failedTask := domain.AcquisitionView{
+		Download: &domain.AcquisitionDownloadSummary{Status: "materialized"},
+		Tasks:    []domain.AcquisitionTaskSummary{{CanRetry: true}},
+	}
+	if !rssEntryCanRetry(failedTask) {
+		t.Fatal("a retryable media task should expose RSS retry")
+	}
+
+	completed := domain.AcquisitionView{
+		Download: &domain.AcquisitionDownloadSummary{Status: "materialized"},
+		Tasks:    []domain.AcquisitionTaskSummary{{CanRetry: false}},
+	}
+	if rssEntryCanRetry(completed) {
+		t.Fatal("a completed acquisition should not expose RSS retry")
+	}
+}
+
 func TestAcquisitionStageMatches(t *testing.T) {
 	cases := []struct {
 		name  string

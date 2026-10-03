@@ -45,6 +45,8 @@ const entry: RssEntry = {
   status: 'enqueued',
   classification: 'enqueued',
   duplicateCount: 0,
+  version: 1,
+  canRetry: false,
   adjudicationState: 'not_required',
   downloadUriAvailable: true,
   sourceSeason: 1,
@@ -114,6 +116,46 @@ describe('RssDetailPage entries', () => {
 
     await userEvent.click(screen.getAllByRole('link', { name: entry.title })[0]);
     await waitFor(() => expect(router.state.location.pathname).toBe(`/acquisitions/${entry.acquisitionId}`));
+  });
+
+  it('retries a recoverable RSS enqueue entry with its version and idempotency key', async () => {
+    const retryableEntry: RssEntry = {
+      ...entry,
+      id: '30000000-0000-0000-0000-000000000006',
+      acquisitionId: undefined,
+      acquisitionProgress: undefined,
+      status: 'enqueue_failed',
+      classification: 'enqueue_failed',
+      canRetry: true,
+      version: 2,
+      errorCode: 'rss_schedule_failed',
+      errorMessage: '暂时无法加入下载',
+    };
+    let retryRequest: Request | undefined;
+    let retryBody: unknown;
+    server.use(
+      http.get(`*/api/v1/rss/subscriptions/${subscriptionId}`, () => HttpResponse.json(subscription)),
+      http.get(`*/api/v1/rss/subscriptions/${subscriptionId}/entries`, ({ request }) => groupedEntryPage(request, [retryableEntry], [])),
+      http.post(`*/api/v1/rss/subscriptions/${subscriptionId}/entries/${retryableEntry.id}/retry`, async ({ request }) => {
+        retryRequest = request;
+        retryBody = await request.json();
+        return HttpResponse.json({ operationId: '30000000-0000-0000-0000-000000000007', status: 'queued' }, { status: 202 });
+      }),
+    );
+
+    renderWithProviders(<RssDetailPage subscriptionId={subscriptionId} />, {
+      routePath: '/rss/$subscriptionId',
+      initialEntry: `/rss/${subscriptionId}`,
+    });
+
+    expect(await screen.findAllByText('暂时无法加入下载')).toHaveLength(2);
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    await userEvent.click(screen.getByRole('menuitem', { name: '重试任务' }));
+    await waitFor(() => {
+      expect(retryRequest).toBeDefined();
+      expect(retryBody).toEqual({ expectedVersion: 2 });
+    });
+    expect(retryRequest!.headers.get('Idempotency-Key')).toBeTruthy();
   });
 
   it('searches skipped entries by keyword', async () => {

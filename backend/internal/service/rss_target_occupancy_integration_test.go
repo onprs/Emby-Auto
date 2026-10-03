@@ -74,7 +74,7 @@ func newRSSTargetFixture(t *testing.T) rssTargetFixture {
 	if _, err := pool.Exec(ctx, `INSERT INTO admin_users (id, username, password_hash) VALUES ($1, $2, 'fixture-hash')`, fixture.actorID, "rss-target-"+fixture.actorID.String()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, tmdb_series_id, title) VALUES ($1, 9100, 'Target Occupancy Series')`, fixture.seriesID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, tmdb_series_id, title, metadata) VALUES ($1, 9100, 'Target Occupancy Series', '{"status":"Ended"}'::jsonb)`, fixture.seriesID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO tmdb_seasons (id, series_id, season_number, episode_count) VALUES ($1, $2, 2, 2)`, seasonID, fixture.seriesID); err != nil {

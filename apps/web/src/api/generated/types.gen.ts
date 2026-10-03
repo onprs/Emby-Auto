@@ -1194,6 +1194,10 @@ export type CancelTaskRequest = {
     expectedVersion: number;
 };
 
+export type RetryRssEntryRequest = {
+    expectedVersion: number;
+};
+
 export type RssEntry = {
     id: string;
     subscriptionId: string;
@@ -1205,7 +1209,9 @@ export type RssEntry = {
     status: 'discovered' | 'enqueueing' | 'enqueued' | 'enqueue_failed';
     classification: 'pending' | 'enqueued' | 'enqueue_failed' | 'duplicate' | 'rejected' | 'unconsumable';
     duplicateCount: number;
+    version: number;
     downloadUriAvailable: boolean;
+    canRetry: boolean;
     publishedAt?: string;
     sourceSeason?: number;
     sourceEpisode?: number;
@@ -3615,6 +3621,53 @@ export type ListRssEntriesResponses = {
 };
 
 export type ListRssEntriesResponse = ListRssEntriesResponses[keyof ListRssEntriesResponses];
+
+export type RetryRssEntryData = {
+    body: RetryRssEntryRequest;
+    headers: {
+        'Idempotency-Key': string;
+    };
+    path: {
+        subscriptionId: string;
+        entryId: string;
+    };
+    query?: never;
+    url: '/api/v1/rss/subscriptions/{subscriptionId}/entries/{entryId}/retry';
+};
+
+export type RetryRssEntryErrors = {
+    /**
+     * The request is invalid.
+     */
+    400: ApiError;
+    /**
+     * Authentication is required or failed.
+     */
+    401: ApiError;
+    /**
+     * The requested resource was not found.
+     */
+    404: ApiError;
+    /**
+     * The command conflicts with current resource state.
+     */
+    409: ApiError;
+    /**
+     * A required dependency is unavailable.
+     */
+    503: ApiError;
+};
+
+export type RetryRssEntryError = RetryRssEntryErrors[keyof RetryRssEntryErrors];
+
+export type RetryRssEntryResponses = {
+    /**
+     * The RSS entry retry operation was accepted.
+     */
+    202: CommandAccepted;
+};
+
+export type RetryRssEntryResponse = RetryRssEntryResponses[keyof RetryRssEntryResponses];
 
 export type SearchTmDbSeriesData = {
     body?: never;

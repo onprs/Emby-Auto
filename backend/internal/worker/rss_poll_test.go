@@ -44,6 +44,7 @@ type rssPollStoreStub struct {
 	summaryCalls        int
 	scheduleErrors      map[uuid.UUID]error
 	scheduleCalls       map[uuid.UUID]int
+	scheduleVersions    map[uuid.UUID]int32
 	realtimeScheduleIDs map[uuid.UUID]uuid.UUID
 	mappingIDs          []uuid.UUID
 	mappingListCalls    int
@@ -92,6 +93,10 @@ func (stub *rssPollStoreStub) ScheduleRSSDownload(_ context.Context, candidate d
 		stub.scheduleCalls = make(map[uuid.UUID]int)
 	}
 	stub.scheduleCalls[candidate.EntryID]++
+	if stub.scheduleVersions == nil {
+		stub.scheduleVersions = make(map[uuid.UUID]int32)
+	}
+	stub.scheduleVersions[candidate.EntryID] = candidate.ExpectedVersion
 	return stub.scheduleErrors[candidate.EntryID]
 }
 
@@ -105,6 +110,10 @@ func (stub *rssPollStoreStub) ScheduleRSSDownloadWithRealtimeCheck(_ context.Con
 		stub.realtimeScheduleIDs = make(map[uuid.UUID]uuid.UUID)
 	}
 	stub.scheduleCalls[candidate.EntryID]++
+	if stub.scheduleVersions == nil {
+		stub.scheduleVersions = make(map[uuid.UUID]int32)
+	}
+	stub.scheduleVersions[candidate.EntryID] = candidate.ExpectedVersion
 	stub.realtimeScheduleIDs[candidate.EntryID] = checkID
 	return stub.scheduleErrors[candidate.EntryID]
 }
@@ -164,6 +173,28 @@ func (stub *rssRealtimeVerifierStub) VerifyEntry(_ context.Context, id uuid.UUID
 
 func (stub *rssRealtimeVerifierStub) VerifyCoordinates(context.Context, uuid.UUID, []domain.EpisodeCoordinate) (uuid.UUID, error) {
 	return uuid.Nil, nil
+}
+
+func TestRSSPollHandlerRetriesOneEntryWithoutFetchingFeed(t *testing.T) {
+	subscriptionID, entryID := uuid.New(), uuid.New()
+	feed := &rssFeedClientStub{feed: domain.RSSFeed{Title: "must not fetch"}}
+	store := &rssPollStoreStub{command: domain.RSSPollCommand{
+		SubscriptionID: subscriptionID, FeedURL: "https://example.test/feed.xml", Enabled: true, SourceSeason: 1, PollInterval: time.Minute,
+	}}
+	handler := NewRSSPollHandler(feed, store, 1)
+	payload := []byte(`{"command":"retry-entry","entryId":"` + entryID.String() + `","expectedVersion":1}`)
+	if err := handler.Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "rss_subscription", ResourceID: subscriptionID, Payload: payload}); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if feed.calls != 0 {
+		t.Fatalf("RSS feed fetch calls = %d, want 0", feed.calls)
+	}
+	if store.scheduleCalls[entryID] != 1 {
+		t.Fatalf("entry schedule calls = %d, want 1", store.scheduleCalls[entryID])
+	}
+	if store.scheduleVersions[entryID] != 1 {
+		t.Fatalf("entry expected version = %d, want 1", store.scheduleVersions[entryID])
+	}
 }
 
 func TestRSSPollHandlerPreparesTargetMappingWhenAutomaticFileMappingIsDisabled(t *testing.T) {
