@@ -253,8 +253,10 @@ configure_database() {
     # PostgreSQL 服务模板将实例名中的连字符解码为路径分隔符，集群名使用下划线。
     pg_createcluster --port "$database_port" --start-conf=auto 17 emby_auto -- \
       --encoding=UTF8 --locale=C.UTF-8 --auth-local=peer --auth-host=scram-sha-256
-    pg_conftool 17 emby_auto set listen_addresses 127.0.0.1
   fi
+  # 辅助工具会把 IPv4 地址误判为数值，移除旧值后显式写入带引号的字符串。
+  pg_conftool 17 emby_auto remove listen_addresses
+  printf "\nlisten_addresses = '127.0.0.1'\n" >>"$postgres_dir/postgresql.conf"
   if ! systemctl enable --now postgresql@17-emby_auto.service || \
     ! systemctl is-active --quiet postgresql@17-emby_auto.service; then
     fail 'PostgreSQL 实例启动失败，请运行 systemctl status postgresql@17-emby_auto.service 查看状态。'

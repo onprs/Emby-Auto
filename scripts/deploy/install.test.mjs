@@ -143,7 +143,8 @@ test('完整安装创建独立数据库与服务，并使用用户指定的端�
   assert.match(environment, /DATABASE_MANAGED_EXTERNALLY=true/);
   assert.match(readFileSync(join(f.sandbox, 'cluster.log'), 'utf8'), /--port 19082 --start-conf=auto 17 emby_auto/);
   assert.match(readFileSync(join(f.sandbox, 'cluster.log'), 'utf8'), /--encoding=UTF8 --locale=C\.UTF-8/);
-  assert.match(readFileSync(join(f.sandbox, 'cluster.log'), 'utf8'), /listen_addresses 127\.0\.0\.1/);
+  assert.match(readFileSync(join(f.sandbox, 'etc/postgresql/17/emby_auto/postgresql.conf'), 'utf8'),
+    /^listen_addresses = '127\.0\.0\.1'$/m);
   assert.match(readFileSync(join(f.sandbox, 'etc/nginx/conf.d/emby-auto.conf'), 'utf8'), /listen 127\.0\.0\.1:19080/);
   assert.match(readFileSync(join(f.sandbox, 'etc/nginx/conf.d/emby-auto.conf'), 'utf8'), /server 127\.0\.0\.1:19081/);
   assert.match(readFileSync(join(f.sandbox, 'etc/systemd/system/emby-auto-api.service.d/installer.conf'), 'utf8'), /User=emby-auto/);
