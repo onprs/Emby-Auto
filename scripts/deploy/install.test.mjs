@@ -51,7 +51,7 @@ state_dir="$TEST_ROOT/var/lib/emby-auto"
 storage_dir="$TEST_ROOT/srv/emby-auto"
 unit_dir="$TEST_ROOT/etc/systemd/system"
 nginx_dir="$TEST_ROOT/etc/nginx"
-postgres_dir="$TEST_ROOT/etc/postgresql/17/emby-auto"
+postgres_dir="$TEST_ROOT/etc/postgresql/17/emby_auto"
 lock_dir="$TEST_ROOT/run/emby-auto-install"
 check_platform() { target_arch=amd64; distribution_codename=bookworm; }
 require_root() { :; }
@@ -80,8 +80,9 @@ nginx() { printf '%s\\n' "$*" >>"$TEST_ROOT/nginx.log"; }
 systemctl() {
   printf '%s\\n' "$*" >>"$TEST_ROOT/service.log"
   if [[ "\${WORKER_FAIL:-0}" == 1 && "$*" == "is-active --quiet emby-auto-worker.service" ]]; then return 3; fi
+  if [[ "\${DATABASE_FAIL:-0}" == 1 && "$*" == "is-active --quiet postgresql@17-emby_auto.service" ]]; then return 3; fi
 }
-pg_createcluster() { mkdir -p "$postgres_dir"; printf '%s\\n' "$*" >>"$TEST_ROOT/cluster.log"; }
+pg_createcluster() { mkdir -p "$postgres_dir"; touch "$postgres_dir/postgresql.conf"; printf '%s\\n' "$*" >>"$TEST_ROOT/cluster.log"; }
 pg_conftool() { printf '%s\\n' "$*" >>"$TEST_ROOT/cluster.log"; }
 runuser() {
   local actor="$2"
@@ -140,7 +141,7 @@ test('完整安装创建独立数据库与服务，并使用用户指定的端�
   assert.match(environment, /API_ADDRESS=127\.0\.0\.1:19081/);
   assert.match(environment, /@127\.0\.0\.1:19082\/emby_auto\?sslmode=disable/);
   assert.match(environment, /DATABASE_MANAGED_EXTERNALLY=true/);
-  assert.match(readFileSync(join(f.sandbox, 'cluster.log'), 'utf8'), /--port 19082 --start-conf=auto 17 emby-auto/);
+  assert.match(readFileSync(join(f.sandbox, 'cluster.log'), 'utf8'), /--port 19082 --start-conf=auto 17 emby_auto/);
   assert.match(readFileSync(join(f.sandbox, 'cluster.log'), 'utf8'), /--encoding=UTF8 --locale=C\.UTF-8/);
   assert.match(readFileSync(join(f.sandbox, 'cluster.log'), 'utf8'), /listen_addresses 127\.0\.0\.1/);
   assert.match(readFileSync(join(f.sandbox, 'etc/nginx/conf.d/emby-auto.conf'), 'utf8'), /listen 127\.0\.0\.1:19080/);
@@ -156,6 +157,32 @@ test('完整安装创建独立数据库与服务，并使用用户指定的端�
   assert.ok(!result.output.includes(password));
   assert.ok(!readFileSync(join(f.sandbox, 'database-arguments.log'), 'utf8').includes(password));
   assert.match(readFileSync(join(f.sandbox, 'database-input.log'), 'utf8'), /CREATE DATABASE emby_auto OWNER emby_auto/);
+});
+
+test('PostgreSQL 服务实例解码后指向实际创建的集群配置', (t) => {
+  const f = fixture(t);
+  const result = f.run();
+  assert.equal(result.status, 0, result.output);
+  const services = readFileSync(join(f.sandbox, 'service.log'), 'utf8').split('\n');
+  const unit = services.find((line) => line.startsWith('enable --now postgresql@')).split(' ').at(-1);
+  const instance = unit.slice('postgresql@'.length, -'.service'.length);
+  const decoded = spawnSync('systemd-escape', ['--unescape', instance], { encoding: 'utf8' });
+  assert.equal(decoded.status, 0, decoded.stderr);
+  assert.ok(existsSync(join(f.sandbox, 'etc/postgresql', decoded.stdout.trim(), 'postgresql.conf')),
+    'systemd 的 AssertPathExists 必须能找到数据库集群配置');
+});
+
+test('数据库启动未成功时停止安装并保留凭据供重试', (t) => {
+  const f = fixture(t);
+  let result = f.run([], { DATABASE_FAIL: '1' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /PostgreSQL 实例启动失败/);
+  assert.ok(!existsSync(join(f.sandbox, 'database-input.log')));
+  assert.ok(!existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
+  const password = setting(f.sandbox, 'database_password');
+  result = f.run();
+  assert.equal(result.status, 0, result.output);
+  assert.equal(setting(f.sandbox, 'database_password'), password);
 });
 
 test('重复安装保留版本、凭据和用户调整后的运行配置', (t) => {

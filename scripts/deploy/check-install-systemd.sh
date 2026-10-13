@@ -31,7 +31,7 @@ run_installer() {
 }
 
 run_installer
-for service in emby-auto-api emby-auto-worker postgresql@17-emby-auto nginx; do
+for service in emby-auto-api emby-auto-worker postgresql@17-emby_auto nginx; do
   systemctl is-active --quiet "$service"
 done
 curl --fail --silent --noproxy '*' http://127.0.0.1:18080/ >/dev/null

@@ -31,7 +31,7 @@ curl -fsSL https://github.com/onprs/Emby-Auto/releases/latest/download/install.s
 
 三个端口必须互不相同，范围为 `1024–65535`。已有媒体目录会保留原权限；指定账户需要具备目录读写权限。硬件转码用户还需将服务账户加入设备要求的 `render`、`video` 等组。
 
-安装器为应用创建名为 `17/emby-auto` 的独立 PostgreSQL 实例，默认仅监听 `127.0.0.1:18082`。数据库连接由安装器写入受限的运行配置，网页向导会跳过数据库步骤。凭据不会显示在安装日志中。
+安装器为应用创建名为 `17/emby_auto` 的独立 PostgreSQL 实例，默认仅监听 `127.0.0.1:18082`。数据库连接由安装器写入受限的运行配置，网页向导会跳过数据库步骤。凭据不会显示在安装日志中。
 
 ### 打开网页并完成设置
 
@@ -54,7 +54,7 @@ ssh -L 18080:127.0.0.1:18080 用户@设备地址
 安装中断后可用相同参数重试，已生成的数据库凭据、配置和媒体目录会保留。已完成的安装会检查当前服务并显示访问地址，保留原版本。安装器不接管手动部署，升级请按本文的升级步骤操作。
 
 ```bash
-systemctl status emby-auto-api emby-auto-worker postgresql@17-emby-auto --no-pager
+systemctl status emby-auto-api emby-auto-worker postgresql@17-emby_auto --no-pager
 journalctl -u emby-auto-api -u emby-auto-worker --since today
 ```
 

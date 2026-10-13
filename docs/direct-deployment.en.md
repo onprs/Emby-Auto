@@ -31,7 +31,7 @@ curl -fsSL https://github.com/onprs/Emby-Auto/releases/latest/download/install.s
 
 Ports must be distinct integers between `1024` and `65535`. Existing media permissions are preserved; the selected account needs read/write access. Hardware encoding may require membership in `render`, `video`, or device-specific groups.
 
-The installer creates a dedicated PostgreSQL cluster named `17/emby-auto`, listening on `127.0.0.1:18082` by default. Database credentials are saved in restricted configuration files and omitted from installation logs. The web wizard skips database configuration.
+The installer creates a dedicated PostgreSQL cluster named `17/emby_auto`, listening on `127.0.0.1:18082` by default. Database credentials are saved in restricted configuration files and omitted from installation logs. The web wizard skips database configuration.
 
 ### Open the Web Interface
 
@@ -54,7 +54,7 @@ Configure HTTPS for network access, set `SESSION_COOKIE_SECURE=true` in `/etc/em
 Repeat the same command and options after an interrupted installation. Generated credentials, configuration, and media directories are preserved. A completed installation checks its existing services and displays its address while retaining the installed version. The installer does not take over manual deployments. Follow the upgrade instructions below to update a version.
 
 ~~~bash
-systemctl status emby-auto-api emby-auto-worker postgresql@17-emby-auto --no-pager
+systemctl status emby-auto-api emby-auto-worker postgresql@17-emby_auto --no-pager
 journalctl -u emby-auto-api -u emby-auto-worker --since today
 ~~~
 

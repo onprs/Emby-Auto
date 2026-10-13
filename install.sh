@@ -9,7 +9,7 @@ state_dir="/var/lib/emby-auto"
 storage_dir="/srv/emby-auto"
 unit_dir="/etc/systemd/system"
 nginx_dir="/etc/nginx"
-postgres_dir="/etc/postgresql/17/emby-auto"
+postgres_dir="/etc/postgresql/17/emby_auto"
 lock_dir="/run/emby-auto-install"
 version="latest"
 service_user=""
@@ -250,11 +250,15 @@ prepare_account_and_storage() {
 configure_database() {
   log '配置独立 PostgreSQL 实例……'
   if [[ ! -d "$postgres_dir" ]]; then
-    pg_createcluster --port "$database_port" --start-conf=auto 17 emby-auto -- \
+    # PostgreSQL 服务模板将实例名中的连字符解码为路径分隔符，集群名使用下划线。
+    pg_createcluster --port "$database_port" --start-conf=auto 17 emby_auto -- \
       --encoding=UTF8 --locale=C.UTF-8 --auth-local=peer --auth-host=scram-sha-256
-    pg_conftool 17 emby-auto set listen_addresses 127.0.0.1
+    pg_conftool 17 emby_auto set listen_addresses 127.0.0.1
   fi
-  systemctl enable --now postgresql@17-emby-auto.service
+  if ! systemctl enable --now postgresql@17-emby_auto.service || \
+    ! systemctl is-active --quiet postgresql@17-emby_auto.service; then
+    fail 'PostgreSQL 实例启动失败，请运行 systemctl status postgresql@17-emby_auto.service 查看状态。'
+  fi
   # 密码只通过标准输入传递，不出现在命令参数或安装日志中。
   if ! {
     printf "SELECT 'CREATE ROLE emby_auto LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'emby_auto')\\gexec\n"
