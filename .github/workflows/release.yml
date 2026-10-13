@@ -36,6 +36,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: 检查一键安装入口
+        run: npm run deploy:install:check
+
       - name: Build Compose release images
         run: npm run deploy:build
 
@@ -76,9 +79,10 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           cd runtime/release
+          cp "${GITHUB_WORKSPACE}/install.sh" install.sh
           sha256sum "emby-auto-compose-${tag}.tar.gz" \
             emby-auto-direct-amd64-linux-amd64.tar.gz \
-            emby-auto-direct-arm64-linux-arm64.tar.gz > SHA256SUMS
+            emby-auto-direct-arm64-linux-arm64.tar.gz install.sh > SHA256SUMS
 
       - name: Publish GitHub Release
         env:
@@ -91,5 +95,5 @@ jobs:
             "emby-auto-compose-${tag}.tar.gz" \
             emby-auto-direct-amd64-linux-amd64.tar.gz \
             emby-auto-direct-arm64-linux-arm64.tar.gz \
-            SHA256SUMS \
+            SHA256SUMS install.sh \
             --latest --verify-tag --generate-notes

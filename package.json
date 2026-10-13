@@ -23,6 +23,7 @@
     "deploy:direct:build": "bash scripts/deploy/build-direct-release.sh",
     "deploy:direct:check": "bash scripts/deploy/check-direct.sh static",
     "deploy:direct:check-release": "bash scripts/deploy/check-direct.sh release",
+    "deploy:install:check": "bash -n install.sh && bash -n scripts/deploy/check-install-systemd.sh && node --test scripts/deploy/install.test.mjs",
     "check:generated": "bash scripts/check-generated.sh",
     "db:check-migrations": "bash scripts/dev/check-migrations.sh",
     "db:check-schema": "bash scripts/dev/check-schema.sh",
