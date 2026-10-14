@@ -35,6 +35,11 @@ func TestRSSSubtitleGroupCandidateRegression(t *testing.T) {
 		{"组合字符保持词边界", "Cafe\u0301 动画 - 01", []string{"Cafe"}, []string{}},
 		{"未知标签优先于正文名称", "[ReleaseTeam] Comet Adventure - 01", []string{"Comet"}, []string{"ReleaseTeam", "Comet"}},
 		{"完整标签不拆成较短维护名", "[Release Team] 动画 - 01", []string{"Release Team", "Team"}, []string{"Release Team"}},
+		{"未知连字符名称不拆成维护名", "[Northern-Team] 动画 - 01", []string{"Team"}, []string{"Northern-Team"}},
+		{"未知空格名称不拆成维护名", "[Northern Team] 动画 - 01", []string{"Team"}, []string{"Northern Team"}},
+		{"联合发布保留名称内部连字符", "[Alpha-Team & Beta] 动画 - 01", []string{"Alpha-Team", "Beta"}, []string{"Alpha-Team", "Beta"}},
+		{"联合发布保留名称内部符号", "[Alpha&Beta + Gamma] 动画 - 01", []string{"Alpha&Beta", "Gamma"}, []string{"Alpha&Beta", "Gamma"}},
+		{"重复名称仅在明确联合边界命中", "[Team Edition & Team] 动画 - 01", []string{"Team"}, []string{"Team"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

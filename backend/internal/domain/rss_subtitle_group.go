@@ -205,12 +205,12 @@ func ExtractRSSSubtitleGroupCandidates(feed RSSFeed, maintained []string) []stri
 				if label.known || label.metadata {
 					continue
 				}
-				if rssSubtitleGroupTextContains(label.key, name.key) {
+				if rssSubtitleGroupContains(label.key, name.key, rssSubtitleGroupJointBoundary) {
 					add(name.name, name.key, rssSubtitleGroupJointLabel, source.score-index*20+utf8.RuneCountInString(name.name))
 					label.matched = true
 				}
 			}
-			if rssSubtitleGroupTextContains(source.text, name.key) {
+			if rssSubtitleGroupContains(source.text, name.key, rssSubtitleGroupBoundary) {
 				add(name.name, name.key, rssSubtitleGroupTextMatch, source.score+utf8.RuneCountInString(name.name))
 			}
 		}
@@ -244,8 +244,8 @@ func ExtractRSSSubtitleGroupCandidates(feed RSSFeed, maintained []string) []stri
 	return result
 }
 
-// 参数已在当前请求中完成规范化，匹配时保留词边界和名称内部的分隔符。
-func rssSubtitleGroupTextContains(text, key string) bool {
+// 参数已在当前请求中完成规范化，联合发布标签与正文使用各自的边界规则。
+func rssSubtitleGroupContains(text, key string, boundary func(string, int, int) bool) bool {
 	if text == "" || key == "" {
 		return false
 	}
@@ -255,13 +255,33 @@ func rssSubtitleGroupTextContains(text, key string) bool {
 			return false
 		}
 		start := offset + index
-		if rssSubtitleGroupBoundary(text, start, start+len(key)) {
+		if boundary(text, start, start+len(key)) {
 			return true
 		}
 		_, size := utf8.DecodeRuneInString(text[start:])
 		offset = start + size
 	}
 	return false
+}
+
+func rssSubtitleGroupJointBoundary(value string, start, end int) bool {
+	// 空格和连字符属于名称；只有明确的联合发布分隔符才能拆分标签。
+	const separators = "&+/|,、×"
+	before := strings.TrimSpace(value[:start])
+	after := strings.TrimSpace(value[end:])
+	if before != "" {
+		previous, _ := utf8.DecodeLastRuneInString(before)
+		if !strings.ContainsRune(separators, previous) {
+			return false
+		}
+	}
+	if after != "" {
+		next, _ := utf8.DecodeRuneInString(after)
+		if !strings.ContainsRune(separators, next) {
+			return false
+		}
+	}
+	return true
 }
 
 func rssSubtitleGroupBoundary(value string, start, end int) bool {

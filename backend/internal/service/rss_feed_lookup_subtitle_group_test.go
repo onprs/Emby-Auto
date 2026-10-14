@@ -32,6 +32,21 @@ func TestRSSFeedLookupReturnsSubtitleGroupCandidates(t *testing.T) {
 	}
 }
 
+func TestRSSFeedLookupPreservesUnknownSubtitleGroupLabel(t *testing.T) {
+	lookup := newTestFeedLookup(&feedFetcherStub{feed: domain.RSSFeed{
+		Title:   "Animation RSS",
+		Entries: []domain.RSSFeedEntry{{Title: "[Northern-Team] 动画 - 01"}},
+	}}).WithSubtitleGroups(rssSubtitleGroupSourceStub{names: []string{"Team"}})
+
+	result, err := lookup.Lookup(context.Background(), "https://example.test/feed.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SubtitleGroup != "Northern-Team" || len(result.SubtitleGroupCandidates) != 1 || result.SubtitleGroupCandidates[0] != "Northern-Team" {
+		t.Fatalf("识别结果必须保留完整发布名称，实际为 %#v", result)
+	}
+}
+
 func TestRSSFeedLookupReportsSubtitleGroupListFailure(t *testing.T) {
 	lookup := newTestFeedLookup(&feedFetcherStub{feed: domain.RSSFeed{Title: "Show RSS"}}).WithSubtitleGroups(rssSubtitleGroupSourceStub{err: errors.New("database unavailable")})
 
