@@ -87,8 +87,11 @@ export function updateSubtitleGroup(groupId: string, body: UpdateRssSubtitleGrou
   return unwrap<RssSubtitleGroup>(updateRssSubtitleGroup({ path: { groupId }, body }), '更新字幕组失败');
 }
 
-export function deleteSubtitleGroup(groupId: string): Promise<void> {
-  return unwrap<void>(deleteRssSubtitleGroup({ path: { groupId } }), '删除字幕组失败');
+export async function deleteSubtitleGroup(groupId: string): Promise<void> {
+  const result = await deleteRssSubtitleGroup({ path: { groupId } });
+  if (result.response?.status !== 204) {
+    throw new ApiFailure(result.error, '删除字幕组失败', result.response?.status ?? null);
+  }
 }
 
 export function updateSubscription(subscriptionId: string, body: UpdateRssSubscriptionRequest): Promise<RssSubscription> {

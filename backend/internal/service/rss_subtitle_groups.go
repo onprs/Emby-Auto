@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -146,8 +145,10 @@ func normalizeRSSSubtitleGroupInput(value string) (string, string, error) {
 	if utf8.RuneCountInString(name) > 128 {
 		return "", "", invalidRSSSubtitleGroup("name", "must not exceed 128 characters")
 	}
-	normalized := strings.ToLower(strings.Join(strings.Fields(name), " "))
-	return name, normalized, nil
+	if !domain.ValidRSSSubtitleGroupName(name) {
+		return "", "", invalidRSSSubtitleGroup("name", "must contain visible content without non-whitespace control characters")
+	}
+	return name, domain.RSSSubtitleGroupNameKey(name), nil
 }
 
 func rssSubtitleGroupFromRow(row db.RssSubtitleGroup) domain.RSSSubtitleGroup {

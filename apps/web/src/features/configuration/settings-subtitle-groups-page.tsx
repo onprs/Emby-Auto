@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, LoaderCircle, Pencil, Plus, Trash2, X } from 'lucide-react';
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -21,19 +21,36 @@ export function SettingsSubtitleGroupsPage() {
   const [name, setName] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
+  const formVersion = useRef(0);
+  const currentEditingId = useRef<string | null>(null);
 
   const save = useMutation({
-    mutationFn: () => editingId ? updateSubtitleGroup(editingId, { name: editingName.trim() }) : createSubtitleGroup(name.trim()),
-    onSuccess: () => {
-      setName('');
-      setEditingId(null);
-      setEditingName('');
+    mutationFn: (input: { id: string | null; name: string; version: number }) => input.id
+      ? updateSubtitleGroup(input.id, { name: input.name })
+      : createSubtitleGroup(input.name),
+    onSuccess: (_group, input) => {
+      if (input.version === formVersion.current) {
+        formVersion.current++;
+        currentEditingId.current = null;
+        setName('');
+        setEditingId(null);
+        setEditingName('');
+      }
       void queryClient.invalidateQueries({ queryKey: ['rss-subtitle-groups'] });
     },
   });
   const remove = useMutation({
     mutationFn: deleteSubtitleGroup,
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['rss-subtitle-groups'] }),
+    onSuccess: (_result, groupId) => {
+      if (currentEditingId.current === groupId) {
+        formVersion.current++;
+        currentEditingId.current = null;
+        setEditingId(null);
+        setEditingName('');
+        save.reset();
+      }
+      void queryClient.invalidateQueries({ queryKey: ['rss-subtitle-groups'] });
+    },
   });
 
   if (groups.isPending) {
@@ -45,8 +62,9 @@ export function SettingsSubtitleGroupsPage() {
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (editingId ? !editingName.trim() : !name.trim()) return;
-    save.mutate();
+    const submittedName = (editingId ? editingName : name).trim();
+    if (save.isPending || !submittedName) return;
+    save.mutate({ id: editingId, name: submittedName, version: formVersion.current });
   };
 
   return (
@@ -64,7 +82,11 @@ export function SettingsSubtitleGroupsPage() {
               <Input
                 id="rss-subtitle-group-name"
                 value={editingId ? editingName : name}
-                onChange={(event) => (editingId ? setEditingName(event.target.value) : setName(event.target.value))}
+                onChange={(event) => {
+                  formVersion.current++;
+                  if (editingId) setEditingName(event.target.value);
+                  else setName(event.target.value);
+                }}
                 placeholder="输入字幕组名称"
                 maxLength={128}
               />
@@ -75,14 +97,20 @@ export function SettingsSubtitleGroupsPage() {
                 {editingId ? '保存名称' : '添加字幕组'}
               </Button>
               {editingId ? (
-                <Button type="button" variant="outline" aria-label="取消编辑" title="取消编辑" onClick={() => { setEditingId(null); setEditingName(''); }}>
+                <Button type="button" variant="outline" aria-label="取消编辑" title="取消编辑" onClick={() => {
+                  formVersion.current++;
+                  currentEditingId.current = null;
+                  setEditingId(null);
+                  setEditingName('');
+                  save.reset();
+                }}>
                   <X aria-hidden="true" />
                 </Button>
               ) : null}
             </div>
           </form>
 
-          {save.error ? <ErrorState message={save.error instanceof Error ? save.error.message : '保存字幕组失败'} /> : null}
+          {save.error && save.variables?.version === formVersion.current ? <ErrorState message={save.error instanceof Error ? save.error.message : '保存字幕组失败'} /> : null}
           {remove.error ? <ErrorState message={remove.error instanceof Error ? remove.error.message : '删除字幕组失败'} /> : null}
 
           {groups.data.items.length > 0 ? (
@@ -97,7 +125,13 @@ export function SettingsSubtitleGroupsPage() {
                       size="icon"
                       aria-label={`编辑 ${group.name}`}
                       title="编辑"
-                      onClick={() => { setEditingId(group.id); setEditingName(group.name); save.reset(); }}
+                      onClick={() => {
+                        formVersion.current++;
+                        currentEditingId.current = group.id;
+                        setEditingId(group.id);
+                        setEditingName(group.name);
+                        save.reset();
+                      }}
                     >
                       <Pencil aria-hidden="true" />
                     </Button>

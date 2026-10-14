@@ -42,10 +42,13 @@ export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
   const [autoReview, setAutoReview] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lastLookupUrl = useRef('');
+  const lookupVersion = useRef(0);
+  const nameEdited = useRef(false);
 
   const lookup = useMutation({
-    mutationFn: lookupFeed,
-    onSuccess: (result) => {
+    mutationFn: (input: { feedUrl: string; version: number }) => lookupFeed(input.feedUrl),
+    onSuccess: (result, input) => {
+      if (input.version !== lookupVersion.current) return;
       const suggestion = result.suggestedQuery || result.feedTitle || '';
       setKeyword(suggestion);
       setAutomaticCandidates(result.candidates);
@@ -53,7 +56,7 @@ export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
       setAgentResolutionId(result.agentResolutionId ?? '');
       setSubmitted('');
       const detectedName = result.subtitleGroup || result.feedTitle || '';
-      if (detectedName && !subscriptionName.trim()) {
+      if (!nameEdited.current) {
         setSubscriptionName(detectedName);
       }
       if (result.candidates.length > 0) {
@@ -64,7 +67,8 @@ export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
         setMode('manual');
       }
     },
-    onError: () => {
+    onError: (_cause, input) => {
+      if (input.version !== lookupVersion.current) return;
       lastLookupUrl.current = '';
       setMode('manual');
     },
@@ -147,7 +151,7 @@ export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
     setSubtitleGroupCandidates([]);
     setAgentResolutionId('');
     setMode('idle');
-    lookup.mutate(trimmed);
+    lookup.mutate({ feedUrl: trimmed, version: ++lookupVersion.current });
   };
 
   const selectSeries = (selection: SeriesSelection) => {
@@ -184,7 +188,13 @@ export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
               type="url"
               value={feedUrl}
               onChange={(event) => {
+                lookupVersion.current++;
+                lastLookupUrl.current = '';
+                lookup.reset();
                 setFeedUrl(event.target.value);
+                if (!nameEdited.current) setSubscriptionName('');
+                setKeyword('');
+                setError(null);
                 setSeries(null);
                 setMode('idle');
                 setSubmitted('');
@@ -303,7 +313,10 @@ export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
             id="rss-subscription-name"
             list="rss-subtitle-group-options"
             value={subscriptionName}
-            onChange={(event) => setSubscriptionName(event.target.value)}
+            onChange={(event) => {
+              nameEdited.current = true;
+              setSubscriptionName(event.target.value);
+            }}
             placeholder="例如：字幕组名称或发布版本（留空默认使用番剧名）"
           />
           {subtitleGroupCandidates.length > 0 ? (
