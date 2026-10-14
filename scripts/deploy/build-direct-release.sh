@@ -59,7 +59,8 @@ cp "${root_dir}/deploy/nginx/locations.conf" "${release}/config/emby-auto-locati
 cp "${root_dir}/docs/direct-deployment.md" "${release}/DEPLOYMENT.md"
 cp "${root_dir}/docs/direct-deployment.en.md" "${release}/DEPLOYMENT.en.md"
 cp "${root_dir}/LICENSE" "${release}/LICENSE"
-chmod 0755 "${release}/bin/"*
+cp "${root_dir}/install.sh" "${release}/install.sh"
+chmod 0755 "${release}/bin/"* "${release}/install.sh"
 
 (
   cd "${release}"

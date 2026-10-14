@@ -20,7 +20,9 @@ async function reachReview() {
   await userEvent.type(screen.getByLabelText('确认密码'), 'administrator-password');
   await userEvent.click(screen.getByRole('button', { name: '继续' }));
 
-  await userEvent.type(await screen.findByLabelText('密码'), 'qb-password');
+  await userEvent.type(await screen.findByLabelText('URL'), 'http://127.0.0.1:8080');
+  await userEvent.type(screen.getByLabelText('Emby URL'), 'http://127.0.0.1:8096/emby');
+  await userEvent.type(screen.getByLabelText('密码'), 'qb-password');
   await userEvent.type(screen.getByLabelText('Emby API key'), 'emby-key');
   await userEvent.type(screen.getByLabelText('TMDb API Read Access Token'), 'tmdb-token');
   await userEvent.click(screen.getByRole('button', { name: '继续' }));
@@ -52,7 +54,7 @@ describe('SetupWizard', () => {
     expect(body.database).toBeUndefined();
     expect(body.administrator).toEqual({ username: 'admin', password: 'administrator-password' });
     expect(body.configuration.qBittorrent).toEqual({
-      url: 'http://host.docker.internal:8080',
+      url: 'http://127.0.0.1:8080',
       username: 'admin',
       password: 'qb-password',
     });

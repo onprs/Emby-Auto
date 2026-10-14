@@ -667,6 +667,12 @@ test.describe('first-run setup', () => {
     await page.getByLabel('确认密码').fill('administrator-password');
     await page.getByRole('button', { name: '继续' }).click();
 
+    await expect(page.getByLabel('URL', { exact: true })).toHaveValue('');
+    await expect(page.getByLabel('Emby URL', { exact: true })).toHaveValue('');
+    await page.getByRole('button', { name: '继续' }).click();
+    await expect(page.getByText('qBittorrent URL 必须是有效的 HTTP(S) 地址')).toBeVisible();
+    await page.getByLabel('URL', { exact: true }).fill('http://qbittorrent.test:8080');
+    await page.getByLabel('Emby URL', { exact: true }).fill('http://emby.test:8096/emby');
     await page.getByLabel('密码', { exact: true }).fill('qb-password');
     await page.getByLabel('Emby API key').fill('emby-key');
     await page.getByLabel('TMDb API Read Access Token').fill('tmdb-token');
@@ -688,15 +694,17 @@ test.describe('first-run setup', () => {
     const body = requestBody as unknown as {
       database?: object;
       configuration: {
-        qBittorrent: { password: string };
-        emby: { apiKey: string };
+        qBittorrent: { url: string; password: string };
+        emby: { url: string; apiKey: string };
         tmdb: { apiToken: string };
         paths: { ffmpegPath: string; animeLibraryRoot: string; movieLibraryRoot: string };
         transcode: { encoder: string; maxConcurrency: number };
       };
     };
     expect(body.database).toBeUndefined();
+    expect(body.configuration.qBittorrent.url).toBe('http://qbittorrent.test:8080');
     expect(body.configuration.qBittorrent.password).toBe('qb-password');
+    expect(body.configuration.emby.url).toBe('http://emby.test:8096/emby');
     expect(body.configuration.emby.apiKey).toBe('emby-key');
     expect(body.configuration.tmdb.apiToken).toBe('tmdb-token');
     expect(body.configuration.paths).toEqual(expect.objectContaining({

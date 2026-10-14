@@ -33,11 +33,13 @@ required_files=(
   deploy/direct/nginx.conf
   deploy/nginx/locations.conf
   scripts/deploy/build-direct-release.sh
+  install.sh
 )
 for file in "${required_files[@]}"; do
   test -s "${root_dir}/${file}"
 done
 bash -n "${root_dir}/scripts/deploy/build-direct-release.sh"
+bash -n "${root_dir}/install.sh"
 
 grep -Fq 'license": "MIT"' "${root_dir}/package.json"
 grep -Fq 'MIT License' "${root_dir}/LICENSE"
@@ -85,6 +87,7 @@ release_files=(
   config/emby-auto-locations.conf
   DEPLOYMENT.md
   DEPLOYMENT.en.md
+  install.sh
   LICENSE
   SHA256SUMS
 )
@@ -99,6 +102,7 @@ cmp -s "${root_dir}/deploy/nginx/locations.conf" "${release_dir}/config/emby-aut
 cmp -s "${root_dir}/docs/direct-deployment.md" "${release_dir}/DEPLOYMENT.md"
 cmp -s "${root_dir}/docs/direct-deployment.en.md" "${release_dir}/DEPLOYMENT.en.md"
 cmp -s "${root_dir}/LICENSE" "${release_dir}/LICENSE"
+cmp -s "${root_dir}/install.sh" "${release_dir}/install.sh"
 diff -qr "${root_dir}/apps/web/dist" "${release_dir}/web" >/dev/null
 for binary in emby-auto-api emby-auto-worker emby-auto-migration-check; do
   test -s "${release_dir}/bin/${binary}"

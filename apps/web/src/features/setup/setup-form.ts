@@ -36,7 +36,7 @@ export type SetupForm = {
 
 export const defaultSetupForm: SetupForm = {
   database: {
-    host: 'postgres',
+    host: '127.0.0.1',
     port: '5432',
     database: 'emby_auto',
     username: 'emby_auto',
@@ -45,10 +45,10 @@ export const defaultSetupForm: SetupForm = {
   },
   administrator: { username: 'admin', password: '', confirmation: '' },
   services: {
-    qbUrl: 'http://host.docker.internal:8080',
+    qbUrl: '',
     qbUsername: 'admin',
     qbPassword: '',
-    embyUrl: 'http://host.docker.internal:8096/emby',
+    embyUrl: '',
     embyApiKey: '',
     tmdbApiToken: '',
   },
