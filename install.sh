@@ -300,9 +300,11 @@ install_application() {
     printf '[Service]\nUser=%s\nGroup=%s\n' "$service_user" "$service_gid" >"$unit_dir/emby-auto-$service.service.d/installer.conf"
   done
   install -m 0644 "$release_source/config/emby-auto-locations.conf" "$nginx_dir/emby-auto-locations.conf"
-  awk -v port="$web_port" -v api="$api_port" \
-    '{gsub(/127\.0\.0\.1:18080/, "127.0.0.1:" port); gsub(/127\.0\.0\.1:18081/, "127.0.0.1:" api); print}' \
-    "$release_source/config/nginx.conf" >"$nginx_dir/conf.d/emby-auto.conf"
+  awk -v port="$web_port" -v api="$api_port" '
+    $1 == "listen" { sub(/127\.0\.0\.1:18080/, "127.0.0.1:" port) }
+    $1 == "server" { sub(/127\.0\.0\.1:18081/, "127.0.0.1:" api) }
+    { print }
+  ' "$release_source/config/nginx.conf" >"$nginx_dir/conf.d/emby-auto.conf"
   nginx -t || fail 'Nginx 配置检查失败，应用尚未启动。'
   systemctl daemon-reload
   services_started=1

@@ -160,6 +160,16 @@ test('完整安装创建独立数据库与服务，并使用用户指定的端�
   assert.match(readFileSync(join(f.sandbox, 'database-input.log'), 'utf8'), /CREATE DATABASE emby_auto OWNER emby_auto/);
 });
 
+test('交换网页与 API 默认端口时分别写入对应的监听配置', (t) => {
+  const f = fixture(t);
+  const result = f.run(['--port', '18081', '--api-port', '18080']);
+  assert.equal(result.status, 0, result.output);
+  const configuration = readFileSync(join(f.sandbox, 'etc/nginx/conf.d/emby-auto.conf'), 'utf8');
+  assert.match(configuration, /^\s*listen 127\.0\.0\.1:18081;$/m);
+  assert.match(configuration, /^\s*server 127\.0\.0\.1:18080;$/m);
+  assert.match(readFileSync(join(f.sandbox, 'etc/emby-auto/runtime.env'), 'utf8'), /^API_ADDRESS=127\.0\.0\.1:18080$/m);
+});
+
 test('PostgreSQL 服务实例解码后指向实际创建的集群配置', (t) => {
   const f = fixture(t);
   const result = f.run();
