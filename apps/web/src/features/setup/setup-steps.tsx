@@ -116,7 +116,7 @@ function ServicesStep({ form, setForm, disabled }: StepProps) {
       <div className="grid gap-5 border-b border-zinc-200 pb-6">
         <h2 className="text-sm font-semibold text-zinc-900">qBittorrent</h2>
         <Field label="URL" htmlFor="setup-qb-url">
-          <Input id="setup-qb-url" type="url" value={form.services.qbUrl} onChange={(event) => update({ qbUrl: event.target.value })} autoComplete="url" />
+          <Input id="setup-qb-url" type="url" placeholder="qBittorrent Web UI 地址" value={form.services.qbUrl} onChange={(event) => update({ qbUrl: event.target.value })} autoComplete="url" />
         </Field>
         <div className="grid gap-5 sm:grid-cols-2">
           <Field label="用户名" htmlFor="setup-qb-username">
@@ -129,7 +129,7 @@ function ServicesStep({ form, setForm, disabled }: StepProps) {
       </div>
       <div className="grid gap-5 border-b border-zinc-200 py-6 sm:grid-cols-2">
         <Field label="Emby URL" htmlFor="setup-emby-url">
-          <Input id="setup-emby-url" type="url" value={form.services.embyUrl} onChange={(event) => update({ embyUrl: event.target.value })} autoComplete="url" />
+          <Input id="setup-emby-url" type="url" placeholder="Emby Server 地址" value={form.services.embyUrl} onChange={(event) => update({ embyUrl: event.target.value })} autoComplete="url" />
         </Field>
         <Field label="Emby API key" htmlFor="setup-emby-key">
           <Input id="setup-emby-key" type="password" value={form.services.embyApiKey} onChange={(event) => update({ embyApiKey: event.target.value })} autoComplete="new-password" />
