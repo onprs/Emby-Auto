@@ -1,8 +1,9 @@
-import { screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { RssFeedLookup } from '@/api/generated/types.gen';
 import { CreateSubscriptionForm } from '@/features/rss/create-subscription-form';
 import { server } from '@/test/msw-server';
 import { renderWithProviders } from '@/test/render';
@@ -261,5 +262,155 @@ describe('CreateSubscriptionForm', () => {
     expect(searchCalls).toEqual(['修正后的名字']);
     await userEvent.click(candidate);
     expect(screen.getByRole('button', { name: '创建订阅' })).toBeEnabled();
+  });
+});
+
+function subtitleLookup(address: string, name: string): RssFeedLookup {
+  return {
+    feedUrl: address,
+    feedTitle: '动画订阅',
+    suggestedQuery: '动画作品',
+    suggestedQueries: ['动画作品'],
+    sampleTitles: [],
+    candidates: [{ tmdbSeriesId: 100, name: `${name} 动画` }],
+    catalogMatchSource: 'deterministic',
+    subtitleGroup: name,
+    subtitleGroupCandidates: [name],
+  };
+}
+
+function lookupGate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+describe('字幕组自动填写的请求状态', () => {
+  it('更换地址后清理旧自动名称并填写新识别名称', async () => {
+    server.use(http.post('*/api/v1/rss/feed-lookup', async ({ request }) => {
+      const { feedUrl: address } = await request.json() as { feedUrl: string };
+      return HttpResponse.json(subtitleLookup(address, address.endsWith('first.xml') ? 'ReleaseTeam' : 'TranslationTeam'));
+    }));
+    renderWithProviders(<CreateSubscriptionForm onDone={() => {}} />);
+    const address = await screen.findByLabelText('RSS 地址');
+    await userEvent.type(address, 'https://example.test/first.xml');
+    await userEvent.tab();
+    await waitFor(() => expect(screen.getByLabelText('订阅源名称（字幕组）')).toHaveValue('ReleaseTeam'));
+    await userEvent.clear(address);
+    expect(screen.getByLabelText('订阅源名称（字幕组）')).toHaveValue('');
+    await userEvent.type(address, 'https://example.test/second.xml');
+    await userEvent.tab();
+
+    await waitFor(() => expect(screen.getByLabelText('订阅源名称（字幕组）')).toHaveValue('TranslationTeam'));
+    expect(document.querySelector('option[value="TranslationTeam"]')).not.toBeNull();
+  });
+
+  it('更换地址后保留用户手动名称', async () => {
+    server.use(http.post('*/api/v1/rss/feed-lookup', async ({ request }) => {
+      const { feedUrl: address } = await request.json() as { feedUrl: string };
+      return HttpResponse.json(subtitleLookup(address, 'ReleaseTeam'));
+    }));
+    renderWithProviders(<CreateSubscriptionForm onDone={() => {}} />);
+    await userEvent.type(await screen.findByLabelText('订阅源名称（字幕组）'), '自定义发布版本');
+    await userEvent.type(screen.getByLabelText('RSS 地址'), 'https://example.test/first.xml');
+    await userEvent.tab();
+    await screen.findByRole('button', { name: /ReleaseTeam 动画/ });
+    await userEvent.clear(screen.getByLabelText('RSS 地址'));
+    await userEvent.type(screen.getByLabelText('RSS 地址'), 'https://example.test/second.xml');
+    await userEvent.tab();
+    await screen.findByRole('button', { name: /ReleaseTeam 动画/ });
+
+    expect(screen.getByLabelText('订阅源名称（字幕组）')).toHaveValue('自定义发布版本');
+  });
+
+  it('请求期间手动输入的名称不被完成结果覆盖', async () => {
+    const gate = lookupGate();
+    let started = false;
+    mockLookup(async () => {
+      started = true;
+      await gate.promise;
+      return HttpResponse.json(subtitleLookup(feedUrl, 'ReleaseTeam'));
+    });
+    const { queryClient } = renderWithProviders(<CreateSubscriptionForm onDone={() => {}} />);
+    await userEvent.type(await screen.findByLabelText('RSS 地址'), feedUrl);
+    await userEvent.tab();
+    await waitFor(() => expect(started).toBe(true));
+    await userEvent.type(screen.getByLabelText('订阅源名称（字幕组）'), '手动确认版本');
+    await act(async () => gate.resolve());
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+
+    expect(screen.getByLabelText('订阅源名称（字幕组）')).toHaveValue('手动确认版本');
+  });
+
+  it('用户主动清空名称后保持留空', async () => {
+    server.use(http.post('*/api/v1/rss/feed-lookup', async ({ request }) => {
+      const { feedUrl: address } = await request.json() as { feedUrl: string };
+      return HttpResponse.json(subtitleLookup(address, 'ReleaseTeam'));
+    }));
+    renderWithProviders(<CreateSubscriptionForm onDone={() => {}} />);
+    await userEvent.type(await screen.findByLabelText('RSS 地址'), feedUrl);
+    await userEvent.tab();
+    await waitFor(() => expect(screen.getByLabelText('订阅源名称（字幕组）')).toHaveValue('ReleaseTeam'));
+    await userEvent.clear(screen.getByLabelText('订阅源名称（字幕组）'));
+    await userEvent.clear(screen.getByLabelText('RSS 地址'));
+    await userEvent.type(screen.getByLabelText('RSS 地址'), 'https://example.test/second.xml');
+    await userEvent.tab();
+    await screen.findByRole('button', { name: /ReleaseTeam 动画/ });
+
+    expect(screen.getByLabelText('订阅源名称（字幕组）')).toHaveValue('');
+  });
+
+  it('地址已变更而未重新识别时忽略旧地址的完成结果', async () => {
+    const gate = lookupGate();
+    let started = false;
+    mockLookup(async () => {
+      started = true;
+      await gate.promise;
+      return HttpResponse.json(subtitleLookup(feedUrl, 'OldReleaseTeam'));
+    });
+    const { queryClient } = renderWithProviders(<CreateSubscriptionForm onDone={() => {}} />);
+    const address = await screen.findByLabelText('RSS 地址');
+    await userEvent.type(address, feedUrl);
+    await userEvent.tab();
+    await waitFor(() => expect(started).toBe(true));
+    fireEvent.change(address, { target: { value: 'https://example.test/second.xml' } });
+    await act(async () => gate.resolve());
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+
+    expect(screen.getByLabelText('订阅源名称（字幕组）')).toHaveValue('');
+    expect(document.querySelector('option[value="OldReleaseTeam"]')).toBeNull();
+    expect(screen.queryByRole('button', { name: /OldReleaseTeam 动画/ })).not.toBeInTheDocument();
+  });
+
+  it.each(['成功', '失败'])('新地址先完成后忽略旧请求的%s响应', async (outcome) => {
+    const gate = lookupGate();
+    let oldStarted = false;
+    server.use(http.post('*/api/v1/rss/feed-lookup', async ({ request }) => {
+      const { feedUrl: address } = await request.json() as { feedUrl: string };
+      if (address === feedUrl) {
+        oldStarted = true;
+        await gate.promise;
+        return outcome === '成功'
+          ? HttpResponse.json(subtitleLookup(address, 'OldReleaseTeam'))
+          : HttpResponse.json({ code: 'rss_fetch_failed', message: '旧请求失败', details: {} }, { status: 503 });
+      }
+      return HttpResponse.json(subtitleLookup(address, 'CurrentReleaseTeam'));
+    }));
+    const { queryClient } = renderWithProviders(<CreateSubscriptionForm onDone={() => {}} />);
+    const address = await screen.findByLabelText('RSS 地址');
+    await userEvent.type(address, feedUrl);
+    await userEvent.tab();
+    await waitFor(() => expect(oldStarted).toBe(true));
+    await userEvent.clear(address);
+    await userEvent.type(address, 'https://example.test/second.xml');
+    await userEvent.tab();
+    await screen.findByRole('button', { name: /CurrentReleaseTeam 动画/ });
+    await act(async () => gate.resolve());
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+
+    expect(screen.getByLabelText('订阅源名称（字幕组）')).toHaveValue('CurrentReleaseTeam');
+    expect(screen.getByRole('button', { name: /CurrentReleaseTeam 动画/ })).toBeVisible();
+    expect(screen.queryByText('无法自动识别 RSS 内容，请手动搜索作品。')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /OldReleaseTeam 动画/ })).not.toBeInTheDocument();
   });
 });

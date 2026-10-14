@@ -692,6 +692,9 @@ export type RssFeedLookup = {
 
 export type RssSubtitleGroup = {
     id: string;
+    /**
+     * 维护名称必须包含可见内容，且不能含空白以外的控制字符。全角 ASCII、成对外层括号和空白会被规范化；空格和标点用于区分名称，已维护的短名称或数字名称可通过完整发布标签识别。
+     */
     name: string;
     createdAt: string;
     updatedAt: string;
@@ -702,10 +705,16 @@ export type RssSubtitleGroupPage = {
 };
 
 export type CreateRssSubtitleGroupRequest = {
+    /**
+     * 必须包含可见内容，且不能含空白以外的控制字符。全角 ASCII、成对外层括号和空白会被规范化；空格和标点用于区分名称。
+     */
     name: string;
 };
 
 export type UpdateRssSubtitleGroupRequest = {
+    /**
+     * 必须包含可见内容，且不能含空白以外的控制字符。全角 ASCII、成对外层括号和空白会被规范化；空格和标点用于区分名称。
+     */
     name: string;
 };
 
