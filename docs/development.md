@@ -29,7 +29,7 @@ npm run dev --workspace @emby-auto/web
 
 ## 组件与接口
 
-API 负责安装、认证、查询和短事务；Worker 独立执行下载、映射、转码、字幕处理和入库任务。PostgreSQL 保存状态与配置，River 管理持久化任务队列。Nginx 提供静态网页、API 代理、SSE 和媒体预览。
+API 负责安装、认证、查询和短事务；Worker 独立执行下载、映射、转码、字幕处理和入库任务。PostgreSQL 保存状态与配置，River 管理持久化任务队列。原生部署可由 API 同时提供静态网页与接口；容器部署通过 Nginx 提供网页、API 代理、SSE 和媒体预览。
 
 [OpenAPI 契约](../contracts/openapi.yaml) 是 HTTP 接口的唯一契约。修改接口或数据库查询后执行：
 

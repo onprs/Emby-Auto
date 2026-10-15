@@ -55,7 +55,6 @@ cp "${root_dir}/deploy/direct/runtime.env.example" "${release}/config/runtime.en
 cp "${root_dir}/deploy/direct/emby-auto-api.service" "${release}/config/emby-auto-api.service"
 cp "${root_dir}/deploy/direct/emby-auto-worker.service" "${release}/config/emby-auto-worker.service"
 cp "${root_dir}/deploy/direct/nginx.conf" "${release}/config/nginx.conf"
-cp "${root_dir}/deploy/nginx/locations.conf" "${release}/config/emby-auto-locations.conf"
 cp "${root_dir}/docs/direct-deployment.md" "${release}/DEPLOYMENT.md"
 cp "${root_dir}/docs/direct-deployment.en.md" "${release}/DEPLOYMENT.en.md"
 cp "${root_dir}/LICENSE" "${release}/LICENSE"

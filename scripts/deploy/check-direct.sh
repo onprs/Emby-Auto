@@ -31,7 +31,6 @@ required_files=(
   deploy/direct/emby-auto-api.service
   deploy/direct/emby-auto-worker.service
   deploy/direct/nginx.conf
-  deploy/nginx/locations.conf
   scripts/deploy/build-direct-release.sh
   install.sh
 )
@@ -46,7 +45,8 @@ grep -Fq 'MIT License' "${root_dir}/LICENSE"
 grep -Fq '[English](README.en.md)' "${root_dir}/README.md"
 grep -Fq '[简体中文](README.md)' "${root_dir}/README.en.md"
 grep -Fq 'EMBY_MEDIA_OWNER_UID=' "${root_dir}/deploy/direct/runtime.env.example"
-grep -Fq 'API_ADDRESS=127.0.0.1:18081' "${root_dir}/deploy/direct/runtime.env.example"
+grep -Fq 'API_ADDRESS=127.0.0.1:18080' "${root_dir}/deploy/direct/runtime.env.example"
+grep -Fq 'WEB_ROOT=/opt/emby-auto/current/web' "${root_dir}/deploy/direct/runtime.env.example"
 
 for unit in emby-auto-api emby-auto-worker; do
   unit_file="${root_dir}/deploy/direct/${unit}.service"
@@ -62,13 +62,10 @@ done
 grep -Fq 'ExecStart=/opt/emby-auto/current/bin/emby-auto-api' "${root_dir}/deploy/direct/emby-auto-api.service"
 grep -Fq 'ExecStart=/opt/emby-auto/current/bin/emby-auto-worker' "${root_dir}/deploy/direct/emby-auto-worker.service"
 
-grep -Fq 'server 127.0.0.1:18081;' "${root_dir}/deploy/direct/nginx.conf"
-grep -Fq 'listen 127.0.0.1:18080;' "${root_dir}/deploy/direct/nginx.conf"
-grep -Fq 'include /etc/nginx/emby-auto-locations.conf;' "${root_dir}/deploy/direct/nginx.conf"
-grep -Fq 'location = /api/v1/events' "${root_dir}/deploy/nginx/locations.conf"
-grep -Fq 'proxy_buffering off;' "${root_dir}/deploy/nginx/locations.conf"
-grep -Fq 'proxy_set_header Range $http_range;' "${root_dir}/deploy/nginx/locations.conf"
-grep -Fq 'try_files $uri $uri/ /index.html;' "${root_dir}/deploy/nginx/locations.conf"
+grep -Fq 'proxy_pass http://127.0.0.1:18080;' "${root_dir}/deploy/direct/nginx.conf"
+grep -Fq 'listen 127.0.0.1:18079;' "${root_dir}/deploy/direct/nginx.conf"
+grep -Fq 'proxy_buffering off;' "${root_dir}/deploy/direct/nginx.conf"
+grep -Fq 'proxy_set_header Range $http_range;' "${root_dir}/deploy/direct/nginx.conf"
 
 if [[ "${mode}" == "static" ]]; then
   echo "direct Linux deployment static checks passed"
@@ -84,7 +81,6 @@ release_files=(
   config/emby-auto-api.service
   config/emby-auto-worker.service
   config/nginx.conf
-  config/emby-auto-locations.conf
   DEPLOYMENT.md
   DEPLOYMENT.en.md
   install.sh
@@ -98,7 +94,6 @@ cmp -s "${root_dir}/deploy/direct/runtime.env.example" "${release_dir}/config/ru
 cmp -s "${root_dir}/deploy/direct/emby-auto-api.service" "${release_dir}/config/emby-auto-api.service"
 cmp -s "${root_dir}/deploy/direct/emby-auto-worker.service" "${release_dir}/config/emby-auto-worker.service"
 cmp -s "${root_dir}/deploy/direct/nginx.conf" "${release_dir}/config/nginx.conf"
-cmp -s "${root_dir}/deploy/nginx/locations.conf" "${release_dir}/config/emby-auto-locations.conf"
 cmp -s "${root_dir}/docs/direct-deployment.md" "${release_dir}/DEPLOYMENT.md"
 cmp -s "${root_dir}/docs/direct-deployment.en.md" "${release_dir}/DEPLOYMENT.en.md"
 cmp -s "${root_dir}/LICENSE" "${release_dir}/LICENSE"

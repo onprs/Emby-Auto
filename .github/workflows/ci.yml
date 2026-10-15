@@ -149,9 +149,8 @@ jobs:
       - name: 输出安装失败诊断
         if: failure()
         run: |
-          sudo systemctl status postgresql@17-emby_auto.service emby-auto-api.service emby-auto-worker.service --no-pager || true
-          sudo journalctl -u postgresql@17-emby_auto.service -u emby-auto-api.service -u emby-auto-worker.service --no-pager -n 100
-          sudo tail -n 100 /var/log/postgresql/postgresql-17-emby_auto.log || true
+          sudo systemctl status emby-auto-api.service emby-auto-worker.service --no-pager || true
+          sudo journalctl -u emby-auto-api.service -u emby-auto-worker.service --no-pager -n 100
 
   container-build:
     runs-on: ubuntu-latest

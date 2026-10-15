@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 仅供 GitHub 托管的临时 CI 设备执行，会实际安装软件包和系统服务。
+# 仅供 GitHub 托管的临时 CI 设备执行，会实际安装软件包和应用服务。
 [[ "${GITHUB_ACTIONS:-}" == true && "${RUNNER_ENVIRONMENT:-}" == github-hosted && "$EUID" == 0 ]] || {
   printf '%s\n' '此检查只能在 GitHub 托管的临时 CI 设备中以 root 执行。' >&2
   exit 1
@@ -16,8 +16,19 @@ cp "$release_dir/$archive" "$assets/$archive"
 export EMBY_AUTO_INSTALL_TEST_SOURCE="$root_dir/install.sh"
 export EMBY_AUTO_INSTALL_TEST_ASSETS="$assets"
 
+external_services_snapshot() {
+  dpkg-query -W -f='${Package}=${Version}\n' 'postgresql*' 'nginx*' 2>/dev/null || true
+  local directory
+  for directory in /etc/postgresql /etc/nginx; do
+    if [[ -d "$directory" ]]; then
+      find "$directory" -type f -exec sha256sum {} + | sort
+    fi
+  done
+}
+external_services_snapshot >"$assets/external.before"
+
 run_installer() {
-  # 使用当前 CI 构建的发布包，系统识别、依赖安装与服务管理均使用真实实现。
+  # 使用当前 CI 构建的发布包，其它安装操作均使用真实实现。
   bash -c '
     source "$EMBY_AUTO_INSTALL_TEST_SOURCE"
     download_release() {
@@ -31,24 +42,28 @@ run_installer() {
 }
 
 run_installer
-for service in emby-auto-api emby-auto-worker postgresql@17-emby_auto nginx; do
+for service in emby-auto-api emby-auto-worker; do
   systemctl is-active --quiet "$service"
 done
-curl --fail --silent --noproxy '*' http://127.0.0.1:18080/ >/dev/null
+curl --fail --silent --noproxy '*' http://127.0.0.1:18080/ >"$assets/index.html"
+curl --fail --silent --noproxy '*' http://127.0.0.1:18080/tasks | cmp -s - "$assets/index.html"
 curl --fail --silent --noproxy '*' http://127.0.0.1:18080/api/v1/setup/status | python3 -c '
 import json, sys
 status = json.load(sys.stdin)
 assert status["state"] == "required", status
-assert status["databaseConfigured"] is True, status
-assert status["databaseManagedExternally"] is True, status
+assert status["databaseConfigured"] is False, status
+assert status["databaseManagedExternally"] is False, status
+assert status["administratorConfigured"] is False, status
 '
 [[ "$(systemctl show -p User --value emby-auto-api)" == emby-auto ]]
 [[ "$(systemctl show -p User --value emby-auto-worker)" == emby-auto ]]
 [[ "$(stat -c %a /etc/emby-auto/installer.env)" == 600 ]]
 [[ "$(stat -c %a /etc/emby-auto/runtime.env)" == 640 ]]
-[[ "$(runuser -u postgres -- psql -p 18082 -d emby_auto -Atc 'SELECT 1')" == 1 ]]
-[[ "$(runuser -u postgres -- psql -p 18082 -d emby_auto -Atc 'SHOW server_encoding')" == UTF8 ]]
+[[ ! -e /var/lib/emby-auto/bootstrap.json ]]
+[[ ! -e /var/lib/emby-auto/bootstrap.json.complete ]]
+external_services_snapshot >"$assets/external.after"
+cmp -s "$assets/external.before" "$assets/external.after"
 before="$(sha256sum /etc/emby-auto/installer.env /etc/emby-auto/runtime.env)"
 run_installer
 [[ "$before" == "$(sha256sum /etc/emby-auto/installer.env /etc/emby-auto/runtime.env)" ]]
-printf '%s\n' '真实 systemd 安装、数据库连接、网页向导与重复安装检查通过。'
+printf '%s\n' '真实 systemd 安装、数据库填写向导、网页路由、外部服务保留与重复安装检查通过。'
