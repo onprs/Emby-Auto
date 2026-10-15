@@ -104,6 +104,15 @@ func (runtime *activeRuntime) Close() {
 
 func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	switcher := httpapi.NewSwitchingHandler(nil)
+	var handler http.Handler = switcher
+	if cfg.WebRoot != "" {
+		webHandler, err := httpapi.NewWebHandler(switcher, cfg.WebRoot)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = webHandler.Close() }()
+		handler = webHandler
+	}
 	runtime := &activeRuntime{}
 	defer runtime.Close()
 
@@ -130,7 +139,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 
 	server := &http.Server{
 		Addr:              cfg.APIAddress,
-		Handler:           switcher,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}

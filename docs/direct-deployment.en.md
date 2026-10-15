@@ -1,140 +1,110 @@
 # Direct Linux Deployment
 
-[简体中文](direct-deployment.md) | **English**
+**English** | [简体中文](direct-deployment.md)
 
-Install on your own Linux device using the automatic installer or a prebuilt release. Prepare qBittorrent and Emby Server separately.
+This guide covers Emby Auto on your own Linux device. The installer installs the application, FFmpeg, and ffprobe, and enables the application services at boot. Install and configure PostgreSQL, qBittorrent, and Emby Server separately. The application serves both the web interface and API; a reverse proxy is optional.
 
-## Automatic Installation
-
-Supported systems: Debian 12/13 and Ubuntu 22.04/24.04/26.04, 64-bit `amd64` or `arm64`, running systemd. You need root or sudo access, Bash, curl, and connectivity to GitHub, distribution repositories, and the official PostgreSQL repository when required.
-
-~~~bash
-curl -fsSL https://github.com/onprs/Emby-Auto/releases/latest/download/install.sh | sudo bash -s --
-~~~
-
-When running as root, replace `sudo bash` with `bash`. The installer downloads and verifies a prebuilt release, installs PostgreSQL 17, Nginx, FFmpeg and ffprobe, creates a non-root service account and storage directories, and enables services at boot. Git, Go, and Node.js are not required on the target device.
-
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `--version` | Latest stable Release | Select a release tag starting with `v` |
-| `--user` | Create `emby-auto` | Use the existing media owner account |
-| `--port` | `18080` | Web loopback port |
-| `--api-port` | `18081` | API loopback port |
-| `--database-port` | `18082` | Dedicated PostgreSQL loopback port |
-| `--help` | — | Show help |
-
-Append options to the command, for example:
-
-~~~bash
-curl -fsSL https://github.com/onprs/Emby-Auto/releases/latest/download/install.sh | sudo bash -s -- --user media-owner
-~~~
-
-Ports must be distinct integers between `1024` and `65535`. Existing media permissions are preserved; the selected account needs read/write access. Hardware encoding may require membership in `render`, `video`, or device-specific groups.
-
-The installer creates a dedicated PostgreSQL cluster named `17/emby_auto`, listening on `127.0.0.1:18082` by default. Database credentials are saved in restricted configuration files and omitted from installation logs. The web wizard skips database configuration.
-
-### Open the Web Interface
-
-Open `http://127.0.0.1:18080` on the device. For a remote device, establish an SSH tunnel from your computer:
-
-~~~bash
-ssh -L 18080:127.0.0.1:18080 user@device-address
-~~~
-
-Then open the same URL. Adjust the tunnel and browser URL if you changed the web port.
-
-Create an administrator and enter qBittorrent Web UI credentials, an Emby URL and API key, and a TMDb API Read Access Token. Service addresses must be reachable from the deployment device. qBittorrent and the application must use identical absolute download paths. Mount remote download and library directories on the device before setup.
-
-Default directories are `/srv/emby-auto/downloads`, `/srv/emby-auto/work`, `/srv/emby-auto/staging`, `/srv/emby-auto/media/anime`, and `/srv/emby-auto/media/movies`. For an existing library, enter its actual paths and use an account with the media owner's UID.
-
-Configure HTTPS for network access, set `SESSION_COOKIE_SECURE=true` in `/etc/emby-auto/runtime.env`, and restart the API. The default loopback endpoint supports local access and SSH tunnels.
-
-### Retry, Logs, and Backups
-
-Repeat the same command and options after an interrupted installation. Generated credentials, configuration, and media directories are preserved. A completed installation checks its existing services and displays its address while retaining the installed version. The installer does not take over manual deployments. Follow the upgrade instructions below to update a version.
-
-~~~bash
-systemctl status emby-auto-api emby-auto-worker postgresql@17-emby_auto --no-pager
-journalctl -u emby-auto-api -u emby-auto-worker --since today
-~~~
-
-Back up the application database, `/etc/emby-auto`, `/var/lib/emby-auto`, and media directories. For the automatically installed database:
-
-~~~bash
-sudo -u postgres pg_dump -p 18082 -Fc emby_auto > emby-auto.dump
-~~~
-
-Adjust the database port when customized. Encrypt backups and restrict access because they contain sensitive information.
-
-## Manual Installation
-
-The following steps are for deployments that manage dependencies and service accounts independently. Automatic installation already completes these steps; continue with HTTPS, backups, or upgrades as needed.
-
-### Deployment Topology
-
-| Component | Default location or port | Management |
-| --- | --- | --- |
-| API | `127.0.0.1:18081` | `emby-auto-api.service` |
-| Worker | No listening port | `emby-auto-worker.service` |
-| Web / Nginx | `127.0.0.1:18080` | Host Nginx |
-| Release directories | `/opt/emby-auto/releases/<release-id>` | Read-only, root-managed |
-| Active release | `/opt/emby-auto/current` | Atomic symbolic link |
-| Runtime state | `/var/lib/emby-auto` | systemd `StateDirectory` |
-| Runtime environment | `/etc/emby-auto/runtime.env` | Root-managed |
-
-The standard direct deployment does not install a host controller. Dashboard controls that depend on host-level Worker management are unavailable; use `systemctl` to manage the service lifecycle.
+## Automatic installation
 
 ### Requirements
 
-The target host requires:
+- Debian 12/13 or Ubuntu 22.04/24.04/26.04, 64-bit `amd64` or `arm64`, with systemd running.
+- Root or sudo access, Bash and curl installed, and access to GitHub and the system package repositories.
+- A reachable PostgreSQL database and a dedicated application account. PostgreSQL 17 is the project's database validation baseline.
+- qBittorrent Web API, Emby Server, and a TMDb API Read Access Token.
 
-- 64-bit Linux (`amd64` or `arm64`) with systemd.
-- PostgreSQL 17 and Nginx supplied by the distribution.
-- FFmpeg and ffprobe with the encoders required by the selected transcode configuration.
-- Reachable qBittorrent Web API and Emby Server instances.
-- A TMDb API Read Access Token.
-- A non-root service account matching the media owner; the manual steps use `emby`.
-- Bash, curl, GNU coreutils, tar, and gzip.
+Run:
 
-### 1. Download and Verify a Release
+```bash
+curl -fsSL https://github.com/onprs/Emby-Auto/releases/latest/download/install.sh | sudo bash -s --
+```
 
-Download the prebuilt release for the target architecture. These commands use `amd64`; set `target_arch=arm64` on an `arm64` device:
+As root, replace `sudo bash` with `bash`. Docker, Git, Go, and Node.js are not required. The installer preserves existing databases, reverse proxies, and their configuration.
 
-~~~bash
-target_arch=amd64
+For an existing media library, use its owner account:
+
+```bash
+curl -fsSL https://github.com/onprs/Emby-Auto/releases/latest/download/install.sh | sudo bash -s -- --user media-account
+```
+
+By default, the installer creates a non-root `emby-auto` account and download, work, staging, and media directories under `/srv/emby-auto`. An existing account must have access to the selected directories. Existing media ownership and permissions are preserved.
+
+### Open the setup wizard
+
+Open `http://127.0.0.1:18080` on the device. For a remote device, first create an SSH tunnel from your computer:
+
+```bash
+ssh -L 18080:127.0.0.1:18080 user@device-address
+```
+
+Open the same address and enter:
+
+1. Your PostgreSQL host, port, database, account, password, and SSL mode.
+2. An administrator account.
+3. qBittorrent, Emby, and TMDb settings.
+4. Media directories and FFmpeg tool paths.
+5. A transcode profile.
+
+The application creates its tables in the selected database. The service account must be able to reach the database and access the media directories. Worker waits until setup is complete before processing jobs.
+
+### Installer options
+
+| Option | Purpose |
+| --- | --- |
+| `--version vVERSION` | Install a specific Release; defaults to the latest stable Release |
+| `--user ACCOUNT` | Use an existing media owner; defaults to creating `emby-auto` |
+| `--port PORT` | Shared loopback web and API port; defaults to `18080` |
+
+For a port conflict, use a free port such as `--port 19080`, and adjust the browser address and SSH tunnel accordingly. Repeating the installer preserves the installed version, setup state, and runtime configuration. Follow the upgrade procedure to change versions.
+
+## Directories and services
+
+| Content | Location or endpoint |
+| --- | --- |
+| Current release | `/opt/emby-auto/current` |
+| Release directories | `/opt/emby-auto/releases/` |
+| Runtime environment | `/etc/emby-auto/runtime.env` |
+| Installer record | `/etc/emby-auto/installer.env` |
+| Setup configuration | `/var/lib/emby-auto/bootstrap.json` and its `.complete` marker |
+| Web and API | `127.0.0.1:18080` by default |
+| Application services | `emby-auto-api.service`, `emby-auto-worker.service` |
+
+API and Worker run as separate processes. You manage the lifecycle of PostgreSQL, the reverse proxy, qBittorrent, and Emby. Use `systemctl` to manage native application services. Dashboard Worker controls that depend on a host controller require a separate host integration.
+
+## Manual deployment
+
+### 1. Prepare dependencies and the release
+
+Prepare a PostgreSQL database, a dedicated account, FFmpeg, and ffprobe. The service units require systemd. Download and verify the release for your architecture:
+
+```bash
+release_tag="<release-tag>"
+target_arch="amd64"
 archive="emby-auto-direct-${target_arch}-linux-${target_arch}.tar.gz"
-release_url=https://github.com/onprs/Emby-Auto/releases/latest/download
-curl -fL "${release_url}/${archive}" -o "${archive}"
-curl -fL "${release_url}/SHA256SUMS" -o SHA256SUMS
+curl -fLO "https://github.com/onprs/Emby-Auto/releases/download/${release_tag}/${archive}"
+curl -fLO "https://github.com/onprs/Emby-Auto/releases/download/${release_tag}/SHA256SUMS"
 awk -v name="${archive}" '$2 == name' SHA256SUMS | sha256sum --check --strict -
 tar -xzf "${archive}"
 cd "emby-auto-direct-${target_arch}"
 sha256sum -c SHA256SUMS
-~~~
+```
 
-Confirm each command succeeds before proceeding. Do not install a release that fails verification. Bundles include the application, web assets, service templates, installer, and deployment guides. To select a version, replace `latest/download` with `download/vVERSION` in the URL.
+Use `target_arch="arm64"` for an arm64 device. Confirm each command succeeds before continuing; download the release again if verification fails.
 
-See the [development and release guide](https://github.com/onprs/Emby-Auto/blob/main/docs/development.md) for source builds.
+### 2. Prepare the database and media account
 
-### 2. Prepare the Service Account and Storage
+The database administrator must create a dedicated database and account with permission to create tables and extensions. The application uses `pgcrypto`; an administrator should enable it in advance on restricted managed databases. Use loopback for a local database, or a trusted network and an appropriate TLS mode for a remote database.
 
-Confirm that the service account has a nonzero UID and GID:
+Run the application as the media owner. These examples use `emby`; replace the account and group when appropriate and query the actual UID:
 
 ```bash
-id emby
 id -u emby
 id -g emby
 ```
 
-When another account owns the media files, update all of the following consistently:
+The service UID must match the owner of imported media. It needs access to download, work, staging, and library directories. qBittorrent and the application must use the same absolute download path. Keep the existing permission policy for established libraries. API and Worker use the same non-root account with a nonzero UID and GID so they can share setup configuration with mode `0600`.
 
-- `User` and `Group` for both systemd services.
-- `EMBY_MEDIA_OWNER_UID` in `/etc/emby-auto/runtime.env`.
-- Ownership of the state, download, work, staging, and media directories.
-
-The API and Worker use the same service account so they can read one installation file with mode `0600`; the Worker also creates and repairs imported files as the media owner. Neither service requires root or `CAP_CHOWN`.
-
-Create the example directories with:
+For a new deployment whose media directories do not exist yet, create them with the following example. Preserve permissions on existing directories.
 
 ```bash
 sudo install -d -o emby -g emby -m 0770 \
@@ -145,76 +115,54 @@ sudo install -d -o emby -g emby -m 0770 \
   /srv/emby-auto/media/movies
 ```
 
-Preserve the established ownership policy of existing media libraries and avoid indiscriminate recursive `chown` or `chmod` operations. The qBittorrent save path must exactly match the absolute path configured for the Worker. When qBittorrent runs in a container, use a same-path mount.
+For hardware transcoding, add the service account to the device-required `render`, `video`, or other groups, then restart services to apply group membership.
 
-For VAAPI, NVENC, or another hardware encoder, add the service account to the required `render`, `video`, or device-specific group and restart the services to apply group membership.
+### 3. Install the release and runtime configuration
 
-### 3. Configure PostgreSQL
-
-Create a dedicated role and database as a PostgreSQL administrator. Enter the password interactively:
-
-```bash
-sudo -u postgres createuser --pwprompt emby_auto
-sudo -u postgres createdb --owner=emby_auto emby_auto
-```
-
-PostgreSQL should not be exposed to the internet. A database on the same host can use `127.0.0.1:5432`; a remote database should use a trusted network and an appropriate TLS mode.
-
-The application applies application migrations and River migrations in sequence during first-run setup and subsequent startup. Migration tables are application-managed and must not be modified manually.
-
-### 4. Install a Release Directory
-
-From the verified release directory, run:
+From the verified release directory:
 
 ```bash
 release_source="$PWD"
 release_id="$(date -u +%Y%m%d%H%M%S)"
-
-sudo install -d -o root -g root -m 0755 /opt/emby-auto/releases
 sudo install -d -o root -g root -m 0755 "/opt/emby-auto/releases/${release_id}"
 sudo cp -a "${release_source}/." "/opt/emby-auto/releases/${release_id}/"
 sudo chown -R root:root "/opt/emby-auto/releases/${release_id}"
-
 sudo ln -sfn "releases/${release_id}" /opt/emby-auto/current.next
 sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
-```
-
-Root manages immutable release directories. The service account only needs to read binaries, templates, and Web files. systemd stores runtime state in `/var/lib/emby-auto`, outside the release directory.
-
-### 5. Install the Runtime Environment and systemd Services
-
-Create the runtime environment file:
-
-```bash
 sudo install -d -o root -g root -m 0755 /etc/emby-auto
 sudo install -o root -g emby -m 0640 \
-  /opt/emby-auto/current/config/runtime.env.example \
-  /etc/emby-auto/runtime.env
+  /opt/emby-auto/current/config/runtime.env.example /etc/emby-auto/runtime.env
 sudoedit /etc/emby-auto/runtime.env
 ```
 
-Set at least `EMBY_MEDIA_OWNER_UID`. A first-run setup performed over loopback or an SSH tunnel may temporarily keep `SESSION_COOKIE_SECURE=false`; set it to `true` after HTTPS becomes available.
+Set `EMBY_MEDIA_OWNER_UID` to the service account's actual non-root UID. The default configuration is:
 
-Install the systemd units:
+```dotenv
+API_ADDRESS=127.0.0.1:18080
+WEB_ROOT=/opt/emby-auto/current/web
+BOOTSTRAP_CONFIG_PATH=/var/lib/emby-auto/bootstrap.json
+SESSION_COOKIE_SECURE=false
+```
+
+Leave the database connection and encryption key unset so the setup wizard can configure them. `WEB_ROOT` selects the directory served by the application. If you host the web files separately, leave it unset and forward `/api/` to the application yourself.
+
+### 4. Configure application services
 
 ```bash
 sudo install -o root -g root -m 0644 \
-  /opt/emby-auto/current/config/emby-auto-api.service \
-  /etc/systemd/system/emby-auto-api.service
+  /opt/emby-auto/current/config/emby-auto-api.service /etc/systemd/system/emby-auto-api.service
 sudo install -o root -g root -m 0644 \
-  /opt/emby-auto/current/config/emby-auto-worker.service \
-  /etc/systemd/system/emby-auto-worker.service
-sudo systemctl daemon-reload
+  /opt/emby-auto/current/config/emby-auto-worker.service /etc/systemd/system/emby-auto-worker.service
 ```
 
-The default units use `emby:emby`. For another service account, create persistent drop-ins for both services instead of editing units in the release:
+The units default to `emby:emby`. For another account, create persistent drop-ins for both services and change the runtime environment file's group to the selected account's group:
 
 ```bash
 sudo systemctl edit emby-auto-api.service
 sudo systemctl edit emby-auto-worker.service
 ```
 
-Place the following content in both drop-ins:
+Use the following in both drop-ins:
 
 ```ini
 [Service]
@@ -222,182 +170,69 @@ User=<media-user>
 Group=<media-group>
 ```
 
-Also update the group of `/etc/emby-auto/runtime.env` and set `EMBY_MEDIA_OWNER_UID` for the same account.
-
-Load the final configuration and start both services:
+After configuring the account, load and start the services:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now emby-auto-api.service
-sudo systemctl enable --now emby-auto-worker.service
+sudo systemctl enable --now emby-auto-api.service emby-auto-worker.service
 ```
 
-The Worker waits for installation configuration and does not claim background jobs before first-run setup completes.
+Open the setup wizard locally or through an SSH tunnel.
 
-### 6. Install Nginx
+## HTTPS and reverse proxies
 
-Install the shared location configuration and direct-deployment site:
+Local access and SSH tunnels can use the application directly. For LAN or internet access, choose Caddy, Nginx, Traefik, or another reverse proxy and configure your domain and TLS certificate. The upstream is `http://127.0.0.1:18080`; adjust it for a custom port.
+
+The proxy must:
+
+- Forward the web interface and `/api/` to the same application endpoint, preserving the original host and protocol.
+- Support long-lived SSE at `/api/v1/events` without response buffering.
+- Forward `Range` and `If-Range` for media previews and stream the response.
+
+The release includes `config/nginx.conf` as an optional loopback proxy example on `127.0.0.1:18079`. Adapt it to your own Nginx site and certificate configuration, or use your selected proxy's configuration.
+
+Once HTTPS works, set `SESSION_COOKIE_SECURE=true` in `/etc/emby-auto/runtime.env` and restart API:
 
 ```bash
-sudo install -o root -g root -m 0644 \
-  /opt/emby-auto/current/config/emby-auto-locations.conf \
-  /etc/nginx/emby-auto-locations.conf
-sudo install -o root -g root -m 0644 \
-  /opt/emby-auto/current/config/nginx.conf \
-  /etc/nginx/conf.d/emby-auto.conf
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-If the distribution does not load `/etc/nginx/conf.d/*.conf`, install the site in its enabled Nginx server directory instead. Preserve the include path for `/etc/nginx/emby-auto-locations.conf`.
-
-The default site listens on `127.0.0.1:18080`, and the API listens on `127.0.0.1:18081`. Verify both entry points:
-
-```bash
-curl --fail http://127.0.0.1:18081/api/v1/health/live
-curl --fail http://127.0.0.1:18080/api/v1/health/live
-```
-
-### 7. Complete First-Run Setup
-
-For remote administration, forward the loopback Web endpoint over SSH:
-
-```bash
-ssh -L 8080:127.0.0.1:18080 user@example-host
-```
-
-Then open `http://127.0.0.1:8080` on the administration host. Typical same-host setup values are:
-
-```text
-PostgreSQL host   127.0.0.1
-PostgreSQL port   5432
-PostgreSQL db     emby_auto
-PostgreSQL user   emby_auto
-PostgreSQL SSL    disable (same-host loopback only)
-qBittorrent URL   http://127.0.0.1:<qbittorrent-port>
-Emby URL          http://127.0.0.1:<emby-port>/emby
-ffmpegPath        /usr/bin/ffmpeg
-ffprobePath       /usr/bin/ffprobe
-downloadRoot      /srv/emby-auto/downloads
-workRoot          /srv/emby-auto/work
-stagingRoot       /srv/emby-auto/staging
-animeLibraryRoot  /srv/emby-auto/media/anime
-movieLibraryRoot  /srv/emby-auto/media/movies
-```
-
-The wizard writes the database connection and generated configuration-encryption key to `/var/lib/emby-auto/bootstrap.json` with mode `0600`. This file contains sensitive configuration and must not be copied to an untrusted location, written to logs, or committed to version control.
-
-After setup, run the readiness checks:
-
-```bash
-curl --fail http://127.0.0.1:18081/api/v1/health/ready
-sudo -u emby bash -c '
-  set -a
-  source /etc/emby-auto/runtime.env
-  set +a
-  exec /opt/emby-auto/current/bin/emby-auto-worker --check
-'
-```
-
-Replace `emby` when using another service account. Confirm that both services remain active without recurring startup or connection errors:
-
-```bash
-systemctl status emby-auto-api emby-auto-worker --no-pager
-journalctl -u emby-auto-api -u emby-auto-worker --since today
-```
-
-### 8. Configure HTTPS
-
-LAN or internet access requires Caddy, Nginx, Traefik, or another TLS entry point in front of `127.0.0.1:18080`. The outer proxy must preserve:
-
-- Long-lived, unbuffered SSE connections at `/api/v1/events`.
-- `Range`, `If-Range`, and streaming behavior for artifact requests.
-- `/api/` proxying, static asset caching, and the React SPA fallback.
-
-After validating TLS, run:
-
-```bash
-sudoedit /etc/emby-auto/runtime.env
 sudo systemctl restart emby-auto-api.service
 ```
 
-Set `SESSION_COOKIE_SECURE=true` and verify that the session cookie contains `HttpOnly`, `SameSite=Strict`, and `Secure`. Do not expose API port `18081` through the firewall. Keep port `18080` bound to loopback and expose only the outer TLS entry point.
+Keep the application bound to loopback and expose the reverse proxy. Confirm that session cookies include `HttpOnly`, `SameSite=Strict`, and `Secure`.
 
-### 9. Backups and Monitoring
-
-At minimum, back up:
-
-- A consistent PostgreSQL archive.
-- `/etc/emby-auto/runtime.env`.
-- `/var/lib/emby-auto`, which contains installation configuration.
-- Media and application work directories according to the storage policy.
-
-Inspect runtime status with:
+## Checks and backups
 
 ```bash
 systemctl status emby-auto-api emby-auto-worker --no-pager
 journalctl -u emby-auto-api -u emby-auto-worker -f
-curl --fail http://127.0.0.1:18081/api/v1/health/ready
+curl --fail http://127.0.0.1:18080/api/v1/setup/status
+curl --fail http://127.0.0.1:18080/api/v1/health/ready
 ```
 
-Backups may contain database connections and external-service credentials. Encrypt them and restrict access.
+API readiness should pass after setup. The service account can run `emby-auto-worker --check` with its runtime environment to validate Worker configuration and database connectivity.
 
-### 10. Upgrade
+Back up PostgreSQL consistently, `/etc/emby-auto`, `/var/lib/emby-auto`, and media and work directories according to your storage policy. Preserve both `bootstrap.json` and `bootstrap.json.complete`. The encryption key is required to read stored service credentials. Encrypt backups and restrict access.
 
-Download and verify a new GitHub Release, then install it into a new `/opt/emby-auto/releases/<release-id>` directory. Complete backups and allow active download processing, transcoding, imports, and Agent operations to finish before upgrading.
+## Upgrades and existing deployments
 
-The automatic installer stores account settings in `installer.conf` systemd drop-ins, which remain active after unit updates. If you customized web or API ports, restore their values after copying the Nginx template below and before validating it.
-
-Switch the active release in this order:
+Back up the database and application configuration. Pause background work and finish or pause downloads and transcoding through the existing deployment's controls. Download and verify the new release and install it in a new release directory.
 
 ```bash
 new_release_id="<installed-release-id>"
-
-sudo systemctl stop emby-auto-worker.service
-sudo systemctl stop emby-auto-api.service
-
+sudo systemctl stop emby-auto-worker.service emby-auto-api.service
 sudo ln -sfn "releases/${new_release_id}" /opt/emby-auto/current.next
 sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
-
 sudo install -o root -g root -m 0644 \
-  /opt/emby-auto/current/config/emby-auto-api.service \
-  /etc/systemd/system/emby-auto-api.service
+  /opt/emby-auto/current/config/emby-auto-api.service /etc/systemd/system/emby-auto-api.service
 sudo install -o root -g root -m 0644 \
-  /opt/emby-auto/current/config/emby-auto-worker.service \
-  /etc/systemd/system/emby-auto-worker.service
-sudo install -o root -g root -m 0644 \
-  /opt/emby-auto/current/config/emby-auto-locations.conf \
-  /etc/nginx/emby-auto-locations.conf
-sudo install -o root -g root -m 0644 \
-  /opt/emby-auto/current/config/nginx.conf \
-  /etc/nginx/conf.d/emby-auto.conf
-
+  /opt/emby-auto/current/config/emby-auto-worker.service /etc/systemd/system/emby-auto-worker.service
 sudo systemctl daemon-reload
-sudo nginx -t
 sudo systemctl start emby-auto-api.service
-curl --fail http://127.0.0.1:18081/api/v1/health/ready
+curl --fail http://127.0.0.1:18080/api/v1/health/ready
 sudo systemctl start emby-auto-worker.service
-sudo systemctl reload nginx
 ```
 
-Do not overwrite `/etc/emby-auto/runtime.env` with a new template. systemd drop-ins remain effective after unit updates. If API readiness fails, leave the Worker stopped and inspect migration logs.
+Preserve the runtime environment, setup files, and account drop-ins. Adjust checks for a custom port. If database migration fails, keep Worker stopped and inspect API logs. Rolling back application binaries depends on database migration compatibility.
 
-### 11. Rollback and Uninstall
+For deployments created by the older installer that provisioned PostgreSQL and Nginx, retain and manage those services and their data. The new installer rejects the old installer record. Follow manual deployment steps and preserve the existing configuration. Set `WEB_ROOT` in the API runtime environment to serve the web interface directly; update the proxy upstream if you change the application port.
 
-An atomic switch back to an earlier release is valid only when the old binaries are compatible with the current database schema. After an incompatible schema migration, stop both services and restore PostgreSQL and `/var/lib/emby-auto` backups from the same point in time before switching releases.
-
-Remove the services while retaining data:
-
-```bash
-sudo systemctl disable --now emby-auto-worker.service emby-auto-api.service
-sudo rm -f /etc/systemd/system/emby-auto-worker.service
-sudo rm -f /etc/systemd/system/emby-auto-api.service
-sudo rm -rf /etc/systemd/system/emby-auto-worker.service.d
-sudo rm -rf /etc/systemd/system/emby-auto-api.service.d
-sudo rm -f /etc/nginx/conf.d/emby-auto.conf
-sudo rm -f /etc/nginx/emby-auto-locations.conf
-sudo systemctl daemon-reload
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-Delete the PostgreSQL database, `/var/lib/emby-auto`, `/etc/emby-auto`, and release directories only when the installation data is no longer required. Media libraries are not part of application uninstall.
+For Docker migrations, preserve the application database, original encryption key, and setup files. Grant the service account access and replace container-only addresses with host-reachable addresses. Keep a single Worker during migration and validate the database, web interface, and media workflow before removing old resources.

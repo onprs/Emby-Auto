@@ -74,6 +74,44 @@ describe('SetupWizard', () => {
     }));
   });
 
+  it('首次初始化显示数据库步骤，并提交用户填写的连接信息', async () => {
+    let captured: InitializeSetupRequest | null = null;
+    const status = { ...requiredSetup, databaseConfigured: false, databaseManagedExternally: false };
+    server.use(
+      http.post('*/api/v1/setup/initialize', async ({ request }) => {
+        captured = (await request.json()) as InitializeSetupRequest;
+        return HttpResponse.json({ ...status, state: 'completed', administratorConfigured: true });
+      }),
+    );
+    const completed = vi.fn();
+    renderWithProviders(<SetupWizard status={status} onCompleted={completed} />);
+
+    for (const [label, value] of [
+      ['主机', '127.0.0.1'],
+      ['端口', '15432'],
+      ['数据库', 'media_automation'],
+      ['用户名', 'media_service'],
+      ['密码', 'database-password'],
+    ]) {
+      const input = await screen.findByLabelText(label);
+      await userEvent.clear(input);
+      await userEvent.type(input, value);
+    }
+    await userEvent.click(screen.getByRole('button', { name: '继续' }));
+    await reachReview();
+    await userEvent.click(screen.getByRole('button', { name: '开始初始化' }));
+
+    await waitFor(() => expect(completed).toHaveBeenCalledOnce());
+    expect((captured as unknown as InitializeSetupRequest).database).toEqual({
+      host: '127.0.0.1',
+      port: 15432,
+      database: 'media_automation',
+      username: 'media_service',
+      password: 'database-password',
+      sslMode: 'disable',
+    });
+  });
+
   it('clears every submitted secret after initialization fails', async () => {
     server.use(
       http.post('*/api/v1/setup/initialize', () => HttpResponse.json({

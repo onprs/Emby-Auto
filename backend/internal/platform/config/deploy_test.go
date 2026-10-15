@@ -112,10 +112,14 @@ func TestPublicDeploymentsKeepAPIAndWorkerIndependent(t *testing.T) {
 		!strings.Contains(directEnvironment, "BOOTSTRAP_CONFIG_PATH=/var/lib/emby-auto/bootstrap.json") {
 		t.Fatal("direct environment must configure the media owner and shared bootstrap")
 	}
-	if !strings.Contains(directNginx, "server 127.0.0.1:18081;") ||
-		!strings.Contains(directNginx, "listen 127.0.0.1:18080;") ||
-		!strings.Contains(directNginx, "include /etc/nginx/emby-auto-locations.conf;") {
-		t.Fatal("direct Nginx must expose a loopback Web endpoint and use shared locations")
+	if !strings.Contains(directEnvironment, "WEB_ROOT=/opt/emby-auto/current/web") ||
+		!strings.Contains(directEnvironment, "API_ADDRESS=127.0.0.1:18080") {
+		t.Fatal("原生部署必须支持由应用直接提供网页与 API")
+	}
+	if !strings.Contains(directNginx, "proxy_pass http://127.0.0.1:18080;") ||
+		!strings.Contains(directNginx, "listen 127.0.0.1:18079;") ||
+		!strings.Contains(directNginx, "proxy_buffering off;") {
+		t.Fatal("可选 Nginx 示例必须代理到应用并支持流式响应")
 	}
 	for _, required := range []string{"systemctl", "PostgreSQL 17", "SESSION_COOKIE_SECURE", "sha256sum -c SHA256SUMS"} {
 		if !strings.Contains(directGuide, required) {
