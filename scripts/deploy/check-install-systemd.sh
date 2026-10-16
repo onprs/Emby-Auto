@@ -27,6 +27,15 @@ external_services_snapshot() {
 }
 external_services_snapshot >"$assets/external.before"
 
+# 托管 runner 的目录权限可能与普通安装环境不同；为临时设备设置特权服务所需的边界。
+[[ -d /opt && ! -L /opt ]] || {
+  printf '%s\n' 'CI 安装父目录必须是实际目录。' >&2
+  exit 1
+}
+stat -c 'CI /opt 原权限：uid=%u gid=%g mode=%a' /opt
+chown root:root /opt
+chmod 0755 /opt
+
 run_installer() {
   # 使用当前 CI 构建的发布包，其它安装操作均使用真实实现。
   bash -c '
