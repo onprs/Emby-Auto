@@ -23,9 +23,12 @@ function fixture(t) {
   const assets = join(directory, 'assets');
   const payload = join(assets, 'emby-auto-direct-amd64');
   for (const part of ['bin', 'web', 'config']) mkdirSync(join(payload, part), { recursive: true });
-  for (const binary of ['api', 'worker']) writeFileSync(join(payload, 'bin', `emby-auto-${binary}`), '#!/bin/sh\nexit 0\n');
+  for (const binary of ['api', 'worker', 'migration-check', 'background-runtime', 'release-preflight', 'recover-stale-operations', 'migrate-runtime-addresses', 'migrate-staging-ownership']) {
+    writeFileSync(join(payload, 'bin', `emby-auto-${binary}`), '#!/bin/sh\nexit 0\n');
+  }
+  writeFileSync(join(payload, 'bin/emby-auto-host-control'), ['#!/bin/sh', 'echo running', ''].join('\n'));
   writeFileSync(join(payload, 'web/index.html'), '<!doctype html><title>Emby Auto</title>');
-  for (const name of ['emby-auto-api.service', 'emby-auto-worker.service']) {
+  for (const name of ['emby-auto-api.service', 'emby-auto-worker.service', 'emby-auto-systemd-control.service', 'worker-runtime.sh']) {
     copyFileSync(join(root, 'deploy/direct', name), join(payload, 'config', name));
   }
   shell('find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS', payload);
@@ -51,6 +54,13 @@ unit_dir="$TEST_ROOT/etc/systemd/system"
 lock_dir="$TEST_ROOT/run/emby-auto-install"
 check_platform() { target_arch=amd64; }
 require_root() { :; }
+command() {
+  if [[ "$1" == -v && ( "$2" == ffmpeg || "$2" == ffprobe ) ]]; then
+    [[ "\${REUSE_MEDIA_TOOLS:-0}" == 1 ]] && return 0
+    return 1
+  fi
+  builtin command "$@"
+}
 id() {
   if [[ "\${*: -1}" == root ]]; then command id "$@"; return; fi
   [[ "\${*: -1}" != missing-user ]] || return 1
@@ -128,7 +138,7 @@ test('完整安装仅配置应用和 FFmpeg，网页与 API 共用指定端口',
   const result = f.run(['--version', 'v1.2.3', '--port', '19080'], { CREATE_ACCOUNT: '1' });
   assert.equal(result.status, 0, result.output);
   assert.match(result.stdout, /http:\/\/127.0.0.1:19080/);
-  assert.match(result.stdout, /填写已准备好的 PostgreSQL 连接/);
+  assert.match(result.stdout, /初始化向导中填写 PostgreSQL/);
   assert.ok(existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
   const environment = readFileSync(join(f.sandbox, 'etc/emby-auto/runtime.env'), 'utf8');
   assert.match(environment, /^API_ADDRESS=127\.0\.0\.1:19080$/m);
@@ -137,13 +147,14 @@ test('完整安装仅配置应用和 FFmpeg，网页与 API 共用指定端口',
   assert.match(environment, /^RIVER_GENERAL_WORKERS=10$/m);
   assert.match(environment, /^RIVER_TRANSCODE_WORKERS=1$/m);
   assert.match(readFileSync(join(f.sandbox, 'etc/systemd/system/emby-auto-api.service.d/installer.conf'), 'utf8'), /User=emby-auto/);
-  assert.match(readFileSync(join(f.sandbox, 'service.log'), 'utf8'), /enable --now emby-auto-api.service emby-auto-worker.service/);
+  assert.match(readFileSync(join(f.sandbox, 'service.log'), 'utf8'), /enable --now emby-auto-systemd-control.service emby-auto-api.service emby-auto-worker.service/);
   assert.doesNotMatch(readFileSync(join(f.sandbox, 'service.log'), 'utf8'), /postgresql|nginx/);
   assert.equal(readFileSync(join(f.sandbox, 'packages.log'), 'utf8'), 'update\ninstall -y --no-install-recommends ca-certificates ffmpeg\n');
   assert.match(readFileSync(join(f.sandbox, 'useradd.log'), 'utf8'), /--system --user-group/);
   assert.equal(statSync(join(f.sandbox, 'etc/emby-auto/runtime.env')).mode & 0o777, 0o640);
   assert.equal(statSync(join(f.sandbox, 'etc/emby-auto/installer.env')).mode & 0o777, 0o600);
   assert.equal(statSync(join(f.sandbox, 'opt/emby-auto/current/bin/emby-auto-api')).mode & 0o777, 0o755);
+  assert.match(readFileSync(join(f.sandbox, 'etc/emby-auto/installer.env'), 'utf8'), /^installer_format=3$/m);
   assert.doesNotMatch(readFileSync(join(f.sandbox, 'etc/emby-auto/installer.env'), 'utf8'), /database_password/);
   assert.ok(!existsSync(join(f.sandbox, 'var/lib/emby-auto/bootstrap.json')));
   assert.ok(!existsSync(join(f.sandbox, 'forbidden.log')));
@@ -191,7 +202,7 @@ test('旧版安装记录在下载、安装依赖和修改服务之前被拒绝',
   writeFileSync(path, original);
   const result = f.run();
   assert.notEqual(result.status, 0);
-  assert.match(result.output, /旧版安装记录/);
+  assert.match(result.output, /安装记录版本不兼容/);
   assert.equal(readFileSync(path, 'utf8'), original);
   assert.ok(!existsSync(join(f.sandbox, 'packages.log')));
   assert.ok(!existsSync(join(f.sandbox, 'service.log')));
@@ -285,6 +296,105 @@ test('权限不足、缺失账户、root 账户和占用端口在服务修改前
     assert.match(result.output, message);
     assert.ok(!existsSync(join(f.sandbox, 'service.log')));
   }
+});
+
+test('本地制品安装校验完整发布包，并且不会访问下载入口', (t) => {
+  const f = fixture(t);
+  const result = f.run(['--archive', join(f.assets, archiveName), '--checksums', join(f.assets, 'SHA256SUMS')], { FETCH_FAIL: '1' });
+  assert.equal(result.status, 0, result.output);
+  assert.ok(existsSync(join(f.sandbox, 'etc/emby-auto/host-control.env')));
+  assert.equal(statSync(join(f.sandbox, 'etc/emby-auto/host-control.env')).mode & 0o777, 0o600);
+});
+
+test('迁移准备不启动服务，后续启动保留准备好的制品和配置', (t) => {
+  const f = fixture(t);
+  let result = f.run(['--no-start']);
+  assert.equal(result.status, 0, result.output);
+  assert.ok(existsSync(join(f.sandbox, 'etc/emby-auto/prepared')));
+  assert.ok(!existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
+  assert.doesNotMatch(readFileSync(join(f.sandbox, 'service.log'), 'utf8'), /enable|start /);
+  const environment = readFileSync(join(f.sandbox, 'etc/emby-auto/runtime.env'), 'utf8');
+  rmSync(f.assets, { recursive: true });
+  result = f.run([], { FETCH_FAIL: '1' });
+  assert.equal(result.status, 0, result.output);
+  assert.equal(readFileSync(join(f.sandbox, 'etc/emby-auto/runtime.env'), 'utf8'), environment);
+});
+
+test('旧版原生安装记录在下载和修改服务之前被拒绝', (t) => {
+  const f = fixture(t);
+  mkdirSync(join(f.sandbox, 'etc/emby-auto'), { recursive: true });
+  const path = join(f.sandbox, 'etc/emby-auto/installer.env');
+  const original = 'installer_format=2\nservice_user=emby-auto\nweb_port=18080\nversion=latest\n';
+  writeFileSync(path, original);
+  const result = f.run();
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /安装记录版本不兼容/);
+  assert.equal(readFileSync(path, 'utf8'), original);
+  assert.ok(!existsSync(join(f.sandbox, 'packages.log')));
+  assert.ok(!existsSync(join(f.sandbox, 'service.log')));
+});
+
+test('拒绝符号链接安装目录并保留目标内容', (t) => {
+  const f = fixture(t);
+  mkdirSync(join(f.sandbox, 'opt'), { recursive: true });
+  symlinkSync(f.assets, join(f.sandbox, 'opt/emby-auto'));
+  const archive = readFileSync(join(f.assets, archiveName));
+  const result = f.run();
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /安装目录不能是符号链接/);
+  assert.deepEqual(readFileSync(join(f.assets, archiveName)), archive);
+  assert.ok(!existsSync(join(f.sandbox, 'service.log')));
+});
+
+test('准备后的制品发生变化时拒绝启动并保留当前内容', (t) => {
+  const f = fixture(t);
+  let result = f.run(['--no-start']);
+  assert.equal(result.status, 0, result.output);
+  const path = join(f.sandbox, 'opt/emby-auto/current/bin/emby-auto-api');
+  writeFileSync(path, 'changed-after-preparation');
+  rmSync(join(f.sandbox, 'service.log'));
+  result = f.run();
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /内容已变化/);
+  assert.equal(readFileSync(path, 'utf8'), 'changed-after-preparation');
+  assert.ok(!existsSync(join(f.sandbox, 'service.log')));
+  assert.ok(!existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
+});
+
+test('迁移完成登记只验证服务，不重新启动或改写配置', (t) => {
+  const f = fixture(t);
+  let result = f.run(['--no-start']);
+  assert.equal(result.status, 0, result.output);
+  const path = join(f.sandbox, 'etc/emby-auto/runtime.env');
+  const environment = readFileSync(path, 'utf8');
+  rmSync(f.assets, { recursive: true });
+  rmSync(join(f.sandbox, 'service.log'));
+  result = f.run(['--finalize'], { FETCH_FAIL: '1' });
+  assert.equal(result.status, 0, result.output);
+  assert.ok(existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
+  assert.equal(readFileSync(path, 'utf8'), environment);
+  assert.doesNotMatch(readFileSync(join(f.sandbox, 'service.log'), 'utf8'), /enable|start |stop |daemon-reload/);
+});
+
+test('迁移完成登记失败保持既有服务与配置', (t) => {
+  const f = fixture(t);
+  let result = f.run(['--no-start']);
+  assert.equal(result.status, 0, result.output);
+  const path = join(f.sandbox, 'etc/emby-auto/runtime.env');
+  const environment = readFileSync(path, 'utf8');
+  rmSync(join(f.sandbox, 'service.log'));
+  result = f.run(['--finalize'], { HEALTH_FAIL: '1' });
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
+  assert.equal(readFileSync(path, 'utf8'), environment);
+  assert.ok(!existsSync(join(f.sandbox, 'service.log')));
+});
+
+test('已有 FFmpeg 与 ffprobe 时复用工具并保留系统软件包', (t) => {
+  const f = fixture(t);
+  const result = f.run([], { REUSE_MEDIA_TOOLS: '1' });
+  assert.equal(result.status, 0, result.output);
+  assert.ok(!existsSync(join(f.sandbox, 'packages.log')));
 });
 
 test('无效端口及旧版端口选项在写入前被拒绝', (t) => {

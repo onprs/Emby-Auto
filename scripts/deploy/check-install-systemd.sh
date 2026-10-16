@@ -27,6 +27,15 @@ external_services_snapshot() {
 }
 external_services_snapshot >"$assets/external.before"
 
+# 托管 runner 的目录权限可能与普通安装环境不同；为临时设备设置特权服务所需的边界。
+[[ -d /opt && ! -L /opt ]] || {
+  printf '%s\n' 'CI 安装父目录必须是实际目录。' >&2
+  exit 1
+}
+stat -c 'CI /opt 原权限：uid=%u gid=%g mode=%a' /opt
+chown root:root /opt
+chmod 0755 /opt
+
 run_installer() {
   # 使用当前 CI 构建的发布包，其它安装操作均使用真实实现。
   bash -c '
@@ -42,7 +51,7 @@ run_installer() {
 }
 
 run_installer
-for service in emby-auto-api emby-auto-worker; do
+for service in emby-auto-api emby-auto-worker emby-auto-systemd-control; do
   systemctl is-active --quiet "$service"
 done
 curl --fail --silent --noproxy '*' http://127.0.0.1:18080/ >"$assets/index.html"
@@ -61,9 +70,22 @@ assert status["administratorConfigured"] is False, status
 [[ "$(stat -c %a /etc/emby-auto/runtime.env)" == 640 ]]
 [[ ! -e /var/lib/emby-auto/bootstrap.json ]]
 [[ ! -e /var/lib/emby-auto/bootstrap.json.complete ]]
+[[ "$(stat -c %a /run/emby-auto-systemd/control.sock)" == 660 ]]
+[[ "$(stat -c %u /run/emby-auto-systemd/control.sock)" == 0 ]]
+[[ "$(stat -c %g /run/emby-auto-systemd/control.sock)" == "$(id -g emby-auto)" ]]
+control_command() {
+  runuser -u emby-auto -- env EMBY_AUTO_HOST_CONTROL_SOCKET=/run/emby-auto-systemd/control.sock \
+    /opt/emby-auto/current/bin/emby-auto-host-control "$@"
+}
+[[ "$(control_command media-owner)" == "$(id -u emby-auto)" ]]
+# 此时尚未填写数据库，Worker 只在等待初始化，可直接验证隔离 CI 设备的控制通道。
+[[ "$(control_command worker-stop)" == stopped ]]
+! systemctl is-active --quiet emby-auto-worker
+[[ "$(control_command worker-start)" == running ]]
+systemctl is-active --quiet emby-auto-worker
 external_services_snapshot >"$assets/external.after"
 cmp -s "$assets/external.before" "$assets/external.after"
 before="$(sha256sum /etc/emby-auto/installer.env /etc/emby-auto/runtime.env)"
 run_installer
 [[ "$before" == "$(sha256sum /etc/emby-auto/installer.env /etc/emby-auto/runtime.env)" ]]
-printf '%s\n' '真实 systemd 安装、数据库填写向导、网页路由、外部服务保留与重复安装检查通过。'
+printf '%s\n' '真实 systemd 安装、应用身份与后台控制、数据库填写向导、网页路由、外部服务保留与重复安装检查通过。'

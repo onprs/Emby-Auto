@@ -149,8 +149,8 @@ jobs:
       - name: 输出安装失败诊断
         if: failure()
         run: |
-          sudo systemctl status emby-auto-api.service emby-auto-worker.service --no-pager || true
-          sudo journalctl -u emby-auto-api.service -u emby-auto-worker.service --no-pager -n 100
+          sudo systemctl status emby-auto-api.service emby-auto-worker.service emby-auto-systemd-control.service --no-pager || true
+          sudo journalctl -u emby-auto-api.service -u emby-auto-worker.service -u emby-auto-systemd-control.service --no-pager -n 100
 
   container-build:
     runs-on: ubuntu-latest

@@ -16,6 +16,7 @@ ExecStart=/opt/emby-auto/current/bin/emby-auto-worker
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=120s
+KillMode=control-group
 UMask=0027
 NoNewPrivileges=true
 CapabilityBoundingSet=

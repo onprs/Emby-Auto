@@ -54,6 +54,9 @@ ssh -L 18080:127.0.0.1:18080 用户@设备地址
 | `--version v版本号` | 安装指定 Release，默认最新正式版本 |
 | `--user 账户` | 使用现有媒体所有者账户，默认创建 `emby-auto` |
 | `--port 端口` | 网页与 API 共用的回环端口，默认 `18080` |
+| `--archive 文件`、`--checksums 文件` | 校验并使用已下载的发布包与 `SHA256SUMS` |
+| `--no-start` | 准备应用和服务，保持服务状态，供迁移使用 |
+| `--finalize` | 核验准备后的服务并完成安装登记，保持配置和服务状态 |
 
 端口被占用时，例如使用 `--port 19080`，访问地址和 SSH 隧道也应改用该端口。重复执行保留当前版本、初始化状态和运行配置。更换版本按下文升级步骤操作。
 
@@ -68,8 +71,9 @@ ssh -L 18080:127.0.0.1:18080 用户@设备地址
 | 初始化配置 | `/var/lib/emby-auto/bootstrap.json` 与 `.complete` 标记 |
 | 网页与 API | 默认 `127.0.0.1:18080` |
 | 后台服务 | `emby-auto-api.service`、`emby-auto-worker.service` |
+| 后台控制 | `emby-auto-systemd-control.service`、`/etc/emby-auto/host-control.env` |
 
-API 与 Worker 是独立进程。数据库、反向代理、qBittorrent 和 Emby 的生命周期由用户管理。原生部署的应用服务由 `systemctl` 启停；Dashboard 中依赖宿主控制器的 Worker 启停功能需要另行配置宿主集成。
+API 与 Worker 是独立进程。一键安装会配置后台控制服务，Dashboard 可暂停和恢复后台处理。暂停会停止 Worker，并为应用管理的活动下载保留恢复标记；恢复后再启动 Worker。数据库、反向代理、qBittorrent 和 Emby 的生命周期由用户管理。
 
 ## 手动部署
 
@@ -148,12 +152,21 @@ SESSION_COOKIE_SECURE=false
 
 ### 4. 配置应用服务
 
+配置后台控制服务允许使用的应用 UID 和 GID，并安装三个 unit：
+
 ```bash
-sudo install -o root -g root -m 0644 \
-  /opt/emby-auto/current/config/emby-auto-api.service /etc/systemd/system/emby-auto-api.service
-sudo install -o root -g root -m 0644 \
-  /opt/emby-auto/current/config/emby-auto-worker.service /etc/systemd/system/emby-auto-worker.service
+sudo install -o root -g root -m 0600 \
+  /opt/emby-auto/current/config/host-control.env.example /etc/emby-auto/host-control.env
+printf 'EMBY_AUTO_SERVICE_UID=%s\nEMBY_AUTO_SERVICE_GID=%s\n' "$(id -u emby)" "$(id -g emby)" | \
+  sudo tee /etc/emby-auto/host-control.env >/dev/null
+for service in api worker systemd-control; do
+  sudo install -o root -g root -m 0644 \
+    "/opt/emby-auto/current/config/emby-auto-${service}.service" \
+    "/etc/systemd/system/emby-auto-${service}.service"
+done
 ```
+
+后台控制服务以 root 运行，只提供固定的 Worker 启停和主机状态查询。应用版本目录及其父目录须由 root 管理，禁止组和其他用户写入。
 
 默认 unit 使用 `emby:emby`。使用其它服务账户时，为两个服务分别创建持久化 drop-in，并将运行环境文件的 group 调整为该账户所属组：
 
@@ -162,7 +175,7 @@ sudo systemctl edit emby-auto-api.service
 sudo systemctl edit emby-auto-worker.service
 ```
 
-两个 drop-in 均写入：
+同时将 `/etc/emby-auto/host-control.env` 的 UID 和 GID 改为该账户的实际值。两个应用 drop-in 均写入：
 
 ```ini
 [Service]
@@ -174,10 +187,10 @@ Group=<media-group>
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now emby-auto-api.service emby-auto-worker.service
+sudo systemctl enable --now emby-auto-systemd-control.service emby-auto-api.service emby-auto-worker.service
 ```
 
-再通过本机浏览器或 SSH 隧道打开初始化向导。
+以上启动步骤适用于全新部署。迁移时先保持 Worker 停止，按下文迁移流程保留初始化状态。全新部署再通过本机浏览器或 SSH 隧道打开初始化向导。
 
 ## HTTPS 与反向代理
 
@@ -202,37 +215,89 @@ sudo systemctl restart emby-auto-api.service
 ## 检查与备份
 
 ```bash
-systemctl status emby-auto-api emby-auto-worker --no-pager
-journalctl -u emby-auto-api -u emby-auto-worker -f
+systemctl status emby-auto-api emby-auto-worker emby-auto-systemd-control --no-pager
+journalctl -u emby-auto-api -u emby-auto-worker -u emby-auto-systemd-control -f
 curl --fail http://127.0.0.1:18080/api/v1/setup/status
 curl --fail http://127.0.0.1:18080/api/v1/health/ready
 ```
 
-初始化完成后，API 就绪接口应通过。应用服务账户可使用运行环境执行 `emby-auto-worker --check`，验证 Worker 配置和数据库连接。
+初始化完成后，API 就绪接口应通过。应用服务账户可使用运行环境执行 `emby-auto-worker --check`，验证 Worker 配置和数据库连接。维护命令可用以下 Bash 函数加载运行环境：
+
+```bash
+emby_auto_maintenance() {
+  sudo bash -c 'set -a; source /etc/emby-auto/runtime.env; set +a; command_name=$1; shift; exec "/opt/emby-auto/current/bin/$command_name" "$@"' -- "$@"
+}
+emby_auto_maintenance emby-auto-background-runtime --state status
+emby_auto_maintenance emby-auto-release-preflight --require-idle
+```
+
+后台状态的 `verified=true` 表示 Worker 和下载状态通过核验。`transfers.active` 是实际活动 torrent 数量；预检中的 `downloads.active` 是业务记录数量，暂停后仍可保留。状态输出包括计数、下载摘要和进度。
 
 备份范围包括 PostgreSQL 一致性备份、`/etc/emby-auto`、`/var/lib/emby-auto`，以及按既有存储策略备份的媒体和工作目录。`bootstrap.json` 与 `bootstrap.json.complete` 必须一起保留，包含的加密密钥用于读取数据库中保存的外部服务凭据。备份应加密保存并限制访问权限。
 
 ## 升级与已有部署迁移
 
-升级前备份数据库和应用配置，并确认后台工作已暂停、下载和转码已结束或已按原部署机制暂停。下载并校验新发布包，将其放入新的版本目录。
+升级前备份数据库和应用配置，下载并校验新发布包，将其放入新的版本目录。使用上面的维护函数暂停后台：
 
 ```bash
-new_release_id="<installed-release-id>"
-sudo systemctl stop emby-auto-worker.service emby-auto-api.service
-sudo ln -sfn "releases/${new_release_id}" /opt/emby-auto/current.next
-sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
-sudo install -o root -g root -m 0644 \
-  /opt/emby-auto/current/config/emby-auto-api.service /etc/systemd/system/emby-auto-api.service
-sudo install -o root -g root -m 0644 \
-  /opt/emby-auto/current/config/emby-auto-worker.service /etc/systemd/system/emby-auto-worker.service
-sudo systemctl daemon-reload
-sudo systemctl start emby-auto-api.service
-curl --fail http://127.0.0.1:18080/api/v1/health/ready
-sudo systemctl start emby-auto-worker.service
+emby_auto_maintenance emby-auto-background-runtime --state stopped
+emby_auto_maintenance emby-auto-release-preflight --require-idle
 ```
 
-保留运行环境、初始化文件和账户 drop-in；自定义端口时调整检查命令。数据库迁移失败时保持 Worker 停止，检查 API 日志。是否可以切回旧版本取决于数据库迁移兼容性。
+确认后台输出为 `state=stopped`、`verified=true`、`transfers.active=0`，并核对预检中没有运行中的操作、长任务或 stale operation。若存在中断的 attempt，保持 Worker 停止，等待至少五分钟，再先预览恢复候选：
 
-从旧版自动创建数据库和 Nginx 配置的安装器迁移时，现有数据库、数据库服务和 Web 入口继续由用户管理。新安装器会拒绝旧版安装记录，按手动部署步骤准备新应用版本并保留原配置。可以在 API 运行环境中设置 `WEB_ROOT` 来启用应用网页入口；需要调整监听端口时同步更新反向代理上游。
+```bash
+emby_auto_maintenance emby-auto-recover-stale-operations --worker-stopped --stale-after 5m
+```
 
-从 Docker 迁移时，保留应用专用数据库、原加密密钥及初始化文件，设置服务账户的文件权限，并将容器专用地址转换为宿主可访问地址。迁移期间保持单一 Worker，完成数据库、网页和媒体流程验证后再移除旧资源。
+核对候选范围后使用相同命令增加 `--apply`，重新检查运行态。满足门禁后替换应用：
+
+```bash
+(
+  set -e
+  new_release_id="<installed-release-id>"
+  sudo systemctl stop emby-auto-api.service emby-auto-systemd-control.service
+  sudo ln -sfn "releases/${new_release_id}" /opt/emby-auto/current.next
+  sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
+  for service in api worker systemd-control; do
+    sudo install -o root -g root -m 0644 \
+      "/opt/emby-auto/current/config/emby-auto-${service}.service" \
+      "/etc/systemd/system/emby-auto-${service}.service"
+  done
+  sudo systemctl daemon-reload
+  sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service
+  curl --fail http://127.0.0.1:18080/api/v1/health/ready
+  emby_auto_maintenance emby-auto-migration-check
+  emby_auto_maintenance emby-auto-background-runtime --state running
+)
+```
+
+保留运行环境、初始化文件、控制服务的账户绑定和应用账户 drop-in；自定义端口时调整检查命令。恢复后台后确认 `verified=true`、`transfers.runtimeMarks=0`，并核验原有任务。恢复失败或结果不明时，先只读查询状态，再执行正式 `stopped` 转换并核对门禁。数据库迁移失败时保持 Worker 停止；是否能够切回旧版本取决于数据库迁移兼容性。
+
+安装器会拒绝版本不兼容的安装记录。旧部署按手动部署步骤准备新版本，保留原有数据库、运行配置和初始化文件，并配置后台控制服务。旧安装器创建的 PostgreSQL 和 Nginx 继续由用户管理。
+
+### 从 Docker 迁移
+
+1. 通过原部署的控制方式停止旧 Worker，确认转码已退出，暂停应用管理的 torrent 并保留恢复标记。保持旧服务停止，避免两个 Worker 同时处理任务。
+2. 保存应用数据库的一致性备份、原初始化文件及完成标记、运行配置和旧部署定义。保留原加密密钥、管理员和媒体绝对路径；核对发布包包含当前数据库所需的迁移。
+3. 使用 `--no-start` 准备原生应用，保持新 Worker 停止。此命令在包含安装器、对应架构发布包与校验文件的目录执行；示例使用本页的 `emby` 账户，端口冲突时增加 `--port`：
+
+```bash
+sudo bash install.sh --no-start --user emby \
+  --archive ./emby-auto-direct-amd64-linux-amd64.tar.gz \
+  --checksums ./SHA256SUMS
+```
+
+4. 将原 `bootstrap.json` 与 `bootstrap.json.complete` 一起复制到原生状态目录，设为服务账户所有、权限 `0600`。配置宿主可访问的数据库连接，并核对外部服务地址和各级目录权限。迁移期间保持配置只有一个写入者。
+5. 启动控制服务和 API，验证数据库、网页及 HTTPS；需要数据库迁移时先验证迁移兼容性。通过正式后台恢复命令启动新 Worker，确认下载、字幕、转码、入库和清理行为后保留旧资源作为回滚来源。
+6. 服务通过检查后运行 `sudo bash install.sh --finalize` 完成安装登记。此操作核验制品与服务，保留运行配置和服务状态。
+
+发布包提供两个默认预览的迁移工具。`emby-auto-migrate-runtime-addresses` 仅将 qBittorrent 与 Emby 地址中的指定主机替换为回环 IP；`emby-auto-migrate-staging-ownership` 仅处理数据库任务所属暂存树中的 root 所有目录，保留 group、mode 和文件内容。先预览并核对范围，再指定私有备份路径和 `--apply`：
+
+```bash
+sudo install -d -o root -g root -m 0700 /var/backups/emby-auto-migration
+emby_auto_maintenance emby-auto-migrate-runtime-addresses --container-host-address 127.0.0.1
+emby_auto_maintenance emby-auto-migrate-staging-ownership --uid "$(id -u emby)" --container-host-address 127.0.0.1
+```
+
+地址工具默认匹配 `host.docker.internal`，其它容器主机名使用 `--from-host` 指定，并单独核对 Agent、代理等配置。`--container-host-address` 仅为迁移命令临时解析该 qBittorrent 地址；数据库连接须已配置为宿主可访问地址。应用变更时使用 `--backup` 保存恢复点，可用 `--expected-changes` 或 `--expected-tasks` 约束预览数量；回滚使用 `--restore` 指定快照并先预览，再加 `--apply`。快照目录须由执行账户所有、权限 `0700`，快照文件权限为 `0600`。这些命令要求 Worker 已停止、应用 torrent 已暂停且下载引用可核实。
