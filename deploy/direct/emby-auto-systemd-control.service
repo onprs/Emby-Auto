@@ -1,0 +1,30 @@
+[Unit]
+Description=Emby Auto 原生后台控制
+After=local-fs.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/emby-auto/host-control.env
+ExecStart=/opt/emby-auto/current/bin/emby-auto-host-control serve --socket /run/emby-auto-systemd/control.sock --runtime-helper /opt/emby-auto/current/config/worker-runtime.sh --allowed-uid ${EMBY_AUTO_SERVICE_UID} --socket-group ${EMBY_AUTO_SERVICE_GID}
+RuntimeDirectory=emby-auto-systemd
+RuntimeDirectoryMode=0755
+UMask=0077
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_CHOWN
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+ReadWritePaths=/run/emby-auto-systemd
+
+[Install]
+WantedBy=multi-user.target

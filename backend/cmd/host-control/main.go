@@ -38,6 +38,11 @@ type controlRequest struct {
 	Command string `json:"command"`
 }
 
+type serverAccess struct {
+	allowedUID uint32
+	socketGID  int
+}
+
 type controlResponse struct {
 	Status              string  `json:"status,omitempty"`
 	UID                 *uint32 `json:"uid,omitempty"`
@@ -102,8 +107,13 @@ func runServerCommand(args []string) error {
 	flags.SetOutput(io.Discard)
 	socketPath := flags.String("socket", defaultSocketPath, "Unix socket path")
 	runtimeHelperPath := flags.String("runtime-helper", defaultRuntimeHelperPath, "Worker runtime helper path")
+	allowedUID := flags.Uint("allowed-uid", 0, "允许连接的应用 UID，默认只允许 root")
+	socketGID := flags.Uint("socket-group", 0, "应用 socket 所属组 GID")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
-		return errors.New("usage: emby-auto-host-control serve [--socket PATH] [--runtime-helper PATH]")
+		return errors.New("usage: emby-auto-host-control serve [--socket PATH] [--runtime-helper PATH] [--allowed-uid UID --socket-group GID]")
+	}
+	if *allowedUID >= 1<<32-1 || *socketGID >= 1<<32-1 || (*allowedUID == 0) != (*socketGID == 0) {
+		return errors.New("应用 UID 和 socket GID 必须同时指定为非 root 数值")
 	}
 	if os.Geteuid() != 0 {
 		return errors.New("host-control server must run as root")
@@ -111,16 +121,20 @@ func runServerCommand(args []string) error {
 	if !filepath.IsAbs(*socketPath) || !filepath.IsAbs(*runtimeHelperPath) {
 		return errors.New("socket and runtime helper paths must be absolute")
 	}
-	if err := validateExecutable(*runtimeHelperPath); err != nil {
+	resolvedHelper, err := filepath.EvalSymlinks(*runtimeHelperPath)
+	if err != nil {
+		return errors.New("无法解析宿主控制脚本")
+	}
+	if err := validatePrivilegedExecutable(resolvedHelper); err != nil {
 		return fmt.Errorf("validate runtime helper: %w", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return serve(ctx, *socketPath, *runtimeHelperPath)
+	return serve(ctx, *socketPath, resolvedHelper, serverAccess{allowedUID: uint32(*allowedUID), socketGID: int(*socketGID)})
 }
 
-func serve(ctx context.Context, socketPath, runtimeHelperPath string) error {
+func serve(ctx context.Context, socketPath, runtimeHelperPath string, access serverAccess) error {
 	if err := prepareSocketPath(socketPath); err != nil {
 		return err
 	}
@@ -132,7 +146,14 @@ func serve(ctx context.Context, socketPath, runtimeHelperPath string) error {
 		_ = listener.Close()
 		_ = os.Remove(socketPath)
 	}()
-	if err := os.Chmod(socketPath, 0o600); err != nil {
+	mode := os.FileMode(0o600)
+	if access.allowedUID != 0 {
+		if err := os.Chown(socketPath, 0, access.socketGID); err != nil {
+			return errors.New("无法设置应用控制 socket 的组")
+		}
+		mode = 0o660
+	}
+	if err := os.Chmod(socketPath, mode); err != nil {
 		return fmt.Errorf("secure host-control socket: %w", err)
 	}
 
@@ -149,26 +170,26 @@ func serve(ctx context.Context, socketPath, runtimeHelperPath string) error {
 			}
 			return fmt.Errorf("accept host-control connection: %w", acceptErr)
 		}
-		handleConnection(ctx, connection, runtimeHelperPath)
+		handleConnection(ctx, connection, runtimeHelperPath, access)
 	}
 }
 
-func handleConnection(parent context.Context, connection *net.UnixConn, runtimeHelperPath string) {
+func handleConnection(parent context.Context, connection *net.UnixConn, runtimeHelperPath string, access serverAccess) {
 	defer func() { _ = connection.Close() }()
 	_ = connection.SetDeadline(time.Now().Add(requestTimeout))
 
 	response := controlResponse{}
 	if uid, err := peerUID(connection); err != nil {
 		response.Error = fmt.Sprintf("inspect peer credentials: %v", err)
-	} else if uid != 0 {
-		response.Error = "host-control socket only accepts uid 0 clients"
+	} else if uid != 0 && uid != access.allowedUID {
+		response.Error = "host-control client UID is not authorized"
 	} else {
 		request, err := decodeRequest(connection)
 		if err != nil {
 			response.Error = err.Error()
 		} else {
 			ctx, cancel := context.WithTimeout(parent, requestTimeout)
-			response = executeRequest(ctx, runtimeHelperPath, request)
+			response = executeRequestWithOwner(ctx, runtimeHelperPath, request, access.allowedUID)
 			cancel()
 		}
 	}
@@ -197,7 +218,14 @@ func decodeRequest(reader io.Reader) (controlRequest, error) {
 }
 
 func executeRequest(ctx context.Context, runtimeHelperPath string, request controlRequest) controlResponse {
+	return executeRequestWithOwner(ctx, runtimeHelperPath, request, 0)
+}
+
+func executeRequestWithOwner(ctx context.Context, runtimeHelperPath string, request controlRequest, configuredUID uint32) controlResponse {
 	if request.Command == "media-owner" {
+		if configuredUID != 0 {
+			return controlResponse{UID: &configuredUID}
+		}
 		uid, err := resolveMediaOwnerUID(user.Lookup)
 		if err != nil {
 			return controlResponse{Error: err.Error()}
@@ -253,17 +281,21 @@ func sendRequest(ctx context.Context, socketPath string, request controlRequest)
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = connection.SetDeadline(deadline)
 	}
-	if err := json.NewEncoder(connection).Encode(request); err != nil {
-		return controlResponse{}, fmt.Errorf("send host-control request: %w", err)
-	}
+	writeErr := json.NewEncoder(connection).Encode(request)
 	var response controlResponse
 	decoder := json.NewDecoder(io.LimitReader(connection, maxMessageBytes))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&response); err != nil {
+		if writeErr != nil {
+			return controlResponse{}, fmt.Errorf("send host-control request: %w", writeErr)
+		}
 		return controlResponse{}, fmt.Errorf("read host-control response: %w", err)
 	}
 	if response.Error != "" {
 		return controlResponse{}, errors.New(response.Error)
+	}
+	if writeErr != nil {
+		return controlResponse{}, fmt.Errorf("send host-control request: %w", writeErr)
 	}
 	return response, nil
 }
@@ -357,9 +389,45 @@ func validateExecutable(path string) error {
 	return nil
 }
 
+func validatePrivilegedExecutable(path string) error {
+	if err := validateExecutable(path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return errors.New("无法检查宿主控制脚本")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 || info.Mode().Perm()&0o022 != 0 {
+		return errors.New("宿主控制脚本必须由 root 拥有且禁止组和其他用户写入")
+	}
+	return validateRootDirectoryChain(filepath.Dir(path))
+}
+
+func validateRootDirectoryChain(directory string) error {
+	for ; ; directory = filepath.Dir(directory) {
+		info, err := os.Lstat(directory)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("控制通道必须位于可信目录")
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != 0 || (info.Mode().Perm()&0o022 != 0 && info.Mode()&os.ModeSticky == 0) {
+			return errors.New("控制通道的目录必须由 root 管理")
+		}
+		if directory == "/" {
+			return nil
+		}
+	}
+}
+
 func prepareSocketPath(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create host-control runtime directory: %w", err)
+	}
+	if os.Geteuid() == 0 {
+		if err := validateRootDirectoryChain(filepath.Dir(path)); err != nil {
+			return err
+		}
 	}
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -370,6 +438,11 @@ func prepareSocketPath(path string) error {
 	}
 	if info.Mode()&os.ModeSocket == 0 {
 		return errors.New("refusing to replace a non-socket host-control path")
+	}
+	connection, err := net.DialTimeout("unix", path, 200*time.Millisecond)
+	if err == nil {
+		_ = connection.Close()
+		return errors.New("控制 socket 已有运行中的服务")
 	}
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("remove stale host-control socket: %w", err)

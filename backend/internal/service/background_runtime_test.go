@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/onprs/emby-auto/backend/internal/domain"
@@ -94,7 +95,7 @@ func TestBackgroundRuntimeControllerReadsAndSetsFixedCommands(t *testing.T) {
 func TestBackgroundRuntimeControllerOrdersTransfersAndCompensatesFailedStart(t *testing.T) {
 	events := []string{}
 	executor := &backgroundRuntimeExecutorStub{
-		outputs: map[string][]byte{},
+		outputs: map[string][]byte{"worker-stop": []byte("stopped\n")},
 		errors:  map[string]error{"worker-start": errors.New("start failed")},
 		events:  &events,
 	}
@@ -105,7 +106,7 @@ func TestBackgroundRuntimeControllerOrdersTransfersAndCompensatesFailedStart(t *
 	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("Set(running) error = %v, want unavailable", err)
 	}
-	if want := []string{"torrent-resume", "worker-start", "torrent-pause"}; !reflect.DeepEqual(events, want) {
+	if want := []string{"torrent-resume", "worker-start", "worker-stop", "torrent-pause"}; !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
 	}
 }
@@ -171,13 +172,15 @@ func (stub *backgroundTransferConfigurationStub) ResolveSecret(context.Context, 
 }
 
 type backgroundTorrentClientStub struct {
-	torrents []qbittorrent.Torrent
-	added    [][]string
-	removed  [][]string
-	stopped  [][]string
-	resumed  [][]string
-	loggedIn int
-	err      error
+	torrents   []qbittorrent.Torrent
+	added      [][]string
+	removed    [][]string
+	stopped    [][]string
+	resumed    [][]string
+	loggedIn   int
+	err        error
+	inertStop  bool
+	inertStart bool
 }
 
 func (stub *backgroundTorrentClientStub) Login(context.Context) error {
@@ -189,24 +192,63 @@ func (stub *backgroundTorrentClientStub) ListTorrents(context.Context, string) (
 	return stub.torrents, stub.err
 }
 
-func (stub *backgroundTorrentClientStub) AddTorrentTags(_ context.Context, hashes []string, _ ...string) error {
+func (stub *backgroundTorrentClientStub) AddTorrentTags(_ context.Context, hashes []string, tags ...string) error {
 	stub.added = append(stub.added, append([]string(nil), hashes...))
+	stub.mutate(hashes, func(torrent *qbittorrent.Torrent) {
+		for _, tag := range tags {
+			if !qbittorrent.TorrentHasTag(*torrent, tag) {
+				torrent.Tags += "," + tag
+			}
+		}
+	})
 	return stub.err
 }
 
-func (stub *backgroundTorrentClientStub) RemoveTorrentTags(_ context.Context, hashes []string, _ ...string) error {
+func (stub *backgroundTorrentClientStub) RemoveTorrentTags(_ context.Context, hashes []string, tags ...string) error {
 	stub.removed = append(stub.removed, append([]string(nil), hashes...))
+	stub.mutate(hashes, func(torrent *qbittorrent.Torrent) {
+		remaining := []string{}
+		for _, current := range strings.Split(torrent.Tags, ",") {
+			remove := false
+			for _, tag := range tags {
+				remove = remove || strings.TrimSpace(current) == tag
+			}
+			if !remove && strings.TrimSpace(current) != "" {
+				remaining = append(remaining, current)
+			}
+		}
+		torrent.Tags = strings.Join(remaining, ",")
+	})
 	return stub.err
 }
 
 func (stub *backgroundTorrentClientStub) StopTorrents(_ context.Context, hashes []string) error {
 	stub.stopped = append(stub.stopped, append([]string(nil), hashes...))
+	if !stub.inertStop {
+		stub.mutate(hashes, func(torrent *qbittorrent.Torrent) { torrent.State = "stoppedDL" })
+	}
 	return stub.err
 }
 
 func (stub *backgroundTorrentClientStub) ResumeTorrents(_ context.Context, hashes []string) error {
 	stub.resumed = append(stub.resumed, append([]string(nil), hashes...))
+	if !stub.inertStart {
+		stub.mutate(hashes, func(torrent *qbittorrent.Torrent) { torrent.State = "downloading" })
+	}
 	return stub.err
+}
+
+func (stub *backgroundTorrentClientStub) mutate(hashes []string, action func(*qbittorrent.Torrent)) {
+	if stub.err != nil {
+		return
+	}
+	for i := range stub.torrents {
+		for _, hash := range hashes {
+			if stub.torrents[i].Hash == hash {
+				action(&stub.torrents[i])
+			}
+		}
+	}
 }
 
 func configuredBackgroundTransfers(client *backgroundTorrentClientStub) *QBittorrentBackgroundTransfers {

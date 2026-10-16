@@ -3,6 +3,7 @@ set -euo pipefail
 
 # 此入口面向公开用户，所有应用文件均从公开 Release 获取。
 repository="onprs/Emby-Auto"
+installer_format=3
 install_dir="/opt/emby-auto"
 config_dir="/etc/emby-auto"
 state_dir="/var/lib/emby-auto"
@@ -12,6 +13,10 @@ lock_dir="/run/emby-auto-install"
 version="latest"
 service_user=""
 web_port=""
+release_archive=""
+release_checksums=""
+prepare_only=0
+finalize_only=0
 temporary=""
 services_started=0
 installation_completed=0
@@ -28,6 +33,10 @@ usage() {
     '  --version <v版本号>       安装指定 Release，默认最新正式版本' \
     '  --user <现有账户>         使用媒体文件所有者；默认创建 emby-auto' \
     '  --port <端口>             网页与 API 回环端口，默认 18080' \
+    '  --archive <发布包>        使用已下载的对应架构发布包' \
+    '  --checksums <校验文件>    本地发布包对应的 SHA256SUMS' \
+    '  --no-start                只准备应用和服务，供迁移前使用' \
+    '  --finalize                核验已准备并启动的服务，完成安装登记' \
     '  --help                    显示帮助' \
     '' \
     '安装应用和 FFmpeg；请自行准备 PostgreSQL、qBittorrent 与 Emby。' \
@@ -40,20 +49,29 @@ parse_arguments() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --help|-h) usage; exit 0 ;;
-      --version|--user|--port)
+      --no-start) prepare_only=1; shift ;;
+      --finalize) finalize_only=1; shift ;;
+      --version|--user|--port|--archive|--checksums)
         [[ $# -ge 2 && -n "$2" ]] || fail "$1 缺少参数。"
         case "$1" in
           --version) version="$2" ;;
           --user) service_user="$2" ;;
           --port) web_port="$2" ;;
+          --archive) release_archive="$2" ;;
+          --checksums) release_checksums="$2" ;;
         esac
         shift 2
         ;;
       *) fail "未知参数：$1；使用 --help 查看用法。" ;;
     esac
   done
+  (( prepare_only == 0 || finalize_only == 0 )) || fail '--no-start 与 --finalize 不能同时使用。'
+  (( finalize_only == 0 )) || [[ -z "$release_archive" && -z "$release_checksums" ]] || fail '--finalize 不接受发布包参数。'
   [[ "$version" == latest || "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9.-]+)?$ ]] || fail 'Release 版本格式无效。'
   [[ -z "$service_user" || "$service_user" =~ ^[a-z_][a-z0-9_-]*\$?$ ]] || fail '服务账户名称无效。'
+  if [[ -n "$release_archive" || -n "$release_checksums" ]]; then
+    [[ -f "$release_archive" && -f "$release_checksums" ]] || fail '--archive 与 --checksums 必须同时指定可读取的文件。'
+  fi
 }
 
 validate_port() {
@@ -84,13 +102,26 @@ require_root() {
   (( EUID == 0 )) || fail '请使用 sudo 或 root 运行安装命令。'
 }
 
+validate_application_paths() {
+  local directory mode
+  for directory in "$install_dir" "$install_dir/releases" "$config_dir"; do
+    [[ ! -L "$directory" ]] || fail '应用安装目录不能是符号链接。'
+    [[ ! -e "$directory" || -d "$directory" ]] || fail '应用安装位置必须是目录。'
+    if (( EUID == 0 )) && [[ -d "$directory" ]]; then
+      [[ "$(stat -c %u "$directory")" == 0 ]] || fail '应用安装目录必须由 root 管理。'
+      mode="$(stat -c %a "$directory")"
+      (( (8#$mode & 0022) == 0 )) || fail '应用安装目录不能允许组或其他用户写入。'
+    fi
+  done
+}
+
 read_setting() {
   awk -v key="$1" 'index($0, key "=") == 1 {print substr($0, length(key) + 2)}' "$config_dir/installer.env"
 }
 
 load_settings() {
   if [[ -f "$config_dir/installer.env" ]]; then
-    [[ "$(read_setting installer_format)" == 2 ]] || fail '检测到旧版安装记录，请按部署文档迁移；已有服务和数据保持原样。'
+    [[ "$(read_setting installer_format)" == "$installer_format" ]] || fail '安装记录版本不兼容，请按部署文档迁移；已有服务和数据保持原样。'
     local key requested saved
     for key in service_user web_port; do
       requested="${!key}"
@@ -108,7 +139,7 @@ load_settings() {
   else
     local existing
     for existing in "$config_dir/runtime.env" "$install_dir/current" "$state_dir/bootstrap.json" "$state_dir/bootstrap.json.complete" \
-      "$unit_dir/emby-auto-api.service" "$unit_dir/emby-auto-worker.service" \
+      "$unit_dir/emby-auto-api.service" "$unit_dir/emby-auto-worker.service" "$unit_dir/emby-auto-systemd-control.service" \
       "$unit_dir/emby-auto-api.service.d" "$unit_dir/emby-auto-worker.service.d"; do
       [[ ! -e "$existing" && ! -L "$existing" ]] || fail '检测到已有手动部署，安装器不会接管；请按部署文档迁移或升级。'
     done
@@ -151,8 +182,10 @@ verify_archive() {
   release_source="$temporary/$archive_root"
   (cd "$release_source" && sha256sum --check --status SHA256SUMS) || fail '发布包内容校验失败。'
   local required
-  for required in bin/emby-auto-api bin/emby-auto-worker web/index.html \
-    config/emby-auto-api.service config/emby-auto-worker.service; do
+  for required in bin/emby-auto-api bin/emby-auto-worker bin/emby-auto-migration-check bin/emby-auto-host-control \
+    bin/emby-auto-background-runtime bin/emby-auto-release-preflight bin/emby-auto-recover-stale-operations \
+    bin/emby-auto-migrate-runtime-addresses bin/emby-auto-migrate-staging-ownership web/index.html \
+    config/emby-auto-api.service config/emby-auto-worker.service config/emby-auto-systemd-control.service config/worker-runtime.sh; do
     [[ -s "$release_source/$required" ]] || fail "发布包缺少 $required。"
   done
   release_digest="$checksum"
@@ -166,6 +199,12 @@ download_release() {
     base_url="https://github.com/$repository/releases/download/$version"
   fi
   archive="emby-auto-direct-$target_arch-linux-$target_arch.tar.gz"
+  if [[ -n "$release_archive" ]]; then
+    cp -- "$release_archive" "$temporary/$archive"
+    cp -- "$release_checksums" "$temporary/SHA256SUMS"
+    verify_archive "$archive"
+    return
+  fi
   log "下载 Linux $target_arch 发布包（$version）……"
   fetch "$base_url/$archive" "$temporary/$archive" || fail '无法下载发布包，请检查网络和 Release 版本。'
   fetch "$base_url/SHA256SUMS" "$temporary/SHA256SUMS" || fail '无法下载 Release 校验文件。'
@@ -182,6 +221,11 @@ check_port() {
 }
 
 install_dependencies() {
+  if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+    log '复用已安装的 FFmpeg 与 ffprobe。'
+    check_port
+    return
+  fi
   log '安装 FFmpeg 与 ffprobe……'
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
@@ -214,8 +258,8 @@ prepare_account_and_storage() {
   done
   install -d -m 0755 "$config_dir"
   if [[ ! -f "$config_dir/installer.env" ]]; then
-    (umask 077; printf 'installer_format=2\nservice_user=%s\nweb_port=%s\nversion=%s\n' \
-      "$service_user" "$web_port" "$version" >"$config_dir/installer.env.next")
+    (umask 077; printf 'installer_format=%s\nservice_user=%s\nweb_port=%s\nversion=%s\n' \
+      "$installer_format" "$service_user" "$web_port" "$version" >"$config_dir/installer.env.next")
     mv -f "$config_dir/installer.env.next" "$config_dir/installer.env"
   fi
 }
@@ -230,14 +274,14 @@ install_application() {
     cp -R "$release_source/." "$release_path.next/"
     find "$release_path.next" -type d -exec chmod 0755 {} +
     find "$release_path.next" -type f -exec chmod 0644 {} +
-    chmod 0755 "$release_path.next"/bin/*
+    chmod 0755 "$release_path.next"/bin/* "$release_path.next/config/worker-runtime.sh"
     mv "$release_path.next" "$release_path"
   fi
   ln -sfn "releases/${release_digest:0:16}" "$install_dir/current.next"
   mv -Tf "$install_dir/current.next" "$install_dir/current"
   if [[ ! -f "$config_dir/runtime.env" ]]; then
-    (umask 077; printf 'APP_ENV=production\nAPI_ADDRESS=127.0.0.1:%s\nWEB_ROOT=%s/current/web\nBOOTSTRAP_CONFIG_PATH=%s/bootstrap.json\nLOG_LEVEL=info\nSHUTDOWN_TIMEOUT=30s\nSESSION_COOKIE_SECURE=false\nRIVER_GENERAL_WORKERS=10\nRIVER_TRANSCODE_WORKERS=1\nEMBY_MEDIA_OWNER_UID=%s\n' \
-      "$web_port" "$install_dir" "$state_dir" "$service_uid" >"$config_dir/runtime.env.next")
+    (umask 077; printf 'APP_ENV=production\nAPI_ADDRESS=127.0.0.1:%s\nWEB_ROOT=%s/current/web\nBOOTSTRAP_CONFIG_PATH=%s/bootstrap.json\nLOG_LEVEL=info\nSHUTDOWN_TIMEOUT=30s\nSESSION_COOKIE_SECURE=false\nRIVER_GENERAL_WORKERS=10\nRIVER_TRANSCODE_WORKERS=1\nEMBY_MEDIA_OWNER_UID=%s\nEMBY_AUTO_HOST_CONTROL_EXECUTABLE=%s/current/bin/emby-auto-host-control\nEMBY_AUTO_HOST_CONTROL_SOCKET=/run/emby-auto-systemd/control.sock\n' \
+      "$web_port" "$install_dir" "$state_dir" "$service_uid" "$install_dir" >"$config_dir/runtime.env.next")
     chown "root:$service_gid" "$config_dir/runtime.env.next"
     chmod 0640 "$config_dir/runtime.env.next"
     mv -f "$config_dir/runtime.env.next" "$config_dir/runtime.env"
@@ -247,9 +291,26 @@ install_application() {
     install -d -m 0755 "$unit_dir/emby-auto-$service.service.d"
     printf '[Service]\nUser=%s\nGroup=%s\n' "$service_user" "$service_gid" >"$unit_dir/emby-auto-$service.service.d/installer.conf"
   done
+  if [[ ! -f "$config_dir/host-control.env" ]]; then
+    (umask 077; printf 'EMBY_AUTO_SERVICE_UID=%s\nEMBY_AUTO_SERVICE_GID=%s\n' "$service_uid" "$service_gid" >"$config_dir/host-control.env.next")
+    mv -f "$config_dir/host-control.env.next" "$config_dir/host-control.env"
+  fi
+  install -m 0644 "$release_source/config/emby-auto-systemd-control.service" "$unit_dir/emby-auto-systemd-control.service"
   systemctl daemon-reload
+}
+
+verify_prepared_release() {
+  [[ -f "$install_dir/current/SHA256SUMS" ]] || fail '已准备的应用缺少内容校验文件。'
+  (cd "$install_dir/current" && sha256sum --check --status SHA256SUMS) || fail '已准备的应用内容已变化，请核对制品。'
+  local binary
+  for binary in "$install_dir/current"/bin/* "$install_dir/current/config/worker-runtime.sh"; do
+    [[ -f "$binary" && -x "$binary" ]] || fail '已准备的应用缺少可执行文件。'
+  done
+}
+
+start_services() {
   services_started=1
-  systemctl enable --now emby-auto-api.service emby-auto-worker.service
+  systemctl enable --now emby-auto-systemd-control.service emby-auto-api.service emby-auto-worker.service
 }
 
 check_health() {
@@ -257,7 +318,9 @@ check_health() {
   for ((attempt = 0; attempt < 30; attempt++)); do
     if curl --fail --silent --noproxy '*' --max-time 2 "http://127.0.0.1:$web_port/api/v1/setup/status" -o "$temporary/setup-status.json" && \
       curl --fail --silent --noproxy '*' --max-time 2 "http://127.0.0.1:$web_port/" -o "$temporary/index.html" && \
-      systemctl is-active --quiet emby-auto-api.service && systemctl is-active --quiet emby-auto-worker.service; then
+      systemctl is-active --quiet emby-auto-api.service && systemctl is-active --quiet emby-auto-worker.service && \
+      systemctl is-active --quiet emby-auto-systemd-control.service && \
+      [[ "$(runuser -u "$service_user" -- env EMBY_AUTO_HOST_CONTROL_SOCKET=/run/emby-auto-systemd/control.sock "$install_dir/current/bin/emby-auto-host-control" worker-status)" == running ]]; then
       return 0
     fi
     sleep 2
@@ -270,7 +333,7 @@ show_access() {
   log "Emby Auto 已安装。浏览器打开：http://127.0.0.1:$web_port"
   log '远程设备可先在自己的电脑建立 SSH 隧道：'
   log "  ssh -L $web_port:127.0.0.1:$web_port 用户@设备地址"
-  log '随后在自己的电脑打开同一网页地址，填写已准备好的 PostgreSQL 连接、管理员及外部服务信息。'
+  log '首次使用时，在初始化向导中填写 PostgreSQL、管理员和外部服务信息。'
   log 'qBittorrent 的下载路径需要与初始化向导中的下载目录一致。'
   log "部署、HTTPS、备份与升级：https://github.com/$repository/blob/main/docs/direct-deployment.md"
 }
@@ -279,7 +342,7 @@ cleanup() {
   local status=$?
   if (( status != 0 )); then
     if (( services_started == 1 && installation_completed == 0 )); then
-      systemctl stop emby-auto-worker.service emby-auto-api.service || true
+      systemctl stop emby-auto-worker.service emby-auto-api.service emby-auto-systemd-control.service || true
     fi
     printf '%s\n' '安装未完成。已生成的应用配置和媒体目录会保留；修复原因后可使用相同命令重试。' >&2
   fi
@@ -301,6 +364,7 @@ main() {
   install -d -m 0755 "$lock_dir"
   exec 9>"$lock_dir/lock"
   flock -n 9 || fail '另一项安装正在执行。'
+  validate_application_paths
   load_settings
   check_account
   check_port
@@ -309,15 +373,38 @@ main() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
   if [[ -f "$config_dir/installed" ]]; then
+    if (( prepare_only == 0 )); then
+      check_health
+      show_access
+    else
+      log '应用已经安装，现有服务状态保持原样。'
+    fi
+    installation_completed=1
+    return
+  fi
+  if (( finalize_only == 1 )); then
+    [[ -f "$config_dir/prepared" ]] || fail '尚未准备应用，无法完成安装登记。'
+    verify_prepared_release
     check_health
+    touch "$config_dir/installed"
     installation_completed=1
     show_access
     return
   fi
-  download_release
-  install_dependencies
-  prepare_account_and_storage
-  install_application
+  if [[ ! -f "$config_dir/prepared" ]]; then
+    download_release
+    install_dependencies
+    prepare_account_and_storage
+    install_application
+    touch "$config_dir/prepared"
+  fi
+  verify_prepared_release
+  if (( prepare_only == 1 )); then
+    installation_completed=1
+    log '应用与服务已准备。迁移旧配置后先启动控制服务和 API，再通过正式后台恢复命令启动 Worker。'
+    return
+  fi
+  start_services
   check_health
   touch "$config_dir/installed"
   installation_completed=1

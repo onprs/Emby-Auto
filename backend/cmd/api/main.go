@@ -257,7 +257,7 @@ func buildRuntimeHandler(
 		cfg.HostControlExecutable,
 		service.OSBackgroundRuntimeExecutor{},
 		backgroundTransfers,
-	)
+	).WithLock(repository.NewBackgroundRuntimeLock(pool))
 	artifactContent := service.NewArtifactContentService(queries)
 	acquisitionCommands := service.NewAcquisitionDeletionWorkflow(queries, transactor, operationScheduler)
 	downloadCommands := service.NewDownloadCommandWorkflow(transactor, operationScheduler)

@@ -54,6 +54,9 @@ The application creates its tables in the selected database. The service account
 | `--version vVERSION` | Install a specific Release; defaults to the latest stable Release |
 | `--user ACCOUNT` | Use an existing media owner; defaults to creating `emby-auto` |
 | `--port PORT` | Shared loopback web and API port; defaults to `18080` |
+| `--archive FILE`, `--checksums FILE` | Verify and use a downloaded archive and `SHA256SUMS` |
+| `--no-start` | Prepare application files and services without changing their running state |
+| `--finalize` | Verify prepared services and complete installation registration without restarting services or rewriting configuration |
 
 For a port conflict, use a free port such as `--port 19080`, and adjust the browser address and SSH tunnel accordingly. Repeating the installer preserves the installed version, setup state, and runtime configuration. Follow the upgrade procedure to change versions.
 
@@ -68,8 +71,9 @@ For a port conflict, use a free port such as `--port 19080`, and adjust the brow
 | Setup configuration | `/var/lib/emby-auto/bootstrap.json` and its `.complete` marker |
 | Web and API | `127.0.0.1:18080` by default |
 | Application services | `emby-auto-api.service`, `emby-auto-worker.service` |
+| Background control | `emby-auto-systemd-control.service`, `/etc/emby-auto/host-control.env` |
 
-API and Worker run as separate processes. You manage the lifecycle of PostgreSQL, the reverse proxy, qBittorrent, and Emby. Use `systemctl` to manage native application services. Dashboard Worker controls that depend on a host controller require a separate host integration.
+API and Worker run as separate processes. Automatic installation configures background control for Dashboard pause and resume. Pausing stops Worker and marks active application downloads for restoration; resuming restores those downloads before starting Worker. You manage PostgreSQL, the reverse proxy, qBittorrent, and Emby separately.
 
 ## Manual deployment
 
@@ -148,12 +152,21 @@ Leave the database connection and encryption key unset so the setup wizard can c
 
 ### 4. Configure application services
 
+Bind background control to the application UID and GID, then install all three units:
+
 ```bash
-sudo install -o root -g root -m 0644 \
-  /opt/emby-auto/current/config/emby-auto-api.service /etc/systemd/system/emby-auto-api.service
-sudo install -o root -g root -m 0644 \
-  /opt/emby-auto/current/config/emby-auto-worker.service /etc/systemd/system/emby-auto-worker.service
+sudo install -o root -g root -m 0600 \
+  /opt/emby-auto/current/config/host-control.env.example /etc/emby-auto/host-control.env
+printf 'EMBY_AUTO_SERVICE_UID=%s\nEMBY_AUTO_SERVICE_GID=%s\n' "$(id -u emby)" "$(id -g emby)" | \
+  sudo tee /etc/emby-auto/host-control.env >/dev/null
+for service in api worker systemd-control; do
+  sudo install -o root -g root -m 0644 \
+    "/opt/emby-auto/current/config/emby-auto-${service}.service" \
+    "/etc/systemd/system/emby-auto-${service}.service"
+done
 ```
+
+The control service runs as root and exposes fixed Worker operations and host status queries. Release directories and their parents must be root owned and must not be writable by the group or other users.
 
 The units default to `emby:emby`. For another account, create persistent drop-ins for both services and change the runtime environment file's group to the selected account's group:
 
@@ -162,7 +175,7 @@ sudo systemctl edit emby-auto-api.service
 sudo systemctl edit emby-auto-worker.service
 ```
 
-Use the following in both drop-ins:
+Also set `/etc/emby-auto/host-control.env` to the selected account’s actual UID and GID. Use the following in both application drop-ins:
 
 ```ini
 [Service]
@@ -174,10 +187,10 @@ After configuring the account, load and start the services:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now emby-auto-api.service emby-auto-worker.service
+sudo systemctl enable --now emby-auto-systemd-control.service emby-auto-api.service emby-auto-worker.service
 ```
 
-Open the setup wizard locally or through an SSH tunnel.
+These startup commands are for new deployments. During migration, keep Worker stopped and preserve setup state using the procedure below. For a new deployment, open the setup wizard locally or through an SSH tunnel.
 
 ## HTTPS and reverse proxies
 
@@ -202,37 +215,89 @@ Keep the application bound to loopback and expose the reverse proxy. Confirm tha
 ## Checks and backups
 
 ```bash
-systemctl status emby-auto-api emby-auto-worker --no-pager
-journalctl -u emby-auto-api -u emby-auto-worker -f
+systemctl status emby-auto-api emby-auto-worker emby-auto-systemd-control --no-pager
+journalctl -u emby-auto-api -u emby-auto-worker -u emby-auto-systemd-control -f
 curl --fail http://127.0.0.1:18080/api/v1/setup/status
 curl --fail http://127.0.0.1:18080/api/v1/health/ready
 ```
 
-API readiness should pass after setup. The service account can run `emby-auto-worker --check` with its runtime environment to validate Worker configuration and database connectivity.
+API readiness should pass after setup. The service account can run `emby-auto-worker --check` with its runtime environment to validate Worker configuration and database connectivity. Use this Bash helper to load the environment for maintenance commands:
+
+```bash
+emby_auto_maintenance() {
+  sudo bash -c 'set -a; source /etc/emby-auto/runtime.env; set +a; command_name=$1; shift; exec "/opt/emby-auto/current/bin/$command_name" "$@"' -- "$@"
+}
+emby_auto_maintenance emby-auto-background-runtime --state status
+emby_auto_maintenance emby-auto-release-preflight --require-idle
+```
+
+`verified=true` confirms Worker and download state. `transfers.active` counts active torrents; preflight `downloads.active` counts business records, which may remain after pausing. Status output includes counts, download digests, and progress.
 
 Back up PostgreSQL consistently, `/etc/emby-auto`, `/var/lib/emby-auto`, and media and work directories according to your storage policy. Preserve both `bootstrap.json` and `bootstrap.json.complete`. The encryption key is required to read stored service credentials. Encrypt backups and restrict access.
 
 ## Upgrades and existing deployments
 
-Back up the database and application configuration. Pause background work and finish or pause downloads and transcoding through the existing deployment's controls. Download and verify the new release and install it in a new release directory.
+Back up the database and application configuration, verify the new archive, and install it in a new release directory. Pause background work with the maintenance helper above:
 
 ```bash
-new_release_id="<installed-release-id>"
-sudo systemctl stop emby-auto-worker.service emby-auto-api.service
-sudo ln -sfn "releases/${new_release_id}" /opt/emby-auto/current.next
-sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
-sudo install -o root -g root -m 0644 \
-  /opt/emby-auto/current/config/emby-auto-api.service /etc/systemd/system/emby-auto-api.service
-sudo install -o root -g root -m 0644 \
-  /opt/emby-auto/current/config/emby-auto-worker.service /etc/systemd/system/emby-auto-worker.service
-sudo systemctl daemon-reload
-sudo systemctl start emby-auto-api.service
-curl --fail http://127.0.0.1:18080/api/v1/health/ready
-sudo systemctl start emby-auto-worker.service
+emby_auto_maintenance emby-auto-background-runtime --state stopped
+emby_auto_maintenance emby-auto-release-preflight --require-idle
 ```
 
-Preserve the runtime environment, setup files, and account drop-ins. Adjust checks for a custom port. If database migration fails, keep Worker stopped and inspect API logs. Rolling back application binaries depends on database migration compatibility.
+Confirm `state=stopped`, `verified=true`, and `transfers.active=0`. Check preflight for running operations, long tasks, and stale operations. For interrupted attempts, keep Worker stopped, wait at least five minutes, then preview recovery candidates:
 
-For deployments created by the older installer that provisioned PostgreSQL and Nginx, retain and manage those services and their data. The new installer rejects the old installer record. Follow manual deployment steps and preserve the existing configuration. Set `WEB_ROOT` in the API runtime environment to serve the web interface directly; update the proxy upstream if you change the application port.
+```bash
+emby_auto_maintenance emby-auto-recover-stale-operations --worker-stopped --stale-after 5m
+```
 
-For Docker migrations, preserve the application database, original encryption key, and setup files. Grant the service account access and replace container-only addresses with host-reachable addresses. Keep a single Worker during migration and validate the database, web interface, and media workflow before removing old resources.
+Review the candidates, repeat the same command with `--apply`, and check runtime state again. Once the gates pass, switch releases:
+
+```bash
+(
+  set -e
+  new_release_id="<installed-release-id>"
+  sudo systemctl stop emby-auto-api.service emby-auto-systemd-control.service
+  sudo ln -sfn "releases/${new_release_id}" /opt/emby-auto/current.next
+  sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
+  for service in api worker systemd-control; do
+    sudo install -o root -g root -m 0644 \
+      "/opt/emby-auto/current/config/emby-auto-${service}.service" \
+      "/etc/systemd/system/emby-auto-${service}.service"
+  done
+  sudo systemctl daemon-reload
+  sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service
+  curl --fail http://127.0.0.1:18080/api/v1/health/ready
+  emby_auto_maintenance emby-auto-migration-check
+  emby_auto_maintenance emby-auto-background-runtime --state running
+)
+```
+
+Preserve the environment, setup files, control-service identity binding, and application account drop-ins. Adjust checks for a custom port. Confirm `verified=true` and `transfers.runtimeMarks=0` after resuming, and verify existing jobs. If recovery fails or its result is uncertain, inspect state read-only, then perform the formal `stopped` transition and verify the gates. Keep Worker stopped after a failed database migration; binary rollback depends on migration compatibility.
+
+The installer rejects incompatible installation records. Follow manual deployment steps for older deployments, preserve the database, environment and setup files, and configure background control. PostgreSQL and Nginx created by older installers remain user managed.
+
+### Migrating from Docker
+
+1. Stop the old Worker through the existing deployment controls, confirm transcoding has exited, and pause application torrents while retaining restoration markers. Keep old services stopped so only one Worker handles jobs.
+2. Save a consistent database backup, setup files and completion marker, environment, and old deployment definitions. Preserve the original encryption key, administrator, and absolute media paths. Check that the release contains the migrations required by the current database.
+3. Prepare native files with `--no-start` and keep the new Worker stopped. Run this example from a directory containing the installer, matching architecture archive, and checksums. It uses this guide's `emby` account; add `--port` if needed:
+
+```bash
+sudo bash install.sh --no-start --user emby \
+  --archive ./emby-auto-direct-amd64-linux-amd64.tar.gz \
+  --checksums ./SHA256SUMS
+```
+
+4. Copy both original setup files to the native state directory, owned by the service account with mode `0600`. Configure a host-reachable database connection, check external service addresses and descendant directory permissions, and keep configuration changes under a single writer during migration.
+5. Start control and API, then validate the database, web interface, and HTTPS. Check migration compatibility before applying any required database migration. Start the new Worker through formal background recovery, verify downloads, subtitles, transcoding, import, and cleanup, and retain old resources for rollback.
+6. Once services pass checks, run `sudo bash install.sh --finalize`. It verifies release files and services without restarting services or rewriting configuration.
+
+Two migration tools preview changes by default. `emby-auto-migrate-runtime-addresses` replaces only the selected host in qBittorrent and Emby URLs with a loopback IP. `emby-auto-migrate-staging-ownership` changes only root-owned directories within database-backed staging task trees, retaining group, mode, and file content. Review the preview before supplying a private backup path and `--apply`:
+
+```bash
+sudo install -d -o root -g root -m 0700 /var/backups/emby-auto-migration
+emby_auto_maintenance emby-auto-migrate-runtime-addresses --container-host-address 127.0.0.1
+emby_auto_maintenance emby-auto-migrate-staging-ownership --uid "$(id -u emby)" --container-host-address 127.0.0.1
+```
+
+The address tool matches `host.docker.internal` by default; use `--from-host` for other container hosts and check Agent and proxy settings separately. `--container-host-address` temporarily resolves that qBittorrent host only for the maintenance command; the database connection must already be host reachable. Supply `--backup` when applying, and constrain preview counts with `--expected-changes` or `--expected-tasks`. For rollback, preview `--restore` with the saved snapshot before adding `--apply`. Backup directories must be owned by the command user with mode `0700`; snapshots use mode `0600`. These commands require a stopped Worker, paused application torrents, and verifiable download references.

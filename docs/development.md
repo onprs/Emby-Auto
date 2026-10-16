@@ -65,7 +65,7 @@ SKIP_NPM_CI=1 TARGET_GOARCH=arm64 bash scripts/deploy/build-direct-release.sh ru
 TARGET_GOARCH=arm64 DIRECT_RELEASE_DIR=runtime/release/emby-auto-direct-arm64 npm run deploy:direct:check-release
 ~~~
 
-发布包包含 API、Worker、迁移检查工具、网页、安装器、服务模板、部署文档和包内校验和。
+发布包包含 API、Worker、宿主控制器、后台状态命令、发布预检、stale operation 恢复、地址与暂存所有权迁移工具、网页、安装器、服务模板、部署文档和包内校验和。原生控制服务只接受 root 与配置的应用 UID；应用与维护命令使用数据库会话锁串行化后台转换。目录迁移依赖任务范围、设备与 inode 校验，恢复点使用私有权限并在变更前持久化。
 
 `v*` 标签触发 Release 工作流。公开 Release 附带 `install.sh`、两种架构的发布包及 `SHA256SUMS`；安装器依赖以下公开文件名：
 
