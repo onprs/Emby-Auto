@@ -28,6 +28,7 @@ const (
 // Config contains process-level settings shared by the API and Worker.
 type Config struct {
 	APIAddress                        string
+	WebRoot                           string
 	DatabaseURL                       string
 	DatabaseConnectTimeout            time.Duration
 	ShutdownTimeout                   time.Duration
@@ -124,12 +125,17 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	webRoot := strings.TrimSpace(os.Getenv("WEB_ROOT"))
+	if webRoot != "" && !filepath.IsAbs(webRoot) {
+		return Config{}, fmt.Errorf("WEB_ROOT 必须使用绝对路径")
+	}
 	hostControlExecutable := strings.TrimSpace(os.Getenv("EMBY_AUTO_HOST_CONTROL_EXECUTABLE"))
 	if err := validateExecutableSetting("EMBY_AUTO_HOST_CONTROL_EXECUTABLE", hostControlExecutable); err != nil {
 		return Config{}, err
 	}
 	return Config{
 		APIAddress:                        stringFromEnv("API_ADDRESS", defaultAPIAddress),
+		WebRoot:                           webRoot,
 		DatabaseURL:                       databaseURL,
 		DatabaseConnectTimeout:            databaseConnectTimeout,
 		ShutdownTimeout:                   shutdownTimeout,

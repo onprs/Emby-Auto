@@ -20,7 +20,7 @@ Emby Auto 是面向 Emby 的自托管媒体自动化平台，连接资源检索�
 
 ## 一键部署
 
-无需 Docker、克隆仓库或安装 Go、Node.js。安装器会下载预编译发布包，安装 PostgreSQL 17、Nginx 和 FFmpeg，并配置开机启动。
+无需 Docker、克隆仓库或安装 Go、Node.js。安装器会下载预编译发布包，安装 FFmpeg，并配置应用开机启动。网页与 API 由应用直接提供，反向代理可自行选择。
 
 支持 Debian 12/13、Ubuntu 22.04/24.04/26.04，64 位 `amd64` 或 `arm64`，需要运行 systemd、具备 root 或 sudo 权限，并已安装 Bash 和 curl。设备需要能访问 GitHub 与系统软件源。
 
@@ -36,7 +36,7 @@ curl -fsSL https://github.com/onprs/Emby-Auto/releases/latest/download/install.s
 ssh -L 18080:127.0.0.1:18080 用户@设备地址
 ~~~
 
-数据库已自动配置。按照网页向导设置管理员，填写 qBittorrent Web UI 地址与凭据、Emby 地址与 API key、TMDb API Read Access Token，并确认媒体目录。
+提前准备 PostgreSQL 数据库和专用账户。按照网页向导填写数据库连接、管理员、qBittorrent Web UI 地址与凭据、Emby 地址与 API key、TMDb API Read Access Token，并确认媒体目录。
 
 已有媒体库时，使用媒体文件所有者账户安装：
 
@@ -48,7 +48,7 @@ curl -fsSL https://github.com/onprs/Emby-Auto/releases/latest/download/install.s
 
 ## 使用条件
 
-- qBittorrent 与 Emby Server 作为外部服务接入，需要提前准备。
+- PostgreSQL、qBittorrent 与 Emby Server 由用户自行安装配置，需要提前准备。
 - 部署设备必须能访问下载目录和媒体库；qBittorrent 与应用使用的下载绝对路径需要一致。
 - 应用服务账户的 UID 必须与 Emby 媒体文件所有者一致。
 - 默认通过本机或 SSH 隧道访问。通过网络对外提供服务时，需要配置 HTTPS，并启用安全会话 Cookie。

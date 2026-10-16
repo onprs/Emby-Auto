@@ -208,6 +208,7 @@ type Querier interface {
 	ListAcquisitionTaskSummaries(ctx context.Context, acquisitionID pgtype.UUID) ([]ListAcquisitionTaskSummariesRow, error)
 	ListAcquisitionTaskSummariesByAcquisitionIDs(ctx context.Context, acquisitionIds []pgtype.UUID) ([]ListAcquisitionTaskSummariesByAcquisitionIDsRow, error)
 	ListAcquisitions(ctx context.Context, arg ListAcquisitionsParams) ([]Acquisition, error)
+	ListActiveDownloadHashes(ctx context.Context) ([]*string, error)
 	ListActiveTaskIDsForAcquisition(ctx context.Context, acquisitionID pgtype.UUID) ([]pgtype.UUID, error)
 	ListAgentDownloadFiles(ctx context.Context, downloadID pgtype.UUID) ([]ListAgentDownloadFilesRow, error)
 	ListAgentMappingAcquisitionsByRSSSubscription(ctx context.Context, subscriptionID pgtype.UUID) ([]pgtype.UUID, error)
@@ -281,6 +282,7 @@ type Querier interface {
 	ListSubscriptionDeletionAcquisitionIDs(ctx context.Context, subscriptionID pgtype.UUID) ([]pgtype.UUID, error)
 	ListSubtitleVideoMatchCandidates(ctx context.Context, scopeID pgtype.UUID) ([]ListSubtitleVideoMatchCandidatesRow, error)
 	ListTaskExternalSubtitles(ctx context.Context, taskID pgtype.UUID) ([]ListTaskExternalSubtitlesRow, error)
+	ListTaskIDsForStagingMigration(ctx context.Context) ([]pgtype.UUID, error)
 	ListTaskOperationSummaries(ctx context.Context, taskIds []pgtype.UUID) ([]Operation, error)
 	// sqlc nullable projection: optional workflow rows use zero scalar sentinels.
 	ListTaskViews(ctx context.Context, arg ListTaskViewsParams) ([]ListTaskViewsRow, error)
