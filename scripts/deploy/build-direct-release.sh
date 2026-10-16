@@ -37,11 +37,23 @@ binary_names=(
   emby-auto-api
   emby-auto-worker
   emby-auto-migration-check
+  emby-auto-host-control
+  emby-auto-background-runtime
+  emby-auto-release-preflight
+  emby-auto-recover-stale-operations
+  emby-auto-migrate-runtime-addresses
+  emby-auto-migrate-staging-ownership
 )
 binary_packages=(
   ./cmd/api
   ./cmd/worker
   ./cmd/migration-check
+  ./cmd/host-control
+  ./cmd/background-runtime
+  ./cmd/release-preflight
+  ./cmd/recover-stale-operations
+  ./cmd/migrate-runtime-addresses
+  ./cmd/migrate-staging-ownership
 )
 for index in "${!binary_names[@]}"; do
   CGO_ENABLED=0 GOOS=linux GOARCH="${target_arch}" go -C "${root_dir}/backend" build \
@@ -54,8 +66,11 @@ cp -R "${root_dir}/apps/web/dist/." "${release}/web/"
 cp "${root_dir}/deploy/direct/runtime.env.example" "${release}/config/runtime.env.example"
 cp "${root_dir}/deploy/direct/emby-auto-api.service" "${release}/config/emby-auto-api.service"
 cp "${root_dir}/deploy/direct/emby-auto-worker.service" "${release}/config/emby-auto-worker.service"
+cp "${root_dir}/deploy/direct/emby-auto-systemd-control.service" "${release}/config/emby-auto-systemd-control.service"
+cp "${root_dir}/deploy/direct/worker-runtime.sh" "${release}/config/worker-runtime.sh"
+cp "${root_dir}/deploy/direct/host-control.env.example" "${release}/config/host-control.env.example"
+chmod 0755 "${release}/config/worker-runtime.sh"
 cp "${root_dir}/deploy/direct/nginx.conf" "${release}/config/nginx.conf"
-cp "${root_dir}/deploy/nginx/locations.conf" "${release}/config/emby-auto-locations.conf"
 cp "${root_dir}/docs/direct-deployment.md" "${release}/DEPLOYMENT.md"
 cp "${root_dir}/docs/direct-deployment.en.md" "${release}/DEPLOYMENT.en.md"
 cp "${root_dir}/LICENSE" "${release}/LICENSE"

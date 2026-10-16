@@ -8,6 +8,8 @@ import (
 
 func TestLoadUsesEnvironmentAndDefaults(t *testing.T) {
 	t.Setenv("API_ADDRESS", "127.0.0.1:9090")
+	webRoot := t.TempDir()
+	t.Setenv("WEB_ROOT", webRoot)
 	t.Setenv("DATABASE_URL", "postgres://local/test")
 	t.Setenv("DATABASE_CONNECT_TIMEOUT", "3s")
 	t.Setenv("SHUTDOWN_TIMEOUT", "7s")
@@ -38,6 +40,9 @@ func TestLoadUsesEnvironmentAndDefaults(t *testing.T) {
 
 	if got.APIAddress != "127.0.0.1:9090" {
 		t.Fatalf("APIAddress = %q, want %q", got.APIAddress, "127.0.0.1:9090")
+	}
+	if got.WebRoot != webRoot {
+		t.Fatalf("WebRoot = %q, want %q", got.WebRoot, webRoot)
 	}
 	if got.DatabaseURL != "postgres://local/test" {
 		t.Fatalf("DatabaseURL = %q, want %q", got.DatabaseURL, "postgres://local/test")
@@ -112,6 +117,7 @@ func TestLoadRejectsInvalidSecurityAndWorkerConfiguration(t *testing.T) {
 		{name: "zero RSS schedule concurrency", env: "RSS_SCHEDULE_CONCURRENCY", value: "0"},
 		{name: "zero media owner UID", env: "EMBY_MEDIA_OWNER_UID", value: "0"},
 		{name: "relative host control executor", env: "EMBY_AUTO_HOST_CONTROL_EXECUTABLE", value: "scripts/host-control"},
+		{name: "relative web root", env: "WEB_ROOT", value: "web"},
 	}
 
 	for _, test := range tests {

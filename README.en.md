@@ -20,7 +20,7 @@ Emby Auto is a self-hosted media automation platform for Emby. It connects resou
 
 ## One-command installation
 
-No Docker, repository checkout, Go, or Node.js is required. The installer downloads a prebuilt release, installs PostgreSQL 17, Nginx, and FFmpeg, and enables services at boot.
+No Docker, repository checkout, Go, or Node.js is required. The installer downloads a prebuilt release, installs FFmpeg, and enables the application services at boot. The application serves both the web interface and API; you can choose your own reverse proxy.
 
 Supported systems: Debian 12/13 and Ubuntu 22.04/24.04/26.04, 64-bit `amd64` or `arm64`, running systemd. You need root or sudo access, Bash, curl, and network access to GitHub and system package repositories.
 
@@ -36,7 +36,7 @@ Open `http://127.0.0.1:18080` on that device. For a remote device, establish an 
 ssh -L 18080:127.0.0.1:18080 user@device-address
 ~~~
 
-The database is configured automatically. Use the web wizard to create an administrator, enter your qBittorrent Web UI credentials, Emby URL and API key, TMDb API Read Access Token, and confirm storage paths.
+Prepare a PostgreSQL database and a dedicated account. Use the web wizard to enter the database connection, create an administrator, enter your qBittorrent Web UI credentials, Emby URL and API key, TMDb API Read Access Token, and confirm storage paths.
 
 For an existing media library, install using the account that owns its files:
 
@@ -48,7 +48,7 @@ Running the installer again preserves the installed version, configuration, and 
 
 ## Requirements for use
 
-- Prepare qBittorrent and Emby Server as external services.
+- Install and configure PostgreSQL, qBittorrent, and Emby Server separately before setup.
 - The device must have access to download and library directories. qBittorrent and the application must use identical absolute download paths.
 - The application account UID must match the owner of Emby media files.
 - Access locally or through an SSH tunnel by default. Configure HTTPS and secure session cookies for network access.
@@ -57,7 +57,7 @@ Running the installer again preserves the installed version, configuration, and 
 ## Other deployment options
 
 - [Docker Compose](docs/deployment.en.md): deploy using containers.
-- [Manual Linux installation](docs/direct-deployment.en.md#manual-installation): prepare dependencies and install a release yourself.
+- [Manual Linux installation](docs/direct-deployment.en.md#manual-deployment): prepare dependencies and install a release yourself.
 - [GitHub Releases](https://github.com/onprs/Emby-Auto/releases): download `amd64` or `arm64` bundles and checksums.
 
 ## Security and contributions
