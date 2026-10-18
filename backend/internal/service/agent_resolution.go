@@ -1015,6 +1015,7 @@ func validateRSSReleaseAdjudicationProposal(proposal domain.AgentRSSReleaseAdjud
 			}
 			for _, reason := range append(append([]string{}, entry.RejectionReasons...), entry.Deterministic.RejectionReasons...) {
 				if reason == "download_uri_missing" || reason == "title_excluded" || reason == "title_include_mismatch" || reason == "episode_range_batch" ||
+					reason == "fractional_episode_requires_explicit_mapping" ||
 					reason == rssTargetInLibraryReason || reason == rssTargetImportedReason || reason == rssTargetProcessingReason {
 					return invalid("rss_adjudication_hard_rejection")
 				}
