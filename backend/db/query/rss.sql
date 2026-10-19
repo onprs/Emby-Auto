@@ -795,7 +795,7 @@ SELECT EXISTS (
     WHERE current_check.target_episode_id = sqlc.arg(target_episode_id)
       AND current_check.check_id = sqlc.arg(check_id)
       AND current_check.present
-      AND current_check.checked_at >= now() - interval '30 seconds'
+      AND current_check.checked_at >= statement_timestamp() - interval '30 seconds'
       AND NOT EXISTS (
           SELECT 1
           FROM rss_target_realtime_checks AS newer_check
@@ -874,21 +874,21 @@ SELECT
         FROM rss_target_realtime_checks AS realtime
         WHERE realtime.target_episode_id = target.target_episode_id
           AND realtime.check_id = sqlc.narg(realtime_check_id)::uuid
-          AND realtime.checked_at >= now() - interval '30 seconds'
+          AND realtime.checked_at >= statement_timestamp() - interval '30 seconds'
     ) AS realtime_check_valid,
     COALESCE((
         SELECT realtime.present
         FROM rss_target_realtime_checks AS realtime
         WHERE realtime.target_episode_id = target.target_episode_id
           AND realtime.check_id = sqlc.narg(realtime_check_id)::uuid
-          AND realtime.checked_at >= now() - interval '30 seconds'
+          AND realtime.checked_at >= statement_timestamp() - interval '30 seconds'
     ), false)::boolean AS realtime_catalog_present,
     (
         SELECT realtime.checked_at
         FROM rss_target_realtime_checks AS realtime
         WHERE realtime.target_episode_id = target.target_episode_id
           AND realtime.check_id = sqlc.narg(realtime_check_id)::uuid
-          AND realtime.checked_at >= now() - interval '30 seconds'
+          AND realtime.checked_at >= statement_timestamp() - interval '30 seconds'
         ORDER BY realtime.checked_at DESC
         LIMIT 1
     ) AS realtime_checked_at,
@@ -949,107 +949,108 @@ SELECT
               OR acquisition.rss_entry_id IS DISTINCT FROM sqlc.narg(excluded_rss_entry_id)::uuid
           )
     ) AS managed_import_present,
-    EXISTS (
-        SELECT 1
-        FROM acquisitions AS acquisition
-        WHERE acquisition.deletion_requested_at IS NULL
-          AND (
-              sqlc.narg(excluded_rss_entry_id)::uuid IS NULL
-              OR acquisition.rss_entry_id IS DISTINCT FROM sqlc.narg(excluded_rss_entry_id)::uuid
-          )
-          AND (
-              EXISTS (
-                  SELECT 1
-                  FROM episode_tasks AS task
-                  JOIN episode_mappings AS task_mapping ON task_mapping.id = task.mapping_id
-                  WHERE task.acquisition_id = acquisition.id
-                    AND task_mapping.target_episode_id = target.target_episode_id
-                    AND (
-                        task.state NOT IN ('imported', 'rejected', 'cancelled')
-                        OR (
-                            task.state = 'cancelled'
-                            AND (task.video_state = 'failed' OR task.subtitle_state = 'failed')
-                            AND task.video_state IN ('failed', 'video_ready')
-                            AND task.subtitle_state IN ('failed', 'ass_ready')
-                        )
-                    )
+    COALESCE((
+        EXISTS (
+            SELECT 1
+            FROM episode_mappings AS task_mapping
+            JOIN episode_tasks AS task ON task.mapping_id = task_mapping.id
+            JOIN acquisitions AS acquisition ON acquisition.id = task.acquisition_id
+            WHERE task_mapping.target_episode_id = target.target_episode_id
+              AND acquisition.deletion_requested_at IS NULL
+              AND (sqlc.narg(excluded_rss_entry_id)::uuid IS NULL
+                   OR acquisition.rss_entry_id IS DISTINCT FROM sqlc.narg(excluded_rss_entry_id)::uuid)
+              AND (
+                  task.state NOT IN ('imported', 'rejected', 'cancelled')
+                  OR (
+                      task.state = 'cancelled'
+                      AND (task.video_state = 'failed' OR task.subtitle_state = 'failed')
+                      AND task.video_state IN ('failed', 'video_ready')
+                      AND task.subtitle_state IN ('failed', 'ass_ready')
+                  )
               )
-              OR EXISTS (
-                  SELECT 1
-                  FROM episode_mappings AS owner_mapping
-                  LEFT JOIN rss_entries AS owner_entry ON owner_entry.id = acquisition.rss_entry_id
-                  JOIN LATERAL (
-                      SELECT candidate.id, candidate.status
-                      FROM downloads AS candidate
-                      WHERE candidate.acquisition_id = acquisition.id
-                        AND candidate.deleted_at IS NULL
-                      ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
-                      LIMIT 1
-                  ) AS download ON true
-                  WHERE owner_mapping.profile_id = acquisition.mapping_profile_id
-                    AND owner_mapping.target_episode_id = target.target_episode_id
-                    AND owner_mapping.mapping_status = 'mapped'
-                    AND owner_mapping.source_season::bigint = COALESCE(
-                        owner_entry.source_season::bigint,
-                        CASE
-                            WHEN acquisition.rss_entry_id IS NULL
-                             AND acquisition.source_payload->'singleEpisode' = 'true'::jsonb
-                             AND COALESCE(acquisition.source_payload->>'sourceSeason', '') ~ '^[1-9][0-9]{0,9}$'
-                            THEN (acquisition.source_payload->>'sourceSeason')::bigint
-                        END
-                    )
-                    AND owner_mapping.source_episode::bigint = COALESCE(
-                        owner_entry.source_episode::bigint,
-                        CASE
-                            WHEN acquisition.rss_entry_id IS NULL
-                             AND acquisition.source_payload->'singleEpisode' = 'true'::jsonb
-                             AND COALESCE(acquisition.source_payload->>'sourceEpisode', '') ~ '^[1-9][0-9]{0,9}$'
-                            THEN (acquisition.source_payload->>'sourceEpisode')::bigint
-                        END
-                    )
-                    AND owner_mapping.source_episode_fraction_hundredths = COALESCE(
-                        owner_entry.source_episode_fraction_hundredths,
-                        CASE
-                            WHEN acquisition.rss_entry_id IS NULL
-                             AND acquisition.source_payload->'singleEpisode' = 'true'::jsonb
-                             AND COALESCE(acquisition.source_payload->>'sourceEpisodeFractionHundredths', '0') ~ '^(?:0|[1-9][0-9]?)$'
-                            THEN COALESCE((acquisition.source_payload->>'sourceEpisodeFractionHundredths')::integer, 0)
-                        END,
-                        0
-                    )
-                    AND download.status <> 'cancelled'
-                    AND NOT EXISTS (
-                        SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id
-                    )
+        )
+        OR EXISTS (
+            SELECT 1
+            FROM episode_mappings AS owner_mapping
+            JOIN rss_entries AS owner_entry
+              ON owner_entry.source_season = owner_mapping.source_season
+             AND owner_entry.source_episode = owner_mapping.source_episode
+             AND owner_entry.source_episode_fraction_hundredths = owner_mapping.source_episode_fraction_hundredths
+            JOIN acquisitions AS acquisition
+              ON acquisition.rss_entry_id = owner_entry.id
+             AND acquisition.mapping_profile_id = owner_mapping.profile_id
+            JOIN LATERAL (
+                SELECT candidate.id, candidate.status
+                FROM downloads AS candidate
+                WHERE candidate.acquisition_id = acquisition.id AND candidate.deleted_at IS NULL
+                ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
+                LIMIT 1
+            ) AS download ON true
+            WHERE owner_mapping.target_episode_id = target.target_episode_id
+              AND owner_mapping.mapping_status = 'mapped'
+              AND acquisition.deletion_requested_at IS NULL
+              AND (sqlc.narg(excluded_rss_entry_id)::uuid IS NULL
+                   OR acquisition.rss_entry_id IS DISTINCT FROM sqlc.narg(excluded_rss_entry_id)::uuid)
+              AND download.status <> 'cancelled'
+              AND NOT EXISTS (SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id)
+        )
+        OR EXISTS (
+            SELECT 1
+            FROM episode_mappings AS owner_mapping
+            JOIN acquisitions AS acquisition ON acquisition.mapping_profile_id = owner_mapping.profile_id
+            JOIN LATERAL (
+                SELECT candidate.id, candidate.status
+                FROM downloads AS candidate
+                WHERE candidate.acquisition_id = acquisition.id AND candidate.deleted_at IS NULL
+                ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
+                LIMIT 1
+            ) AS download ON true
+            WHERE owner_mapping.target_episode_id = target.target_episode_id
+              AND owner_mapping.mapping_status = 'mapped'
+              AND acquisition.rss_entry_id IS NULL
+              AND acquisition.source_payload->'singleEpisode' = 'true'::jsonb
+              AND acquisition.deletion_requested_at IS NULL
+              AND owner_mapping.source_season::bigint = CASE
+                    WHEN COALESCE(acquisition.source_payload->>'sourceSeason', '') ~ '^[1-9][0-9]{0,9}$'
+                    THEN (acquisition.source_payload->>'sourceSeason')::bigint END
+              AND owner_mapping.source_episode::bigint = CASE
+                    WHEN COALESCE(acquisition.source_payload->>'sourceEpisode', '') ~ '^[1-9][0-9]{0,9}$'
+                    THEN (acquisition.source_payload->>'sourceEpisode')::bigint END
+              AND owner_mapping.source_episode_fraction_hundredths = COALESCE(CASE
+                    WHEN COALESCE(acquisition.source_payload->>'sourceEpisodeFractionHundredths', '0') ~ '^(?:0|[1-9][0-9]?)$'
+                    THEN COALESCE((acquisition.source_payload->>'sourceEpisodeFractionHundredths')::integer, 0) END, 0)
+              AND download.status <> 'cancelled'
+              AND NOT EXISTS (SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id)
+        )
+        OR EXISTS (
+            SELECT 1
+            FROM episode_mappings AS owner_mapping
+            JOIN download_files AS source_file
+              ON source_file.selected
+             AND source_file.media_kind = 'video'
+             AND source_file.source_season = owner_mapping.source_season
+             AND source_file.source_episode = owner_mapping.source_episode
+             AND source_file.source_episode_fraction_hundredths = owner_mapping.source_episode_fraction_hundredths
+            JOIN downloads AS download ON download.id = source_file.download_id
+            JOIN acquisitions AS acquisition
+              ON acquisition.id = download.acquisition_id
+             AND acquisition.mapping_profile_id = owner_mapping.profile_id
+            WHERE owner_mapping.target_episode_id = target.target_episode_id
+              AND owner_mapping.mapping_status = 'mapped'
+              AND acquisition.deletion_requested_at IS NULL
+              AND (sqlc.narg(excluded_rss_entry_id)::uuid IS NULL
+                   OR acquisition.rss_entry_id IS DISTINCT FROM sqlc.narg(excluded_rss_entry_id)::uuid)
+              AND download.deleted_at IS NULL
+              AND download.status <> 'cancelled'
+              AND download.id = (
+                  SELECT candidate.id FROM downloads AS candidate
+                  WHERE candidate.acquisition_id = acquisition.id AND candidate.deleted_at IS NULL
+                  ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
+                  LIMIT 1
               )
-              OR EXISTS (
-                  SELECT 1
-                  FROM episode_mappings AS owner_mapping
-                  JOIN LATERAL (
-                      SELECT candidate.id, candidate.status
-                      FROM downloads AS candidate
-                      WHERE candidate.acquisition_id = acquisition.id
-                        AND candidate.deleted_at IS NULL
-                      ORDER BY (candidate.status = 'cancelled'), candidate.attempt DESC
-                      LIMIT 1
-                  ) AS download ON true
-                  JOIN download_files AS source_file
-                    ON source_file.download_id = download.id
-                   AND source_file.selected
-                   AND source_file.media_kind = 'video'
-                   AND source_file.source_season = owner_mapping.source_season
-                   AND source_file.source_episode = owner_mapping.source_episode
-                   AND source_file.source_episode_fraction_hundredths = owner_mapping.source_episode_fraction_hundredths
-                  WHERE owner_mapping.profile_id = acquisition.mapping_profile_id
-                    AND owner_mapping.target_episode_id = target.target_episode_id
-                    AND owner_mapping.mapping_status = 'mapped'
-                    AND download.status <> 'cancelled'
-                    AND NOT EXISTS (
-                        SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id
-                    )
-              )
-          )
-    ) AS processing_present
+              AND NOT EXISTS (SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id)
+        )
+    ), false)::boolean AS processing_present
 FROM target;
 
 -- name: ListStaleRSSEmbyCatalogFulfillmentsForCheck :many
@@ -1060,7 +1061,7 @@ FROM rss_target_fulfillments AS fulfillment
 JOIN rss_target_realtime_checks AS realtime
   ON realtime.target_episode_id = fulfillment.target_episode_id
  AND realtime.check_id = sqlc.arg(realtime_check_id)
- AND realtime.checked_at >= now() - interval '30 seconds'
+ AND realtime.checked_at >= statement_timestamp() - interval '30 seconds'
 WHERE fulfillment.source = 'emby_catalog'
   AND NOT realtime.present
 ORDER BY fulfillment.rss_entry_id, fulfillment.target_episode_id;
@@ -1808,6 +1809,14 @@ SELECT entry.*
 FROM rss_entries AS entry
 WHERE entry.id = sqlc.arg(id)
 FOR UPDATE OF entry;
+
+-- name: RejectRSSEntryBeforeEnqueue :exec
+UPDATE rss_entries
+SET downloadable = false,
+    rejection_reasons = sqlc.arg(rejection_reasons),
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND status IN ('discovered', 'enqueue_failed');
 
 -- name: MarkRSSEntryEnqueueing :one
 UPDATE rss_entries

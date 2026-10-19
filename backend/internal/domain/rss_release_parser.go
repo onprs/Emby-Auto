@@ -10,9 +10,10 @@ import (
 type RSSCoordinateParseStatus string
 
 const (
-	RSSCoordinateMatched   RSSCoordinateParseStatus = "matched"
-	RSSCoordinateNotFound  RSSCoordinateParseStatus = "not_found"
-	RSSCoordinateAmbiguous RSSCoordinateParseStatus = "ambiguous"
+	RSSCoordinateMatched    RSSCoordinateParseStatus = "matched"
+	RSSCoordinateNotFound   RSSCoordinateParseStatus = "not_found"
+	RSSCoordinateAmbiguous  RSSCoordinateParseStatus = "ambiguous"
+	RSSCoordinateFractional RSSCoordinateParseStatus = "fractional"
 )
 
 type RSSCoordinateParseResult struct {
@@ -29,13 +30,15 @@ type rssCoordinatePattern struct {
 	episodeGroup int
 	evidence     string
 	weak         bool
+	fractional   bool
 }
 
 type rssCoordinateCandidate struct {
-	season   int
-	episode  int
-	priority int
-	evidence string
+	season     int
+	episode    int
+	priority   int
+	evidence   string
+	fractional bool
 }
 
 const rssReleaseNumber = `[0-9零〇一二三四五六七八九十百两兩]{1,6}`
@@ -49,6 +52,26 @@ var (
 		regexp.MustCompile(`第[[:space:]]*(` + rssReleaseNumber + `)[[:space:]]*季`),
 	}
 	rssCoordinatePatterns = []rssCoordinatePattern{
+		{
+			expression: regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:s[ ._-]*[0-9]{1,2}[ ._-]*e[ ._-]*|[0-9]{1,2}x|season[ ._-]*[0-9]{1,2}[ ._/-]+(?:episode|ep|e)[ ._-]*)[0-9]{1,4}[.][0-9]+(?:v[0-9]+)?(?:$|[^[:alnum:]])`),
+			priority:   400, fractional: true,
+		},
+		{
+			expression: regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])(?:episode|ep|e|#)[ ._-]*[0-9]{1,4}[.][0-9]+(?:v[0-9]+)?(?:$|[^[:alnum:]])`),
+			priority:   300, fractional: true,
+		},
+		{
+			expression: regexp.MustCompile(`(?:第[[:space:]]*)?` + rssReleaseNumber + `[.][0-9]+[[:space:]]*[话話集回]`),
+			priority:   300, fractional: true,
+		},
+		{
+			expression: regexp.MustCompile(`(?i)[\[\(【（][[:space:]]*[0-9]{1,4}[.][0-9]+(?:v[0-9]+)?[[:space:]]*[\]\)】）]|(?:^|[[:space:]\]\)】）])-[[:space:]]*[0-9]{1,4}[.][0-9]+(?:v[0-9]+)?(?:$|[[:space:]\[\(【（])`),
+			priority:   200, fractional: true,
+		},
+		{
+			expression: regexp.MustCompile(`(?:^|[[:space:]_.])[0-9]{1,4}[.][0-9]+(?:$|[[:space:]_.])`),
+			priority:   100, weak: true, fractional: true,
+		},
 		{
 			expression: regexp.MustCompile(`(?i)(?:^|[^[:alnum:]])s[ ._-]*([0-9]{1,2})[ ._-]*e[ ._-]*([0-9]{1,4})(?:v[0-9]+)?(?:$|[^[:alnum:]])`),
 			priority:   400, seasonGroup: 1, episodeGroup: 2, evidence: "season_episode",
@@ -107,6 +130,10 @@ func ParseRSSReleaseCoordinate(title string, defaultSeason int) RSSCoordinatePar
 			input = rssTechnicalDecimalPattern.ReplaceAllString(input, " ")
 		}
 		for _, matches := range findRSSPatternSubmatches(pattern.expression, input) {
+			if pattern.fractional {
+				candidates = append(candidates, rssCoordinateCandidate{priority: pattern.priority, fractional: true})
+				continue
+			}
 			episode := parseRSSReleaseNumber(matches[pattern.episodeGroup])
 			if episode <= 0 {
 				continue
@@ -131,6 +158,12 @@ func ParseRSSReleaseCoordinate(title string, defaultSeason int) RSSCoordinatePar
 		return candidates[left].priority > candidates[right].priority
 	})
 	highestPriority := candidates[0].priority
+	for _, candidate := range candidates {
+		if candidate.priority == highestPriority && candidate.fractional {
+			// 小数集的完整证据优先于同一标题中截断出的整数，交由显式映射处理。
+			return RSSCoordinateParseResult{Status: RSSCoordinateFractional}
+		}
+	}
 	resolved := make(map[EpisodeCoordinate]string)
 	for _, candidate := range candidates {
 		if candidate.priority != highestPriority {
