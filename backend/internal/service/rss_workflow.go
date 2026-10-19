@@ -76,6 +76,7 @@ func (workflow *RSSWorkflow) PreparePollMapping(
 	operationID uuid.UUID,
 	subscriptionID uuid.UUID,
 	feed domain.RSSFeed,
+	expectedVersion ...int32,
 ) (domain.RSSPollMappingPreparation, error) {
 	if subscriptionID == uuid.Nil {
 		return domain.RSSPollMappingPreparation{}, domain.ErrNotFound
@@ -89,14 +90,17 @@ func (workflow *RSSWorkflow) PreparePollMapping(
 		if err != nil {
 			return fmt.Errorf("lock RSS poll mapping context: %w", err)
 		}
+		if len(expectedVersion) > 0 && expectedVersion[0] > 0 && mappingContext.Version != expectedVersion[0] {
+			return domain.ErrVersionConflict
+		}
+		if !mappingContext.Enabled || mappingContext.DeletedAt.Valid || mappingContext.CompletedAt.Valid {
+			return nil
+		}
 		if mappingContext.MappingProfileID.Valid {
 			if _, err := workflow.extendRSSAnchorMapping(ctx, scope, repository.UUIDFromPG(mappingContext.ID)); err != nil {
 				return err
 			}
 			result.Ready = true
-			return nil
-		}
-		if !mappingContext.Enabled || mappingContext.DeletedAt.Valid || mappingContext.CompletedAt.Valid {
 			return nil
 		}
 		if _, err := scope.Queries.LockMediaSeries(ctx, mappingContext.SeriesID); err != nil {
@@ -216,7 +220,7 @@ func (workflow *RSSWorkflow) PreparePollMapping(
 	if result.Ready {
 		return result, nil
 	}
-	return workflow.prepareAgentPollMapping(ctx, operationID, subscriptionID, feed)
+	return workflow.prepareAgentPollMapping(ctx, operationID, subscriptionID, feed, expectedVersion...)
 }
 
 func (workflow *RSSWorkflow) extendRSSAnchorMapping(
@@ -313,6 +317,7 @@ func (workflow *RSSWorkflow) prepareAgentPollMapping(
 	operationID uuid.UUID,
 	subscriptionID uuid.UUID,
 	feed domain.RSSFeed,
+	expectedVersion ...int32,
 ) (domain.RSSPollMappingPreparation, error) {
 	result := domain.RSSPollMappingPreparation{}
 	err := workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
@@ -322,6 +327,9 @@ func (workflow *RSSWorkflow) prepareAgentPollMapping(
 		}
 		if err != nil {
 			return fmt.Errorf("lock RSS Agent mapping context: %w", err)
+		}
+		if len(expectedVersion) > 0 && expectedVersion[0] > 0 && mappingContext.Version != expectedVersion[0] {
+			return domain.ErrVersionConflict
 		}
 		if mappingContext.MappingProfileID.Valid {
 			result.Ready = true
@@ -335,7 +343,7 @@ func (workflow *RSSWorkflow) prepareAgentPollMapping(
 		for _, item := range feed.Entries {
 			inserted, _, _, err := workflow.persistFeedEntry(
 				ctx, scope, operationID, subscriptionID, uuid.Nil, int(mappingContext.SourceSeason),
-				mappingContext.IncludeKeywords, mappingContext.ExcludeKeywords, item, rssTargetOccupancy{}, uuid.Nil, true,
+				mappingContext.IncludeKeywords, mappingContext.ExcludeKeywords, item, rssTargetOccupancy{}, uuid.Nil, true, nil,
 			)
 			if err != nil {
 				return err
@@ -583,6 +591,9 @@ func (workflow *RSSWorkflow) PersistPoll(
 		if err != nil {
 			return fmt.Errorf("load RSS subscription for poll: %w", err)
 		}
+		if options.ExpectedSubscriptionVersion > 0 && command.Version != options.ExpectedSubscriptionVersion {
+			return domain.ErrVersionConflict
+		}
 		if !command.Enabled || command.DeletedAt.Valid || command.CompletedAt.Valid {
 			return nil
 		}
@@ -600,6 +611,7 @@ func (workflow *RSSWorkflow) PersistPoll(
 		currentBatchAttempts := rssAdjudicationBatchSize
 		adjudicationPlan := make([]bool, len(feed.Entries))
 		occupancyPlan := make([]rssTargetOccupancy, len(feed.Entries))
+		initialOccupancies := make(map[domain.EpisodeCoordinate]rssTargetOccupancy)
 		if options.AdjudicateReleases {
 			adjudicationPlan = domain.PlanRSSReleaseAdjudication(
 				feed.Entries, int(command.SourceSeason), command.IncludeKeywords, command.ExcludeKeywords,
@@ -613,20 +625,30 @@ func (workflow *RSSWorkflow) PersistPoll(
 			analysis := domain.AnalyzeRSSRelease(
 				item.Title, strings.TrimSpace(item.DownloadURI), int(command.SourceSeason), command.IncludeKeywords, command.ExcludeKeywords,
 			)
-			if analysis.SourceSeason <= 0 || analysis.SourceEpisode <= 0 {
+			if !analysis.Downloadable || analysis.SourceSeason <= 0 || analysis.SourceEpisode <= 0 {
 				continue
 			}
-			occupancy, err := loadRSSMappedTargetOccupancyWithRealtimeCheck(
-				ctx, scope.Queries, subscriptionID, analysis.SourceSeason, analysis.SourceEpisode, uuid.Nil, options.RealtimeCheckID,
-			)
-			if err != nil {
-				return err
+			coordinate := domain.EpisodeCoordinate{Season: analysis.SourceSeason, Episode: analysis.SourceEpisode}
+			occupancy, cached := initialOccupancies[coordinate]
+			if !cached {
+				occupancy, err = loadRSSMappedTargetOccupancyWithRealtimeCheck(
+					ctx, scope.Queries, subscriptionID, analysis.SourceSeason, analysis.SourceEpisode, uuid.Nil, options.RealtimeCheckID,
+				)
+				if err != nil {
+					return err
+				}
+				initialOccupancies[coordinate] = occupancy
 			}
 			occupancyPlan[index] = occupancy
 			if occupancy.Reason != "" {
 				adjudicationPlan[index] = false
 			}
 		}
+		pollCache, err := loadRSSPollEntryCache(ctx, scope.Queries, subscriptionID, feed)
+		if err != nil {
+			return fmt.Errorf("load RSS poll entry identities: %w", err)
+		}
+		pollCache.occupancies = initialOccupancies
 		for index, item := range feed.Entries {
 			batchID := uuid.Nil
 			if adjudicationPlan[index] {
@@ -647,7 +669,7 @@ func (workflow *RSSWorkflow) PersistPoll(
 			}
 			inserted, skipped, staged, err := workflow.persistFeedEntry(
 				ctx, scope, operationID, subscriptionID, batchID, int(command.SourceSeason), command.IncludeKeywords,
-				command.ExcludeKeywords, item, occupancyPlan[index], options.RealtimeCheckID, false,
+				command.ExcludeKeywords, item, occupancyPlan[index], options.RealtimeCheckID, false, pollCache,
 			)
 			if err != nil {
 				return err
@@ -706,9 +728,10 @@ func (workflow *RSSWorkflow) PersistPoll(
 		result.Candidates = make([]domain.RSSEnqueueCandidate, 0, len(rows))
 		for _, row := range rows {
 			result.Candidates = append(result.Candidates, domain.RSSEnqueueCandidate{
-				EntryID:      repository.UUIDFromPG(row.ID),
-				Status:       domain.RSSState(row.Status),
-				Downloadable: row.Downloadable,
+				EntryID:                     repository.UUIDFromPG(row.ID),
+				Status:                      domain.RSSState(row.Status),
+				Downloadable:                row.Downloadable,
+				ExpectedSubscriptionVersion: command.Version,
 			})
 		}
 		agentRows, err := scope.Queries.ListAgentResolvableRSSEntries(ctx, repository.UUIDToPG(subscriptionID))
@@ -754,28 +777,18 @@ func (workflow *RSSWorkflow) persistFeedEntry(
 	occupancy rssTargetOccupancy,
 	realtimeCheckID uuid.UUID,
 	preacquisitionMapping bool,
+	pollCache *rssPollEntryCache,
 ) (inserted bool, skipped bool, staged bool, err error) {
 	queries := scope.Queries
 	downloadURI := strings.TrimSpace(item.DownloadURI)
 	btih := qbittorrent.ExtractBTIH(downloadURI)
-	identityURL := strings.TrimSpace(item.URL)
-	if identityURL == "" {
-		identityURL = downloadURI
-	}
-	identity, err := domain.BuildRSSIdentity(domain.RSSIdentityInput{
-		GUID:        item.GUID,
-		BTIH:        btih,
-		URL:         identityURL,
-		Title:       item.Title,
-		PublishedAt: item.PublishedAt,
-	})
+	identity, err := domain.BuildRSSFeedEntryIdentity(item)
 	if err != nil {
 		return false, true, false, nil
 	}
-	analysis := rssReleaseAnalysisWithOccupancy(
-		domain.AnalyzeRSSRelease(item.Title, downloadURI, defaultSeason, includeKeywords, excludeKeywords), occupancy,
-	)
-	rejectionReasons := analysis.RejectionReasons
+	analysis := domain.AnalyzeRSSRelease(item.Title, downloadURI, defaultSeason, includeKeywords, excludeKeywords)
+	persistedAnalysis := rssReleaseAnalysisWithOccupancy(analysis, occupancy)
+	rejectionReasons := persistedAnalysis.RejectionReasons
 	if rejectionReasons == nil {
 		rejectionReasons = []string{}
 	}
@@ -804,16 +817,20 @@ func (workflow *RSSWorkflow) persistFeedEntry(
 		DownloadUri:      optionalString(downloadURI),
 		Title:            title,
 		PublishedAt:      optionalTime(item.PublishedAt),
-		Downloadable:     analysis.Downloadable,
+		Downloadable:     persistedAnalysis.Downloadable,
 		RejectionReasons: rejectionReasons,
 		SourceSeason:     optionalInt32(analysis.SourceSeason),
 		SourceEpisode:    optionalInt32(analysis.SourceEpisode),
 		UpstreamPayload:  payloadJSON,
 	}
 	var existing db.RssEntry
+	known := false
+	if pollCache != nil {
+		existing, known = pollCache.entries[identity]
+	}
 	legacyClaimed := false
 	guid := strings.TrimSpace(item.GUID)
-	if btih != "" && guid != "" {
+	if !known && btih != "" && guid != "" {
 		existing, err = queries.GetLegacyRSSEntryForBTIHUpgrade(ctx, db.GetLegacyRSSEntryForBTIHUpgradeParams{
 			SubscriptionID: repository.UUIDToPG(subscriptionID),
 			Guid:           optionalString(guid),
@@ -828,12 +845,19 @@ func (workflow *RSSWorkflow) persistFeedEntry(
 			return false, false, false, fmt.Errorf("load legacy RSS entry for BTIH upgrade: %w", err)
 		}
 	}
-	if !legacyClaimed {
+	if !known && !legacyClaimed {
 		row, insertErr := queries.InsertRSSEntry(ctx, params)
 		if insertErr == nil {
+			if pollCache != nil {
+				pollCache.remember(identity, row)
+				pollCache.unacquired[repository.UUIDFromPG(row.ID)] = struct{}{}
+			}
 			if occupancy.Reason != "" {
 				if _, err := markRSSEntryTargetOccupiedInTx(ctx, scope, repository.UUIDFromPG(row.ID), operationID, occupancy); err != nil {
 					return false, false, false, err
+				}
+				if pollCache != nil {
+					pollCache.invalidate(repository.UUIDFromPG(row.ID))
 				}
 			}
 			if adjudicate {
@@ -890,21 +914,27 @@ func (workflow *RSSWorkflow) persistFeedEntry(
 			params.RejectionReasons = []string{}
 			params.Downloadable = true
 		}
-		if !preacquisitionMapping && analysis.SourceSeason > 0 && analysis.SourceEpisode > 0 {
-			occupancy, err = loadRSSMappedTargetOccupancyWithRealtimeCheck(
-				ctx, queries, subscriptionID, analysis.SourceSeason, analysis.SourceEpisode, existingID, realtimeCheckID,
-			)
-			if err != nil {
-				return false, false, false, err
+		if !preacquisitionMapping && analysis.Downloadable && analysis.SourceSeason > 0 && analysis.SourceEpisode > 0 {
+			cached := false
+			if pollCache != nil {
+				if _, known := pollCache.unacquired[existingID]; known {
+					occupancy, cached = pollCache.occupancies[domain.EpisodeCoordinate{Season: analysis.SourceSeason, Episode: analysis.SourceEpisode}]
+				}
 			}
-			analysis = rssReleaseAnalysisWithOccupancy(
-				domain.AnalyzeRSSRelease(item.Title, downloadURI, defaultSeason, includeKeywords, excludeKeywords), occupancy,
-			)
+			if !cached {
+				occupancy, err = loadRSSMappedTargetOccupancyWithRealtimeCheck(
+					ctx, queries, subscriptionID, analysis.SourceSeason, analysis.SourceEpisode, existingID, realtimeCheckID,
+				)
+				if err != nil {
+					return false, false, false, err
+				}
+			}
+			analysis = rssReleaseAnalysisWithOccupancy(analysis, occupancy)
 			params.Downloadable = analysis.Downloadable
 			params.RejectionReasons = analysis.RejectionReasons
 		}
 	}
-	if _, err := queries.UpdateRSSEntryMetadata(ctx, db.UpdateRSSEntryMetadataParams{
+	updated, err := queries.UpdateRSSEntryMetadata(ctx, db.UpdateRSSEntryMetadataParams{
 		Guid:             params.Guid,
 		Btih:             params.Btih,
 		CanonicalUrl:     params.CanonicalUrl,
@@ -917,12 +947,21 @@ func (workflow *RSSWorkflow) persistFeedEntry(
 		SourceEpisode:    params.SourceEpisode,
 		UpstreamPayload:  params.UpstreamPayload,
 		ID:               existing.ID,
-	}); err != nil {
+	})
+	if err != nil {
 		return false, false, false, fmt.Errorf("update duplicate RSS entry: %w", err)
+	}
+	if pollCache != nil {
+		if _, known := pollCache.unacquired[existingID]; known {
+			pollCache.remember(identity, updated)
+		}
 	}
 	if occupancy.Reason != "" {
 		if _, err := markRSSEntryTargetOccupiedInTx(ctx, scope, existingID, operationID, occupancy); err != nil {
 			return false, false, false, err
+		}
+		if pollCache != nil {
+			pollCache.invalidate(existingID)
 		}
 	}
 	return false, false, false, nil
@@ -1206,118 +1245,152 @@ func (workflow *RSSWorkflow) scheduleRSSDownload(
 		return fmt.Errorf("RSS entry ID is required")
 	}
 	err := workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
-		subscription, err := scope.Queries.LockRSSSubscriptionForEntryReservation(ctx, repository.UUIDToPG(candidate.EntryID))
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("lock RSS subscription for enqueue: %w", err)
-		}
-		if subscription.Enabled == recovery || subscription.DeletedAt.Valid || subscription.CompletedAt.Valid {
-			return nil
-		}
-		entry, err := scope.Queries.LockRSSEntryForEnqueue(ctx, repository.UUIDToPG(candidate.EntryID))
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("lock RSS entry for enqueue: %w", err)
-		}
-		if entry.SubscriptionID != subscription.ID {
-			return NewError("state_conflict", "the RSS entry subscription changed before enqueue", ErrStateConflict, nil)
-		}
-		if candidate.ExpectedVersion > 0 && rssEntryVersion(entry.EnqueueAttempts) != int(candidate.ExpectedVersion) {
-			return NewError("state_conflict", "the RSS entry was modified before enqueue", ErrStateConflict, map[string]any{"expectedVersion": candidate.ExpectedVersion})
-		}
-		if !entry.Downloadable || (entry.Status != string(domain.RSSDiscovered) && entry.Status != string(domain.RSSEnqueueFailed)) {
-			return nil
-		}
-		occupancy, err := lockRSSMappedTargetOccupancyWithRealtimeCheck(
-			ctx,
-			scope,
-			repository.UUIDFromPG(subscription.ID),
-			valueInt32(entry.SourceSeason),
-			valueInt32(entry.SourceEpisode),
-			candidate.EntryID,
-			realtimeCheckID,
-		)
-		if err != nil {
-			return err
-		}
-		if occupancy.Reason != "" {
-			if _, err := markRSSEntryTargetOccupiedInTx(ctx, scope, candidate.EntryID, uuid.Nil, occupancy); err != nil {
-				return err
-			}
-			if occupancy.Fulfilled {
-				return workflow.completeRSSSubscriptionAtFulfillmentInTx(ctx, scope, repository.UUIDFromPG(subscription.ID), uuid.Nil, "enqueue_guard")
-			}
-			return nil
-		}
-		if err := domain.ValidateRSSTransition(domain.RSSState(entry.Status), domain.RSSEnqueueing); err != nil {
-			return err
-		}
-		updated, err := scope.Queries.MarkRSSEntryEnqueueing(ctx, entry.ID)
-		if err != nil {
-			return fmt.Errorf("mark RSS entry enqueueing: %w", err)
-		}
-		sourcePayload, err := json.Marshal(map[string]any{
-			"rssEntryId":    candidate.EntryID,
-			"identityKey":   entry.IdentityKey,
-			"sourceSeason":  valueInt32(entry.SourceSeason),
-			"sourceEpisode": valueInt32(entry.SourceEpisode),
-		})
-		if err != nil {
-			return fmt.Errorf("encode RSS acquisition payload: %w", err)
-		}
-		acquisition, err := scope.Queries.UpsertRSSAcquisition(ctx, db.UpsertRSSAcquisitionParams{
-			ID:               repository.UUIDToPG(uuid.New()),
-			SeriesID:         subscription.SeriesID,
-			MappingProfileID: subscription.MappingProfileID,
-			RssEntryID:       entry.ID,
-			SourcePayload:    sourcePayload,
-		})
-		if err != nil {
-			return fmt.Errorf("create RSS acquisition: %w", err)
-		}
-		download, err := scope.Queries.CreateRSSDownloadAttempt(ctx, db.CreateRSSDownloadAttemptParams{
-			ID:            repository.UUIDToPG(uuid.New()),
-			AcquisitionID: acquisition.ID,
-		})
-		if err != nil {
-			return fmt.Errorf("create RSS download attempt: %w", err)
-		}
-		if _, err := workflow.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
-			Kind:           appqueue.KindDownloadEnqueue,
-			ResourceType:   "download",
-			ResourceID:     repository.UUIDFromPG(download.ID),
-			IdempotencyKey: "download.enqueue:" + repository.UUIDFromPG(download.ID).String(),
-			MaxAttempts:    5,
-			Timeout:        DownloadEnqueueTimeout,
-			Payload: map[string]any{
-				"defaultSeason":  valueInt32(entry.SourceSeason),
-				"defaultEpisode": valueInt32(entry.SourceEpisode),
-				"singleEpisode":  true,
-			},
-		}); err != nil {
-			return fmt.Errorf("schedule RSS download enqueue: %w", err)
-		}
-		data, err := json.Marshal(map[string]any{
-			"status":          domain.RSSEnqueueing,
-			"enqueueAttempt":  updated.EnqueueAttempts,
-			"downloadAttempt": download.Attempt,
-			"acquisitionId":   repository.UUIDFromPG(acquisition.ID),
-			"downloadId":      repository.UUIDFromPG(download.ID),
-		})
-		if err != nil {
-			return fmt.Errorf("encode RSS enqueue event: %w", err)
-		}
-		return appendRSSEntryEvent(ctx, scope.Queries, candidate.EntryID, "rss.entry.enqueueing", data)
+		return workflow.scheduleRSSDownloadInTx(ctx, scope, candidate, recovery, realtimeCheckID, nil)
 	})
+	return workflow.finishRSSSchedule(ctx, candidate, err)
+}
+
+func (workflow *RSSWorkflow) scheduleRSSDownloadInTx(
+	ctx context.Context,
+	scope database.TxScope,
+	candidate domain.RSSEnqueueCandidate,
+	recovery bool,
+	realtimeCheckID uuid.UUID,
+	expectedTarget *uuid.UUID,
+) error {
+	subscription, err := scope.Queries.LockRSSSubscriptionForEntryReservation(ctx, repository.UUIDToPG(candidate.EntryID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("lock RSS subscription for enqueue: %w", err)
+	}
+	if candidate.ExpectedSubscriptionVersion > 0 && subscription.Version != candidate.ExpectedSubscriptionVersion {
+		return domain.ErrVersionConflict
+	}
+	if subscription.Enabled == recovery || subscription.DeletedAt.Valid || subscription.CompletedAt.Valid {
+		return nil
+	}
+	entry, err := scope.Queries.LockRSSEntryForEnqueue(ctx, repository.UUIDToPG(candidate.EntryID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("lock RSS entry for enqueue: %w", err)
+	}
+	if entry.SubscriptionID != subscription.ID {
+		return NewError("state_conflict", "the RSS entry subscription changed before enqueue", ErrStateConflict, nil)
+	}
+	if candidate.ExpectedVersion > 0 && rssEntryVersion(entry.EnqueueAttempts) != int(candidate.ExpectedVersion) {
+		return NewError("state_conflict", "the RSS entry was modified before enqueue", ErrStateConflict, map[string]any{"expectedVersion": candidate.ExpectedVersion})
+	}
+	if !entry.Downloadable || (entry.Status != string(domain.RSSDiscovered) && entry.Status != string(domain.RSSEnqueueFailed)) {
+		return nil
+	}
+	analysis := domain.AnalyzeRSSRelease(entry.Title, valueOrEmpty(entry.DownloadUri), int(subscription.SourceSeason), subscription.IncludeKeywords, subscription.ExcludeKeywords)
+	if !analysis.Downloadable && !rssOnlySoftCoordinateReasons(analysis.RejectionReasons) {
+		// 旧版本或已裁决条目也必须通过当前确定性硬拒绝规则。
+		if err := scope.Queries.RejectRSSEntryBeforeEnqueue(ctx, db.RejectRSSEntryBeforeEnqueueParams{
+			ID: entry.ID, RejectionReasons: analysis.RejectionReasons,
+		}); err != nil {
+			return fmt.Errorf("reject RSS entry before enqueue: %w", err)
+		}
+		return appendRSSEntryEvent(ctx, scope.Queries, candidate.EntryID, "rss.entry.rejected", mustJSON(map[string]any{
+			"reasonCodes": analysis.RejectionReasons,
+		}))
+	}
+	var occupancy rssTargetOccupancy
+	if expectedTarget != nil {
+		occupancy, err = loadRSSMappedTargetOccupancyAfterLock(ctx, scope, rssTargetOccupancyRequest{
+			subscriptionID: repository.UUIDFromPG(subscription.ID),
+			sourceSeason:   valueInt32(entry.SourceSeason), sourceEpisode: valueInt32(entry.SourceEpisode),
+			excludedEntryID: candidate.EntryID, realtimeCheckID: realtimeCheckID,
+		}, *expectedTarget)
+	} else {
+		occupancy, err = lockRSSMappedTargetOccupancyWithRealtimeCheck(
+			ctx, scope, repository.UUIDFromPG(subscription.ID), valueInt32(entry.SourceSeason),
+			valueInt32(entry.SourceEpisode), candidate.EntryID, realtimeCheckID,
+		)
+	}
+	if err != nil {
+		return err
+	}
+	if occupancy.Reason != "" {
+		if _, err := markRSSEntryTargetOccupiedInTx(ctx, scope, candidate.EntryID, uuid.Nil, occupancy); err != nil {
+			return err
+		}
+		if occupancy.Fulfilled {
+			return workflow.completeRSSSubscriptionAtFulfillmentInTx(ctx, scope, repository.UUIDFromPG(subscription.ID), uuid.Nil, "enqueue_guard")
+		}
+		return nil
+	}
+	if err := domain.ValidateRSSTransition(domain.RSSState(entry.Status), domain.RSSEnqueueing); err != nil {
+		return err
+	}
+	updated, err := scope.Queries.MarkRSSEntryEnqueueing(ctx, entry.ID)
+	if err != nil {
+		return fmt.Errorf("mark RSS entry enqueueing: %w", err)
+	}
+	sourcePayload, err := json.Marshal(map[string]any{
+		"rssEntryId":    candidate.EntryID,
+		"identityKey":   entry.IdentityKey,
+		"sourceSeason":  valueInt32(entry.SourceSeason),
+		"sourceEpisode": valueInt32(entry.SourceEpisode),
+	})
+	if err != nil {
+		return fmt.Errorf("encode RSS acquisition payload: %w", err)
+	}
+	acquisition, err := scope.Queries.UpsertRSSAcquisition(ctx, db.UpsertRSSAcquisitionParams{
+		ID:               repository.UUIDToPG(uuid.New()),
+		SeriesID:         subscription.SeriesID,
+		MappingProfileID: subscription.MappingProfileID,
+		RssEntryID:       entry.ID,
+		SourcePayload:    sourcePayload,
+	})
+	if err != nil {
+		return fmt.Errorf("create RSS acquisition: %w", err)
+	}
+	download, err := scope.Queries.CreateRSSDownloadAttempt(ctx, db.CreateRSSDownloadAttemptParams{
+		ID:            repository.UUIDToPG(uuid.New()),
+		AcquisitionID: acquisition.ID,
+	})
+	if err != nil {
+		return fmt.Errorf("create RSS download attempt: %w", err)
+	}
+	if _, err := workflow.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
+		Kind:           appqueue.KindDownloadEnqueue,
+		ResourceType:   "download",
+		ResourceID:     repository.UUIDFromPG(download.ID),
+		IdempotencyKey: "download.enqueue:" + repository.UUIDFromPG(download.ID).String(),
+		MaxAttempts:    5,
+		Timeout:        DownloadEnqueueTimeout,
+		Payload: map[string]any{
+			"defaultSeason":  valueInt32(entry.SourceSeason),
+			"defaultEpisode": valueInt32(entry.SourceEpisode),
+			"singleEpisode":  true,
+		},
+	}); err != nil {
+		return fmt.Errorf("schedule RSS download enqueue: %w", err)
+	}
+	data, err := json.Marshal(map[string]any{
+		"status":          domain.RSSEnqueueing,
+		"enqueueAttempt":  updated.EnqueueAttempts,
+		"downloadAttempt": download.Attempt,
+		"acquisitionId":   repository.UUIDFromPG(acquisition.ID),
+		"downloadId":      repository.UUIDFromPG(download.ID),
+	})
+	if err != nil {
+		return fmt.Errorf("encode RSS enqueue event: %w", err)
+	}
+	return appendRSSEntryEvent(ctx, scope.Queries, candidate.EntryID, "rss.entry.enqueueing", data)
+}
+
+func (workflow *RSSWorkflow) finishRSSSchedule(ctx context.Context, candidate domain.RSSEnqueueCandidate, err error) error {
 	if err == nil {
 		return nil
 	}
 	var serviceErr *Error
-	if errors.As(err, &serviceErr) && (strings.HasPrefix(serviceErr.Code, "rss_realtime_") || errors.Is(err, ErrStateConflict)) {
+	if errors.Is(err, domain.ErrVersionConflict) || (errors.As(err, &serviceErr) && (strings.HasPrefix(serviceErr.Code, "rss_realtime_") || errors.Is(err, ErrStateConflict))) {
 		return err
 	}
 	if failureErr := workflow.recordScheduleFailure(ctx, candidate.EntryID, "rss_schedule_failed", err.Error()); failureErr != nil {

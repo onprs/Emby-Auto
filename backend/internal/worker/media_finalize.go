@@ -48,10 +48,10 @@ func (handler *MediaFinalizeHandler) Handle(ctx context.Context, operation domai
 	if command.Video.BaseName != command.Subtitle.BaseName {
 		return permanentFailure("artifact_basename_mismatch", "video and subtitle artifacts do not share a basename", nil)
 	}
-	if err := verifyArtifactFile(command.Video); err != nil {
+	if err := verifyArtifactFile(ctx, command.Video); err != nil {
 		return permanentFailure("video_artifact_invalid", "the video artifact does not match its database identity", err)
 	}
-	if err := verifyArtifactFile(command.Subtitle); err != nil {
+	if err := verifyArtifactFile(ctx, command.Subtitle); err != nil {
 		return permanentFailure("subtitle_artifact_invalid", "the subtitle artifact does not match its database identity", err)
 	}
 	if err := handler.store.CompleteFinalize(ctx, command.TaskID, operation.ID); err != nil {

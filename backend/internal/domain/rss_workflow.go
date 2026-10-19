@@ -96,8 +96,9 @@ type RSSPollMappingPreparation struct {
 }
 
 type RSSPollPersistOptions struct {
-	AdjudicateReleases bool
-	RealtimeCheckID    uuid.UUID
+	AdjudicateReleases          bool
+	RealtimeCheckID             uuid.UUID
+	ExpectedSubscriptionVersion int32
 }
 
 type RSSPollPersistResult struct {

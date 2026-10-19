@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -144,11 +145,37 @@ func TestEventStreamWritesPublicUUIDCursorAndEnvelope(t *testing.T) {
 	if response.Header().Get("Content-Type") != "text/event-stream" || response.Header().Get("Cache-Control") != "no-cache, no-transform" || response.Header().Get("X-Accel-Buffering") != "no" {
 		t.Fatalf("SSE headers = %#v", response.Header())
 	}
-	want := "id: 10000000-0000-0000-0000-000000000010\n" +
+	want := ": connected\n\n" + "id: 10000000-0000-0000-0000-000000000010\n" +
 		"event: task.updated\n" +
 		"data: {\"id\":\"10000000-0000-0000-0000-000000000010\",\"topic\":\"task.updated\",\"data\":{\"state\":\"processing\"},\"occurredAt\":\"2026-07-21T12:30:00Z\"}\n\n"
 	if response.Body.String() != want {
 		t.Fatalf("SSE body = %q, want %q", response.Body.String(), want)
+	}
+}
+
+func TestEventStreamSendsHeadersWithoutWaitingForNewEvents(t *testing.T) {
+	source := &eventSourceStub{}
+	server := NewServer(readinessStub{}, WithEvents(source))
+	server.eventPollInterval = time.Hour
+	httpServer := httptest.NewServer(NewHandler(server))
+	defer httpServer.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, httpServer.URL+"/api/v1/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := httpServer.Client().Do(request)
+	if err != nil {
+		t.Fatalf("没有新事件时连接未及时建立：%v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("事件流响应为 %d，响应头为 %v", response.StatusCode, response.Header)
+	}
+	line, err := bufio.NewReader(response.Body).ReadString('\n')
+	if err != nil || !strings.HasPrefix(line, ":") {
+		t.Fatalf("事件流缺少初始保活消息：%q，错误为 %v", line, err)
 	}
 }
 

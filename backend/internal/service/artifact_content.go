@@ -32,7 +32,7 @@ func NewArtifactContentService(queries *db.Queries) *ArtifactContentService {
 }
 
 func (service *ArtifactContentService) OpenArtifact(ctx context.Context, taskID, artifactID uuid.UUID) (ArtifactContent, error) {
-	artifact, err := service.queries.GetArtifactByID(ctx, repository.UUIDToPG(artifactID))
+	artifact, err := service.queries.GetArtifactContent(ctx, repository.UUIDToPG(artifactID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ArtifactContent{}, domain.ErrNotFound
 	}

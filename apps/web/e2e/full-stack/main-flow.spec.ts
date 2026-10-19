@@ -25,6 +25,8 @@ type Task = {
   movieTitle?: string;
   releaseYear?: number;
   state: string;
+  videoState: string;
+  subtitleState: string;
   version: number;
   failureStage?: string;
   errorCode?: string;
@@ -37,7 +39,6 @@ type OperationPage = { items: Operation[] };
 type CommandAccepted = { operationId: string; status: string };
 type EmbyScanAccepted = { scan: { id: string }; operationId: string; status: string };
 type RssSubscription = { id: string; name: string; feedUrl: string; enabled: boolean; completedAt?: string };
-type RssSubscriptionPage = { items: RssSubscription[] };
 type RssEntryPage = { items: Array<{ acquisitionId?: string; downloadId?: string; status: string }> };
 
 const manifest = JSON.parse(
@@ -236,12 +237,11 @@ async function createRSSSubscription(
   }
   const createResponse = page.waitForResponse((response) => response.url().includes('/api/v1/rss/subscriptions') && response.request().method() === 'POST');
   await page.getByRole('button', { name: '创建订阅' }).click();
-  expect((await createResponse).ok()).toBeTruthy();
-  await expect(page.getByRole('link', { name: seriesTitle }).first()).toBeVisible();
-  const subscriptions = await json<RssSubscriptionPage>(page.request, '/api/v1/rss/subscriptions?limit=100');
-  const subscriptionId = subscriptions.items.find((item) => item.feedUrl === feedUrl)?.id;
-  expect(subscriptionId).toBeTruthy();
-  return subscriptionId!;
+  const createdResponse = await createResponse;
+  expect(createdResponse.ok()).toBeTruthy();
+  const created = await createdResponse.json() as RssSubscription;
+  await expect(page.getByRole('link').and(page.locator(`a[href^="/rss/${created.id}"]`))).toBeVisible();
+  return created.id;
 }
 
 async function mapAndMaterialize(page: Page, acquisitionId: string, downloadId: string) {
@@ -338,13 +338,31 @@ async function reviewTask(page: Page, acquisitionId: string) {
   return { taskId, importOperationId: importOperation!.id };
 }
 
+async function assertImportedPreview(page: Page, task: Task) {
+  expect(task.artifacts).toBeTruthy();
+  const videoResponse = await page.request.get(`/api/v1/tasks/${task.id}/artifacts/${task.artifacts!.video.id}/content`, {
+    headers: { Range: 'bytes=0-7' },
+  });
+  expect(videoResponse.status()).toBe(206);
+  expect(videoResponse.headers()['content-range']).toMatch(/^bytes 0-7\//);
+  expect((await videoResponse.body()).length).toBe(8);
+  const subtitleResponse = await page.request.get(`/api/v1/tasks/${task.id}/artifacts/${task.artifacts!.subtitle.id}/content`);
+  expect(subtitleResponse.status()).toBe(200);
+  expect(await subtitleResponse.text()).toContain('Fixture subtitle');
+  const invalidRange = await page.request.get(`/api/v1/tasks/${task.id}/artifacts/${task.artifacts!.video.id}/content`, {
+    headers: { Range: 'bytes=0-7invalid' },
+  });
+  expect(invalidRange.status()).toBe(416);
+}
+
 async function reviewImportAndScan(page: Page, acquisitionId: string) {
   const { taskId } = await reviewTask(page, acquisitionId);
-  await poll(
+  const importedTask = await poll(
     () => json<Task>(page.request, `/api/v1/tasks/${taskId}`),
     (value) => value.state === 'imported' && value.cleanup?.status === 'completed',
     90_000,
   );
+  await assertImportedPreview(page, importedTask);
 
   await requestEmbyRefreshAndUpdateCatalog(page);
   await expect(page.getByRole('link', { name: 'Fixture Library' })).toBeVisible();
@@ -400,11 +418,12 @@ test('@movie real movie pipeline reaches the movie library and Emby catalog', as
   await page.getByRole('button', { name: '审核通过并入库' }).click();
   const reviewedTask = await (await reviewed).json() as Task;
   expect(reviewedTask.state).toBe('import_queued');
-  await poll(
+  const importedTask = await poll(
     () => json<Task>(page.request, `/api/v1/tasks/${taskId}`),
     (value) => value.state === 'imported' && value.cleanup?.status === 'completed',
     90_000,
   );
+  await assertImportedPreview(page, importedTask);
 
   const movieDirectory = path.join(manifest.paths.movieLibraryRoot, 'Fixture Movie(2024)');
   expect(fs.existsSync(path.join(movieDirectory, 'Fixture Movie(2024).mp4'))).toBeTruthy();
@@ -453,11 +472,12 @@ test('@cross-browser real RSS pipeline reaches acquisition, task and Emby catalo
     (value) => !value.enabled && Boolean(value.completedAt),
     90_000,
   );
-  await poll(
+  const cleanedTask = await poll(
     () => json<Task>(page.request, `/api/v1/tasks/${taskId}`),
     (value) => value.cleanup?.status === 'completed',
     90_000,
   );
+  await assertImportedPreview(page, cleanedTask);
   const subscriptionOperations = await json<OperationPage>(page.request, `/api/v1/operations?limit=100&resourceType=rss_subscription&resourceId=${subscriptionId}`);
   expect(subscriptionOperations.items.find((operation) => operation.kind === 'rss.subscription.delete')).toBeUndefined();
 
@@ -581,8 +601,10 @@ test('@recovery task media failure retries, stale review conflicts, and processi
     );
 
     await page.goto(`/tasks/${retryTaskId}`);
+    const frozenTask = await json<Task>(page.request, `/api/v1/tasks/${retryTaskId}`);
     const stalePage = await context.newPage();
     await stalePage.route('**/api/v1/events**', (route) => route.abort());
+    await stalePage.route(`**/api/v1/tasks/${retryTaskId}`, (route) => route.fulfill({ json: frozenTask }));
     await stalePage.goto(`/tasks/${retryTaskId}`);
     const approvedResponse = page.waitForResponse((response) => response.url().includes(`/api/v1/tasks/${retryTaskId}/review`) && response.request().method() === 'POST');
     await page.getByRole('button', { name: '审核通过并入库' }).click();
@@ -594,7 +616,7 @@ test('@recovery task media failure retries, stale review conflicts, and processi
     await expect(stalePage.getByRole('alert').last()).toBeVisible();
     await stalePage.close();
 
-    await setFixtureControl(page, 'media_slow', true);
+    await setFixtureControl(page, 'media_blocked', true);
     const cancelFlow = await createSearchAcquisition(page, 'Fixture task cancel');
     await mapAndMaterialize(page, cancelFlow.acquisitionId, cancelFlow.downloadId);
     const cancelAcquisition = await poll(
@@ -604,18 +626,22 @@ test('@recovery task media failure retries, stale review conflicts, and processi
     const cancelTaskId = cancelAcquisition.tasks[0].id;
     await poll(
       () => json<Task>(page.request, `/api/v1/tasks/${cancelTaskId}`),
-      (value) => value.state === 'processing',
+      (value) => value.state === 'processing' && value.videoState === 'transcoding' && value.subtitleState === 'extracting_or_converting',
     );
     await page.goto(`/tasks/${cancelTaskId}`);
     await page.getByRole('button', { name: '取消任务' }).click();
+    const cancelledResponse = page.waitForResponse((response) => response.url().includes(`/api/v1/tasks/${cancelTaskId}/cancel`) && response.request().method() === 'POST');
     await page.getByRole('button', { name: '确认', exact: true }).click();
+    expect((await cancelledResponse).status()).toBe(202);
     await poll(
       () => json<Task>(page.request, `/api/v1/tasks/${cancelTaskId}`),
-      (value) => value.state === 'cancelled',
+      (value) => value.state === 'cancelled'
+        && value.operations.some((operation) => operation.kind === 'task.cancel' && operation.status === 'succeeded')
+        && value.operations.filter((operation) => operation.kind === 'transcode.run' || operation.kind === 'subtitle.prepare').every((operation) => operation.status === 'cancelled'),
     );
   } finally {
     await setFixtureControl(page, 'media_invalid', false);
-    await setFixtureControl(page, 'media_slow', false);
+    await setFixtureControl(page, 'media_blocked', false);
   }
 });
 

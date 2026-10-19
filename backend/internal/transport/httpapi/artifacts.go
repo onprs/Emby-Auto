@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5/middleware"
@@ -88,24 +89,27 @@ func parseByteRange(header string, size int64) (int64, int64, bool) {
 	}
 	var start, end int64
 	if parts[0] == "" {
-		var suffix int64
-		if _, err := fmt.Sscanf(parts[1], "%d", &suffix); err != nil || suffix <= 0 {
+		suffix, err := strconv.ParseUint(parts[1], 10, 63)
+		if err != nil || suffix == 0 {
 			return 0, 0, false
 		}
-		if suffix > size {
-			suffix = size
-		}
-		start = size - suffix
+		start = size - min(int64(suffix), size)
 		end = size - 1
 		return start, end, true
 	}
-	if _, err := fmt.Sscanf(parts[0], "%d", &start); err != nil {
+	parsedStart, err := strconv.ParseUint(parts[0], 10, 63)
+	if err != nil {
 		return 0, 0, false
 	}
+	start = int64(parsedStart)
 	if parts[1] == "" {
 		end = size - 1
-	} else if _, err := fmt.Sscanf(parts[1], "%d", &end); err != nil {
-		return 0, 0, false
+	} else {
+		parsedEnd, err := strconv.ParseUint(parts[1], 10, 63)
+		if err != nil {
+			return 0, 0, false
+		}
+		end = int64(parsedEnd)
 	}
 	if start < 0 || end < start || start >= size {
 		return 0, 0, false

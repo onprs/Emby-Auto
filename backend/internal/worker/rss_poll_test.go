@@ -56,7 +56,7 @@ func (stub *rssPollStoreStub) LoadPollCommand(context.Context, uuid.UUID) (domai
 	return stub.command, stub.loadErr
 }
 
-func (stub *rssPollStoreStub) PreparePollMapping(_ context.Context, operationID, _ uuid.UUID, feed domain.RSSFeed) (domain.RSSPollMappingPreparation, error) {
+func (stub *rssPollStoreStub) PreparePollMapping(_ context.Context, operationID, _ uuid.UUID, feed domain.RSSFeed, _ ...int32) (domain.RSSPollMappingPreparation, error) {
 	stub.ensureMappingCalls++
 	stub.ensureOperationID = operationID
 	stub.ensureMappingFeed = feed
