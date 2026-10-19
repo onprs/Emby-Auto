@@ -174,7 +174,7 @@ describe("SettingsServicesPage", () => {
     renderWithProviders(<SettingsServicesPage />);
 
     expect(await screen.findByText("当前事件总量")).toBeInTheDocument();
-    expect(screen.getByText("12")).toBeInTheDocument();
+    expect(await screen.findByText("12")).toBeInTheDocument();
     expect(screen.getByText("最早事件时间")).toBeInTheDocument();
     expect(screen.getByText(/2026/)).toBeInTheDocument();
   });
@@ -189,7 +189,7 @@ describe("SettingsServicesPage", () => {
     renderWithProviders(<SettingsServicesPage />);
 
     expect(await screen.findByText("当前事件总量")).toBeInTheDocument();
-    expect(screen.getByText("0")).toBeInTheDocument();
+    expect(await screen.findByText("0")).toBeInTheDocument();
     const label = screen.getByText("最早事件时间");
     expect(label.parentElement).toHaveTextContent("—");
   });
