@@ -11,7 +11,7 @@ Element.prototype.scrollIntoView = vi.fn();
 // Node fetch needs an absolute origin; the browser uses same-origin relative URLs.
 client.setConfig({ baseUrl: 'http://localhost', credentials: 'include' });
 
-beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 afterEach(() => {
   cleanup();
   server.resetHandlers();
