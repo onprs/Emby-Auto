@@ -131,6 +131,7 @@ type Querier interface {
 	GetAppSetting(ctx context.Context, name string) (AppSetting, error)
 	GetArchivedRSSAcquisitionByID(ctx context.Context, id pgtype.UUID) (GetArchivedRSSAcquisitionByIDRow, error)
 	GetArtifactByID(ctx context.Context, id pgtype.UUID) (MediaArtifact, error)
+	GetArtifactContent(ctx context.Context, id pgtype.UUID) (GetArtifactContentRow, error)
 	GetArtifactSetForTask(ctx context.Context, taskID pgtype.UUID) (GetArtifactSetForTaskRow, error)
 	GetCompatibleActiveMappingProfile(ctx context.Context, arg GetCompatibleActiveMappingProfileParams) (pgtype.UUID, error)
 	GetDefaultTranscodeProfile(ctx context.Context) (TranscodeProfile, error)
