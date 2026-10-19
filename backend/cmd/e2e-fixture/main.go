@@ -449,6 +449,7 @@ func (fixture *fixtureServer) tmdb(writer http.ResponseWriter, request *http.Req
 		if request.URL.Path == fmt.Sprintf("/tmdb/tv/%d", series.ID) {
 			_ = json.NewEncoder(writer).Encode(map[string]any{
 				"id": series.ID, "name": series.Title, "original_name": series.Title,
+				"status": "Ended", "in_production": false,
 				"seasons": []map[string]any{{"id": series.ID*10 + 1, "name": "Season 1", "season_number": 1, "episode_count": 1}},
 			})
 			return

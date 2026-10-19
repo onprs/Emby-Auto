@@ -131,6 +131,7 @@ type Querier interface {
 	GetAppSetting(ctx context.Context, name string) (AppSetting, error)
 	GetArchivedRSSAcquisitionByID(ctx context.Context, id pgtype.UUID) (GetArchivedRSSAcquisitionByIDRow, error)
 	GetArtifactByID(ctx context.Context, id pgtype.UUID) (MediaArtifact, error)
+	GetArtifactContent(ctx context.Context, id pgtype.UUID) (GetArtifactContentRow, error)
 	GetArtifactSetForTask(ctx context.Context, taskID pgtype.UUID) (GetArtifactSetForTaskRow, error)
 	GetCompatibleActiveMappingProfile(ctx context.Context, arg GetCompatibleActiveMappingProfileParams) (pgtype.UUID, error)
 	GetDefaultTranscodeProfile(ctx context.Context) (TranscodeProfile, error)
@@ -163,6 +164,7 @@ type Querier interface {
 	GetRSSEntryBySignals(ctx context.Context, arg GetRSSEntryBySignalsParams) (RssEntry, error)
 	GetRSSEntryMappedRealtimeTarget(ctx context.Context, entryID pgtype.UUID) (GetRSSEntryMappedRealtimeTargetRow, error)
 	GetRSSEntryRelations(ctx context.Context, rssEntryID pgtype.UUID) (GetRSSEntryRelationsRow, error)
+	GetRSSMappedTargetEpisodeID(ctx context.Context, arg GetRSSMappedTargetEpisodeIDParams) (pgtype.UUID, error)
 	GetRSSMappedTargetOccupancy(ctx context.Context, arg GetRSSMappedTargetOccupancyParams) (GetRSSMappedTargetOccupancyRow, error)
 	GetRSSPollCommand(ctx context.Context, id pgtype.UUID) (GetRSSPollCommandRow, error)
 	GetRSSPreacquisitionMappingScope(ctx context.Context, id pgtype.UUID) (RssPreacquisitionMappingScope, error)
@@ -252,6 +254,8 @@ type Querier interface {
 	ListRSSAutoReviewPendingTasks(ctx context.Context, subscriptionID pgtype.UUID) ([]ListRSSAutoReviewPendingTasksRow, error)
 	ListRSSCompletionCleanupCandidates(ctx context.Context, subscriptionID pgtype.UUID) ([]ListRSSCompletionCleanupCandidatesRow, error)
 	ListRSSEntries(ctx context.Context, arg ListRSSEntriesParams) ([]ListRSSEntriesRow, error)
+	ListRSSEntriesByIDs(ctx context.Context, entryIds []pgtype.UUID) ([]RssEntry, error)
+	ListRSSEntryMappedRealtimeTargets(ctx context.Context, entryIds []pgtype.UUID) ([]ListRSSEntryMappedRealtimeTargetsRow, error)
 	ListRSSImportConflictReconciliationCandidates(ctx context.Context, subscriptionID pgtype.UUID) ([]ListRSSImportConflictReconciliationCandidatesRow, error)
 	ListRSSImportedEntryAcquisitions(ctx context.Context, subscriptionID pgtype.UUID) ([]ListRSSImportedEntryAcquisitionsRow, error)
 	ListRSSMappedRealtimeTargets(ctx context.Context, subscriptionID pgtype.UUID) ([]ListRSSMappedRealtimeTargetsRow, error)
@@ -286,6 +290,7 @@ type Querier interface {
 	ListTaskOperationSummaries(ctx context.Context, taskIds []pgtype.UUID) ([]Operation, error)
 	// sqlc nullable projection: optional workflow rows use zero scalar sentinels.
 	ListTaskViews(ctx context.Context, arg ListTaskViewsParams) ([]ListTaskViewsRow, error)
+	ListUnacquiredRSSFeedEntriesByIdentity(ctx context.Context, arg ListUnacquiredRSSFeedEntriesByIdentityParams) ([]RssEntry, error)
 	ListUnresolvedRSSAdjudicationBatches(ctx context.Context, subscriptionID pgtype.UUID) ([]pgtype.UUID, error)
 	LockAcquisitionForDeletion(ctx context.Context, id pgtype.UUID) (LockAcquisitionForDeletionRow, error)
 	LockAcquisitionForMapping(ctx context.Context, id pgtype.UUID) (LockAcquisitionForMappingRow, error)
@@ -316,6 +321,7 @@ type Querier interface {
 	LockRSSSubscriptionForEntryReservation(ctx context.Context, id pgtype.UUID) (RssSubscription, error)
 	LockRSSSubscriptionForMappingAcquisition(ctx context.Context, acquisitionID pgtype.UUID) (pgtype.UUID, error)
 	LockRSSSubscriptionForTaskImport(ctx context.Context, taskID pgtype.UUID) (pgtype.UUID, error)
+	LockRSSSubscriptionsForEntries(ctx context.Context, entryIds []pgtype.UUID) ([]RssSubscription, error)
 	LockSearchRun(ctx context.Context, id pgtype.UUID) (SearchRun, error)
 	MarkAcquisitionDeletionRequested(ctx context.Context, id pgtype.UUID) (Acquisition, error)
 	MarkActiveCleanupTerminalFailure(ctx context.Context, arg MarkActiveCleanupTerminalFailureParams) (CleanupRun, error)
@@ -368,6 +374,7 @@ type Querier interface {
 	RecordRSSPoll(ctx context.Context, id pgtype.UUID) (RssSubscription, error)
 	RecordRSSPollFailure(ctx context.Context, id pgtype.UUID) (RssSubscription, error)
 	RefreshRSSEmbyCatalogFulfillmentsForRealtimeTarget(ctx context.Context, arg RefreshRSSEmbyCatalogFulfillmentsForRealtimeTargetParams) error
+	RejectRSSEntryBeforeEnqueue(ctx context.Context, arg RejectRSSEntryBeforeEnqueueParams) error
 	ReplaceDefaultTranscodeProfile(ctx context.Context, arg ReplaceDefaultTranscodeProfileParams) (TranscodeProfile, error)
 	RequestAcquisitionOperationCancellations(ctx context.Context, arg RequestAcquisitionOperationCancellationsParams) (int64, error)
 	RequestOperationCancellation(ctx context.Context, id pgtype.UUID) (Operation, error)

@@ -169,19 +169,23 @@ func prepareRSSMappedTargetLocks(
 ) ([]uuid.UUID, error) {
 	expectedTargets := make([]uuid.UUID, len(requests))
 	for index, request := range requests {
-		occupancy, err := loadRSSMappedTargetOccupancyWithRealtimeCheck(
-			ctx,
-			scope.Queries,
-			request.subscriptionID,
-			request.sourceSeason,
-			request.sourceEpisode,
-			request.excludedEntryID,
-			request.realtimeCheckID,
-		)
-		if err != nil {
-			return nil, err
+		if request.subscriptionID == uuid.Nil || request.sourceSeason <= 0 || request.sourceEpisode <= 0 {
+			continue
 		}
-		expectedTargets[index] = occupancy.TargetEpisodeID
+		targetID, err := scope.Queries.GetRSSMappedTargetEpisodeID(ctx, db.GetRSSMappedTargetEpisodeIDParams{
+			SubscriptionID: repository.UUIDToPG(request.subscriptionID),
+			SourceSeason:   int32(request.sourceSeason), SourceEpisode: int32(request.sourceEpisode),
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			if request.realtimeCheckID != uuid.Nil {
+				return nil, NewError("rss_realtime_mapping_unavailable", "the RSS source coordinate does not have a mapped target for real-time verification", ErrStateConflict, nil)
+			}
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("load RSS target for occupancy lock: %w", err)
+		}
+		expectedTargets[index] = repository.UUIDFromPG(targetID)
 	}
 	if err := lockEpisodeMappingTargets(ctx, scope, expectedTargets); err != nil {
 		return nil, err

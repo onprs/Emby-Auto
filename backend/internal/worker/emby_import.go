@@ -178,7 +178,7 @@ func importArtifactPair(
 		if err := context.Cause(ctx); err != nil {
 			return err
 		}
-		prepared, err := prepareImportDestination(*destination, libraryAccess)
+		prepared, err := prepareImportDestination(ctx, *destination, libraryAccess)
 		if err != nil {
 			return err
 		}
@@ -191,12 +191,18 @@ func importArtifactPair(
 		if !destination.prepared {
 			continue
 		}
-		if err := os.Rename(destination.temporary, destination.final); err != nil {
-			if existingErr := verifyFileAgainstArtifact(destination.final, destination.artifact); existingErr == nil {
+		if err := commitTemporaryFile(destination.temporary, destination.final); err != nil {
+			if existingErr := verifyFileAgainstArtifact(ctx, destination.final, destination.artifact); existingErr == nil {
 				if accessErr := libraryAccess.Apply(destination.final); accessErr != nil {
 					return accessErr
 				}
 				continue
+			}
+			if cause := context.Cause(ctx); cause != nil {
+				return cause
+			}
+			if errors.Is(err, os.ErrExist) {
+				return &destinationConflictError{path: destination.final}
 			}
 			return fmt.Errorf("atomically commit library file: %w", err)
 		}
@@ -205,7 +211,10 @@ func importArtifactPair(
 		return err
 	}
 	for _, destination := range destinations {
-		if err := verifyFileAgainstArtifact(destination.final, destination.artifact); err != nil {
+		if err := verifyFileAgainstArtifact(ctx, destination.final, destination.artifact); err != nil {
+			if cause := context.Cause(ctx); cause != nil {
+				return cause
+			}
 			return &destinationConflictError{path: destination.final}
 		}
 		if err := libraryAccess.Apply(destination.final); err != nil {
@@ -218,9 +227,12 @@ func importArtifactPair(
 	return nil
 }
 
-func prepareImportDestination(destination importDestination, libraryAccess ImportedLibraryAccess) (bool, error) {
-	if _, err := os.Stat(destination.final); err == nil {
-		if err := verifyFileAgainstArtifact(destination.final, destination.artifact); err != nil {
+func prepareImportDestination(ctx context.Context, destination importDestination, libraryAccess ImportedLibraryAccess) (bool, error) {
+	if _, err := os.Lstat(destination.final); err == nil {
+		if err := verifyFileAgainstArtifact(ctx, destination.final, destination.artifact); err != nil {
+			if cause := context.Cause(ctx); cause != nil {
+				return false, cause
+			}
 			return false, &destinationConflictError{path: destination.final}
 		}
 		if err := libraryAccess.Apply(destination.final); err != nil {
@@ -230,16 +242,21 @@ func prepareImportDestination(destination importDestination, libraryAccess Impor
 	} else if !os.IsNotExist(err) {
 		return false, err
 	}
-	if err := verifyArtifactFile(destination.artifact); err != nil {
-		return false, fmt.Errorf("verify staged artifact: %w", err)
+	info, err := os.Lstat(destination.artifact.FilePath)
+	if err != nil {
+		return false, fmt.Errorf("inspect staged artifact: %w", err)
 	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() != destination.artifact.SizeBytes {
+		return false, fmt.Errorf("staged artifact must be a regular file matching its recorded size")
+	}
+	// 复制后验证临时文件的完整校验和，避免对源文件重复进行一次全量读取。
 	if err := os.Remove(destination.temporary); err != nil && !os.IsNotExist(err) {
 		return false, err
 	}
-	if err := copyFile(destination.artifact.FilePath, destination.temporary); err != nil {
+	if err := copyFile(ctx, destination.artifact.FilePath, destination.temporary); err != nil {
 		return false, fmt.Errorf("copy artifact to library temporary file: %w", err)
 	}
-	if err := verifyFileAgainstArtifact(destination.temporary, destination.artifact); err != nil {
+	if err := verifyFileAgainstArtifact(ctx, destination.temporary, destination.artifact); err != nil {
 		return false, fmt.Errorf("verify library temporary file: %w", err)
 	}
 	if err := libraryAccess.Apply(destination.temporary); err != nil {
@@ -305,7 +322,7 @@ func importTemporaryPath(final string, operationID uuid.UUID) string {
 	return filepath.Join(filepath.Dir(final), "."+stem+"."+operationID.String()+".import.part"+extension)
 }
 
-func verifyFileAgainstArtifact(path string, artifact domain.MediaArtifact) error {
+func verifyFileAgainstArtifact(ctx context.Context, path string, artifact domain.MediaArtifact) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err
@@ -313,7 +330,7 @@ func verifyFileAgainstArtifact(path string, artifact domain.MediaArtifact) error
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return fmt.Errorf("library artifact must be a regular file, not a symlink")
 	}
-	size, checksum, err := fileIdentity(path)
+	size, checksum, err := fileIdentity(ctx, path)
 	if err != nil {
 		return err
 	}

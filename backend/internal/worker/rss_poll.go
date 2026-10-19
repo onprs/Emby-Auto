@@ -21,7 +21,7 @@ type RSSFeedClientFactory func(context.Context) (RSSFeedClient, error)
 
 type RSSPollStore interface {
 	LoadPollCommand(context.Context, uuid.UUID) (domain.RSSPollCommand, error)
-	PreparePollMapping(context.Context, uuid.UUID, uuid.UUID, domain.RSSFeed) (domain.RSSPollMappingPreparation, error)
+	PreparePollMapping(context.Context, uuid.UUID, uuid.UUID, domain.RSSFeed, ...int32) (domain.RSSPollMappingPreparation, error)
 	PersistPoll(context.Context, uuid.UUID, uuid.UUID, domain.RSSFeed, domain.RSSPollPersistOptions) (domain.RSSPollPersistResult, error)
 	RecordPollFailure(context.Context, uuid.UUID, uuid.UUID, string, string) error
 	RecordPollBatch(context.Context, uuid.UUID, uuid.UUID, domain.RSSPollBatchSummary) error
@@ -127,7 +127,10 @@ func (handler *RSSPollHandler) Handle(ctx context.Context, operation domain.Oper
 		}
 		return retryableFailure("rss_fetch_failed", "the RSS feed could not be fetched", err)
 	}
-	preparation, err := handler.store.PreparePollMapping(ctx, operation.ID, command.SubscriptionID, feed)
+	preparation, err := handler.store.PreparePollMapping(ctx, operation.ID, command.SubscriptionID, feed, command.Version)
+	if errors.Is(err, domain.ErrVersionConflict) {
+		return nil
+	}
 	if err != nil {
 		return retryableFailure("rss_mapping_storage_unavailable", "the RSS mapping could not be prepared", err)
 	}
@@ -169,9 +172,13 @@ func (handler *RSSPollHandler) Handle(ctx context.Context, operation domain.Oper
 		}
 	}
 	persisted, err := handler.store.PersistPoll(ctx, operation.ID, command.SubscriptionID, feed, domain.RSSPollPersistOptions{
-		AdjudicateReleases: adjudicateReleases,
-		RealtimeCheckID:    realtimeCheckID,
+		AdjudicateReleases:          adjudicateReleases,
+		RealtimeCheckID:             realtimeCheckID,
+		ExpectedSubscriptionVersion: command.Version,
 	})
+	if errors.Is(err, domain.ErrVersionConflict) {
+		return nil
+	}
 	if err != nil {
 		var serviceErr *service.Error
 		if errors.As(err, &serviceErr) && strings.HasPrefix(serviceErr.Code, "rss_realtime_") {
@@ -264,7 +271,13 @@ func (handler *RSSPollHandler) entryScheduler() (service.RSSEntryScheduler, erro
 	if !ok {
 		return nil, errors.New("RSS enqueue does not accept real-time Emby checks")
 	}
-	return &rssRealtimeEntryScheduler{verifier: handler.realtimeVerifier, store: realtimeStore}, nil
+	realtimeScheduler := &rssRealtimeEntryScheduler{verifier: handler.realtimeVerifier, store: realtimeStore}
+	batchVerifier, canVerifyBatch := handler.realtimeVerifier.(rssRealtimeBatchVerifier)
+	batchStore, canScheduleBatch := handler.store.(rssRealtimeBatchStore)
+	if canVerifyBatch && canScheduleBatch {
+		return &rssRealtimeBatchEntryScheduler{rssRealtimeEntryScheduler: realtimeScheduler, verifier: batchVerifier, store: batchStore, maxConcurrency: handler.maxConcurrency}, nil
+	}
+	return realtimeScheduler, nil
 }
 
 func (handler *RSSPollHandler) retryEntry(ctx context.Context, entryID uuid.UUID, expectedVersion int32) error {

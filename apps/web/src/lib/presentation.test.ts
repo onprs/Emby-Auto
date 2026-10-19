@@ -59,6 +59,7 @@ describe('friendlyError', () => {
 describe('reasonLabel', () => {
   it('explains RSS rejection and target occupancy reasons', () => {
     expect(reasonLabel('episode_ambiguous')).toBe('集数信息相互冲突');
+    expect(reasonLabel('fractional_episode_requires_explicit_mapping')).toBe('小数集需要明确映射');
     expect(reasonLabel('target_episode_in_library')).toBe('媒体库已有该集');
     expect(reasonLabel('target_episode_imported')).toBe('该集已由系统入库');
     expect(reasonLabel('target_episode_processing')).toBe('该集正在处理中');
@@ -77,6 +78,7 @@ describe('rssRejectionReasonOptions', () => {
       'episode_not_detected',
       'agent_ignored',
       'episode_ambiguous',
+      'fractional_episode_requires_explicit_mapping',
       'download_uri_missing',
       'title_include_mismatch',
       'title_excluded',

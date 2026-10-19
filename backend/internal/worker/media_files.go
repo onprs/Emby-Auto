@@ -120,7 +120,10 @@ func prepareOutputDirectory(paths mediaOutputPaths) error {
 	return nil
 }
 
-func copyFile(source, destination string) error {
+func copyFile(ctx context.Context, source, destination string) error {
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
 	input, err := os.Open(source)
 	if err != nil {
 		return err
@@ -137,10 +140,13 @@ func copyFile(source, destination string) error {
 			_ = os.Remove(destination)
 		}
 	}()
-	if _, err := io.Copy(output, input); err != nil {
+	if _, err := copyMediaContent(ctx, output, input); err != nil {
 		return err
 	}
 	if err := output.Sync(); err != nil {
+		return err
+	}
+	if err := context.Cause(ctx); err != nil {
 		return err
 	}
 	if err := output.Close(); err != nil {
@@ -150,19 +156,54 @@ func copyFile(source, destination string) error {
 	return nil
 }
 
-func commitTemporaryFile(temporary, final string) error {
-	if _, err := os.Stat(final); err == nil {
-		return fmt.Errorf("final output already exists")
-	} else if !os.IsNotExist(err) {
-		return err
+// copyMediaContent 分块检查取消，同时保留普通文件之间的内核复制能力。
+func copyMediaContent(ctx context.Context, destination io.Writer, source io.Reader) (int64, error) {
+	var total int64
+	for {
+		if err := context.Cause(ctx); err != nil {
+			return total, err
+		}
+		copied, err := io.CopyN(destination, source, 4<<20)
+		total += copied
+		if err == io.EOF {
+			return total, context.Cause(ctx)
+		}
+		if err != nil {
+			return total, err
+		}
 	}
-	if err := os.Rename(temporary, final); err != nil {
-		return fmt.Errorf("atomically rename output: %w", err)
+}
+
+func commitTemporaryFile(temporary, final string) error {
+	if err := renameMediaFile(temporary, final); err != nil {
+		return fmt.Errorf("commit media output without replacing an existing file: %w", err)
 	}
 	return nil
 }
 
-func fileIdentity(filePath string) (int64, []byte, error) {
+func linkMediaFile(temporary, final string) error {
+	if err := os.Link(temporary, final); err != nil {
+		return err
+	}
+	return os.Remove(temporary)
+}
+
+type contextMediaReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (reader contextMediaReader) Read(buffer []byte) (int, error) {
+	if err := context.Cause(reader.ctx); err != nil {
+		return 0, err
+	}
+	return reader.reader.Read(buffer)
+}
+
+func fileIdentity(ctx context.Context, filePath string) (int64, []byte, error) {
+	if err := context.Cause(ctx); err != nil {
+		return 0, nil, err
+	}
 	file, err := os.Open(filePath)
 	if err != nil {
 		return 0, nil, err
@@ -176,14 +217,21 @@ func fileIdentity(filePath string) (int64, []byte, error) {
 		return 0, nil, fmt.Errorf("media output must be a non-empty regular file")
 	}
 	hasher := sha256.New()
-	if _, err := io.Copy(hasher, file); err != nil {
+	copied, err := io.Copy(hasher, contextMediaReader{ctx: ctx, reader: file})
+	if err != nil {
 		return 0, nil, err
 	}
-	return info.Size(), hasher.Sum(nil), nil
+	if err := context.Cause(ctx); err != nil {
+		return 0, nil, err
+	}
+	if copied != info.Size() {
+		return 0, nil, fmt.Errorf("media file size changed while calculating its identity")
+	}
+	return copied, hasher.Sum(nil), nil
 }
 
-func verifyArtifactFile(artifact domain.MediaArtifact) error {
-	size, checksum, err := fileIdentity(artifact.FilePath)
+func verifyArtifactFile(ctx context.Context, artifact domain.MediaArtifact) error {
+	size, checksum, err := fileIdentity(ctx, artifact.FilePath)
 	if err != nil {
 		return err
 	}
