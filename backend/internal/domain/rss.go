@@ -2,6 +2,7 @@ package domain
 
 import (
 	"crypto/sha256"
+	"encoding/base32"
 	"encoding/hex"
 	"errors"
 	"net"
@@ -18,10 +19,11 @@ var btihPattern = regexp.MustCompile(`(?i)^[0-9a-f]{40}$`)
 
 // RSSEnqueueCandidate is an entry that may produce an independent download job.
 type RSSEnqueueCandidate struct {
-	EntryID         uuid.UUID
-	Status          RSSState
-	Downloadable    bool
-	ExpectedVersion int32
+	EntryID                     uuid.UUID
+	Status                      RSSState
+	Downloadable                bool
+	ExpectedVersion             int32
+	ExpectedSubscriptionVersion int32
 }
 
 type RSSIdentityInput struct {
@@ -95,6 +97,8 @@ func AnalyzeRSSRelease(title, downloadURI string, defaultSeason int, includeKeyw
 		analysis.SourceEpisode = coordinate.SourceEpisode
 	case RSSCoordinateAmbiguous:
 		analysis.RejectionReasons = append(analysis.RejectionReasons, "episode_ambiguous")
+	case RSSCoordinateFractional:
+		analysis.RejectionReasons = append(analysis.RejectionReasons, "fractional_episode_requires_explicit_mapping")
 	default:
 		analysis.RejectionReasons = append(analysis.RejectionReasons, "episode_not_detected")
 	}
@@ -143,16 +147,25 @@ func CanAdjudicateRSSRelease(title, downloadURI string, defaultSeason int, inclu
 func PlanRSSReleaseAdjudication(entries []RSSFeedEntry, defaultSeason int, includeKeywords, excludeKeywords []string) []bool {
 	planned := make([]bool, len(entries))
 	coordinates := make(map[EpisodeCoordinate][]int)
+	identities := make(map[EpisodeCoordinate]map[string]struct{})
 	for index, entry := range entries {
 		analysis := AnalyzeRSSRelease(entry.Title, entry.DownloadURI, defaultSeason, includeKeywords, excludeKeywords)
 		planned[index] = canAdjudicateRSSReleaseAnalysis(analysis)
 		if analysis.Downloadable {
+			identity, err := BuildRSSFeedEntryIdentity(entry)
+			if err != nil {
+				continue
+			}
 			coordinate := EpisodeCoordinate{Season: analysis.SourceSeason, Episode: analysis.SourceEpisode}
 			coordinates[coordinate] = append(coordinates[coordinate], index)
+			if identities[coordinate] == nil {
+				identities[coordinate] = make(map[string]struct{})
+			}
+			identities[coordinate][identity] = struct{}{}
 		}
 	}
-	for _, indexes := range coordinates {
-		if len(indexes) < 2 {
+	for coordinate, indexes := range coordinates {
+		if len(identities[coordinate]) < 2 {
 			continue
 		}
 		for _, index := range indexes {
@@ -174,6 +187,18 @@ func canAdjudicateRSSReleaseAnalysis(analysis RSSReleaseAnalysis) bool {
 		}
 	}
 	return true
+}
+
+// BuildRSSFeedEntryIdentity 让裁决规划和持久化使用相同的内容去重顺序。
+func BuildRSSFeedEntryIdentity(entry RSSFeedEntry) (string, error) {
+	identityURL := strings.TrimSpace(entry.URL)
+	if identityURL == "" {
+		identityURL = strings.TrimSpace(entry.DownloadURI)
+	}
+	return BuildRSSIdentity(RSSIdentityInput{
+		GUID: entry.GUID, BTIH: btihFromMagnet(entry.DownloadURI), URL: identityURL,
+		Title: entry.Title, PublishedAt: entry.PublishedAt,
+	})
 }
 
 func BuildRSSIdentity(input RSSIdentityInput) (string, error) {
@@ -201,10 +226,16 @@ func BuildRSSIdentity(input RSSIdentityInput) (string, error) {
 func normalizeBTIH(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.TrimPrefix(strings.ToLower(value), "urn:btih:")
-	if !btihPattern.MatchString(value) {
-		return ""
+	if btihPattern.MatchString(value) {
+		return value
 	}
-	return strings.ToLower(value)
+	if len(value) == 32 {
+		decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(value))
+		if err == nil && len(decoded) == 20 {
+			return hex.EncodeToString(decoded)
+		}
+	}
+	return ""
 }
 
 func btihFromMagnet(rawURL string) string {

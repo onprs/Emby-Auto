@@ -1,0 +1,77 @@
+# 单条任务全流程测试记录
+
+本文面向开发维护环境。测试使用独立 PostgreSQL 容器、隔离数据库或测试专属 schema、临时媒体目录，不使用生产数据。测试日期为 2026-10-18，源码比较基线为 `0841daa`。
+
+测试覆盖搜索和 RSS 创建任务、下载与映射、视频转码、字幕处理、产物配对、人工审核、入库、Emby 目录同步、源文件与暂存文件清理，以及失败重试、取消、版本冲突、事件重放和预览读取。
+
+外部 qBittorrent、TMDb、RSS 源和 Emby 使用本地测试服务。浏览器端到端测试使用媒体工具夹具；另有真实 FFmpeg、FFprobe 和真实文件系统参与的媒体处理至清理测试。外部服务的生产网络吞吐不在本次测量范围内。
+
+**问题与修复**
+
+| 问题 | 影响与证据 | 修复及回归覆盖 |
+| --- | --- | --- |
+| 入库提交会覆盖并发出现的同名文件 | 确定性模拟另一写入者在临时文件准备完成后创建正式视频或字幕；原实现返回成功并覆盖对方文件 | Linux 使用禁止覆盖的原子重命名，不支持该系统调用时采用创建硬链接后移除临时文件；已有文件内容一致时允许重放，内容冲突时保留原文件并报告冲突。覆盖视频、字幕、普通文件和悬空符号链接 |
+| 复制和校验期间不能响应任务取消 | 原复制与校验调用不接收任务上下文，已开始的大文件操作会继续执行 | 复制每完成最多 4 MiB 检查取消，校验每次读取前检查取消；保留取消原因，移除失败复制产生的临时文件。新增读取期间主动取消及已取消操作不创建目标的用例 |
+| 入库清理后预览失效 | 数据库集成用例在入库成功并删除暂存文件后，视频或字幕预览返回文件不可用 | 根据成功入库记录和产物配对关系读取正式文件，入库前继续读取暂存文件；保留资源所属任务校验。浏览器覆盖番剧、电影和 RSS 任务清理后的预览 |
+| 非法 Range 被当作合法范围 | 原解析器接受多范围、带正号或带尾随字符的输入 | 使用严格的无符号整数解析；覆盖合法前缀、后缀、开放范围、边界截断，以及非法字符、多范围、逆序和整数溢出。实际 HTTP 请求验证非法范围返回 416 |
+| 空闲 SSE 连接建立缓慢 | 没有新事件时首批响应需等待 15 秒心跳，与前端连接超时发生竞争；新增真实 HTTP 用例在修复前超时失败 | 建立流时立即发送保活注释；请求取消时关闭管道，避免写入阻塞。原有事件格式、游标和关闭行为测试继续通过 |
+| SSE 重连后页面仍停留在错误状态 | 事件游标已推进，但 API 重启期间列表读取失败；恢复连接后没有新事件，列表不会重读。新增前端用例在修复前保持旧数据 | 成功重连后批量重新获取受保护的数据，避免漏掉游标推进期间失败的读取；单元测试及 API 重启的浏览器用例验证自动恢复 |
+
+新增回归集中在 `backend/internal/worker/import_boundaries_test.go`、`media_file_boundaries_test.go`、`media_flow_integration_test.go`、`backend/internal/service/artifact_content_integration_test.go`、`backend/internal/transport/httpapi/artifacts_test.go`、`events_test.go` 和 `apps/web/src/app/sse.test.ts`。
+
+同时修复端到端测试的前提和定位方式：以订阅创建响应中的 ID 定位可见链接；冻结过期审核页的任务快照；为代表完整单集剧集的 TMDb 夹具提供已完结状态；使用跨平台可识别的初始化配置路径。取消场景使用显式处理屏障，等待视频和字幕均进入处理阶段，再核对取消响应为 202、两个处理操作均已取消且取消操作成功结束，消除固定延时结束时的版本竞争。连载中订阅保持启用的生产规则继续由既有数据库集成测试验证。
+
+**性能测量**
+
+环境为 Linux amd64、AMD Ryzen AI 7 H 350、Go 1.26.0、本地文件系统。入库测量采用相同媒体数据、相同 Benchmark 和相同工具链；通过 Go overlay 读取基线中的五个媒体 worker 源文件，在不修改工作区代码的情况下比较修复前后行为。
+
+32 MiB 视频加 ASS 字幕，每组运行 10 次，重复 7 组，以下为各组结果的中位数：
+
+| 指标 | 基线 | 修复后 |
+| --- | ---: | ---: |
+| 单次入库耗时 | 64.52 ms | 50.59 ms |
+| 媒体数据处理吞吐 | 520.06 MB/s | 663.28 MB/s |
+| 每次操作分配 | 212,722 B | 179,050 B |
+| 每次操作分配次数 | 153 | 151 |
+
+耗时降低约 21.6%，吞吐提高约 27.5%。优化减少了复制前对源文件的一次全量校验读取；复制后的临时文件校验和正式文件校验均保留。取消检查同时覆盖这些读取过程。
+
+256 MiB 视频加字幕，每组运行 3 次，重复 3 组：单次入库耗时中位数 374.24 ms、吞吐 717.28 MB/s、操作分配 184,880 B。输入增大 8 倍时，操作分配约增大 3.3%，未按视频大小分配整文件缓冲区。分配数据仅指 Benchmark 计时区间内的操作分配，不包含测试媒体的生成和进程峰值内存。
+
+真实媒体测试使用 2 秒、1280×720、24 fps 的合成视频及音频，视频输出采用 libx264、CRF 23、fast、2 线程，外置中文字幕从 SRT 转换为 ASS。该用例使用测试存储，按阶段顺序直接调用处理器，执行真实工具和文件操作；数据库状态流转另有集成测试覆盖。以下为该媒体用例的一次执行结果：
+
+| 阶段 | 耗时 |
+| --- | ---: |
+| 视频转码与校验 | 531.20 ms |
+| 字幕转换与校验 | 85.82 ms |
+| 产物配对校验 | 0.35 ms |
+| 复制入库与校验 | 5.36 ms |
+| 源文件与暂存文件清理 | 0.26 ms |
+| 媒体处理至清理总耗时 | 623.49 ms |
+
+该测试在清理后再次检查正式视频、字幕的大小和 SHA-256，验证缓存已删除且正式资源完整。上述时间不包含生成输入片段，也不包含下载、人工审核或真实外部服务等待。短片段和本地缓存条件下的数据不能直接推广为长视频、冷盘、网络文件系统或硬件编码的性能。
+
+**回归结果**
+
+| 检查 | 结果 |
+| --- | --- |
+| `npm run check` | 通过，包括 OpenAPI 检查、Go 静态检查、普通测试、前后端构建和生成文件一致性检查 |
+| `npm run check:integration` | 独立 Compose 项目中通过；应用迁移 44/44、River 7/7、Schema 检查和完整集成测试通过 |
+| 前端单元测试 | 36 个文件、281 项测试通过 |
+| 全部后端测试，含数据库集成 | 普通维护账号运行时 902 个顶层用例通过；跳过的 2 项权限用例已在隔离 root 容器补测通过 |
+| service、repository、worker、httpapi 的集成与竞态检测 | 626 个顶层用例通过，未报告 Go 数据竞争 |
+| 真实 FFmpeg 媒体处理至清理 | 通过 |
+| Chromium、Firefox、窄屏浏览器端到端 | 13 项全部通过，完整独立运行耗时 2.7 分钟；取消场景另有一次定向回归通过 |
+
+普通账号运行时跳过的 `TestPrivilegedHelperRejectsUntrustedParent` 和 `TestStagingOwnershipApplyRetryAndRestoreKeepFilesGroupAndMode`，已在无网络、只读根文件系统、临时目录可写的独立 root 容器中补测通过。同时补跑 `TestStagingOwnershipRejectsLinksAndReplacedDirectories` 的 root 分支，确认目录所有权重放与恢复保持文件完整，并拒绝越界、符号链接和被替换的目录。
+
+开发维护环境复测时，应先设置指向隔离数据库的 `TEST_DATABASE_URL`，并确保真实媒体用例需要的 FFmpeg、FFprobe 和 libx264 可用。生成文件一致性检查会重写生成文件，应在浏览器测试之前完成，避免文件刷新干扰 Vite 中的用例。
+
+```bash
+GOTOOLCHAIN=go1.26.0 npm run check
+GOTOOLCHAIN=go1.26.0 go -C backend test -tags=integration -count=1 ./...
+GOTOOLCHAIN=go1.26.0 go -C backend test -race -tags=integration -count=1 ./internal/service ./internal/repository ./internal/worker ./internal/transport/httpapi
+GOTOOLCHAIN=go1.26.0 npm run test:e2e:full
+GOTOOLCHAIN=go1.26.0 go -C backend test ./internal/worker -run '^$' -bench '^BenchmarkImportArtifactPair$' -benchtime=10x -count=7
+GOTOOLCHAIN=go1.26.0 go -C backend test ./internal/worker -run '^$' -bench '^BenchmarkImportArtifactPairLarge$' -benchtime=3x -count=3
+```

@@ -73,7 +73,7 @@ fixture_pid=$!
 
 export DATABASE_URL
 export API_ADDRESS="127.0.0.1:${API_PORT}"
-export BOOTSTRAP_CONFIG_PATH="${native_runtime}\\bootstrap.json"
+export BOOTSTRAP_CONFIG_PATH="${native_runtime}/bootstrap.json"
 export CONFIG_ENCRYPTION_KEY="MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 export SESSION_COOKIE_SECURE="false"
 export SESSION_TTL="1h"

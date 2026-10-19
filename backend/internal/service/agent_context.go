@@ -753,6 +753,11 @@ func pgTimeRFC3339(value pgtype.Timestamptz) *string {
 
 func staticAgentTool(name, description string, properties map[string]any, value any) agentharness.Tool {
 	encoded, _ := json.Marshal(value)
+	if len(properties) == 0 && len(encoded) > agentapi.MaxToolResultBytes && encoded[0] == '[' {
+		if tool, paged := pagedStaticAgentTool(name, description, encoded); paged {
+			return tool
+		}
+	}
 	return agentharness.Tool{
 		Definition: agentapi.ToolDefinition{Name: name, Description: description, Parameters: strictObject(properties)},
 		Execute: func(_ context.Context, _ string, raw json.RawMessage) (json.RawMessage, error) {

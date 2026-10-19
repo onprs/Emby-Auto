@@ -189,7 +189,7 @@ func (handler *SubtitlePrepareHandler) Handle(ctx context.Context, operation dom
 			return permanentFailure("subtitle_plan_invalid", "the selected external subtitle has no source identity", nil)
 		}
 	}
-	size, checksum, err := fileIdentity(paths.Final)
+	size, checksum, err := fileIdentity(ctx, paths.Final)
 	if err != nil {
 		return retryableFailure("subtitle_output_unavailable", "the committed subtitle output is unavailable", err)
 	}

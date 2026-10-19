@@ -190,6 +190,44 @@ describe('EventStream', () => {
     events.stop();
   });
 
+  it('重连后刷新断线期间失败的读取，即使事件游标已经推进', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let apiAvailable = true;
+    let value = 'before';
+    const observer = new QueryObserver(queryClient, {
+      queryKey: ['searches', 'recent'],
+      queryFn: async () => {
+        if (!apiAvailable) throw new Error('API 暂时不可用');
+        return value;
+      },
+    });
+    const unsubscribe = observer.subscribe(() => {});
+    await vi.waitFor(() => expect(observer.getCurrentResult().data).toBe('before'));
+    let firstStream!: ReadableStreamDefaultController<Uint8Array>;
+    const encoder = new TextEncoder();
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({ start(controller) { firstStream = controller; } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode(': connected\n\n')); } }), { status: 200 }));
+    const events = new EventStream(queryClient, { fetch: fetcher as typeof fetch, reconnectBaseMs: 1, refreshIntervalMs: 1 });
+    try {
+      events.start();
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+      apiAvailable = false;
+      firstStream.enqueue(encoder.encode('id: 10000000-0000-0000-0000-000000000020\ndata: {"topic":"search.completed","resourceType":"search_run","resourceId":"search-id"}\n\n'));
+      await vi.waitFor(() => expect(observer.getCurrentResult().isError).toBe(true));
+      apiAvailable = true;
+      value = 'after';
+      firstStream.error(new Error('连接中断'));
+      await vi.waitFor(() => expect(observer.getCurrentResult().data).toBe('after'));
+      const headers = new Headers(fetcher.mock.calls[1]?.[1]?.headers);
+      expect(headers.get('Last-Event-ID')).toBe('10000000-0000-0000-0000-000000000020');
+    } finally {
+      events.stop();
+      unsubscribe();
+      queryClient.clear();
+    }
+  });
+
   it('reconnects when a half-open stream misses the heartbeat deadline', async () => {
     const queryClient = new QueryClient();
     let calls = 0;
