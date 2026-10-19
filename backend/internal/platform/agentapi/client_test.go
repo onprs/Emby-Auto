@@ -202,7 +202,7 @@ func TestClientHonorsContextCancellation(t *testing.T) {
 	cancel()
 	err = client.ConnectivityTest(ctx)
 	var apiErr *Error
-	if !errors.As(err, &apiErr) || apiErr.Code != "agent_request_timeout" {
-		t.Fatalf("error = %#v, want cancelled request classification", err)
+	if !errors.As(err, &apiErr) || apiErr.Code != "agent_request_cancelled" || apiErr.Retryable || !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %#v, want non-retryable cancelled request classification", err)
 	}
 }

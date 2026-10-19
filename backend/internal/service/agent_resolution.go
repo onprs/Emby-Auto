@@ -504,7 +504,7 @@ func (service *AgentResolutionService) Run(ctx context.Context, operation domain
 			return service.finishInactive(ctx, resolution.ID, domain.AgentResolutionCancelled, "agent_mapping_superseded", "another acquisition is the RSS Mapping anchor")
 		}
 	}
-	if configuration.Version != int32(resolution.ConfigurationVersion) || settings.Protocol != resolution.Protocol || settings.Model != resolution.Model || providerOrigin(settings.BaseURL) != resolution.ProviderOrigin {
+	if !agentResolutionConfigurationMatches(configuration, resolution) {
 		return service.finishInactive(ctx, resolution.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent configuration changed before execution")
 	}
 	snapshot, err := service.buildAgentContext(ctx, resolution.Capability, resolution.ResourceID)
@@ -533,6 +533,7 @@ func (service *AgentResolutionService) Run(ctx context.Context, operation domain
 		if err != nil {
 			return &AgentRunError{Code: "agent_not_configured", Message: "Agent network configuration is invalid", Cause: err}
 		}
+		defer httpClient.CloseIdleConnections()
 		client, err := agentapi.NewClient(agentapi.ClientOptions{
 			BaseURL: settings.BaseURL, APIKey: apiKey, Model: settings.Model,
 			RequestTimeout: time.Duration(settings.RequestTimeoutSeconds) * time.Second, HTTPClient: httpClient,
@@ -567,7 +568,7 @@ func (service *AgentResolutionService) Run(ctx context.Context, operation domain
 	if err != nil || !bytes.Equal(currentSnapshot.Fingerprint[:], resolution.InputFingerprint) || !sameOptionalInt(currentSnapshot.ResourceVersion, resolution.ResourceVersion) {
 		return service.finishInactive(ctx, resolution.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent resource context changed during execution")
 	}
-	return service.validateAndApply(ctx, configuration, resolution, snapshot)
+	return service.validateAndApply(ctx, resolution, snapshot)
 }
 
 func (service *AgentResolutionService) Get(ctx context.Context, id uuid.UUID) (domain.AgentResolution, error) {
@@ -689,12 +690,15 @@ func AutomaticAgentResolutionRetryable(resolution domain.AgentResolution) bool {
 
 func (service *AgentResolutionService) validateAndApply(
 	ctx context.Context,
-	configuration domain.Configuration,
 	resolution domain.AgentResolution,
 	snapshot agentContextSnapshot,
 ) error {
 	validation, proposal, err := service.validateProposal(ctx, resolution, snapshot)
 	if err != nil {
+		return err
+	}
+	configuration, current, err := service.loadAgentApplicationConfiguration(ctx, resolution)
+	if err != nil || !current {
 		return err
 	}
 	if resolution.Capability == domain.AgentCapabilityCatalogCandidate && validation.Verdict == domain.AgentValidationReviewRequired {
@@ -717,6 +721,11 @@ func (service *AgentResolutionService) validateAndApply(
 	if err != nil {
 		return err
 	}
+	if service.rssRealtime != nil {
+		if _, current, err := service.loadAgentApplicationConfiguration(ctx, resolution); err != nil || !current {
+			return err
+		}
+	}
 
 	switch resolution.Capability {
 	case domain.AgentCapabilityRSSReleaseAdjudication:
@@ -737,6 +746,27 @@ func (service *AgentResolutionService) validateAndApply(
 			Verdict: domain.AgentValidationInvalid, ReasonCodes: []string{"agent_capability_unsupported"},
 		})
 	}
+}
+
+func agentResolutionConfigurationMatches(configuration domain.Configuration, resolution domain.AgentResolution) bool {
+	settings := configuration.Settings.Agent.WithDefaults()
+	return configuration.Version == int32(resolution.ConfigurationVersion) && settings.Protocol == resolution.Protocol &&
+		settings.Model == resolution.Model && providerOrigin(settings.BaseURL) == resolution.ProviderOrigin
+}
+
+func (service *AgentResolutionService) loadAgentApplicationConfiguration(ctx context.Context, resolution domain.AgentResolution) (domain.Configuration, bool, error) {
+	configuration, err := service.configuration.Load(ctx)
+	if err != nil {
+		return domain.Configuration{}, false, err
+	}
+	settings := configuration.Settings.Agent.WithDefaults()
+	if !settings.Enabled || !agentCapabilityEnabled(settings, resolution.Capability) {
+		return configuration, false, service.finishInactive(ctx, resolution.ID, domain.AgentResolutionCancelled, "agent_disabled", "Agent assistance was disabled before application")
+	}
+	if !agentResolutionConfigurationMatches(configuration, resolution) {
+		return configuration, false, service.finishInactive(ctx, resolution.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent configuration changed before application")
+	}
+	return configuration, true, nil
 }
 
 func (service *AgentResolutionService) failAutomaticProposal(
@@ -872,7 +902,8 @@ func (service *AgentResolutionService) validateProposal(
 		return validation, proposal, nil
 	case domain.AgentCapabilityRSSCoordinate:
 		var proposal domain.AgentRSSCoordinateProposal
-		if err := strictJSON(resolution.Proposal, &proposal); err != nil || proposal.EntryID != resolution.ResourceID || proposal.SourceSeason <= 0 || proposal.SourceEpisode <= 0 {
+		if err := strictJSON(resolution.Proposal, &proposal); err != nil || proposal.EntryID != resolution.ResourceID ||
+			proposal.SourceSeason <= 0 || proposal.SourceSeason > math.MaxInt32 || proposal.SourceEpisode <= 0 || proposal.SourceEpisode > math.MaxInt32 {
 			return invalid("agent_proposal_invalid"), proposal, nil
 		}
 		if proposal.Decision != "resolved" {
@@ -1074,7 +1105,8 @@ func validateDownloadFileProposal(proposal domain.AgentDownloadFileResolutionPro
 	selectedFiles := map[uuid.UUID]struct{}{}
 	for _, video := range proposal.Videos {
 		file, owned := snapshot.Files[video.FileID]
-		if !owned || file.MediaKind != string(domain.MediaVideo) || video.SourceSeason <= 0 || video.SourceEpisode <= 0 ||
+		if !owned || file.MediaKind != string(domain.MediaVideo) || video.SourceSeason <= 0 || video.SourceSeason > math.MaxInt32 ||
+			video.SourceEpisode <= 0 || video.SourceEpisode > math.MaxInt32 ||
 			video.SourceEpisodeFractionHundredths < 0 || video.SourceEpisodeFractionHundredths > 99 {
 			return invalid("download_file_scope_violation")
 		}
@@ -1908,14 +1940,16 @@ func agentToolStepBudget(capability domain.AgentCapability, snapshot agentContex
 		defaultSteps = 6
 		maximumSteps = 64
 	)
-	if capability != domain.AgentCapabilityRSSReleaseAdjudication {
-		return defaultSteps
+	steps := defaultSteps
+	if capability == domain.AgentCapabilityRSSReleaseAdjudication {
+		steps += len(snapshot.RSSAdjudicationEntries)
 	}
-	steps := len(snapshot.RSSAdjudicationEntries) + defaultSteps
-	if steps > maximumSteps {
-		return maximumSteps
+	for _, tool := range snapshot.Tools {
+		if tool.MinimumReadSteps > 1 {
+			steps += min(tool.MinimumReadSteps-1, maximumSteps)
+		}
 	}
-	return steps
+	return min(steps, maximumSteps)
 }
 
 func agentRunError(err error) error {
