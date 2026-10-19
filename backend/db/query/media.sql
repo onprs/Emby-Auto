@@ -421,6 +421,30 @@ SELECT *
 FROM media_artifacts
 WHERE id = sqlc.arg(id);
 
+-- name: GetArtifactContent :one
+SELECT artifact.task_id,
+       artifact.kind,
+       artifact.format,
+       artifact.size_bytes,
+       COALESCE(
+           CASE artifact.kind
+               WHEN 'video' THEN imported.destination_video_path
+               WHEN 'subtitle' THEN imported.destination_subtitle_path
+           END,
+           artifact.file_path
+       )::text AS file_path
+FROM media_artifacts AS artifact
+LEFT JOIN imports AS imported
+    ON imported.task_id = artifact.task_id
+   AND imported.status = 'succeeded'
+   AND EXISTS (
+       SELECT 1
+       FROM artifact_sets AS paired
+       WHERE paired.task_id = artifact.task_id
+         AND artifact.id IN (paired.video_artifact_id, paired.subtitle_artifact_id)
+   )
+WHERE artifact.id = sqlc.arg(id);
+
 -- name: RequeueTaskVideoBranch :one
 UPDATE episode_tasks
 SET state = 'processing',

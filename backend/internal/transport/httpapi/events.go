@@ -79,9 +79,15 @@ func (server *Server) eventReader(
 ) io.Reader {
 	reader, writer := io.Pipe()
 	go func() {
+		stopCancellation := context.AfterFunc(ctx, func() { _ = writer.Close() })
+		defer stopCancellation()
 		defer func() {
 			_ = writer.Close()
 		}()
+		// 立即发送保活注释，使空闲连接也能在客户端超时前收到响应头。
+		if _, err := io.WriteString(writer, ": connected\n\n"); err != nil {
+			return
+		}
 		cursor := cloneUUID(initialCursor)
 		if !writeEventBatch(writer, initial, &cursor) {
 			return

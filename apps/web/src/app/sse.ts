@@ -159,6 +159,12 @@ export class EventStream {
         throw new Error(`event stream returned HTTP ${response.status}`);
       }
       clearTimeout(connectionTimer);
+      if (this.reconnectAttempt > 0) {
+        // 事件游标可能已在读取失败前推进，重连后补取受保护的数据。
+        this.queueRefresh({
+          predicate: (query) => query.queryKey[0] !== 'setup-status' && query.queryKey[0] !== 'session',
+        });
+      }
       this.reconnectAttempt = 0;
       this.emit('open');
       await this.consume(response.body, generation, controller.signal);
