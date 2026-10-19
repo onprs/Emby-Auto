@@ -116,11 +116,12 @@ func (client *Client) ConnectivityTest(ctx context.Context) error {
 		{Role: "user", Content: "Echo the fixed connectivity value: " + nonce},
 	}
 	echoDone := false
+	tools := connectivityTools(nonce)
 	for step := 0; step < maxConnectivitySteps; step++ {
 		response, err := client.complete(ctx, chatRequest{
 			Model:       client.model,
 			Messages:    messages,
-			Tools:       connectivityTools(nonce),
+			Tools:       tools,
 			Temperature: float64Pointer(0),
 		})
 		if err != nil {
@@ -133,6 +134,9 @@ func (client *Client) ConnectivityTest(ctx context.Context) error {
 		messages = append(messages, assistant)
 		if len(assistant.ToolCalls) == 0 {
 			return &Error{Code: "agent_submission_missing"}
+		}
+		if len(assistant.ToolCalls) != 1 {
+			return &Error{Code: "agent_tool_call_invalid"}
 		}
 		for _, call := range assistant.ToolCalls {
 			switch call.Function.Name {
@@ -164,10 +168,34 @@ func (client *Client) ConnectivityTest(ctx context.Context) error {
 }
 
 func (client *Client) complete(ctx context.Context, payload chatRequest) (chatResponse, error) {
+	return client.completeWithEncoder(ctx, payload, nil)
+}
+
+func (client *Client) completeWithEncoder(ctx context.Context, payload chatRequest, encoder *chatRequestEncoder) (chatResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, client.timeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return chatResponse{}, requestError(ctx, err)
+	}
 	if err := validateResolvedEndpoint(ctx, client.resolver, client.endpoint); err != nil {
+		if ctx.Err() != nil {
+			return chatResponse{}, requestError(ctx, err)
+		}
 		return chatResponse{}, err
 	}
-	encoded, err := json.Marshal(payload)
+	var encoded []byte
+	var err error
+	if encoder == nil {
+		encoded, err = json.Marshal(payload)
+	} else {
+		encoded, err = encoder.encode(payload)
+	}
+	if ctx.Err() != nil {
+		return chatResponse{}, requestError(ctx, err)
+	}
+	if errors.Is(err, errChatRequestTooLarge) || len(encoded) > maxChatRequestBytes {
+		return chatResponse{}, &Error{Code: "agent_context_too_large", Cause: errChatRequestTooLarge}
+	}
 	if err != nil {
 		return chatResponse{}, &Error{Code: "agent_protocol_unsupported", Cause: err}
 	}
@@ -182,19 +210,22 @@ func (client *Client) complete(ctx context.Context, payload chatRequest) (chatRe
 
 	response, err := client.http.Do(request)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.As(err, new(net.Error)) {
-			return chatResponse{}, &Error{Code: "agent_request_timeout", Retryable: !errors.Is(err, context.Canceled), Cause: err}
-		}
-		return chatResponse{}, &Error{Code: "agent_request_failed", Retryable: true, Cause: err}
+		return chatResponse{}, requestError(ctx, err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		if requestInterrupted(ctx, readErr) {
+			return chatResponse{}, requestError(ctx, readErr)
+		}
 		return chatResponse{}, statusError(response.StatusCode)
 	}
 	limited := io.LimitReader(response.Body, maxResponseBytes+1)
 	body, err := io.ReadAll(limited)
 	if err != nil {
+		if requestInterrupted(ctx, err) {
+			return chatResponse{}, requestError(ctx, err)
+		}
 		return chatResponse{}, &Error{Code: "agent_response_invalid", Retryable: true, Cause: err}
 	}
 	if len(body) > maxResponseBytes {
@@ -204,7 +235,45 @@ func (client *Client) complete(ctx context.Context, payload chatRequest) (chatRe
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		return chatResponse{}, &Error{Code: "agent_response_invalid", Retryable: true, Cause: err}
 	}
+	for _, choice := range decoded.Choices {
+		if choice.Message.Role != "assistant" || choice.FinishReason == "length" || choice.FinishReason == "content_filter" {
+			return chatResponse{}, &Error{Code: "agent_response_invalid", Retryable: true}
+		}
+		seen := make(map[string]struct{}, len(choice.Message.ToolCalls))
+		for _, call := range choice.Message.ToolCalls {
+			if strings.TrimSpace(call.ID) == "" || call.Type != "function" || strings.TrimSpace(call.Function.Name) == "" {
+				return chatResponse{}, &Error{Code: "agent_response_invalid", Retryable: true}
+			}
+			if _, duplicate := seen[call.ID]; duplicate {
+				return chatResponse{}, &Error{Code: "agent_response_invalid", Retryable: true}
+			}
+			seen[call.ID] = struct{}{}
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return chatResponse{}, requestError(ctx, err)
+	}
 	return decoded, nil
+}
+
+func requestInterrupted(ctx context.Context, err error) bool {
+	var networkError net.Error
+	return ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &networkError) && networkError.Timeout())
+}
+
+func requestError(ctx context.Context, err error) *Error {
+	cause := err
+	if ctx.Err() != nil {
+		cause = errors.Join(err, ctx.Err())
+	}
+	if errors.Is(cause, context.Canceled) {
+		return &Error{Code: "agent_request_cancelled", Cause: cause}
+	}
+	var networkError net.Error
+	if errors.Is(cause, context.DeadlineExceeded) || (errors.As(cause, &networkError) && networkError.Timeout()) {
+		return &Error{Code: "agent_request_timeout", Retryable: true, Cause: cause}
+	}
+	return &Error{Code: "agent_request_failed", Retryable: true, Cause: cause}
 }
 
 func statusError(status int) *Error {
@@ -215,7 +284,9 @@ func statusError(status int) *Error {
 		return &Error{Code: "agent_model_unavailable", StatusCode: status}
 	case http.StatusTooManyRequests:
 		return &Error{Code: "agent_rate_limited", StatusCode: status, Retryable: true}
-	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+	case http.StatusRequestTimeout:
+		return &Error{Code: "agent_request_timeout", StatusCode: status, Retryable: true}
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		return &Error{Code: "agent_provider_unavailable", StatusCode: status, Retryable: true}
 	default:
 		return &Error{Code: "agent_protocol_unsupported", StatusCode: status}
@@ -314,7 +385,8 @@ type chatToolDefinition struct {
 
 type chatResponse struct {
 	Choices []struct {
-		Message chatMessage `json:"message"`
+		Message      chatMessage `json:"message"`
+		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens     int64 `json:"prompt_tokens"`
@@ -332,7 +404,7 @@ type connectivitySubmissionArguments struct {
 }
 
 func connectivityTools(nonce string) []chatTool {
-	return []chatTool{
+	tools := []chatTool{
 		{
 			Type: "function",
 			Function: chatToolDefinition{
@@ -363,4 +435,8 @@ func connectivityTools(nonce string) []chatTool {
 			},
 		},
 	}
+	for index := range tools {
+		tools[index].Function.Parameters, tools[index].Function.Strict = prepareToolParameters(tools[index].Function.Parameters)
+	}
+	return tools
 }

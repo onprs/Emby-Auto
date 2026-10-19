@@ -1,13 +1,15 @@
 package agentapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 )
 
-const maxToolResultBytes = 64 << 10
+// MaxToolResultBytes 是单次工具结果的 JSON 字节上限。
+const MaxToolResultBytes = 64 << 10
 
 type ToolDefinition struct {
 	Name        string
@@ -57,20 +59,26 @@ func (client *Client) RunToolLoop(ctx context.Context, request ToolLoopRequest) 
 			return ToolLoopResult{}, &Error{Code: "agent_protocol_unsupported"}
 		}
 		known[tool.Name] = struct{}{}
+		parameters, strict := prepareToolParameters(tool.Parameters)
 		tools = append(tools, chatTool{Type: "function", Function: chatToolDefinition{
-			Name: tool.Name, Description: tool.Description, Parameters: tool.Parameters, Strict: true,
+			Name: tool.Name, Description: tool.Description, Parameters: parameters, Strict: strict,
 		}})
 	}
-	messages := []chatMessage{{Role: "system", Content: request.SystemPrompt}, {Role: "user", Content: request.UserPrompt}}
+	messages := make([]chatMessage, 0, 2+2*request.MaxSteps)
+	messages = append(messages, chatMessage{Role: "system", Content: request.SystemPrompt}, chatMessage{Role: "user", Content: request.UserPrompt})
 	result := ToolLoopResult{Steps: make([]ToolLoopStep, 0, request.MaxSteps)}
+	encoder := chatRequestEncoder{messages: make([]json.RawMessage, 0, 2+2*request.MaxSteps)}
 	sequence := 0
 	invalidSubmissions := 0
 	invalidToolCalls := 0
 	var lastSubmissionError error
 	for sequence < request.MaxSteps {
-		response, err := client.complete(ctx, chatRequest{
+		if err := ctx.Err(); err != nil {
+			return result, requestError(ctx, err)
+		}
+		response, err := client.completeWithEncoder(ctx, chatRequest{
 			Model: client.model, Messages: messages, Tools: tools, Temperature: float64Pointer(0),
-		})
+		}, &encoder)
 		if err != nil {
 			return result, err
 		}
@@ -94,6 +102,9 @@ func (client *Client) RunToolLoop(ctx context.Context, request ToolLoopRequest) 
 			continue
 		}
 		for _, call := range assistant.ToolCalls {
+			if err := ctx.Err(); err != nil {
+				return result, requestError(ctx, err)
+			}
 			if sequence >= request.MaxSteps {
 				return exhaustedToolLoop(result, invalidSubmissions, invalidToolCalls, lastSubmissionError)
 			}
@@ -109,7 +120,8 @@ func (client *Client) RunToolLoop(ctx context.Context, request ToolLoopRequest) 
 				continue
 			}
 			arguments := json.RawMessage(call.Function.Arguments)
-			if !json.Valid(arguments) {
+			trimmed := bytes.TrimSpace(arguments)
+			if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(arguments) {
 				invalidToolCalls++
 				sequence++
 				toolResult := repairResult("agent_tool_arguments_invalid")
@@ -123,6 +135,12 @@ func (client *Client) RunToolLoop(ctx context.Context, request ToolLoopRequest) 
 			sequence++
 			step := ToolLoopStep{Sequence: sequence, ToolName: call.Function.Name, Arguments: arguments}
 			submitted, submitErr := request.Submit(call.Function.Name, arguments)
+			if ctx.Err() != nil || errors.Is(submitErr, context.Canceled) || errors.Is(submitErr, context.DeadlineExceeded) {
+				err := requestError(ctx, submitErr)
+				step.ErrorCode = err.Code
+				result.Steps = append(result.Steps, step)
+				return result, err
+			}
 			if submitErr != nil {
 				invalidSubmissions++
 				lastSubmissionError = submitErr
@@ -139,12 +157,18 @@ func (client *Client) RunToolLoop(ctx context.Context, request ToolLoopRequest) 
 				return result, nil
 			}
 			toolResult, executeErr := request.Execute(ctx, call.Function.Name, arguments)
+			if ctx.Err() != nil || errors.Is(executeErr, context.Canceled) || errors.Is(executeErr, context.DeadlineExceeded) {
+				err := requestError(ctx, executeErr)
+				step.ErrorCode = err.Code
+				result.Steps = append(result.Steps, step)
+				return result, err
+			}
 			if executeErr != nil {
 				step.ErrorCode = "agent_tool_scope_violation"
 				result.Steps = append(result.Steps, step)
 				return result, &Error{Code: "agent_tool_scope_violation", Cause: executeErr}
 			}
-			if !json.Valid(toolResult) || len(toolResult) > maxToolResultBytes {
+			if len(toolResult) > MaxToolResultBytes || !json.Valid(toolResult) {
 				step.ErrorCode = "agent_tool_result_invalid"
 				result.Steps = append(result.Steps, step)
 				return result, &Error{Code: "agent_tool_call_invalid", Retryable: true, Cause: fmt.Errorf("tool result is invalid")}

@@ -30,6 +30,8 @@ const errorMessages: Record<string, string> = {
   agent_resolution_stale: '资源或配置已变化，请重新生成建议。',
   agent_rate_limited: 'Agent 服务请求过多，系统会自动重试。',
   agent_request_timeout: 'Agent 服务响应超时。',
+  agent_request_cancelled: 'Agent 请求已取消。',
+  agent_context_too_large: 'Agent 会话内容过大，无法继续处理。',
   agent_authentication_failed: 'Agent API 凭据无效。',
   agent_model_unavailable: 'Agent 模型不可用。',
   mapping_profile_required: '还没有设置剧集对应关系。',

@@ -29,8 +29,9 @@ var promptVersions = map[domain.AgentCapability]string{
 }
 
 type Tool struct {
-	Definition agentapi.ToolDefinition
-	Execute    agentapi.ToolExecution
+	Definition       agentapi.ToolDefinition
+	Execute          agentapi.ToolExecution
+	MinimumReadSteps int
 }
 
 type Context struct {
