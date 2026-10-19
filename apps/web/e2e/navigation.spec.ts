@@ -65,6 +65,11 @@ async function openMainNavigation(page: Page, mobile: boolean) {
 }
 
 test('uses one route-aware shell and accessible mobile or desktop navigation', async ({ page }, testInfo) => {
+  const browserErrors: string[] = [];
+  page.on('pageerror', (error) => browserErrors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error' && message.args().length > 0) browserErrors.push(message.text());
+  });
   await stubNavigationApi(page);
   const mobile = testInfo.project.name === 'mobile';
   await page.goto('/');
@@ -95,8 +100,12 @@ test('uses one route-aware shell and accessible mobile or desktop navigation', a
     await expect(page.getByRole('button', { name: '展开侧边栏' })).toBeVisible();
     await page.reload();
     await expect(page.getByRole('button', { name: '展开侧边栏' })).toBeVisible();
+    await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '任务', exact: true }).click();
+    await expect(page).toHaveURL(/\/acquisitions$/);
+    await expect(page.getByRole('heading', { name: '任务', exact: true })).toBeVisible();
   }
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(browserErrors).toEqual([]);
 });
 
 test('no longer renders the removed single-child submenu while the operations module is active', async ({ page }, testInfo) => {

@@ -50,7 +50,11 @@
   },
   "devDependencies": {
     "@hey-api/openapi-ts": "0.99.0",
-    "@redocly/cli": "2.39.0",
+    "@redocly/cli": "2.63.0",
+    "@types/react": "~19.2.18",
+    "@types/react-dom": "~19.2.7",
+    "react": "~19.2.9",
+    "react-dom": "~19.2.9",
     "typescript": "6.0.3"
   },
   "engines": {
