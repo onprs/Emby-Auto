@@ -104,6 +104,46 @@ func (verifier *RSSRealtimeEmbyVerifier) VerifyEntry(ctx context.Context, entryI
 	return verifier.verify(ctx, []rssRealtimeTarget{target})
 }
 
+func (verifier *RSSRealtimeEmbyVerifier) VerifyEntries(ctx context.Context, entryIDs []uuid.UUID) (uuid.UUID, error) {
+	if len(entryIDs) == 0 {
+		return uuid.Nil, nil
+	}
+	if verifier == nil || verifier.queries == nil {
+		return uuid.Nil, realtimeVerificationError("rss_realtime_not_configured", "real-time Emby target verification is unavailable", false, nil)
+	}
+	ids := make([]pgtype.UUID, 0, len(entryIDs))
+	unique := make(map[uuid.UUID]struct{}, len(entryIDs))
+	for _, id := range entryIDs {
+		if id == uuid.Nil {
+			return uuid.Nil, realtimeVerificationError("rss_realtime_scope_invalid", "the RSS entry scope is invalid", false, nil)
+		}
+		if _, exists := unique[id]; !exists {
+			ids = append(ids, repository.UUIDToPG(id))
+			unique[id] = struct{}{}
+		}
+	}
+	rows, err := verifier.queries.ListRSSEntryMappedRealtimeTargets(ctx, ids)
+	if err != nil {
+		return uuid.Nil, realtimeVerificationError("rss_realtime_storage_unavailable", "mapped RSS entry targets are unavailable", true, err)
+	}
+	if len(rows) != len(unique) {
+		return uuid.Nil, realtimeVerificationError("rss_realtime_mapping_unavailable", "one or more RSS entries do not have mapped targets", true, nil)
+	}
+	targets := make([]rssRealtimeTarget, 0, len(rows))
+	seenTargets := make(map[uuid.UUID]struct{}, len(rows))
+	for _, row := range rows {
+		target, err := realtimeTargetFromRow(row.SourceSeason, row.SourceEpisode, row.TargetEpisodeID, row.TargetSeason, row.TargetEpisode, row.TmdbEpisodeID, row.TmdbSeriesID)
+		if err != nil {
+			return uuid.Nil, err
+		}
+		if _, exists := seenTargets[target.targetEpisodeID]; !exists {
+			targets = append(targets, target)
+			seenTargets[target.targetEpisodeID] = struct{}{}
+		}
+	}
+	return verifier.verify(ctx, targets)
+}
+
 func (verifier *RSSRealtimeEmbyVerifier) VerifyCoordinates(
 	ctx context.Context,
 	subscriptionID uuid.UUID,
@@ -236,31 +276,39 @@ type realtimeTargetMatch struct {
 }
 
 func matchRealtimeTargets(targets []rssRealtimeTarget, episodes []domain.EmbyLibraryItemCatalog) []realtimeTargetMatch {
-	matches := make([]realtimeTargetMatch, len(targets))
-	for index := range matches {
-		matches[index].source = "absent"
+	providerIDs := make(map[string]struct{}, len(episodes))
+	coordinates := make(map[domain.EpisodeCoordinate]struct{}, len(episodes))
+	coordinatesWithoutProvider := make(map[domain.EpisodeCoordinate]struct{}, len(episodes))
+	for _, item := range episodes {
+		if item.ItemType != "Episode" || strings.TrimSpace(item.Path) == "" {
+			continue
+		}
+		for provider, value := range item.ProviderIDs {
+			if strings.EqualFold(strings.TrimSpace(provider), "tmdb") || strings.EqualFold(strings.TrimSpace(provider), "themoviedb") {
+				if value = strings.TrimSpace(value); value != "" {
+					providerIDs[value] = struct{}{}
+				}
+			}
+		}
+		if item.SeasonNumber != nil && item.EpisodeNumber != nil {
+			coordinate := domain.EpisodeCoordinate{Season: *item.SeasonNumber, Episode: *item.EpisodeNumber}
+			coordinates[coordinate] = struct{}{}
+			if !hasTMDbProviderID(item.ProviderIDs) {
+				coordinatesWithoutProvider[coordinate] = struct{}{}
+			}
+		}
 	}
+	matches := make([]realtimeTargetMatch, len(targets))
 	for index, target := range targets {
-		for _, item := range episodes {
-			if item.ItemType != "Episode" || strings.TrimSpace(item.Path) == "" {
-				continue
-			}
-			if target.tmdbEpisodeID != nil {
-				if providerIDMatches(item.ProviderIDs, "tmdb", *target.tmdbEpisodeID) ||
-					providerIDMatches(item.ProviderIDs, "themoviedb", *target.tmdbEpisodeID) {
-					matches[index] = realtimeTargetMatch{present: true, source: "tmdb_episode"}
-					break
-				}
-				if !hasTMDbProviderID(item.ProviderIDs) && item.SeasonNumber != nil && item.EpisodeNumber != nil &&
-					*item.SeasonNumber == target.target.Season && *item.EpisodeNumber == target.target.Episode {
-					matches[index] = realtimeTargetMatch{present: true, source: "target_coordinate"}
-				}
-				continue
-			}
-			if item.SeasonNumber != nil && item.EpisodeNumber != nil &&
-				*item.SeasonNumber == target.target.Season && *item.EpisodeNumber == target.target.Episode {
+		matches[index].source = "absent"
+		if target.tmdbEpisodeID != nil {
+			if _, present := providerIDs[strconv.FormatInt(*target.tmdbEpisodeID, 10)]; present {
+				matches[index] = realtimeTargetMatch{present: true, source: "tmdb_episode"}
+			} else if _, present := coordinatesWithoutProvider[target.target]; present {
 				matches[index] = realtimeTargetMatch{present: true, source: "target_coordinate"}
 			}
+		} else if _, present := coordinates[target.target]; present {
+			matches[index] = realtimeTargetMatch{present: true, source: "target_coordinate"}
 		}
 	}
 	return matches
@@ -270,16 +318,6 @@ func hasTMDbProviderID(providerIDs map[string]string) bool {
 	for key, value := range providerIDs {
 		if (strings.EqualFold(strings.TrimSpace(key), "tmdb") || strings.EqualFold(strings.TrimSpace(key), "themoviedb")) &&
 			strings.TrimSpace(value) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func providerIDMatches(providerIDs map[string]string, provider string, expected int64) bool {
-	want := strconv.FormatInt(expected, 10)
-	for key, value := range providerIDs {
-		if strings.EqualFold(strings.TrimSpace(key), provider) && strings.TrimSpace(value) == want {
 			return true
 		}
 	}

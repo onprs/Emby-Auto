@@ -29,6 +29,10 @@ func main() {
 	if len(args) == 0 {
 		fatal("media fixture requires FFmpeg arguments")
 	}
+	// 由测试显式释放处理屏障，确保取消场景不会被固定延时结束打断。
+	for controlEnabled("media_blocked") {
+		time.Sleep(25 * time.Millisecond)
+	}
 	output := args[len(args)-1]
 	if strings.EqualFold(filepath.Ext(output), ".ass") {
 		content := []byte("[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,24,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,Fixture subtitle\n")

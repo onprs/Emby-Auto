@@ -14,6 +14,10 @@ type RSSEntryScheduler interface {
 	ScheduleRSSDownload(context.Context, domain.RSSEnqueueCandidate) error
 }
 
+type RSSBatchEntryScheduler interface {
+	ScheduleRSSDownloads(context.Context, []domain.RSSEnqueueCandidate) (RSSBatchResult, error)
+}
+
 type RSSScheduleOutcome struct {
 	EntryID uuid.UUID
 	Err     error
@@ -57,6 +61,9 @@ func ScheduleRSSBatch(
 	result := RSSBatchResult{Outcomes: make([]RSSScheduleOutcome, len(eligible))}
 	if len(eligible) == 0 {
 		return result, nil
+	}
+	if batchScheduler, ok := scheduler.(RSSBatchEntryScheduler); ok {
+		return batchScheduler.ScheduleRSSDownloads(ctx, eligible)
 	}
 	if maxConcurrency > len(eligible) {
 		maxConcurrency = len(eligible)

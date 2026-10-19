@@ -228,6 +228,7 @@ func (service *ConnectivityService) testAgent(ctx context.Context, configuration
 	if err != nil {
 		return &agentapi.Error{Code: "agent_not_configured", Cause: err}
 	}
+	defer httpClient.CloseIdleConnections()
 	client, err := agentapi.NewClient(agentapi.ClientOptions{
 		BaseURL: settings.BaseURL, APIKey: apiKey, Model: settings.Model,
 		RequestTimeout: connectivityTimeout, HTTPClient: httpClient,

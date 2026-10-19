@@ -99,7 +99,7 @@ func (handler *TranscodeRunHandler) Handle(ctx context.Context, operation domain
 		}
 	}
 
-	size, checksum, err := fileIdentity(outputPath)
+	size, checksum, err := fileIdentity(ctx, outputPath)
 	if err != nil {
 		return retryableFailure("transcode_output_unavailable", "the committed video output is unavailable", err)
 	}
