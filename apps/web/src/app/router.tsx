@@ -506,7 +506,7 @@ export function RouteError({ error, reset }: ErrorComponentProps) {
     <section className="grid min-h-[calc(100vh-4rem)] place-items-center px-4">
       <div className="w-full max-w-md border-t-4 border-red-600 bg-white px-6 py-7 shadow-lg">
         <h1 className="text-lg font-semibold text-zinc-950">页面加载失败</h1>
-        <p className="mt-2 break-words text-sm text-zinc-600">{error.message || '无法加载此页面'}</p>
+        <p className="mt-2 break-words text-sm text-zinc-600">{error instanceof Error && error.message ? error.message : '无法加载此页面'}</p>
         <Button type="button" className="mt-6" variant="outline" onClick={reset}>
           <RefreshCw aria-hidden="true" />
           重试
