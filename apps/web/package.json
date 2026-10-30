@@ -16,11 +16,11 @@
   "dependencies": {
     "@radix-ui/react-label": "^2.1.17",
     "@radix-ui/react-slot": "^1.2.4",
-    "@tanstack/react-query": "^5.104.2",
-    "@tanstack/react-router": "^1.170.44",
+    "@tanstack/react-query": "^5.105.0",
+    "@tanstack/react-router": "^1.170.46",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "lucide-react": "^1.56.0",
+    "lucide-react": "^1.62.0",
     "react": "~19.2.9",
     "react-dom": "~19.2.9",
     "recharts": "^3.10.1",
@@ -41,7 +41,7 @@
     "msw": "^3.0.3",
     "tailwindcss": "^4.2.1",
     "typescript": "^6.0.3",
-    "vite": "^8.3.4",
+    "vite": "^8.3.5",
     "vitest": "^5.0.5"
   }
 }
