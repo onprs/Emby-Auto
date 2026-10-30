@@ -321,6 +321,7 @@ type TMDbEpisodeCatalogView struct {
 type DashboardSummary struct {
 	Counts           DashboardStatusCounts
 	AttentionItems   []DashboardAttentionItem
+	RecentTasks      []EpisodeTask
 	RecentOperations []DashboardRecentOperation
 	RecentImports    []DashboardRecentImport
 	RecentScans      []DashboardRecentScan

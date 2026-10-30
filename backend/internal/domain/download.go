@@ -16,6 +16,7 @@ type DownloadEnqueueCommand struct {
 	SourceURI            string
 	TorrentHash          string
 	FileResolutionSource string
+	HasResolvedManifest  bool
 }
 
 type DownloadManifestOutcome string

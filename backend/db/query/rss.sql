@@ -961,11 +961,12 @@ SELECT
                    OR acquisition.rss_entry_id IS DISTINCT FROM sqlc.narg(excluded_rss_entry_id)::uuid)
               AND (
                   task.state NOT IN ('imported', 'rejected', 'cancelled')
-                  OR (
-                      task.state = 'cancelled'
-                      AND (task.video_state = 'failed' OR task.subtitle_state = 'failed')
-                      AND task.video_state IN ('failed', 'video_ready')
-                      AND task.subtitle_state IN ('failed', 'ass_ready')
+                  OR EXISTS (
+                      SELECT 1 FROM operations AS operation
+                      WHERE operation.resource_type = 'episode_task'
+                        AND operation.resource_id = task.id
+                        AND operation.status IN ('queued', 'running')
+                        AND (operation.cancel_requested_at IS NOT NULL OR operation.kind = 'task.cancel')
                   )
               )
         )
@@ -991,7 +992,12 @@ SELECT
               AND acquisition.deletion_requested_at IS NULL
               AND (sqlc.narg(excluded_rss_entry_id)::uuid IS NULL
                    OR acquisition.rss_entry_id IS DISTINCT FROM sqlc.narg(excluded_rss_entry_id)::uuid)
-              AND download.status <> 'cancelled'
+              AND (download.status <> 'cancelled' OR EXISTS (
+                  SELECT 1 FROM operations AS operation
+                  WHERE operation.resource_type = 'download' AND operation.resource_id = download.id
+                    AND operation.status IN ('queued', 'running')
+                    AND (operation.cancel_requested_at IS NOT NULL OR operation.kind = 'download.cancel')
+              ))
               AND NOT EXISTS (SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id)
         )
         OR EXISTS (
@@ -1019,7 +1025,12 @@ SELECT
               AND owner_mapping.source_episode_fraction_hundredths = COALESCE(CASE
                     WHEN COALESCE(acquisition.source_payload->>'sourceEpisodeFractionHundredths', '0') ~ '^(?:0|[1-9][0-9]?)$'
                     THEN COALESCE((acquisition.source_payload->>'sourceEpisodeFractionHundredths')::integer, 0) END, 0)
-              AND download.status <> 'cancelled'
+              AND (download.status <> 'cancelled' OR EXISTS (
+                  SELECT 1 FROM operations AS operation
+                  WHERE operation.resource_type = 'download' AND operation.resource_id = download.id
+                    AND operation.status IN ('queued', 'running')
+                    AND (operation.cancel_requested_at IS NOT NULL OR operation.kind = 'download.cancel')
+              ))
               AND NOT EXISTS (SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id)
         )
         OR EXISTS (
@@ -1041,7 +1052,12 @@ SELECT
               AND (sqlc.narg(excluded_rss_entry_id)::uuid IS NULL
                    OR acquisition.rss_entry_id IS DISTINCT FROM sqlc.narg(excluded_rss_entry_id)::uuid)
               AND download.deleted_at IS NULL
-              AND download.status <> 'cancelled'
+              AND (download.status <> 'cancelled' OR EXISTS (
+                  SELECT 1 FROM operations AS operation
+                  WHERE operation.resource_type = 'download' AND operation.resource_id = download.id
+                    AND operation.status IN ('queued', 'running')
+                    AND (operation.cancel_requested_at IS NOT NULL OR operation.kind = 'download.cancel')
+              ))
               AND download.id = (
                   SELECT candidate.id FROM downloads AS candidate
                   WHERE candidate.acquisition_id = acquisition.id AND candidate.deleted_at IS NULL

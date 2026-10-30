@@ -20,7 +20,7 @@ describe('application navigation context', () => {
     })).toEqual({ target: '/tasks/task-id?from=%2Ftasks%3Fstate%3Dfailed', canUseHistory: false });
 
     expect(resolveReturnTarget({ pathname: '/downloads/id', from: 'https://evil.test' }))
-      .toEqual({ target: '/acquisitions', canUseHistory: false });
+      .toEqual({ target: '/downloads', canUseHistory: false });
   });
 
   it('uses browser history only when state proves the previous entry is the same source', () => {

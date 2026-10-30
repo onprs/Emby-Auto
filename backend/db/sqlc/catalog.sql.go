@@ -784,11 +784,11 @@ SELECT
         WHERE task.acquisition_id <> $1
           AND (
               task.state NOT IN ('imported', 'rejected', 'cancelled')
-              OR (
-                  task.state = 'cancelled'
-                  AND (task.video_state = 'failed' OR task.subtitle_state = 'failed')
-                  AND task.video_state IN ('failed', 'video_ready')
-                  AND task.subtitle_state IN ('failed', 'ass_ready')
+              OR EXISTS (
+                  SELECT 1 FROM operations AS operation
+                  WHERE operation.resource_type = 'episode_task' AND operation.resource_id = task.id
+                    AND operation.status IN ('queued', 'running')
+                    AND (operation.cancel_requested_at IS NOT NULL OR operation.kind = 'task.cancel')
               )
           )
         UNION ALL
@@ -836,7 +836,12 @@ SELECT
               END,
               0
           )
-          AND download.status <> 'cancelled'
+          AND (download.status <> 'cancelled' OR EXISTS (
+              SELECT 1 FROM operations AS operation
+              WHERE operation.resource_type = 'download' AND operation.resource_id = download.id
+                AND operation.status IN ('queued', 'running')
+                AND (operation.cancel_requested_at IS NOT NULL OR operation.kind = 'download.cancel')
+          ))
           AND NOT EXISTS (
               SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id
           )
@@ -863,7 +868,12 @@ SELECT
         WHERE acquisition.id <> $1
           AND acquisition.deletion_requested_at IS NULL
           AND mapping.mapping_status = 'mapped'
-          AND download.status <> 'cancelled'
+          AND (download.status <> 'cancelled' OR EXISTS (
+              SELECT 1 FROM operations AS operation
+              WHERE operation.resource_type = 'download' AND operation.resource_id = download.id
+                AND operation.status IN ('queued', 'running')
+                AND (operation.cancel_requested_at IS NOT NULL OR operation.kind = 'download.cancel')
+          ))
           AND NOT EXISTS (
               SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id
           )

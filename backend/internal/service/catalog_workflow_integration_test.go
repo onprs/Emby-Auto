@@ -906,7 +906,9 @@ SET state = 'cancelled', video_state = 'failed', subtitle_state = 'ass_ready',
 WHERE acquisition_id = $1 AND source_video_file_id = $2`, acquisitionID, sourceFileIDs[0]); err != nil {
 		t.Fatal(err)
 	}
-	assertTargetOccupied("recoverable cancelled task")
+	if releasedPreview, err := catalogWorkflow.PreviewEpisodeMapping(ctx, occupiedInput); err != nil || len(releasedPreview.Rows) != 2 {
+		t.Fatalf("已停止的可恢复任务不应保留目标占用: %#v / %v", releasedPreview, err)
+	}
 	if _, err := pool.Exec(ctx, `
 UPDATE episode_tasks
 SET state = 'cancelled', video_state = 'failed', subtitle_state = 'cancelled'
@@ -914,9 +916,9 @@ WHERE acquisition_id = $1 AND source_video_file_id = $2`, acquisitionID, sourceF
 		t.Fatal(err)
 	}
 	if releasedPreview, err := catalogWorkflow.PreviewEpisodeMapping(ctx, occupiedInput); err != nil {
-		t.Fatalf("unrecoverable cancelled task retained target occupancy: %v", err)
+		t.Fatalf("停止的混合媒体分支仍保留目标占用: %v", err)
 	} else if len(releasedPreview.Rows) != 2 {
-		t.Fatalf("unrecoverable cancelled task preview rows = %d, want 2", len(releasedPreview.Rows))
+		t.Fatalf("已停止任务释放后的预览行数 = %d, 期望 2", len(releasedPreview.Rows))
 	}
 	if _, err := pool.Exec(ctx, `
 UPDATE episode_tasks

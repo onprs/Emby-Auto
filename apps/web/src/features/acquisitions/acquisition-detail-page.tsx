@@ -21,10 +21,10 @@ export function AcquisitionDetailPage({ acquisitionId }: { acquisitionId: string
   });
 
   if (acquisition.isPending) {
-    return <DetailLoadingState title="任务详情" label="正在读取任务生命周期" />;
+    return <DetailLoadingState title="获取记录详情" label="正在读取获取记录" />;
   }
   if (acquisition.error || !acquisition.data) {
-    return <DetailErrorState title="任务详情" message={acquisition.error?.message ?? '无法读取任务'} onRetry={() => acquisition.refetch()} />;
+    return <DetailErrorState title="获取记录详情" message={acquisition.error?.message ?? '无法读取获取记录'} onRetry={() => acquisition.refetch()} />;
   }
 
   const task = acquisition.data;

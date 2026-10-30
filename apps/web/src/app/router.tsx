@@ -5,7 +5,6 @@ import {
   createRouter,
   lazyRouteComponent,
   Outlet,
-  redirect,
   useParams,
   type ErrorComponentProps,
   type RouterHistory,
@@ -14,7 +13,7 @@ import { LoaderCircle, RefreshCw } from 'lucide-react';
 import { useEffect } from 'react';
 
 import { ApiFailure, fetchSession, fetchSetupStatus } from '@/api/app-client';
-import type { Session, SetupStatus } from '@/api/generated/types.gen';
+import type { Download, Session, SetupStatus, TaskState } from '@/api/generated/types.gen';
 import { AppLayout } from '@/app/layout';
 import { normalizeInternalLocation } from '@/app/navigation';
 import { EventStream } from '@/app/sse';
@@ -31,6 +30,7 @@ const AcquisitionDetailPage = lazyRouteComponent(
 );
 const LoginPage = lazyRouteComponent(() => import('@/features/auth/login-page'), 'LoginPage');
 const DashboardPage = lazyRouteComponent(() => import('@/features/dashboard/dashboard-page'), 'DashboardPage');
+const DownloadsPage = lazyRouteComponent(() => import('@/features/downloads/downloads-page'), 'DownloadsPage');
 const DownloadDetailPage = lazyRouteComponent(
   () => import('@/features/downloads/download-detail-page'),
   'DownloadDetailPage',
@@ -82,6 +82,7 @@ const SettingsTranscodePage = lazyRouteComponent(
   'SettingsTranscodePage',
 );
 const SetupWizard = lazyRouteComponent(() => import('@/features/setup/setup-wizard'), 'SetupWizard');
+const TasksPage = lazyRouteComponent(() => import('@/features/tasks/tasks-page'), 'TasksPage');
 const TaskDetailPage = lazyRouteComponent(() => import('@/features/tasks/task-detail-page'), 'TaskDetailPage');
 const AccessDeniedPage = lazyRouteComponent(() => import('@/app/access-denied'), 'AccessDeniedPage');
 const NotFoundPage = lazyRouteComponent(() => import('@/app/not-found'), 'NotFoundPage');
@@ -143,6 +144,17 @@ type AcquisitionListSearch = CursorRouteSearch & {
   sourceKind?: 'search' | 'rss' | 'manual';
   phase?: 'mapping_pending' | 'downloading' | 'processing' | 'awaiting_review' | 'importing' | 'completed' | 'attention';
   sortBy?: 'content' | 'source_kind' | 'progress' | 'updated_at';
+  sortOrder?: 'asc' | 'desc';
+};
+type TaskListRouteSearch = CursorRouteSearch & {
+  state?: TaskState;
+  phase?: 'processing' | 'awaiting_review' | 'importing' | 'failed' | 'cleanup_failed';
+};
+type DownloadListRouteSearch = CursorRouteSearch & {
+  status?: Download['status'];
+  phase?: 'active' | 'waiting' | 'downloading' | 'paused' | 'completed' | 'failed';
+  query?: string;
+  sortBy?: 'attempt' | 'status' | 'client_state' | 'progress' | 'updated_at';
   sortOrder?: 'asc' | 'desc';
 };
 type DetailSourceSearch = { from?: string };
@@ -230,9 +242,15 @@ const acquisitionMappingRoute = createRoute({
 const downloadsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/downloads',
-  beforeLoad: () => {
-    throw redirect({ to: '/acquisitions', replace: true });
-  },
+  validateSearch: (search: Record<string, unknown>): DownloadListRouteSearch => ({
+    ...cursorSearch(search),
+    status: enumSearch(search.status, ['enqueue_pending', 'file_resolution_pending', 'downloading', 'completed', 'selecting_files', 'materialized', 'failed', 'cancelled'] as const),
+    phase: enumSearch(search.phase, ['active', 'waiting', 'downloading', 'paused', 'completed', 'failed'] as const),
+    query: stringSearch(search.query, 256),
+    sortBy: enumSearch(search.sortBy, ['attempt', 'status', 'client_state', 'progress', 'updated_at'] as const),
+    sortOrder: enumSearch(search.sortOrder, ['asc', 'desc'] as const),
+  }),
+  component: DownloadsPage,
 });
 const downloadDetailRoute = createRoute({
   getParentRoute: () => appRoute,
@@ -273,9 +291,12 @@ const rssDetailRoute = createRoute({
 const tasksRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/tasks',
-  beforeLoad: () => {
-    throw redirect({ to: '/acquisitions', replace: true });
-  },
+  validateSearch: (search: Record<string, unknown>): TaskListRouteSearch => ({
+    ...cursorSearch(search),
+    state: enumSearch(search.state, ['media_queued', 'processing', 'finalizing', 'awaiting_review', 'approved', 'rejected', 'import_queued', 'importing', 'imported', 'failed', 'cancelled'] as const),
+    phase: enumSearch(search.phase, ['processing', 'awaiting_review', 'importing', 'failed', 'cleanup_failed'] as const),
+  }),
+  component: TasksPage,
 });
 const taskDetailRoute = createRoute({
   getParentRoute: () => appRoute,

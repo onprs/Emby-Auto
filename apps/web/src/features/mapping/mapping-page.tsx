@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useLocation, useNavigate } from '@tanstack/react-router';
+import { useNavigate } from '@tanstack/react-router';
 import { Check, ListTree, LoaderCircle, RefreshCw, Save, Waypoints } from 'lucide-react';
 import { useRef, useState } from 'react';
 
-import { appNavigationState, currentAppLocation } from '@/app/navigation-context';
+import { appNavigationState } from '@/app/navigation-context';
+import { OperationFeedback } from '@/components/operation-feedback';
 import { ApiFailure } from '@/api/app-client';
 import type {
   DownloadFile,
@@ -39,10 +40,10 @@ interface ExplicitPreviewResult {
 }
 
 export function MappingPage({ acquisitionId }: { acquisitionId: string }) {
+  const [operationId, setOperationId] = useState<string>();
+  const [syncOperationPending, setSyncOperationPending] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const location = useLocation();
-  const source = currentAppLocation(location.href);
   const [mode, setMode] = useState<MappingMode>('anchor');
   const [selectedAnchorSource, setSelectedAnchorSource] = useState('');
   const [selectedTarget, setSelectedTarget] = useState('');
@@ -102,12 +103,8 @@ export function MappingPage({ acquisitionId }: { acquisitionId: string }) {
     },
     onSuccess: (result) => {
       syncHolder.reset();
-      void navigate({
-        to: '/operations/$operationId',
-        params: { operationId: result.operationId },
-        search: { from: source },
-        state: appNavigationState(source),
-      });
+      setSyncOperationPending(true);
+      setOperationId(result.operationId);
       void queryClient.invalidateQueries({ queryKey: ['tmdb-catalog', acquisition.data?.tmdbSeriesId] });
     },
     onError: (cause) => setError(cause instanceof Error ? cause.message : 'TMDb 同步失败'),
@@ -163,7 +160,7 @@ export function MappingPage({ acquisitionId }: { acquisitionId: string }) {
     },
   });
 
-  const commandPending = syncCatalog.isPending || previewMutation.isPending || saveMutation.isPending;
+  const commandPending = syncCatalog.isPending || syncOperationPending || previewMutation.isPending || saveMutation.isPending;
 
   const saveAnchor = (season: number, episode: number) => {
     if (commandPending || hasFractionalSource) return;
@@ -250,6 +247,7 @@ export function MappingPage({ acquisitionId }: { acquisitionId: string }) {
         </button>
       </div>
 
+      <OperationFeedback operationId={operationId} onPendingChange={setSyncOperationPending} onSettled={() => { void catalog.refetch(); }} />
       {catalog.error ? <ErrorState className="mb-4" message="暂时没有剧集信息，请更新后重试。" onRetry={() => catalog.refetch()} /> : null}
       {download.error ? <ErrorState className="mb-4" message="暂时无法读取资源文件。" onRetry={() => download.refetch()} /> : null}
       {(catalog.isPending || download.isPending) && !catalog.error && !download.error ? <LoadingState label="正在读取资源与剧集信息" /> : null}

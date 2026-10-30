@@ -442,7 +442,7 @@ func (q *Queries) ListSubscriptionDeletionAcquisitionIDs(ctx context.Context, su
 }
 
 const lockAcquisitionForDeletion = `-- name: LockAcquisitionForDeletion :one
-SELECT id, deletion_requested_at
+SELECT id, series_id, deletion_requested_at
 FROM acquisitions
 WHERE id = $1
 FOR UPDATE
@@ -450,13 +450,14 @@ FOR UPDATE
 
 type LockAcquisitionForDeletionRow struct {
 	ID                  pgtype.UUID        `db:"id" json:"id"`
+	SeriesID            pgtype.UUID        `db:"series_id" json:"series_id"`
 	DeletionRequestedAt pgtype.Timestamptz `db:"deletion_requested_at" json:"deletion_requested_at"`
 }
 
 func (q *Queries) LockAcquisitionForDeletion(ctx context.Context, id pgtype.UUID) (LockAcquisitionForDeletionRow, error) {
 	row := q.db.QueryRow(ctx, lockAcquisitionForDeletion, id)
 	var i LockAcquisitionForDeletionRow
-	err := row.Scan(&i.ID, &i.DeletionRequestedAt)
+	err := row.Scan(&i.ID, &i.SeriesID, &i.DeletionRequestedAt)
 	return i, err
 }
 

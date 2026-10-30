@@ -203,10 +203,10 @@ func downloadViewFromDB(row db.Download, files []db.DownloadFile) domain.Downloa
 		UpdatedAt:     row.UpdatedAt.Time,
 		Files:         make([]domain.DownloadFileView, 0, len(files)),
 		Actions: domain.DownloadActions{
-			CanRetry: row.Status == "failed" && row.FailureStage != nil &&
-				!isMappingMaterializationFailure(row.Status, valueOrEmpty(row.FailureStage), valueOrEmpty(row.ErrorCode)) &&
-				!row.DeletionRequestedAt.Valid,
-			CanCancel:            (row.Status == "enqueue_pending" || row.Status == "file_resolution_pending" || row.Status == "downloading" || row.Status == "completed" || row.Status == "selecting_files") && !row.DeletionRequestedAt.Valid,
+			CanRetry: (row.Status == "cancelled" || (row.Status == "failed" && row.FailureStage != nil &&
+				!isMappingMaterializationFailure(row.Status, valueOrEmpty(row.FailureStage), valueOrEmpty(row.ErrorCode)) && valueOrEmpty(row.ErrorCode) != "download_manifest_changed")) &&
+				!row.DeletionRequestedAt.Valid && !row.DeletedAt.Valid,
+			CanCancel:            (row.Status == "enqueue_pending" || row.Status == "file_resolution_pending" || row.Status == "downloading" || row.Status == "completed" || row.Status == "selecting_files" || row.Status == "failed") && !row.DeletionRequestedAt.Valid && !row.DeletedAt.Valid,
 			CanDelete:            (row.Status == "completed" || row.Status == "materialized" || row.Status == "failed" || row.Status == "cancelled") && !row.DeletionRequestedAt.Valid && !row.DeletedAt.Valid,
 			CanEditFileSelection: (row.Status == "completed" || row.Status == "selecting_files") && !row.DeletionRequestedAt.Valid,
 			CanResolveFiles:      hasSupportedVideo && (row.Status == "file_resolution_pending" || (row.Status == "failed" && valueOrEmpty(row.FailureStage) == "file_resolution")) && !row.DeletionRequestedAt.Valid,
@@ -1095,6 +1095,15 @@ func acquisitionStageWeight(key string) float64 {
 }
 
 func acquisitionAggregateStatus(view domain.AcquisitionView, downloadStatus string) string {
+	if len(view.Tasks) > 0 {
+		allStopped := true
+		for _, task := range view.Tasks {
+			allStopped = allStopped && task.State == "cancelled"
+		}
+		if allStopped {
+			return "cancelled"
+		}
+	}
 	if (downloadStatus == "failed" && !acquisitionWaitsForMapping(view)) || acquisitionStageStatus(view.Stages, stageFailed) {
 		return "failed"
 	}
@@ -1157,8 +1166,11 @@ func rssEntryVersion(enqueueAttempts int32) int {
 }
 
 func rssEntryCanRetry(acquisition domain.AcquisitionView) bool {
+	if acquisition.Download != nil && acquisition.Download.Status == "cancelled" && len(acquisition.Tasks) == 0 {
+		return true
+	}
 	if acquisition.Download != nil &&
-		acquisition.Download.Status == "failed" &&
+		acquisition.Download.Status == "failed" && acquisition.Download.ErrorCode != "download_manifest_changed" &&
 		acquisition.Download.FailureStage != "" &&
 		!isMappingMaterializationFailure(acquisition.Download.Status, acquisition.Download.FailureStage, acquisition.Download.ErrorCode) {
 		return true
@@ -1253,7 +1265,7 @@ func (service *ReadService) ListRSSEntries(ctx context.Context, subscriptionID u
 		last := repository.UUIDFromPG(batch[len(batch)-1].ID)
 		batchCursor = &last
 	}
-	acquisitionRows, err := service.queries.ListRSSSubscriptionAcquisitions(ctx, repository.UUIDToPG(subscriptionID))
+	acquisitionRows, err := service.queries.ListRSSSubscriptionEntryAcquisitions(ctx, repository.UUIDToPG(subscriptionID))
 	if err != nil {
 		return domain.RSSEntryPage{}, fmt.Errorf("list RSS entry acquisitions: %w", err)
 	}
@@ -1276,6 +1288,19 @@ func (service *ReadService) ListRSSEntries(ctx context.Context, subscriptionID u
 		archivedByEntry[repository.UUIDFromPG(archived.EntryID)] = archived
 	}
 
+	pendingRetryIDs, err := service.queries.ListRSSPendingEntryRetries(ctx, repository.UUIDToPG(subscriptionID))
+	if err != nil {
+		return domain.RSSEntryPage{}, fmt.Errorf("list pending RSS entry retries: %w", err)
+	}
+	pendingRetries := make(map[uuid.UUID]bool, len(pendingRetryIDs))
+	for _, acquisition := range acquisitionRows {
+		if acquisition.DeletionRequestedAt.Valid && acquisition.RssEntryID.Valid {
+			pendingRetries[repository.UUIDFromPG(acquisition.RssEntryID)] = true
+		}
+	}
+	for _, id := range pendingRetryIDs {
+		pendingRetries[repository.UUIDFromPG(id)] = true
+	}
 	views := make([]domain.RSSEntryView, 0, len(rows))
 	reasonsByEntry := make(map[uuid.UUID][]string, len(rows))
 	for _, row := range rows {
@@ -1304,9 +1329,7 @@ func (service *ReadService) ListRSSEntries(ctx context.Context, subscriptionID u
 		}
 		view.DownloadURIAvailable = row.Downloadable
 		view.Version = rssEntryVersion(row.EnqueueAttempts)
-		if row.LastErrorRetryable {
-			view.CanRetry = true
-		}
+		view.CanRetry = row.LastErrorRetryable || (row.Downloadable && (row.Status == string(domain.RSSDiscovered) || row.Status == string(domain.RSSEnqueued) || row.Status == string(domain.RSSEnqueueing)) && !row.ImportedAt.Valid)
 		if row.SourceSeason != nil {
 			value := int(*row.SourceSeason)
 			view.SourceSeason = &value
@@ -1369,6 +1392,10 @@ func (service *ReadService) ListRSSEntries(ctx context.Context, subscriptionID u
 			}
 		}
 		if view.Classification == "rejected" || view.Classification == "unconsumable" {
+			view.CanRetry = len(row.RejectionReasons) == 1 && row.RejectionReasons[0] == rssTargetProcessingReason &&
+				view.AcquisitionID == nil && !row.ImportedAt.Valid && row.AdjudicationState != "ignored"
+		}
+		if pendingRetries[view.ID] {
 			view.CanRetry = false
 		}
 		views = append(views, view)
@@ -1763,6 +1790,10 @@ func (service *ReadService) DashboardSummary(ctx context.Context) (domain.Dashbo
 		return domain.DashboardSummary{}, fmt.Errorf("list dashboard attention items: %w", err)
 	}
 	sortAcquisitionViews(attention, "updated_at", -1)
+	recentTaskIDs, err := service.queries.DashboardRecentTaskIDs(ctx, 5)
+	if err != nil {
+		return domain.DashboardSummary{}, fmt.Errorf("list dashboard video tasks: %w", err)
+	}
 	recent, err := service.queries.DashboardRecentOperations(ctx, 10)
 	if err != nil {
 		return domain.DashboardSummary{}, fmt.Errorf("list dashboard operations: %w", err)
@@ -1802,6 +1833,7 @@ func (service *ReadService) DashboardSummary(ctx context.Context) (domain.Dashbo
 			AverageLatencyMilliseconds: agentStats.AverageLatencyMilliseconds,
 		},
 		AttentionItems:   make([]domain.DashboardAttentionItem, 0, min(5, len(attention))),
+		RecentTasks:      make([]domain.EpisodeTask, 0, len(recentTaskIDs)),
 		RecentOperations: make([]domain.DashboardRecentOperation, 0, len(recent)),
 		RecentImports:    make([]domain.DashboardRecentImport, 0, len(imports)),
 		RecentScans:      make([]domain.DashboardRecentScan, 0, len(scans)),
@@ -1816,6 +1848,16 @@ func (service *ReadService) DashboardSummary(ctx context.Context) (domain.Dashbo
 		if item, ok := dashboardAttentionItem(view); ok {
 			summary.AttentionItems = append(summary.AttentionItems, item)
 		}
+	}
+	for _, id := range recentTaskIDs {
+		row, err := service.queries.GetTaskView(ctx, id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return domain.DashboardSummary{}, fmt.Errorf("load dashboard video task: %w", err)
+		}
+		summary.RecentTasks = append(summary.RecentTasks, taskFromGetRow(row))
 	}
 	for _, row := range recent {
 		summary.RecentOperations = append(summary.RecentOperations, dashboardOperation(row))
