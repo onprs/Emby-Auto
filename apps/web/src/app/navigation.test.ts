@@ -15,12 +15,14 @@ describe('application navigation manifest', () => {
       ['dashboard', '仪表盘', '/'],
       ['searches', '搜索添加', '/searches'],
       ['rss', 'RSS 订阅', '/rss'],
-      ['tasks', '任务', '/acquisitions'],
+      ['tasks', '任务', '/tasks'],
       ['emby', '媒体库', '/emby'],
-      ['operations', '运行记录', '/operations'],
+      ['operations', '操作日志', '/operations'],
       ['settings', '系统设置', '/settings'],
     ]);
-    expect(appNavigation.find((item) => item.id === 'tasks')?.children).toBeUndefined();
+    expect(appNavigation.find((item) => item.id === 'tasks')?.children).toEqual([
+      { label: '视频任务', to: '/tasks' }, { label: '获取记录', to: '/acquisitions' }, { label: '下载', to: '/downloads' },
+    ]);
     expect(appNavigation.find((item) => item.id === 'operations')?.children).toBeUndefined();
   });
 
@@ -41,8 +43,8 @@ describe('application navigation manifest', () => {
   it('defines a reliable list fallback for every detail route', () => {
     expect(defaultReturnForPathname('/searches/id')).toBe('/searches');
     expect(defaultReturnForPathname('/rss/id')).toBe('/rss');
-    expect(defaultReturnForPathname('/tasks/id')).toBe('/acquisitions');
-    expect(defaultReturnForPathname('/downloads/id')).toBe('/acquisitions');
+    expect(defaultReturnForPathname('/tasks/id')).toBe('/tasks');
+    expect(defaultReturnForPathname('/downloads/id')).toBe('/downloads');
     expect(defaultReturnForPathname('/emby/scans/id')).toBe('/emby');
     expect(defaultReturnForPathname('/operations/id')).toBe('/operations');
     expect(defaultReturnForPathname('/acquisitions/id/mapping')).toBe('/acquisitions/id');
@@ -62,8 +64,9 @@ describe('application navigation manifest', () => {
 
   it('keeps the unified task source in diagnostic breadcrumbs', () => {
     expect(breadcrumbsForLocation('/downloads/download-id', '/acquisitions?phase=attention')).toEqual([
-      { label: '任务', to: '/acquisitions?phase=attention' },
-      { label: '下载诊断' },
+      { label: '任务', to: '/tasks' },
+      { label: '获取记录', to: '/acquisitions?phase=attention' },
+      { label: '下载详情' },
     ]);
   });
 
@@ -72,20 +75,21 @@ describe('application navigation manifest', () => {
       '/downloads/22222222-2222-4222-8222-222222222222',
       '/tasks/11111111-1111-4111-8111-111111111111?from=%2Ftasks',
     )).toEqual([
-      { label: '任务', to: '/acquisitions' },
-      { label: '媒体处理诊断', to: '/tasks/11111111-1111-4111-8111-111111111111?from=%2Ftasks' },
-      { label: '下载诊断' },
+      { label: '任务', to: '/tasks' },
+      { label: '视频任务详情', to: '/tasks/11111111-1111-4111-8111-111111111111?from=%2Ftasks' },
+      { label: '下载详情' },
     ]);
   });
 
   it('uses the owning module breadcrumb when a detail is opened directly', () => {
     expect(breadcrumbsForLocation('/downloads/id')).toEqual([
-      { label: '任务', to: '/acquisitions' },
-      { label: '下载诊断' },
+      { label: '任务', to: '/tasks' },
+      { label: '下载', to: '/downloads' },
+      { label: '下载详情' },
     ]);
     expect(breadcrumbsForLocation('/acquisitions/id/mapping')).toEqual([
-      { label: '任务', to: '/acquisitions' },
-      { label: '内容任务详情', to: '/acquisitions/id' },
+      { label: '任务', to: '/tasks' },
+      { label: '获取记录详情', to: '/acquisitions/id' },
       { label: '剧集对应关系' },
     ]);
     expect(routeForPathname('/missing')).toBeUndefined();

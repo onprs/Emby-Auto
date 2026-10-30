@@ -51,6 +51,15 @@ function dashboardSummary(): DashboardSummary {
       mappingPending: 1,
     },
     attentionItems: [{ acquisition: mappingAcquisition(), reason: 'mapping_required' }],
+    recentTasks: [{
+      id: '72000000-0000-0000-0000-000000000001',
+      acquisitionId: '72000000-0000-0000-0000-000000000002',
+      downloadId: '72000000-0000-0000-0000-000000000003',
+      mediaType: 'episode', seriesTitle: '最近处理的番剧', sourceSeason: 1, sourceEpisode: 3,
+      state: 'cancelled', videoState: 'cancelled', subtitleState: 'ass_ready', version: 2,
+      operations: [], actions: { canRetry: true, canCancel: false, canReview: false, canImport: false },
+      createdAt: '2026-07-26T06:00:00Z', updatedAt: '2026-07-26T07:00:00Z',
+    }],
     recentOperations: [{
       id: '72000000-0000-0000-0000-000000000001',
       kind: 'download.enqueue',
@@ -155,9 +164,10 @@ describe('DashboardPage attention', () => {
     expect(diskPanel).not.toHaveTextContent('不同颜色代表不同磁盘设备');
     expect(diskPanel).not.toHaveTextContent('容量与 I/O 实时负载');
 
-    const recent = screen.getByLabelText('最近运行记录');
-    expect(within(recent).getByText('添加下载')).toBeInTheDocument();
-    expect(within(recent).getByText('这个资源已经在下载列表中。')).toBeInTheDocument();
+    const recent = screen.getByLabelText('最近处理的视频');
+    expect(within(recent).getByRole('link', { name: '最近处理的番剧 · 第 1 季第 3 集' })).toHaveAttribute('href', expect.stringContaining('/tasks/72000000-0000-0000-0000-000000000001'));
+    expect(within(recent).queryByText('添加下载')).not.toBeInTheDocument();
+    expect(within(recent).queryByText('这个资源已经在下载列表中。')).not.toBeInTheDocument();
   });
 
   it('keeps the disk capacity list in one column when only one disk exists', async () => {
@@ -215,6 +225,6 @@ describe('DashboardPage attention', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('系统指标暂时不可用');
     const resources = screen.getByLabelText('系统资源');
     expect(within(resources).getByRole('button', { name: '重试' })).toBeInTheDocument();
-    expect(screen.getByLabelText('最近运行记录')).toHaveTextContent('添加下载');
+    expect(screen.getByLabelText('最近处理的视频')).toHaveTextContent('最近处理的番剧');
   });
 });

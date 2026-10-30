@@ -1521,6 +1521,13 @@ export type SystemMetricsSnapshot = {
 export type DashboardSummary = {
     counts: DashboardStatusCounts;
     attentionItems: Array<DashboardAttentionItem>;
+    /**
+     * 最近更新的视频任务，每集或每部电影仅显示一次。
+     */
+    recentTasks: Array<Task>;
+    /**
+     * @deprecated
+     */
     recentOperations: Array<DashboardRecentOperation>;
     recentImports: Array<DashboardRecentImport>;
     recentScans: Array<DashboardRecentScan>;

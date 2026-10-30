@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { AlertTriangle, ArrowRight, CheckCircle2, Download, Eye, Film, ListChecks, LoaderCircle, Pause, Play, RefreshCw, Server } from 'lucide-react';
 
-import type { Acquisition, BackgroundRuntime, DashboardAttentionItem, DashboardRecentOperation } from '@/api/generated/types.gen';
+import type { Acquisition, BackgroundRuntime, DashboardAttentionItem, Task } from '@/api/generated/types.gen';
 import { fetchBackgroundRuntime, fetchDashboardSummary, fetchDashboardSystemMetrics, setBackgroundRuntime } from '@/features/dashboard/api';
 import { ContextLink } from '@/components/context-link';
 import { PageBody, PageHeader } from '@/components/resource';
@@ -18,7 +18,6 @@ import {
   acquisitionPipelineStageLabels,
   episodeLabel,
   friendlyError,
-  operationLabel,
   sourceKindLabel,
 } from '@/lib/presentation';
 import { cn } from '@/lib/utils';
@@ -53,7 +52,7 @@ export function DashboardPage() {
     return <ErrorState message={summary.error?.message ?? '无法读取概览'} onRetry={() => summary.refetch()} />;
   }
 
-  const { counts, attentionItems, recentOperations, recentImports, recentScans, dependencies, links } = summary.data;
+  const { counts, attentionItems, recentTasks, recentImports, recentScans, dependencies, links } = summary.data;
   const needsAttention = counts.attention;
 
   return (
@@ -118,17 +117,17 @@ export function DashboardPage() {
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
-        <Card aria-label="最近运行记录">
-          <CardHeader action={<ViewAllLink to="/operations" />}>
-            <CardTitle>最近运行</CardTitle>
+        <Card aria-label="最近处理的视频">
+          <CardHeader action={<ViewAllLink to="/tasks" />}>
+            <CardTitle>最近处理的视频</CardTitle>
           </CardHeader>
           <CardContent>
-            {recentOperations.length === 0 ? (
-              <p className="text-sm text-zinc-500">暂无运行记录</p>
+            {recentTasks.length === 0 ? (
+              <p className="text-sm text-zinc-500">暂无视频处理任务</p>
             ) : (
               <ul className="divide-y divide-zinc-100">
-                {recentOperations.slice(0, RECENT_LIMIT).map((operation) => (
-                  <RecentOperationRow key={operation.id} operation={operation} />
+                {recentTasks.slice(0, RECENT_LIMIT).map((task) => (
+                  <RecentTaskRow key={task.id} task={task} />
                 ))}
               </ul>
             )}
@@ -334,20 +333,23 @@ function acquisitionTitle(acquisition: Acquisition): string {
   return acquisition.seriesTitle ?? '未命名番剧';
 }
 
-function RecentOperationRow({ operation }: { operation: DashboardRecentOperation }) {
+function RecentTaskRow({ task }: { task: Task }) {
+  const title = task.mediaType === 'movie'
+    ? `${task.movieTitle ?? '未命名电影'}${task.releaseYear ? ` (${task.releaseYear})` : ''}`
+    : `${task.seriesTitle ?? '未命名番剧'} · ${episodeLabel(task.targetSeason ?? task.sourceSeason, task.targetEpisode ?? task.sourceEpisode, task.sourceEpisodeFractionHundredths)}`;
   return (
     <li className="flex items-center justify-between gap-3 py-3">
       <div className="min-w-0">
-        <ContextLink to="/operations/$operationId" params={{ operationId: operation.id }} className="block truncate text-sm font-medium text-zinc-900 hover:underline">
-          {operationLabel(operation.kind)}
+        <ContextLink to="/tasks/$taskId" params={{ taskId: task.id }} className="block truncate text-sm font-medium text-zinc-900 hover:underline">
+          {title}
         </ContextLink>
-        {operation.status === 'failed' ? (
-          <p className="mt-0.5 truncate text-xs text-red-700">{friendlyError(operation.errorCode, operation.errorMessage)}</p>
+        {task.state === 'failed' ? (
+          <p className="mt-0.5 truncate text-xs text-red-700">{friendlyError(task.errorCode, task.errorMessage)}</p>
         ) : (
-          <p className="mt-0.5 text-xs text-zinc-500">{formatDateTime(operation.updatedAt)}</p>
+          <p className="mt-0.5 text-xs text-zinc-500">{formatDateTime(task.updatedAt)}</p>
         )}
       </div>
-      <StatusBadge value={operation.status} />
+      <StatusBadge value={task.state} />
     </li>
   );
 }

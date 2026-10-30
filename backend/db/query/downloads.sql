@@ -5,6 +5,9 @@ SELECT
     d.status,
     d.torrent_hash,
     d.file_resolution_source,
+    (d.file_resolution_source IS NOT NULL AND EXISTS (
+        SELECT 1 FROM download_files AS file WHERE file.download_id = d.id
+    ))::boolean AS has_resolved_manifest,
     COALESCE(
         CASE a.source_kind
             WHEN 'search' THEN candidate.download_uri
@@ -363,7 +366,7 @@ SET status = 'cancelled',
     version = version + 1,
     updated_at = now()
 WHERE id = sqlc.arg(id)
-  AND status IN ('enqueue_pending', 'file_resolution_pending', 'downloading', 'completed', 'selecting_files')
+  AND status IN ('enqueue_pending', 'file_resolution_pending', 'downloading', 'completed', 'selecting_files', 'failed')
   AND version = sqlc.arg(expected_version)
 RETURNING *;
 

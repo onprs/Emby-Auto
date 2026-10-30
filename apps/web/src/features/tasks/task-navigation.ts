@@ -6,7 +6,7 @@ import {
 } from '@/app/navigation-context';
 import { normalizeInternalLocation } from '@/app/navigation';
 
-export const defaultTaskListSource = '/acquisitions';
+export const defaultTaskListSource = '/tasks';
 
 const lastSourceKey = 'emby-auto:task-list:last-source';
 

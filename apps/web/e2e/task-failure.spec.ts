@@ -142,7 +142,7 @@ test('failure summary, sanitized details, retry, and list restoration', async ({
 
   const listPath = `/acquisitions?sourceKind=rss&phase=attention&cursor=${cursor}`;
   await page.goto(listPath);
-  await expect(page.getByRole('heading', { name: '任务' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '获取记录' })).toBeVisible();
   await expect.poll(() => new URL(acquisitionRequest).searchParams.get('sourceKind')).toBe('rss');
   await expect.poll(() => new URL(acquisitionRequest).searchParams.get('phase')).toBe('attention');
 
@@ -201,13 +201,14 @@ test('failure summary, sanitized details, retry, and list restoration', async ({
   await expect.poll(() => retryRequest.expectedVersion).toBe(7);
   expect(retryRequest.key).toBeTruthy();
   await expect(page.getByRole('status').filter({ hasText: '重试请求已提交' })).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/tasks/${taskId}`));
 
   await page.getByRole('button', { name: '返回' }).click();
   await expect(page).toHaveURL(acquisitionPath);
   await expect(page.getByRole('heading', { name: '视觉验收任务' })).toBeVisible();
   await page.getByRole('button', { name: '返回' }).click();
   await expect(page).toHaveURL(listPath);
-  await expect(page.getByRole('heading', { name: '任务' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '获取记录' })).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(200);
   await expect(record).toBeInViewport();
 
@@ -220,5 +221,5 @@ test('failure summary, sanitized details, retry, and list restoration', async ({
   await expect(page).toHaveURL(acquisitionPath);
   await page.goBack();
   await expect(page).toHaveURL(listPath);
-  await expect(page.getByRole('heading', { name: '任务' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '获取记录' })).toBeVisible();
 });

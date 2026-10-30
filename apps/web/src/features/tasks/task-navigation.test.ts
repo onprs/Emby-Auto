@@ -27,8 +27,8 @@ describe('task list return navigation', () => {
   });
 
   it('falls back to the user-facing task list for direct detail links', () => {
-    expect(defaultTaskListSource).toBe('/acquisitions');
-    expect(lastTaskListSource()).toBe('/acquisitions');
+    expect(defaultTaskListSource).toBe('/tasks');
+    expect(lastTaskListSource()).toBe('/tasks');
   });
 
   it('accepts history depth only when it belongs to the same list source', () => {
