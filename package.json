@@ -51,11 +51,11 @@
   "devDependencies": {
     "@hey-api/openapi-ts": "0.99.0",
     "@redocly/cli": "2.71.2",
-    "@types/react": "~19.3.0",
-    "@types/react-dom": "~19.3.0",
+    "@types/react": "~19.2.18",
+    "@types/react-dom": "~19.2.7",
     "@vitest/coverage-v8": "^5.0.5",
-    "react": "~19.3.1",
-    "react-dom": "~19.3.1",
+    "react": "~19.2.9",
+    "react-dom": "~19.2.9",
     "typescript": "6.0.3",
     "vitest": "^5.0.5"
   },
