@@ -150,7 +150,7 @@ describe('AcquisitionsPage failure actions', () => {
     });
 
     await screen.findAllByText('下载失败示例');
-    await userEvent.click(screen.getAllByRole('checkbox', { name: '全选当前页任务' })[0]);
+    await userEvent.click(screen.getAllByRole('checkbox', { name: '全选当前页获取记录' })[0]);
     await userEvent.click(screen.getByRole('button', { name: '批量删除' }));
     await userEvent.click(screen.getByRole('button', { name: '确认批量删除' }));
 
@@ -410,7 +410,7 @@ describe('AcquisitionsPage task retry actions', () => {
     expect(screen.queryByRole('menuitem', { name: '重试任务' })).not.toBeInTheDocument();
     expect(screen.queryByRole('menuitem', { name: '停止处理' })).not.toBeInTheDocument();
   });
-  it('shows retry without stop for processing stuck', async () => {
+  it('允许停止仍占用剧集的失败处理', async () => {
     const item = taskAcquisition({
       tasks: [{
         id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
@@ -428,7 +428,7 @@ describe('AcquisitionsPage task retry actions', () => {
     await screen.findAllByText('任务重试示例');
     await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
     expect(await screen.findByRole('menuitem', { name: '重试任务' })).toBeInTheDocument();
-    expect(screen.queryByRole('menuitem', { name: '停止处理' })).not.toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: '停止处理' })).toBeInTheDocument();
   });
   it('shows merged summary for dual failed with empty failureStage and single retry', async () => {
     const item = taskAcquisition({
@@ -859,7 +859,7 @@ describe('AcquisitionsPage partial retry refresh', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
     expect(postCount1).toBe(1);
     expect(postCount2).toBe(1);
-    expect(screen.getByRole('alert').textContent).toContain('task version changed');
+    expect(screen.getByRole('alert').textContent).toContain('任务状态已经变化，请刷新后再试。');
     await waitFor(() => expect(getAcquisitionsCount).toBeGreaterThan(1));
     // 列表已刷新：不再显示“共 2 个任务”，仅剩第二个任务的失败摘要
     expect(screen.queryByText(/（共 2 个任务）/)).not.toBeInTheDocument();
@@ -924,6 +924,6 @@ describe('AcquisitionsPage partial retry refresh', () => {
     await waitFor(() => expect(getAcquisitionsCount).toBeGreaterThan(1));
     // 失败后仍刷新，但不重复提交
     expect(postCount).toBe(1);
-    expect(screen.getByRole('alert').textContent).toContain('task version changed');
+    expect(screen.getByRole('alert').textContent).toContain('任务状态已经变化，请刷新后再试。');
   });
 });

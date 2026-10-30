@@ -36,6 +36,10 @@ async function stubNavigationApi(page: Page) {
       await json(route, configuration);
       return;
     }
+    if (pathname === '/api/v1/emby/libraries') {
+      await json(route, []);
+      return;
+    }
     if (
       pathname === '/api/v1/searches' ||
       pathname === '/api/v1/rss/subscriptions' ||
@@ -43,7 +47,6 @@ async function stubNavigationApi(page: Page) {
       pathname === '/api/v1/tasks' ||
       pathname === '/api/v1/downloads' ||
       pathname === '/api/v1/emby/scans' ||
-      pathname === '/api/v1/emby/libraries' ||
       pathname === '/api/v1/operations'
     ) {
       await json(route, { items: [] });
@@ -76,7 +79,7 @@ test('uses one route-aware shell and accessible mobile or desktop navigation', a
   await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible();
 
   const navigation = await openMainNavigation(page, mobile);
-  const expected = ['仪表盘', '搜索添加', 'RSS 订阅', '任务', '媒体库', '运行记录', '系统设置'];
+  const expected = ['仪表盘', '搜索添加', 'RSS 订阅', '任务', '媒体库', '操作日志', '系统设置'];
   for (const label of expected) {
     await expect(navigation.getByRole('link', { name: label, exact: true })).toBeVisible();
   }
@@ -93,7 +96,7 @@ test('uses one route-aware shell and accessible mobile or desktop navigation', a
 
     await page.getByRole('button', { name: '打开主导航' }).click();
     await navigation.getByRole('link', { name: '任务', exact: true }).click();
-    await expect(page).toHaveURL(/\/acquisitions$/);
+    await expect(page).toHaveURL(/\/tasks$/);
     await expect(page.getByRole('dialog', { name: '主导航抽屉' })).toBeHidden();
   } else {
     await page.getByRole('button', { name: '收起侧边栏' }).click();
@@ -101,8 +104,8 @@ test('uses one route-aware shell and accessible mobile or desktop navigation', a
     await page.reload();
     await expect(page.getByRole('button', { name: '展开侧边栏' })).toBeVisible();
     await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '任务', exact: true }).click();
-    await expect(page).toHaveURL(/\/acquisitions$/);
-    await expect(page.getByRole('heading', { name: '任务', exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/\/tasks$/);
+    await expect(page.getByRole('heading', { name: '视频任务', exact: true })).toBeVisible();
   }
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(browserErrors).toEqual([]);
@@ -112,10 +115,10 @@ test('no longer renders the removed single-child submenu while the operations mo
   await stubNavigationApi(page);
   const mobile = testInfo.project.name === 'mobile';
   await page.goto('/operations');
-  await expect(page.getByRole('heading', { name: '运行记录' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '操作日志' })).toBeVisible();
 
   const navigation = await openMainNavigation(page, mobile);
-  await expect(navigation.getByRole('link', { name: '运行记录', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(navigation.getByRole('link', { name: '操作日志', exact: true })).toHaveAttribute('aria-current', 'page');
   await expect(navigation.getByRole('link', { name: '任务执行', exact: true })).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
@@ -128,11 +131,11 @@ test('keeps module highlighting and direct-detail recovery correct for every det
     { path: `/rss/${id}`, module: 'RSS 订阅', fallback: '/rss' },
     { path: `/acquisitions/${id}`, module: '任务', fallback: '/acquisitions' },
     { path: `/acquisitions/${id}/mapping`, module: '任务', fallback: `/acquisitions/${id}` },
-    { path: `/tasks/${id}`, module: '任务', fallback: '/acquisitions' },
-    { path: `/downloads/${id}`, module: '任务', fallback: '/acquisitions' },
+    { path: `/tasks/${id}`, module: '任务', fallback: '/tasks' },
+    { path: `/downloads/${id}`, module: '任务', fallback: '/downloads' },
     { path: `/emby/scans/${id}`, module: '媒体库', fallback: '/emby' },
     { path: `/emby/libraries/${id}`, module: '媒体库', fallback: '/emby' },
-    { path: `/operations/${id}`, module: '运行记录', fallback: '/operations' },
+    { path: `/operations/${id}`, module: '操作日志', fallback: '/operations' },
   ];
 
   for (const item of cases) {
@@ -149,16 +152,16 @@ test('keeps module highlighting and direct-detail recovery correct for every det
   }
 });
 
-test('redirects legacy download and media-processing lists into the unified task list', async ({ page }) => {
+test('分别保留视频任务与下载记录的列表和筛选', async ({ page }) => {
   await stubNavigationApi(page);
 
   await page.goto('/downloads?phase=failed');
-  await expect(page).toHaveURL(/\/acquisitions$/);
-  await expect(page.getByRole('heading', { name: '任务' })).toBeVisible();
+  await expect(page).toHaveURL(/\/downloads\?phase=failed$/);
+  await expect(page.getByRole('heading', { name: '下载', exact: true })).toBeVisible();
 
   await page.goto('/tasks?state=failed');
-  await expect(page).toHaveURL(/\/acquisitions$/);
-  await expect(page.getByRole('heading', { name: '任务' })).toBeVisible();
+  await expect(page).toHaveURL(/\/tasks\?state=failed$/);
+  await expect(page.getByRole('heading', { name: '视频任务', exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
@@ -166,7 +169,7 @@ test('offers stable recovery from unknown and forbidden routes', async ({ page }
   await stubNavigationApi(page);
   const source = '/acquisitions?phase=attention';
   await page.goto(source);
-  await expect(page.getByRole('heading', { name: '任务' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '获取记录' })).toBeVisible();
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem('emby-auto:navigation:last-valid'))).toBe(source);
 
   await page.goto('/this-route-does-not-exist');

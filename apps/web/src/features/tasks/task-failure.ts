@@ -85,6 +85,12 @@ const operationKinds: Record<FailureStage, string[]> = {
 };
 
 const codeReasons: Record<string, Reason> = {
+  download_manifest_changed: {
+    reason: '资源文件清单已变化',
+    detail: '新的文件清单与已经确认的文件选择不一致，旧映射无法安全复用。',
+    recommendation: '删除旧获取记录后重新添加资源，并重新确认剧集对应关系。',
+    neverRetry: true,
+  },
   duplicate_torrent: {
     reason: '下载资源已存在',
     detail: '同一个种子已经存在于下载客户端或当前任务中。',
@@ -473,7 +479,7 @@ function resolveReason(stage: FailureStage, code?: string, message?: string): { 
     return { value: codeReasons[code], recognized: true };
   }
   return {
-    value: { reason: unknownFailureReason, detail: unknownFailureReason, recommendation: '展开技术详情或打开运行记录，确认原因后再决定是否重试。' },
+    value: { reason: unknownFailureReason, detail: unknownFailureReason, recommendation: '展开技术详情或打开操作日志，确认原因后再决定是否重试。' },
     recognized: false,
   };
 }
@@ -541,6 +547,16 @@ function buildFailureInfo(source: FailureSource): TaskFailureInfo {
   };
 }
 
+function stoppedProcessingInfo(stage: FailureStage, relatedResource: string, occurredAt: string, retryKind: TaskFailureInfo['retryKind'] = 'task'): TaskFailureInfo {
+  return {
+    stage, stageLabel: stage === 'download' ? '下载' : '视频处理',
+    summary: '处理已停止', detail: '已完成的处理结果会保留，可以重试继续处理。',
+    occurredAt, attemptLabel: '已停止', canRetry: true, retryKind, retryLabel: '重试任务',
+    recommendation: '等待停止完成后，重试会从未完成的阶段继续。',
+    relatedResource, technicalDetails: '',
+  };
+}
+
 export function taskFailureInfo(task: Task): TaskFailureInfo | null {
   if (task.cleanup?.status === 'failed') {
     const stage: FailureStage = 'cleanup';
@@ -564,6 +580,10 @@ export function taskFailureInfo(task: Task): TaskFailureInfo | null {
   const isCancelledRecoverable = task.state === 'cancelled' && task.actions.canRetry;
   if (!isFailed && !isProcessingStuck && !isCancelledRecoverable) {
     return null;
+  }
+  if (isCancelledRecoverable && task.videoState !== 'failed' && task.subtitleState !== 'failed') {
+    const stage: FailureStage = task.videoState === 'cancelled' ? 'video' : task.subtitleState === 'cancelled' ? 'subtitle' : task.import ? 'import' : 'finalize';
+    return stoppedProcessingInfo(stage, relatedTaskResource(task, stage), task.updatedAt);
   }
   const videoFailed = task.videoState === 'failed';
   const subtitleFailed = task.subtitleState === 'failed';
@@ -651,6 +671,9 @@ function acquisitionTaskResource(item: Acquisition, task: AcquisitionTaskSummary
 }
 
 export function acquisitionFailureInfo(item: Acquisition): TaskFailureInfo | null {
+  if (item.download?.status === 'cancelled' && item.tasks.length === 0) {
+    return stoppedProcessingInfo('download', '这集的下载文件', item.download.updatedAt, 'download');
+  }
   if (item.download?.status === 'failed') {
     if (downloadWaitsForMapping(item.download)) return null;
     const stage: FailureStage = item.download.failureStage === 'materialize' ? 'materialize' : 'download';
@@ -670,6 +693,9 @@ export function acquisitionFailureInfo(item: Acquisition): TaskFailureInfo | nul
   const retryableTasks = item.tasks.filter((task) => (task as unknown as { canRetry?: boolean }).canRetry === true);
   const retryableTask = retryableTasks[0];
   if (retryableTask) {
+    if (retryableTask.state === 'cancelled' && retryableTask.videoState !== 'failed' && retryableTask.subtitleState !== 'failed') {
+      return stoppedProcessingInfo('video', acquisitionTaskResource(item, retryableTask, 'video'), retryableTask.updatedAt);
+    }
     // 已导入但清理失败的任务需在媒体分支推导前显式识别，生成清理阶段摘要
     if (retryableTask.state === 'imported' && retryableTask.cleanupStatus === 'failed') {
       const stage: FailureStage = 'cleanup';

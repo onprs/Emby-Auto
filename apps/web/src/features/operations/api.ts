@@ -13,10 +13,10 @@ export function fetchOperations(cursor: string | undefined, filters: { resourceT
         status: (filters.status || undefined) as 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | undefined,
       },
     }),
-    '无法读取运行记录',
+    '无法读取操作日志',
   );
 }
 
 export function fetchOperation(operationId: string): Promise<Operation> {
-  return unwrap<Operation>(getOperation({ path: { operationId } }), '无法读取运行记录');
+  return unwrap<Operation>(getOperation({ path: { operationId } }), '无法读取操作日志');
 }

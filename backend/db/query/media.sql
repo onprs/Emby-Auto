@@ -511,8 +511,8 @@ RETURNING episode_tasks.*;
 -- name: RequeueTaskFailedMediaBranches :one
 UPDATE episode_tasks
 SET state = CASE WHEN state IN ('failed', 'cancelled') THEN 'processing' ELSE state END,
-    video_state = CASE WHEN video_state = 'failed' THEN 'transcode_queued' ELSE video_state END,
-    subtitle_state = CASE WHEN subtitle_state = 'failed' THEN 'subtitle_queued' ELSE subtitle_state END,
+    video_state = CASE WHEN video_state = 'failed' OR (state = 'cancelled' AND video_state = 'cancelled') THEN 'transcode_queued' ELSE video_state END,
+    subtitle_state = CASE WHEN subtitle_state = 'failed' OR (state = 'cancelled' AND subtitle_state = 'cancelled') THEN 'subtitle_queued' ELSE subtitle_state END,
     failure_stage = NULL,
     error_code = NULL,
     error_message = NULL,
@@ -523,7 +523,7 @@ WHERE id = sqlc.arg(id)
   AND (
       (state = 'failed' AND (video_state = 'failed' OR subtitle_state = 'failed'))
       OR (state = 'processing' AND (video_state = 'failed' OR subtitle_state = 'failed'))
-      OR (state = 'cancelled' AND (video_state = 'failed' OR subtitle_state = 'failed') AND video_state IN ('failed', 'video_ready') AND subtitle_state IN ('failed', 'ass_ready'))
+      OR (state = 'cancelled' AND (video_state IN ('failed', 'cancelled') OR subtitle_state IN ('failed', 'cancelled')) AND video_state IN ('failed', 'cancelled', 'video_ready') AND subtitle_state IN ('failed', 'cancelled', 'ass_ready'))
   )
 RETURNING *;
 
@@ -538,6 +538,6 @@ SET state = 'cancelled',
     version = version + 1,
     updated_at = now()
 WHERE id = sqlc.arg(id)
-  AND state NOT IN ('imported', 'failed', 'cancelled', 'rejected')
+  AND state NOT IN ('imported', 'cancelled', 'rejected')
   AND version = sqlc.arg(expected_version)
 RETURNING *;

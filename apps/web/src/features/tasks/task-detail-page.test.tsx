@@ -170,7 +170,7 @@ describe('TaskDetailPage command guards', () => {
     });
     const back = await screen.findByRole('button', { name: '返回' });
     expect(back).toHaveAttribute('title', '返回');
-    expect(screen.getByRole('link', { name: '任务' })).toHaveAttribute('href', '/acquisitions');
+    expect(screen.getByRole('link', { name: '任务' })).toHaveAttribute('href', '/tasks');
   });
 
   it('sends expectedVersion and a stable idempotency key on approve', async () => {

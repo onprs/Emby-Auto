@@ -61,6 +61,13 @@ export async function stubAuthenticatedApp(page: Page) {
           updatedAt: '2026-07-26T07:30:00Z',
         },
       }],
+      recentTasks: [{
+        id: '01000000-0000-0000-0000-000000000004', acquisitionId: '01000000-0000-0000-0000-000000000001',
+        downloadId: '01000000-0000-0000-0000-000000000005', mediaType: 'episode', seriesTitle: '浏览器视频处理记录',
+        sourceSeason: 1, sourceEpisode: 3, state: 'cancelled', videoState: 'cancelled', subtitleState: 'ass_ready',
+        version: 2, operations: [], actions: { canRetry: true, canCancel: false, canReview: false, canImport: false },
+        createdAt: '2026-07-26T06:00:00Z', updatedAt: '2026-07-26T07:00:00Z',
+      }],
       recentOperations: [{
         id: '01000000-0000-0000-0000-000000000003',
         kind: 'download.enqueue',

@@ -1,4 +1,6 @@
+import { ApiFailure } from '@/api/app-client';
 import type { Acquisition } from '@/api/generated/types.gen';
+import { friendlyError } from '@/lib/presentation';
 import { deleteAcquisitionCommand } from '@/features/acquisitions/api';
 import { cancelTaskCommand, fetchTask, retryTaskCommand } from '@/features/tasks/api';
 import { cancelDownloadCommand, fetchDownload, retryDownloadCommand } from '@/features/downloads/api';
@@ -10,8 +12,8 @@ import { cancelDownloadCommand, fetchDownload, retryDownloadCommand } from '@/fe
  * boundary. Imported Emby library content is never part of its cleanup inventory.
  */
 
-const ACTIVE_TASK_STATES = new Set(['media_queued', 'processing', 'finalizing', 'awaiting_review', 'approved', 'import_queued', 'importing']);
-const ACTIVE_DOWNLOAD_STATES = new Set(['enqueue_pending', 'downloading', 'selecting_files']);
+const ACTIVE_TASK_STATES = new Set(['media_queued', 'processing', 'finalizing', 'awaiting_review', 'approved', 'import_queued', 'importing', 'failed']);
+const ACTIVE_DOWNLOAD_STATES = new Set(['enqueue_pending', 'file_resolution_pending', 'downloading', 'completed', 'selecting_files', 'failed']);
 
 export interface AcquisitionActionResult {
   ok: boolean;
@@ -20,22 +22,14 @@ export interface AcquisitionActionResult {
 }
 
 function toErrorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : '操作失败';
+  return cause instanceof ApiFailure ? friendlyError(cause.code, cause.message) : cause instanceof Error ? cause.message : '操作失败';
 }
 
 export function acquisitionHasActiveWork(item: Acquisition): boolean {
   if (item.download && ACTIVE_DOWNLOAD_STATES.has(item.download.status)) {
     return true;
   }
-  return item.tasks.some((task) => {
-    if (!ACTIVE_TASK_STATES.has(task.state)) return false;
-    if (task.state === 'processing') {
-      const videoActive = task.videoState === 'transcode_queued' || task.videoState === 'transcoding';
-      const subtitleActive = task.subtitleState === 'subtitle_queued' || task.subtitleState === 'extracting_or_converting';
-      if (!videoActive && !subtitleActive) return false;
-    }
-    return true;
-  });
+  return item.tasks.some((task) => ACTIVE_TASK_STATES.has(task.state));
 }
 
 export function acquisitionRetryableTasks(item: Acquisition) {
@@ -49,11 +43,11 @@ export function acquisitionCanDelete(_item: Acquisition): boolean {
 
 /** Retries the failed download, or every failed media task after download. */
 export async function retryAcquisition(item: Acquisition, key: string): Promise<AcquisitionActionResult> {
-  if (item.download?.status === 'failed' && item.download.failureStage) {
+  if ((item.download?.status === 'failed' && item.download.failureStage) || (item.download?.status === 'cancelled' && item.tasks.length === 0)) {
     try {
       const download = await fetchDownload(item.download.id);
-      await retryDownloadCommand(download.id, `${key}:download`, download.version);
-      return { ok: true };
+      const result = await retryDownloadCommand(download.id, `${key}:download`, download.version);
+      return { ok: true, operationId: result.operationId };
     } catch (cause) {
       return { ok: false, error: toErrorMessage(cause) };
     }
@@ -67,15 +61,18 @@ export async function retryAcquisitionTasks(item: Acquisition, key: string): Pro
   if (retryable.length === 0) {
     return { ok: false, error: '没有可重试的任务' };
   }
+  let operationId: string | undefined;
   for (const summary of retryable) {
     try {
       const task = await fetchTask(summary.id);
-      await retryTaskCommand(summary.id, `${key}:${summary.id}`, task.version);
+      if (!task.actions.canRetry) continue;
+      const result = await retryTaskCommand(summary.id, `${key}:${summary.id}`, task.version);
+      operationId ??= result.operationId;
     } catch (cause) {
       return { ok: false, error: toErrorMessage(cause) };
     }
   }
-  return { ok: true };
+  return { ok: true, operationId };
 }
 
 /** Cancels the download and every active task, without removing files. */
@@ -83,11 +80,11 @@ export async function cancelAcquisitionWork(item: Acquisition, key: string): Pro
   try {
     if (item.downloadId && item.download && ACTIVE_DOWNLOAD_STATES.has(item.download.status)) {
       const download = await fetchDownload(item.downloadId);
-      await cancelDownloadCommand(item.downloadId, `${key}:dl-cancel`, download.version);
+      if (download.actions.canCancel) await cancelDownloadCommand(item.downloadId, `${key}:dl-cancel`, download.version);
     }
     for (const summary of item.tasks.filter((task) => ACTIVE_TASK_STATES.has(task.state))) {
       const task = await fetchTask(summary.id);
-      await cancelTaskCommand(summary.id, `${key}:task-cancel:${summary.id}`, task.version);
+      if (task.actions.canCancel) await cancelTaskCommand(summary.id, `${key}:task-cancel:${summary.id}`, task.version);
     }
     return { ok: true };
   } catch (cause) {

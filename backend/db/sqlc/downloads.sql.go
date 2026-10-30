@@ -20,7 +20,7 @@ SET status = 'cancelled',
     version = version + 1,
     updated_at = now()
 WHERE id = $1
-  AND status IN ('enqueue_pending', 'file_resolution_pending', 'downloading', 'completed', 'selecting_files')
+  AND status IN ('enqueue_pending', 'file_resolution_pending', 'downloading', 'completed', 'selecting_files', 'failed')
   AND version = $2
 RETURNING id, acquisition_id, attempt, client_name, torrent_hash, status, progress, save_path, error_code, error_message, started_at, completed_at, created_at, updated_at, version, failure_stage, client_state, last_synced_at, deletion_requested_at, deleted_at, file_resolution_source, agent_resolution_id
 `
@@ -168,6 +168,9 @@ SELECT
     d.status,
     d.torrent_hash,
     d.file_resolution_source,
+    (d.file_resolution_source IS NOT NULL AND EXISTS (
+        SELECT 1 FROM download_files AS file WHERE file.download_id = d.id
+    ))::boolean AS has_resolved_manifest,
     COALESCE(
         CASE a.source_kind
             WHEN 'search' THEN candidate.download_uri
@@ -189,6 +192,7 @@ type GetDownloadEnqueueCommandRow struct {
 	Status               string      `db:"status" json:"status"`
 	TorrentHash          *string     `db:"torrent_hash" json:"torrent_hash"`
 	FileResolutionSource *string     `db:"file_resolution_source" json:"file_resolution_source"`
+	HasResolvedManifest  bool        `db:"has_resolved_manifest" json:"has_resolved_manifest"`
 	SourceUri            string      `db:"source_uri" json:"source_uri"`
 }
 
@@ -201,6 +205,7 @@ func (q *Queries) GetDownloadEnqueueCommand(ctx context.Context, id pgtype.UUID)
 		&i.Status,
 		&i.TorrentHash,
 		&i.FileResolutionSource,
+		&i.HasResolvedManifest,
 		&i.SourceUri,
 	)
 	return i, err
