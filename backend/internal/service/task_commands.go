@@ -56,6 +56,16 @@ func (workflow *TaskCommandWorkflow) Retry(ctx context.Context, taskID uuid.UUID
 			operation = existing
 			return nil
 		}
+		before, err := scope.Queries.GetTaskView(ctx, repository.UUIDToPG(taskID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("load task retry context: %w", err)
+		}
+		if err := lockWorkflowForRetry(ctx, scope, repository.UUIDFromPG(before.AcquisitionID), repository.UUIDToPG(taskID), before.State != string(domain.TaskImported), before.State == string(domain.TaskCancelled)); err != nil {
+			return err
+		}
 		task, err := scope.Queries.LockEpisodeTask(ctx, repository.UUIDToPG(taskID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrNotFound
@@ -67,8 +77,8 @@ func (workflow *TaskCommandWorkflow) Retry(ctx context.Context, taskID uuid.UUID
 			return NewError("state_conflict", "the task was modified by another request", ErrStateConflict, map[string]any{"expectedVersion": expectedVersion})
 		}
 		failureStage := valueOrEmpty(task.FailureStage)
-		videoFailed := task.VideoState == string(domain.VideoFailed)
-		subtitleFailed := task.SubtitleState == string(domain.SubtitleFailed)
+		videoFailed := task.VideoState == string(domain.VideoFailed) || (task.State == string(domain.TaskCancelled) && task.VideoState == string(domain.VideoCancelled))
+		subtitleFailed := task.SubtitleState == string(domain.SubtitleFailed) || (task.State == string(domain.TaskCancelled) && task.SubtitleState == string(domain.SubtitleCancelled))
 		hasMediaFailed := videoFailed || subtitleFailed
 		if task.State == string(domain.TaskImported) {
 			failureStage = "cleanup"
@@ -192,7 +202,12 @@ func (workflow *TaskCommandWorkflow) Retry(ctx context.Context, taskID uuid.UUID
 				}
 				return appendResourceEvent(ctx, scope.Queries, "episode_task", taskID, operation.ID, actorUserID, "task.retry_requested", eventData)
 			}
-			// No media branch failed, handle finalize/import for failed tasks only.
+			if isCancelledRecoverable {
+				scheduled, err := workflow.retryCancelledAfterMedia(ctx, scope, taskID, expectedVersion, trimmedKey, actorUserID)
+				operation = scheduled
+				return err
+			}
+			// 媒体分支已完成时，失败任务从整理或入库阶段恢复。
 			if !isFailedState {
 				return NewError("invalid_state", "only a failed task or failed imported cleanup can be retried", ErrStateConflict, map[string]any{"state": task.State})
 			}
@@ -251,6 +266,45 @@ func (workflow *TaskCommandWorkflow) Retry(ctx context.Context, taskID uuid.UUID
 		return domain.EpisodeTask{}, domain.Operation{}, err
 	}
 	return task, operation, nil
+}
+
+func (workflow *TaskCommandWorkflow) retryCancelledAfterMedia(ctx context.Context, scope database.TxScope, taskID uuid.UUID, expectedVersion int32, key string, actorID uuid.UUID) (domain.Operation, error) {
+	view, err := scope.Queries.GetTaskView(ctx, repository.UUIDToPG(taskID))
+	if err != nil {
+		return domain.Operation{}, fmt.Errorf("load stopped task stages: %w", err)
+	}
+	nextState, stage := string(domain.TaskFinalizing), "finalize"
+	schedule := ScheduleOperationRequest{
+		Kind: appqueue.KindMediaFinalize, ResourceType: "episode_task", ResourceID: taskID,
+		IdempotencyKey: key, ActorUserID: actorID, MaxAttempts: 3, Timeout: 5 * time.Minute,
+		Payload: map[string]any{"command": "retry"},
+	}
+	if view.ImportID.Valid {
+		if valueOrEmpty(view.ReviewDecision) != string(domain.TaskApproved) || view.ImportStatus == "succeeded" {
+			return domain.Operation{}, NewError("state_conflict", "the stopped task has no recoverable import", ErrStateConflict, map[string]any{})
+		}
+		imported, err := scope.Queries.RequeueCancelledTaskImport(ctx, repository.UUIDToPG(taskID))
+		if err != nil {
+			return domain.Operation{}, fmt.Errorf("requeue stopped import: %w", err)
+		}
+		nextState, stage = string(domain.TaskImportQueued), "import"
+		schedule.Kind, schedule.Timeout = appqueue.KindEmbyImport, 10*time.Minute
+		schedule.Payload["importId"] = repository.UUIDFromPG(imported.ID)
+	}
+	if _, err := scope.Queries.RequeueCancelledTaskAfterMedia(ctx, db.RequeueCancelledTaskAfterMediaParams{
+		ID: repository.UUIDToPG(taskID), ExpectedVersion: expectedVersion, NextState: nextState,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Operation{}, NewError("state_conflict", "the stopped task is no longer retryable", ErrStateConflict, map[string]any{})
+		}
+		return domain.Operation{}, fmt.Errorf("requeue stopped task: %w", err)
+	}
+	result, err := workflow.operations.ScheduleInTx(ctx, scope, schedule)
+	if err != nil {
+		return domain.Operation{}, err
+	}
+	err = appendResourceEvent(ctx, scope.Queries, "episode_task", taskID, result.Operation.ID, actorID, "task.retry_requested", map[string]any{"failureStage": stage})
+	return result.Operation, err
 }
 
 func mediaBranchSchedule(branch string) (string, time.Duration, int) {

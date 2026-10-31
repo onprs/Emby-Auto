@@ -52,7 +52,7 @@ test.describe('application shell', () => {
     await expect(navigation.getByRole('link', { name: 'RSS 订阅', exact: true })).toBeVisible();
     await expect(navigation.getByRole('link', { name: '任务', exact: true })).toBeVisible();
     await expect(navigation.getByRole('link', { name: '媒体库', exact: true })).toBeVisible();
-    await expect(navigation.getByRole('link', { name: '运行记录', exact: true })).toBeVisible();
+    await expect(navigation.getByRole('link', { name: '操作日志', exact: true })).toBeVisible();
     await expect(navigation.getByRole('link', { name: '系统设置', exact: true })).toBeVisible();
   });
 
@@ -187,9 +187,10 @@ test.describe('application shell', () => {
     await expect(attention.getByText(/下载失败/)).toHaveCount(0);
     await expect(attention.getByText('添加下载')).toHaveCount(0);
 
-    const recent = page.getByLabel('最近运行记录');
-    await expect(recent.getByText('添加下载')).toBeVisible();
-    await expect(recent.getByText('这个资源已经在下载列表中。')).toBeVisible();
+    const recent = page.getByLabel('最近处理的视频');
+    await expect(recent.getByRole('link', { name: '浏览器视频处理记录 · 第 1 季第 3 集' })).toHaveAttribute('href', /\/tasks\/01000000-0000-0000-0000-000000000004/);
+    await expect(recent.getByText('添加下载')).toHaveCount(0);
+    await expect(recent.getByText('这个资源已经在下载列表中。')).toHaveCount(0);
     expect(pageErrors).toEqual([]);
   });
 
@@ -309,7 +310,7 @@ test.describe('application shell', () => {
 
     await page.goto('/acquisitions');
     const titles = page.getByText('细粒度进度作品');
-    const taskProgress = page.getByRole('progressbar', { name: '任务整体进度' });
+    const taskProgress = page.getByRole('progressbar', { name: '获取记录整体进度' });
     const percentages = page.getByText('2%');
     await expect(mobile ? titles.first() : titles.last()).toBeVisible();
     await expect(mobile ? taskProgress.first() : taskProgress.last()).toHaveAttribute('aria-valuenow', '2');
@@ -462,7 +463,7 @@ test.describe('application shell', () => {
     await expect(page).toHaveURL(/sortOrder=asc/);
     await expect.poll(() => new URL(lastListURL).searchParams.get('sortBy')).toBe('progress');
 
-    const selectAll = page.getByRole('checkbox', { name: '全选当前页任务' });
+    const selectAll = page.getByRole('checkbox', { name: '全选当前页获取记录' });
     await (testInfo.project.name === 'mobile' ? selectAll.first() : selectAll.last()).check();
     await expect(page.getByText('已选择 1 项')).toBeVisible();
     await expect(page.getByRole('button', { name: '批量删除' })).toBeVisible();

@@ -1,11 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useLocation, useNavigate } from '@tanstack/react-router';
 import { Trash2 } from 'lucide-react';
 import { useState } from 'react';
 
 import { ApiFailure } from '@/api/app-client';
 import type { Download } from '@/api/generated/types.gen';
-import { appNavigationState, currentAppLocation } from '@/app/navigation-context';
+import { OperationFeedback } from '@/components/operation-feedback';
 import { ContextLink } from '@/components/context-link';
 import { deleteAcquisitionCommand, fetchAcquisition } from '@/features/acquisitions/api';
 import { DeletionFeedback, type DeletionSubmission } from '@/features/deletions/deletion-feedback';
@@ -146,10 +145,8 @@ function isActive(download: Download | undefined): boolean {
 }
 
 function DownloadCommands({ download, onChanged }: { download: Download; onChanged: () => void }) {
+  const [operationId, setOperationId] = useState<string>();
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const location = useLocation();
-  const source = currentAppLocation(location.href);
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<'cancel' | 'delete' | null>(null);
   const [deletions, setDeletions] = useState<DeletionSubmission[]>([]);
@@ -180,17 +177,11 @@ function DownloadCommands({ download, onChanged }: { download: Download; onChang
         void queryClient.invalidateQueries({ queryKey: ['acquisitions'] });
         return;
       }
+      setOperationId(result.operationId);
       onChanged();
-      void navigate({
-        to: '/operations/$operationId',
-        params: { operationId: result.operationId },
-        search: { from: source },
-        state: appNavigationState(source),
-      });
     },
     onError: (cause) => setError(cause instanceof ApiFailure ? friendlyError(cause.code, cause.message) : cause instanceof Error ? cause.message : '操作失败'),
   });
-
   const waitsForMapping = downloadWaitsForMapping(download);
   const canRetry = download.actions.canRetry && !waitsForMapping;
   const canCancel = download.actions.canCancel;
@@ -210,6 +201,7 @@ function DownloadCommands({ download, onChanged }: { download: Download; onChang
             void queryClient.invalidateQueries({ queryKey: ['acquisitions'] });
           }}
         />
+        <OperationFeedback operationId={operationId} onSettled={onChanged} />
         {error ? <ErrorState className="mb-4" message={error} /> : null}
         <ConfirmDialog
           open={confirmation !== null}
@@ -254,14 +246,12 @@ function DownloadCommands({ download, onChanged }: { download: Download; onChang
 }
 
 function FileSelection({ download, onChanged }: { download: Download; onChanged: () => void }) {
+  const [operationId, setOperationId] = useState<string>();
   const [selection, setSelection] = useState<Record<string, boolean>>({});
   const [coordinates, setCoordinates] = useState<Record<string, { season: string; episode: string }>>({});
-  const location = useLocation();
-  const source = currentAppLocation(location.href);
   const [error, setError] = useState<string | null>(null);
   const holder = useState(() => new IdempotencyKeyHolder())[0];
 
-  const navigate = useNavigate();
   const resolving = download.actions.canResolveFiles;
   const editable = download.actions.canEditFileSelection || resolving;
 
@@ -293,16 +283,11 @@ function FileSelection({ download, onChanged }: { download: Download; onChanged:
       }
     },
     onSuccess: (result) => {
+      setOperationId(result.operationId);
       holder.reset();
       setSelection({});
       setCoordinates({});
       onChanged();
-      void navigate({
-        to: '/operations/$operationId',
-        params: { operationId: result.operationId },
-        search: { from: source },
-        state: appNavigationState(source),
-      });
     },
     onError: (cause) => setError(cause instanceof ApiFailure ? friendlyError(cause.code, cause.message) : cause instanceof Error ? cause.message : '保存失败'),
   });
@@ -311,6 +296,7 @@ function FileSelection({ download, onChanged }: { download: Download; onChanged:
 
   return (
     <div>
+      <OperationFeedback operationId={operationId} onSettled={onChanged} />
       {error ? <ErrorState className="mb-4" message={error} /> : null}
       <div className="overflow-x-auto">
         <table className="w-full min-w-[560px] border-collapse text-sm">

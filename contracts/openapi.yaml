@@ -5743,7 +5743,7 @@ components:
     DashboardSummary:
       type: object
       additionalProperties: false
-      required: [counts, attentionItems, recentOperations, recentImports, recentScans, dependencies, agentResolutions, links]
+      required: [counts, attentionItems, recentTasks, recentOperations, recentImports, recentScans, dependencies, agentResolutions, links]
       properties:
         counts:
           $ref: "#/components/schemas/DashboardStatusCounts"
@@ -5751,8 +5751,14 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/DashboardAttentionItem"
+        recentTasks:
+          type: array
+          description: 最近更新的视频任务，每集或每部电影仅显示一次。
+          items:
+            $ref: "#/components/schemas/Task"
         recentOperations:
           type: array
+          deprecated: true
           items:
             $ref: "#/components/schemas/DashboardRecentOperation"
         recentImports:

@@ -37,7 +37,7 @@ export function OperationsPage() {
 
   return (
     <PageBody>
-      <PageHeader title="运行记录" description="最近的处理步骤与执行结果" />
+      <PageHeader title="操作日志" description="最近的处理步骤与执行结果" />
 
       <div className="mb-4 flex flex-wrap gap-2" role="group" aria-label="状态筛选">
         {statusFilters.map((filter) => (
@@ -52,11 +52,11 @@ export function OperationsPage() {
       </div>
 
       {operations.isPending ? (
-        <LoadingState label="正在读取运行记录" />
+        <LoadingState label="正在读取操作日志" />
       ) : operations.error ? (
         <ErrorState message={operations.error.message} onRetry={() => operations.refetch()} />
       ) : operations.data.items.length === 0 ? (
-        <EmptyState title="暂无运行记录" />
+        <EmptyState title="暂无操作日志" />
       ) : (
         <>
           <div className="space-y-2 sm:hidden">

@@ -1,5 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useLocation, useNavigate } from '@tanstack/react-router';
 import { useState } from 'react';
 
 import { ApiFailure } from '@/api/app-client';
@@ -12,7 +11,7 @@ import { taskFailureInfo } from '@/features/tasks/task-failure';
 import { TaskFailurePanel } from '@/features/tasks/task-failure-panel';
 import { EventHistory } from '@/features/events/event-history';
 import { IdempotencyKeyHolder } from '@/lib/idempotency';
-import { appNavigationState, currentAppLocation } from '@/app/navigation-context';
+import { OperationFeedback } from '@/components/operation-feedback';
 import { ContextLink } from '@/components/context-link';
 import { DetailErrorState, DetailGrid, DetailLoadingState, PageBody, PageHeader } from '@/components/resource';
 import { CleanupStageBadge, StatusBadge } from '@/components/status-badge';
@@ -87,7 +86,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   label: '关联获取',
                   value: (
                     <ContextLink to="/acquisitions/$acquisitionId" params={{ acquisitionId: value.acquisitionId }} className="text-emerald-700 hover:underline">
-                      查看内容任务
+                      查看所属获取记录
                     </ContextLink>
                   ),
                 },
@@ -209,9 +208,7 @@ function isActive(task: Task | undefined): boolean {
 }
 
 function CommandPanel({ task, onChanged }: { task: Task; onChanged: () => void }) {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const source = currentAppLocation(location.href);
+  const [operationId, setOperationId] = useState<string>();
   const queryClient = useQueryClient();
   const [notes, setNotes] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -257,15 +254,8 @@ function CommandPanel({ task, onChanged }: { task: Task; onChanged: () => void }
         setError(outcome.error ?? '删除失败');
         return;
       }
+      if (result && 'operationId' in result && typeof result.operationId === 'string') setOperationId(result.operationId);
       onChanged();
-      if (result && 'operationId' in result && typeof result.operationId === 'string') {
-        void navigate({
-          to: '/operations/$operationId',
-          params: { operationId: result.operationId },
-          search: { from: source },
-          state: appNavigationState(source),
-        });
-      }
     },
     onError: (cause) => setError(cause instanceof ApiFailure ? friendlyError(cause.code, cause.message) : cause instanceof Error ? cause.message : '操作失败'),
   });
@@ -296,17 +286,19 @@ function CommandPanel({ task, onChanged }: { task: Task; onChanged: () => void }
             <Input id="review-notes" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="备注（拒绝时请说明原因）" />
           </div>
         ) : null}
+        <OperationFeedback operationId={operationId} onSettled={onChanged} />
         {error ? <ErrorState className="mb-4" message={error} /> : null}
         <ConfirmDialog
           open={confirmation !== null}
-          title={confirmation === 'delete' ? '确认删除任务' : confirmation === 'reject' ? '确认拒绝' : '确认取消'}
+          title={confirmation === 'delete' ? '确认删除所属获取记录' : confirmation === 'reject' ? '确认拒绝' : '确认取消'}
           danger={confirmation === 'delete'}
           lines={
             confirmation === 'reject'
               ? ['拒绝后任务不会入库，审核记录会永久保留。']
               : confirmation === 'delete'
                 ? [
-                    '停止正在进行的下载、转码或处理。',
+                    '删除这集所属的获取记录及其全部关联视频任务。',
+                    '停止该获取记录正在进行的下载、转码或处理。',
                     '删除尚未入库的下载源文件、种子任务和临时缓存。',
                     '已经成功入库到 Emby 的正式资源不会被删除。',
                   ]
@@ -340,7 +332,7 @@ function CommandPanel({ task, onChanged }: { task: Task; onChanged: () => void }
           ) : null}
           {canDelete ? (
             <Button type="button" variant="outline" className="border-red-300 text-red-700 hover:bg-red-50" onClick={() => setConfirmation('delete')} disabled={command.isPending}>
-              删除任务
+              删除所属获取记录
             </Button>
           ) : null}
           {!canReview && !canImport && !canCancel && !canDelete ? <p className="text-sm text-zinc-500">当前没有需要操作的内容</p> : null}

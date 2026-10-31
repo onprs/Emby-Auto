@@ -51,6 +51,7 @@ func ValidateDownloadTransition(from, to DownloadState) error {
 		DownloadDownloading:           {DownloadCompleted: {}, DownloadFailed: {}, DownloadCancelled: {}},
 		DownloadCompleted:             {DownloadSelectingFiles: {}, DownloadFailed: {}, DownloadCancelled: {}},
 		DownloadSelectingFiles:        {DownloadMaterialized: {}, DownloadFailed: {}, DownloadCancelled: {}},
+		DownloadFailed:                {DownloadCancelled: {}},
 	}
 	return validateTransition("download", string(from), string(to), allowed[from], to)
 }
@@ -72,7 +73,7 @@ const (
 )
 
 func ValidateTaskTransition(from, to TaskState) error {
-	// TaskCancelled -> TaskProcessing 不在通用状态机内，取消任务的恢复必须通过 RequeueTaskFailedMediaBranches 的事务化分支状态守卫完成，不属于无上下文的通用转换。
+	// 取消任务的恢复必须经过事务化的分支状态、占用和旧操作退出守卫，不开放无上下文的通用恢复转换。
 	allowed := map[TaskState]map[TaskState]struct{}{
 		TaskMediaQueued:    {TaskProcessing: {}, TaskFailed: {}, TaskCancelled: {}},
 		TaskProcessing:     {TaskFinalizing: {}, TaskFailed: {}, TaskCancelled: {}},
@@ -81,7 +82,7 @@ func ValidateTaskTransition(from, to TaskState) error {
 		TaskApproved:       {TaskImportQueued: {}, TaskFailed: {}, TaskCancelled: {}},
 		TaskImportQueued:   {TaskImporting: {}, TaskFailed: {}, TaskCancelled: {}},
 		TaskImporting:      {TaskImported: {}, TaskFailed: {}, TaskCancelled: {}},
-		TaskFailed:         {TaskProcessing: {}, TaskImportQueued: {}},
+		TaskFailed:         {TaskProcessing: {}, TaskImportQueued: {}, TaskCancelled: {}},
 	}
 	return validateTransition("task", string(from), string(to), allowed[from], to)
 }

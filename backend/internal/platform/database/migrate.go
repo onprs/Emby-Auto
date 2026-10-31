@@ -27,12 +27,6 @@ type MigrationStatus struct {
 	RiverLatest        int
 }
 
-func (status MigrationStatus) Current() bool {
-	return !status.ApplicationDirty &&
-		status.ApplicationCurrent == status.ApplicationLatest &&
-		status.RiverCurrent == status.RiverLatest
-}
-
 type applicationMigration struct {
 	version int64
 	name    string

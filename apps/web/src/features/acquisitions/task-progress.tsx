@@ -40,7 +40,7 @@ type TaskProgressValue = Pick<Acquisition, 'aggregateStatus' | 'currentStage' | 
 export function TaskProgress({
   task,
   compact = false,
-  ariaLabel = '任务整体进度',
+  ariaLabel = '获取记录整体进度',
 }: {
   task: TaskProgressValue;
   compact?: boolean;
@@ -49,7 +49,7 @@ export function TaskProgress({
   const complete = task.aggregateStatus === 'completed';
   const failed = task.aggregateStatus === 'failed' || task.aggregateStatus === 'rejected';
   const cancelled = task.aggregateStatus === 'cancelled';
-  const label = complete ? '生命周期完成' : acquisitionPipelineStageLabels[task.currentStage];
+  const label = cancelled ? '已停止' : complete ? '生命周期完成' : acquisitionPipelineStageLabels[task.currentStage];
 
   return (
     <OverallProgressBar

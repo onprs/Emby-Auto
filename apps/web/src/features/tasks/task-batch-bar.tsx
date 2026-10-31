@@ -50,12 +50,13 @@ export function TaskBatchBar({ count, retryable, deletable, retryTargets, delete
 
       <ConfirmDialog
         open={confirm !== null}
-        title={confirm === 'delete' ? `确认删除 ${deletable} 项任务` : `确认重试 ${retryable} 项任务`}
+        title={confirm === 'delete' ? '确认删除所选视频的获取记录' : `确认重试 ${retryable} 项任务`}
         danger={confirm === 'delete'}
         lines={
           confirm === 'delete'
             ? [
-                '停止这些任务正在进行的下载、转码或处理。',
+                '删除所选视频所属的获取记录及其全部关联视频任务。',
+                '停止这些获取记录正在进行的下载、转码或处理。',
                 '删除尚未入库的下载源文件、种子任务和临时缓存。',
                 '已经成功入库到 Emby 的正式资源不会被删除。',
               ]

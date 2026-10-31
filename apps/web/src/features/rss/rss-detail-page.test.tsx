@@ -136,6 +136,7 @@ describe('RssDetailPage entries', () => {
     server.use(
       http.get(`*/api/v1/rss/subscriptions/${subscriptionId}`, () => HttpResponse.json(subscription)),
       http.get(`*/api/v1/rss/subscriptions/${subscriptionId}/entries`, ({ request }) => groupedEntryPage(request, [retryableEntry], [])),
+      http.get('*/api/v1/operations/30000000-0000-0000-0000-000000000007', () => HttpResponse.json({ id: '30000000-0000-0000-0000-000000000007', kind: 'rss.poll', status: 'queued' })),
       http.post(`*/api/v1/rss/subscriptions/${subscriptionId}/entries/${retryableEntry.id}/retry`, async ({ request }) => {
         retryRequest = request;
         retryBody = await request.json();
@@ -156,6 +157,52 @@ describe('RssDetailPage entries', () => {
       expect(retryBody).toEqual({ expectedVersion: 2 });
     });
     expect(retryRequest!.headers.get('Idempotency-Key')).toBeTruthy();
+  });
+
+  it('在跳过列表重新检查因占用跳过的更新，并留在订阅页面', async () => {
+    const skipped: RssEntry = {
+      ...filteredEntry, canRetry: true, version: 3, rejectReason: 'target_episode_processing',
+      acquisitionId: undefined, acquisitionProgress: undefined,
+    };
+    let requests = 0;
+    let body: unknown;
+    const operationId = '30000000-0000-0000-0000-000000000031';
+    server.use(
+      http.get(`*/api/v1/rss/subscriptions/${subscriptionId}`, () => HttpResponse.json(subscription)),
+      http.get(`*/api/v1/rss/subscriptions/${subscriptionId}/entries`, ({ request }) => groupedEntryPage(request, [], [skipped])),
+      http.get(`*/api/v1/operations/${operationId}`, () => HttpResponse.json({ id: operationId, kind: 'rss.poll', status: 'running' })),
+      http.post(`*/api/v1/rss/subscriptions/${subscriptionId}/entries/${skipped.id}/retry`, async ({ request }) => {
+        requests++;
+        body = await request.json();
+        return HttpResponse.json({ operationId, status: 'queued' }, { status: 202 });
+      }),
+    );
+    const { router } = renderWithProviders(<RssDetailPage subscriptionId={subscriptionId} />, {
+      routePath: '/rss/$subscriptionId', initialEntry: `/rss/${subscriptionId}`,
+    });
+    await screen.findAllByText(skipped.title);
+    await userEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    await userEvent.click(screen.getByRole('menuitem', { name: '重试任务' }));
+    await screen.findByText('操作已提交，正在处理');
+    expect(requests).toBe(1);
+    expect(body).toEqual({ expectedVersion: 3 });
+    expect(router.state.location.pathname).toBe(`/rss/${subscriptionId}`);
+  });
+
+  it('立即检查失败时在原页面显示后台错误', async () => {
+    const operationId = '30000000-0000-0000-0000-000000000032';
+    server.use(
+      http.get(`*/api/v1/rss/subscriptions/${subscriptionId}`, () => HttpResponse.json(subscription)),
+      http.get(`*/api/v1/rss/subscriptions/${subscriptionId}/entries`, ({ request }) => groupedEntryPage(request, [entry], [])),
+      http.post(`*/api/v1/rss/subscriptions/${subscriptionId}/poll`, () => HttpResponse.json({ operationId, status: 'queued' }, { status: 202 })),
+      http.get(`*/api/v1/operations/${operationId}`, () => HttpResponse.json({ id: operationId, kind: 'rss.poll', status: 'failed', errorCode: 'fixture_unavailable', errorMessage: '订阅源暂时不可用' })),
+    );
+    const { router } = renderWithProviders(<RssDetailPage subscriptionId={subscriptionId} />, {
+      routePath: '/rss/$subscriptionId', initialEntry: `/rss/${subscriptionId}`,
+    });
+    await userEvent.click(await screen.findByRole('button', { name: '立即检查' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('订阅源暂时不可用');
+    expect(router.state.location.pathname).toBe(`/rss/${subscriptionId}`);
   });
 
   it('searches skipped entries by keyword', async () => {

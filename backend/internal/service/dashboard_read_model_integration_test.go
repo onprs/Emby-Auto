@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
+	"github.com/onprs/emby-auto/backend/internal/platform/database"
 	"github.com/onprs/emby-auto/backend/internal/testutil"
 )
 
@@ -16,7 +17,7 @@ func TestDashboardAttentionUsesAcquisitionsAndIgnoresHistoricalOperationFailures
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, pool := testutil.NewMigratedPostgres(t)
-	read := NewReadService(db.New(pool))
+	read := NewReadService(db.New(pool), database.NewTransactor(pool))
 
 	failedOperationID := uuid.New()
 	if _, err := pool.Exec(ctx, `
@@ -73,7 +74,7 @@ func TestDashboardTreatsCompletedTransferMappingFailureAsMappingPendingIntegrati
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, pool := testutil.NewMigratedPostgres(t)
-	read := NewReadService(db.New(pool))
+	read := NewReadService(db.New(pool), database.NewTransactor(pool))
 
 	seriesID, acquisitionID, downloadID, fileID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, tmdb_series_id, title) VALUES ($1, $2, 'Completed Transfer Mapping Fixture')`, seriesID, time.Now().UnixNano()); err != nil {

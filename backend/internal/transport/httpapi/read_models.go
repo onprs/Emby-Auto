@@ -633,6 +633,7 @@ func dashboardResponse(summary domain.DashboardSummary) DashboardSummary {
 			MappingPending: summary.Links.MappingPending,
 		},
 		AttentionItems:   make([]DashboardAttentionItem, 0, len(summary.AttentionItems)),
+		RecentTasks:      make([]Task, 0, len(summary.RecentTasks)),
 		RecentOperations: make([]DashboardRecentOperation, 0, len(summary.RecentOperations)),
 		RecentImports:    make([]DashboardRecentImport, 0, len(summary.RecentImports)),
 		RecentScans:      make([]DashboardRecentScan, 0, len(summary.RecentScans)),
@@ -651,6 +652,9 @@ func dashboardResponse(summary domain.DashboardSummary) DashboardSummary {
 		optionalString(&entry.ErrorCode, item.ErrorCode)
 		optionalString(&entry.ErrorMessage, item.ErrorMessage)
 		response.AttentionItems = append(response.AttentionItems, entry)
+	}
+	for _, item := range summary.RecentTasks {
+		response.RecentTasks = append(response.RecentTasks, taskResponse(item))
 	}
 	for _, item := range summary.RecentOperations {
 		response.RecentOperations = append(response.RecentOperations, dashboardOperationResponse(item))

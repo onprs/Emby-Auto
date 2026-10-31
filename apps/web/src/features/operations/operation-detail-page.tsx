@@ -22,10 +22,10 @@ export function OperationDetailPage({ operationId }: { operationId: string }) {
   });
 
   if (operation.isPending) {
-    return <DetailLoadingState title="运行详情" label="正在读取处理进度" />;
+    return <DetailLoadingState title="操作详情" label="正在读取处理进度" />;
   }
   if (operation.error || !operation.data) {
-    return <DetailErrorState title="运行详情" message={operation.error?.message ?? '无法读取处理进度'} onRetry={() => operation.refetch()} />;
+    return <DetailErrorState title="操作详情" message={operation.error?.message ?? '无法读取处理进度'} onRetry={() => operation.refetch()} />;
   }
   const value = operation.data;
 

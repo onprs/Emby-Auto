@@ -19,7 +19,6 @@ import { ErrorState } from "@/components/ui/feedback";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatDateTime } from "@/lib/format";
-import { cn } from "@/lib/utils";
 
 export function SettingsFeedback({
   conflict,

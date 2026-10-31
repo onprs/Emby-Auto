@@ -50,7 +50,10 @@ describe('bundle budget', () => {
       entryBudgetBytes: 100,
       chunkBudgetBytes: 80,
       report: () => undefined,
-    })).rejects.toThrow('assets/index-hash.js is 101 bytes; limit is 100 bytes');
+    })).rejects.toMatchObject({
+      name: 'Error',
+      message: 'bundle budget exceeded:\nassets/index-hash.js is 101 bytes; limit is 100 bytes',
+    });
   });
 
   it('fails when any emitted route chunk exceeds its budget', async () => {
@@ -60,6 +63,9 @@ describe('bundle budget', () => {
       entryBudgetBytes: 100,
       chunkBudgetBytes: 80,
       report: () => undefined,
-    })).rejects.toThrow('assets/route-hash.js is 81 bytes; limit is 80 bytes');
+    })).rejects.toMatchObject({
+      name: 'Error',
+      message: 'bundle budget exceeded:\nassets/route-hash.js is 81 bytes; limit is 80 bytes',
+    });
   });
 });

@@ -26,6 +26,7 @@ const stateFilters: { value: TaskState | ''; label: string }[] = [
   { value: 'importing', label: '入库中' },
   { value: 'imported', label: '已入库' },
   { value: 'failed', label: '失败' },
+  { value: 'cancelled', label: '已停止' },
 ];
 
 export function TasksPage() {
@@ -160,10 +161,11 @@ export function TasksPage() {
     if (canDeleteTask(task)) {
       actions.push({
         key: 'delete',
-        label: '删除任务',
+        label: '删除所属获取记录',
         danger: true,
         confirmLines: [
-          '停止这个任务正在进行的下载、转码或处理。',
+          '删除这集所属的获取记录及其全部关联视频任务。',
+          '停止该获取记录正在进行的下载、转码或处理。',
           '删除尚未入库的下载源文件、种子任务和临时缓存。',
           '已经成功入库到 Emby 的正式资源不会被删除。',
         ],
@@ -181,7 +183,7 @@ export function TasksPage() {
 
   return (
     <PageBody>
-      <PageHeader title="媒体处理" description="查看视频、字幕、审核和入库进度；可重试或删除任务" />
+      <PageHeader title="视频任务" description="按每集视频查看转码、字幕和入库进度" />
 
       <div className="mb-4 flex flex-wrap gap-2" role="group" aria-label="状态筛选">
         {stateFilters.map((filter) => (

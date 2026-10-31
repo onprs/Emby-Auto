@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/domain"
+	"github.com/onprs/emby-auto/backend/internal/platform/database"
 	appqueue "github.com/onprs/emby-auto/backend/internal/platform/riverqueue"
 )
 
@@ -150,7 +151,7 @@ func TestTaskRetryCancelledBothFailedIntegration(t *testing.T) {
 	}
 }
 
-// 普通 cancelled、active 分支、双 ready、非法组合、版本冲突均拒绝且无副作用
+// 活动分支和非法组合必须拒绝恢复，且没有副作用。
 func TestTaskRetryCancelledRejectedIntegration(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -160,12 +161,9 @@ func TestTaskRetryCancelledRejectedIntegration(t *testing.T) {
 		failureStage  string
 		expectedCode  string
 	}{
-		{"cancelled with cancelled branch", string(domain.TaskCancelled), string(domain.VideoCancelled), string(domain.SubtitleASSReady), "", "state_conflict"},
 		{"cancelled with active video", string(domain.TaskCancelled), string(domain.VideoTranscoding), string(domain.SubtitleASSReady), "", "state_conflict"},
 		{"cancelled with active subtitle", string(domain.TaskCancelled), string(domain.VideoReady), string(domain.SubtitleExtractingConverting), "", "state_conflict"},
-		{"cancelled both ready no failed", string(domain.TaskCancelled), string(domain.VideoReady), string(domain.SubtitleASSReady), "", "state_conflict"},
 		{"cancelled both queued", string(domain.TaskCancelled), string(domain.VideoTranscodeQueued), string(domain.SubtitleQueued), "", "state_conflict"},
-		{"cancelled subtitle cancelled with video failed but subtitle cancelled not allowed", string(domain.TaskCancelled), string(domain.VideoFailed), string(domain.SubtitleCancelled), "", "state_conflict"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -229,7 +227,7 @@ func TestTaskCancelledReadModelIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	queries := db.New(fixture.pool)
-	readService := NewReadService(queries)
+	readService := NewReadService(queries, database.NewTransactor(fixture.pool))
 	taskWorkflow := NewTaskWorkflow(queries, fixture.transactor, fixture.scheduler)
 
 	cases := []struct {
@@ -245,9 +243,9 @@ func TestTaskCancelledReadModelIntegration(t *testing.T) {
 		{"cancelled safe video failed", string(domain.TaskCancelled), string(domain.VideoFailed), string(domain.SubtitleASSReady), "", true},
 		{"cancelled safe subtitle failed", string(domain.TaskCancelled), string(domain.VideoReady), string(domain.SubtitleFailed), "", true},
 		{"cancelled safe both failed", string(domain.TaskCancelled), string(domain.VideoFailed), string(domain.SubtitleFailed), "", true},
-		{"cancelled ordinary both cancelled", string(domain.TaskCancelled), string(domain.VideoCancelled), string(domain.SubtitleCancelled), "", false},
+		{"cancelled ordinary both cancelled", string(domain.TaskCancelled), string(domain.VideoCancelled), string(domain.SubtitleCancelled), "", true},
 		{"cancelled with active branch", string(domain.TaskCancelled), string(domain.VideoTranscoding), string(domain.SubtitleASSReady), "", false},
-		{"cancelled both ready", string(domain.TaskCancelled), string(domain.VideoReady), string(domain.SubtitleASSReady), "", false},
+		{"cancelled both ready", string(domain.TaskCancelled), string(domain.VideoReady), string(domain.SubtitleASSReady), "", true},
 		{"processing both ready not retry", string(domain.TaskProcessing), string(domain.VideoReady), string(domain.SubtitleASSReady), "", false},
 	}
 	for _, tc := range cases {

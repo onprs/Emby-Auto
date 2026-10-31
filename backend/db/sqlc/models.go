@@ -24,6 +24,25 @@ type Acquisition struct {
 	DeletionRequestedAt pgtype.Timestamptz `db:"deletion_requested_at" json:"deletion_requested_at"`
 }
 
+type AcquisitionListProjection struct {
+	AcquisitionID        pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
+	ListVisible          bool               `db:"list_visible" json:"list_visible"`
+	Phases               []string           `db:"phases" json:"phases"`
+	OverallProgress      float64            `db:"overall_progress" json:"overall_progress"`
+	ContentTitle         string             `db:"content_title" json:"content_title"`
+	MediaType            string             `db:"media_type" json:"media_type"`
+	ReleaseYear          int32              `db:"release_year" json:"release_year"`
+	SourceSeason         int64              `db:"source_season" json:"source_season"`
+	SourceEpisode        int64              `db:"source_episode" json:"source_episode"`
+	SourceKind           string             `db:"source_kind" json:"source_kind"`
+	ResourceUpdatedAt    pgtype.Timestamptz `db:"resource_updated_at" json:"resource_updated_at"`
+	SourceRevision       int64              `db:"source_revision" json:"source_revision"`
+	ModelVersion         int32              `db:"model_version" json:"model_version"`
+	Dirty                bool               `db:"dirty" json:"dirty"`
+	DirtiedTransactionID int64              `db:"dirtied_transaction_id" json:"dirtied_transaction_id"`
+	DirtiedAt            pgtype.Timestamptz `db:"dirtied_at" json:"dirtied_at"`
+}
+
 type AdminUser struct {
 	ID           pgtype.UUID        `db:"id" json:"id"`
 	Username     string             `db:"username" json:"username"`
@@ -322,34 +341,6 @@ type InstallationState struct {
 	CompletedAt pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
 }
 
-type LegacyMigrationItem struct {
-	ID             pgtype.UUID        `db:"id" json:"id"`
-	SourceKind     string             `db:"source_kind" json:"source_kind"`
-	LegacyID       string             `db:"legacy_id" json:"legacy_id"`
-	Fingerprint    []byte             `db:"fingerprint" json:"fingerprint"`
-	MigrationRunID pgtype.UUID        `db:"migration_run_id" json:"migration_run_id"`
-	Status         string             `db:"status" json:"status"`
-	ResourceType   *string            `db:"resource_type" json:"resource_type"`
-	ResourceID     pgtype.UUID        `db:"resource_id" json:"resource_id"`
-	ErrorCode      *string            `db:"error_code" json:"error_code"`
-	ErrorMessage   *string            `db:"error_message" json:"error_message"`
-	LegacyPayload  []byte             `db:"legacy_payload" json:"legacy_payload"`
-	CreatedAt      pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt      pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-}
-
-type LegacyMigrationRun struct {
-	ID                pgtype.UUID        `db:"id" json:"id"`
-	SourceKind        string             `db:"source_kind" json:"source_kind"`
-	SourceFingerprint []byte             `db:"source_fingerprint" json:"source_fingerprint"`
-	Status            string             `db:"status" json:"status"`
-	Counts            []byte             `db:"counts" json:"counts"`
-	ErrorCode         *string            `db:"error_code" json:"error_code"`
-	ErrorMessage      *string            `db:"error_message" json:"error_message"`
-	StartedAt         pgtype.Timestamptz `db:"started_at" json:"started_at"`
-	CompletedAt       pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
-}
-
 type MediaArtifact struct {
 	ID                 pgtype.UUID        `db:"id" json:"id"`
 	TaskID             pgtype.UUID        `db:"task_id" json:"task_id"`
@@ -451,33 +442,6 @@ type Review struct {
 	ExpectedTaskVersion int32              `db:"expected_task_version" json:"expected_task_version"`
 }
 
-type RssAcquisitionProvenance struct {
-	AcquisitionID               pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
-	RssEntryID                  pgtype.UUID        `db:"rss_entry_id" json:"rss_entry_id"`
-	DownloadID                  pgtype.UUID        `db:"download_id" json:"download_id"`
-	DownloadAttempt             *int32             `db:"download_attempt" json:"download_attempt"`
-	TaskID                      pgtype.UUID        `db:"task_id" json:"task_id"`
-	AcquisitionCreatedAt        pgtype.Timestamptz `db:"acquisition_created_at" json:"acquisition_created_at"`
-	TaskCreatedAt               pgtype.Timestamptz `db:"task_created_at" json:"task_created_at"`
-	VideoReadyAt                pgtype.Timestamptz `db:"video_ready_at" json:"video_ready_at"`
-	SubtitleReadyAt             pgtype.Timestamptz `db:"subtitle_ready_at" json:"subtitle_ready_at"`
-	ArtifactReadyAt             pgtype.Timestamptz `db:"artifact_ready_at" json:"artifact_ready_at"`
-	ReviewedAt                  pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
-	ImportedAt                  pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
-	ArchivedAt                  pgtype.Timestamptz `db:"archived_at" json:"archived_at"`
-	PendingDownloadID           pgtype.UUID        `db:"pending_download_id" json:"pending_download_id"`
-	PendingDownloadAttempt      *int32             `db:"pending_download_attempt" json:"pending_download_attempt"`
-	PendingEnqueueAt            pgtype.Timestamptz `db:"pending_enqueue_at" json:"pending_enqueue_at"`
-	PendingEnqueueEventSequence *int64             `db:"pending_enqueue_event_sequence" json:"pending_enqueue_event_sequence"`
-	PendingTaskID               pgtype.UUID        `db:"pending_task_id" json:"pending_task_id"`
-	PendingTaskCreatedAt        pgtype.Timestamptz `db:"pending_task_created_at" json:"pending_task_created_at"`
-	PendingVideoReadyAt         pgtype.Timestamptz `db:"pending_video_ready_at" json:"pending_video_ready_at"`
-	PendingSubtitleReadyAt      pgtype.Timestamptz `db:"pending_subtitle_ready_at" json:"pending_subtitle_ready_at"`
-	PendingArtifactReadyAt      pgtype.Timestamptz `db:"pending_artifact_ready_at" json:"pending_artifact_ready_at"`
-	PendingReviewedAt           pgtype.Timestamptz `db:"pending_reviewed_at" json:"pending_reviewed_at"`
-	UpdatedAt                   pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-}
-
 type RssAdjudicationBatch struct {
 	ID             pgtype.UUID        `db:"id" json:"id"`
 	SubscriptionID pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
@@ -529,6 +493,23 @@ type RssEntryAdjudication struct {
 	RelatedEntryID pgtype.UUID        `db:"related_entry_id" json:"related_entry_id"`
 	CreatedAt      pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
+type RssEntryListProjection struct {
+	EntryID              pgtype.UUID        `db:"entry_id" json:"entry_id"`
+	SubscriptionID       pgtype.UUID        `db:"subscription_id" json:"subscription_id"`
+	TitleKey             string             `db:"title_key" json:"title_key"`
+	EntryGroup           string             `db:"entry_group" json:"entry_group"`
+	RejectReasons        []string           `db:"reject_reasons" json:"reject_reasons"`
+	OverallProgress      float64            `db:"overall_progress" json:"overall_progress"`
+	SourceSeason         int64              `db:"source_season" json:"source_season"`
+	SourceEpisode        int64              `db:"source_episode" json:"source_episode"`
+	DiscoveredAt         pgtype.Timestamptz `db:"discovered_at" json:"discovered_at"`
+	SourceRevision       int64              `db:"source_revision" json:"source_revision"`
+	ModelVersion         int32              `db:"model_version" json:"model_version"`
+	Dirty                bool               `db:"dirty" json:"dirty"`
+	DirtiedTransactionID int64              `db:"dirtied_transaction_id" json:"dirtied_transaction_id"`
+	DirtiedAt            pgtype.Timestamptz `db:"dirtied_at" json:"dirtied_at"`
 }
 
 type RssFeedCatalogLookup struct {
@@ -605,25 +586,6 @@ type RssSubtitleGroup struct {
 	UpdatedAt      pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
-type RssTargetFulfillment struct {
-	RssEntryID      pgtype.UUID        `db:"rss_entry_id" json:"rss_entry_id"`
-	TargetEpisodeID pgtype.UUID        `db:"target_episode_id" json:"target_episode_id"`
-	Source          string             `db:"source" json:"source"`
-	TaskID          pgtype.UUID        `db:"task_id" json:"task_id"`
-	VerifiedAt      pgtype.Timestamptz `db:"verified_at" json:"verified_at"`
-	InvalidatedAt   pgtype.Timestamptz `db:"invalidated_at" json:"invalidated_at"`
-	CreatedAt       pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-}
-
-type RssTargetRealtimeCheck struct {
-	TargetEpisodeID pgtype.UUID        `db:"target_episode_id" json:"target_episode_id"`
-	CheckID         pgtype.UUID        `db:"check_id" json:"check_id"`
-	Present         bool               `db:"present" json:"present"`
-	MatchSource     string             `db:"match_source" json:"match_source"`
-	CheckedAt       pgtype.Timestamptz `db:"checked_at" json:"checked_at"`
-}
-
 type SearchRun struct {
 	ID           pgtype.UUID        `db:"id" json:"id"`
 	Query        string             `db:"query" json:"query"`
@@ -644,18 +606,6 @@ type Session struct {
 	ExpiresAt   pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
 	LastSeenAt  pgtype.Timestamptz `db:"last_seen_at" json:"last_seen_at"`
 	RevokedAt   pgtype.Timestamptz `db:"revoked_at" json:"revoked_at"`
-	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
-}
-
-type SubtitleVideoMatchCandidate struct {
-	ScopeID     pgtype.UUID        `db:"scope_id" json:"scope_id"`
-	CandidateID string             `db:"candidate_id" json:"candidate_id"`
-	Source      string             `db:"source" json:"source"`
-	StreamIndex *int32             `db:"stream_index" json:"stream_index"`
-	Format      *string            `db:"format" json:"format"`
-	Language    *string            `db:"language" json:"language"`
-	Title       *string            `db:"title" json:"title"`
-	Path        *string            `db:"path" json:"path"`
 	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
 }
 

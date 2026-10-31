@@ -83,7 +83,7 @@ func main() {
 	}
 
 	transactor := database.NewTransactor(pool)
-	service.RegisterRSSSubscriptionProgressCommitHook(transactor)
+	service.RegisterProgressCommitHook(transactor)
 	riverDriver := riverpgxv5.New(pool)
 	recovered := 0
 	for {

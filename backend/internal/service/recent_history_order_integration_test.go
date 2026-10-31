@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/domain"
+	"github.com/onprs/emby-auto/backend/internal/platform/database"
 	"github.com/onprs/emby-auto/backend/internal/testutil"
 )
 
@@ -17,7 +18,7 @@ func TestRecentHistoryUsesCreationAndEventOrderAcrossCursorPagesIntegration(t *t
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, pool := testutil.NewMigratedPostgres(t)
-	reads := NewReadService(db.New(pool))
+	reads := NewReadService(db.New(pool), database.NewTransactor(pool))
 	base := time.Date(2026, time.July, 27, 0, 50, 0, 0, time.UTC)
 	resourceID := uuid.MustParse("70000000-0000-4000-8000-000000000001")
 

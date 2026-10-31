@@ -78,7 +78,7 @@ describe('RecordActions menu', () => {
     await userEvent.click(screen.getByRole('button', { name: '确认删除' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('后端返回的具体失败原因');
-    expect(onChanged).not.toHaveBeenCalled();
+    expect(onChanged).toHaveBeenCalledTimes(1);
   });
 
   it('does not trigger row click when toggling the menu', async () => {

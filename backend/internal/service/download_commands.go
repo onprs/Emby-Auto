@@ -45,6 +45,16 @@ func (workflow *DownloadCommandWorkflow) Retry(ctx context.Context, downloadID u
 			view, loadErr = loadDownloadCommandView(ctx, scope, downloadID)
 			return loadErr
 		}
+		before, err := scope.Queries.GetDownloadByID(ctx, repository.UUIDToPG(downloadID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("load download retry context: %w", err)
+		}
+		if err := lockWorkflowForRetry(ctx, scope, repository.UUIDFromPG(before.AcquisitionID), nullableUUID(uuid.Nil), true, before.Status == "cancelled"); err != nil {
+			return err
+		}
 		current, err := scope.Queries.LockDownloadByID(ctx, repository.UUIDToPG(downloadID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrNotFound
@@ -55,10 +65,19 @@ func (workflow *DownloadCommandWorkflow) Retry(ctx context.Context, downloadID u
 		if current.Version != expectedVersion {
 			return NewError("state_conflict", "the download was modified by another request", ErrStateConflict, map[string]any{"expectedVersion": expectedVersion})
 		}
-		if current.Status != "failed" {
-			return NewError("invalid_state", "only a failed download can be retried", ErrStateConflict, map[string]any{"status": current.Status})
+		if current.DeletionRequestedAt.Valid || current.DeletedAt.Valid {
+			return NewError("deletion_in_progress", "the download is being deleted", ErrStateConflict, map[string]any{})
+		}
+		if current.Status != "failed" && current.Status != "cancelled" {
+			return NewError("invalid_state", "only a failed or stopped download can be retried", ErrStateConflict, map[string]any{"status": current.Status})
+		}
+		if valueOrEmpty(current.ErrorCode) == "download_manifest_changed" {
+			return NewError("download_manifest_changed", "the source files changed; recreate the acquisition and confirm its mapping", ErrStateConflict, map[string]any{})
 		}
 		failureStage := valueOrEmpty(current.FailureStage)
+		if current.Status == "cancelled" {
+			failureStage = "enqueue"
+		}
 		schedule := ScheduleOperationRequest{
 			ResourceType:   "download",
 			ResourceID:     downloadID,
@@ -68,7 +87,16 @@ func (workflow *DownloadCommandWorkflow) Retry(ctx context.Context, downloadID u
 		}
 		switch failureStage {
 		case "enqueue":
-			if _, err := scope.Queries.RequeueDownloadEnqueueStage(ctx, db.RequeueDownloadEnqueueStageParams{
+			if current.Status == "cancelled" {
+				if _, err := scope.Queries.RequeueCancelledDownload(ctx, db.RequeueCancelledDownloadParams{
+					ID: repository.UUIDToPG(downloadID), ExpectedVersion: expectedVersion,
+				}); err != nil {
+					if errors.Is(err, pgx.ErrNoRows) {
+						return NewError("state_conflict", "the stopped download already has media tasks; retry those tasks instead", ErrStateConflict, map[string]any{})
+					}
+					return fmt.Errorf("requeue stopped download: %w", err)
+				}
+			} else if _, err := scope.Queries.RequeueDownloadEnqueueStage(ctx, db.RequeueDownloadEnqueueStageParams{
 				ID: repository.UUIDToPG(downloadID), ExpectedVersion: expectedVersion,
 			}); err != nil {
 				return fmt.Errorf("requeue download enqueue: %w", err)

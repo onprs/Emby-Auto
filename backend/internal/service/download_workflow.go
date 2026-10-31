@@ -51,6 +51,7 @@ func (workflow *DownloadWorkflow) LoadEnqueueCommand(
 		SourceURI:            row.SourceUri,
 		TorrentHash:          stringValue(row.TorrentHash),
 		FileResolutionSource: stringValue(row.FileResolutionSource),
+		HasResolvedManifest:  row.HasResolvedManifest,
 	}, nil
 }
 
@@ -92,12 +93,20 @@ func (workflow *DownloadWorkflow) CompleteEnqueue(
 			return err
 		}
 
+		preserved, err := restoreResolvedDownloadManifest(ctx, scope.Queries, locked, &completion)
+		if err != nil {
+			return err
+		}
 		torrentHash := strings.ToLower(completion.TorrentHash)
 		savePath := completion.SavePath
 		var resolutionSource *string
 		if completion.Outcome == domain.DownloadManifestResolved {
-			source := string(domain.DecisionSourceDeterministic)
-			resolutionSource = &source
+			if preserved {
+				resolutionSource = locked.FileResolutionSource
+			} else {
+				source := string(domain.DecisionSourceDeterministic)
+				resolutionSource = &source
+			}
 		}
 		updated, err := scope.Queries.MarkDownloadManifestPending(ctx, db.MarkDownloadManifestPendingParams{
 			TorrentHash: &torrentHash, SavePath: &savePath, FileResolutionSource: resolutionSource,
@@ -117,6 +126,9 @@ func (workflow *DownloadWorkflow) CompleteEnqueue(
 			}
 			if file.Selected {
 				selectedCount++
+			}
+			if preserved {
+				continue
 			}
 			if _, err := scope.Queries.CreateDownloadFile(ctx, db.CreateDownloadFileParams{
 				ID: repository.UUIDToPG(uuid.New()), DownloadID: repository.UUIDToPG(completion.DownloadID),
@@ -144,7 +156,7 @@ func (workflow *DownloadWorkflow) CompleteEnqueue(
 		case domain.DownloadManifestResolved:
 			if _, err := workflow.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
 				Kind: appqueue.KindDownloadSelectionApply, ResourceType: "download", ResourceID: completion.DownloadID,
-				IdempotencyKey: "download.selection.apply:" + completion.DownloadID.String() + ":" + torrentHash,
+				IdempotencyKey: fmt.Sprintf("download.selection.apply:%s:%s:v%d", completion.DownloadID, torrentHash, updated.Version),
 				MaxAttempts:    5, Timeout: time.Minute, Payload: map[string]any{},
 			}); err != nil {
 				return fmt.Errorf("schedule download selection apply: %w", err)
@@ -234,7 +246,7 @@ func (workflow *DownloadWorkflow) CompleteLegacyEnqueue(ctx context.Context, com
 		}
 		if _, err := workflow.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
 			Kind: appqueue.KindDownloadSync, ResourceType: "download", ResourceID: completion.DownloadID,
-			IdempotencyKey: "download.sync:" + completion.DownloadID.String() + ":" + torrentHash,
+			IdempotencyKey: fmt.Sprintf("download.sync:%s:%s:%s", completion.DownloadID, torrentHash, completion.OperationID),
 			MaxAttempts:    5, Timeout: 30 * time.Second, Payload: map[string]any{},
 		}); err != nil {
 			return fmt.Errorf("schedule legacy download sync: %w", err)
@@ -293,7 +305,7 @@ func (workflow *DownloadWorkflow) CompleteSelectionApply(ctx context.Context, do
 		}
 		if _, err := workflow.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
 			Kind: appqueue.KindDownloadSync, ResourceType: "download", ResourceID: downloadID,
-			IdempotencyKey: "download.sync:" + downloadID.String() + ":" + stringValue(updated.TorrentHash),
+			IdempotencyKey: fmt.Sprintf("download.sync:%s:%s:v%d", downloadID, stringValue(updated.TorrentHash), updated.Version),
 			MaxAttempts:    5, Timeout: 30 * time.Second, Payload: map[string]any{},
 		}); err != nil {
 			return fmt.Errorf("schedule download sync: %w", err)
@@ -431,7 +443,7 @@ func (workflow *DownloadWorkflow) CompleteDownload(
 			Kind:           appqueue.KindDownloadMaterialize,
 			ResourceType:   "download",
 			ResourceID:     downloadID,
-			IdempotencyKey: "download.materialize:" + downloadID.String(),
+			IdempotencyKey: fmt.Sprintf("download.materialize:%s:%s", downloadID, operationID),
 			MaxAttempts:    3,
 			Timeout:        2 * time.Minute,
 			Payload:        map[string]any{},

@@ -13,7 +13,7 @@ WHERE id = sqlc.arg(id)
 FOR UPDATE;
 
 -- name: LockAcquisitionForDeletion :one
-SELECT id, deletion_requested_at
+SELECT id, series_id, deletion_requested_at
 FROM acquisitions
 WHERE id = sqlc.arg(id)
 FOR UPDATE;

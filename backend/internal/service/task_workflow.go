@@ -872,7 +872,7 @@ func buildTaskView(value taskViewValues) domain.EpisodeTask {
 	}
 	task.Actions = domain.TaskActions{
 		CanRetry:  isTaskRetryable(string(task.State), string(task.VideoState), string(task.SubtitleState), task.FailureStage, cleanupStatus),
-		CanCancel: task.State != domain.TaskImported && task.State != domain.TaskFailed && task.State != domain.TaskCancelled && task.State != domain.TaskRejected,
+		CanCancel: task.State != domain.TaskImported && task.State != domain.TaskCancelled && task.State != domain.TaskRejected,
 		CanReview: task.State == domain.TaskAwaitingReview && task.Artifacts != nil,
 		CanImport: task.State == domain.TaskApproved && task.Artifacts != nil && task.Review != nil && task.Review.Decision == domain.TaskApproved,
 	}

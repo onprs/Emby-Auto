@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/domain"
+	"github.com/onprs/emby-auto/backend/internal/platform/database"
 	"github.com/onprs/emby-auto/backend/internal/testutil"
 )
 
@@ -18,7 +19,7 @@ func TestListDownloadsFiltersSearchesAndSortsIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, pool := testutil.NewMigratedPostgres(t)
-	service := NewReadService(db.New(pool))
+	service := NewReadService(db.New(pool), database.NewTransactor(pool))
 
 	seriesID := uuid.New()
 	acquisitionID := uuid.New()

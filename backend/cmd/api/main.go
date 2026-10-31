@@ -242,7 +242,11 @@ func buildRuntimeHandler(
 	agentResolutions := service.NewAgentResolutionService(
 		queries, transactor, operationScheduler, configuration, catalogWorkflow, tmdbSearcher,
 	)
-	readService := service.NewReadService(queries)
+	readService := service.NewReadService(queries, transactor)
+	if err := readService.ReconcileListProjections(ctx); err != nil {
+		pool.Close()
+		return nil, nil, fmt.Errorf("reconcile list projections: %w", err)
+	}
 	rssFeedLookup := service.NewRSSFeedLookup(configuration).WithCatalogMatching(tmdbSearcher, queries, agentResolutions).WithSubtitleGroups(rssSubtitleGroups)
 	tmdbQuery := service.NewTMDbQueryService(queries, tmdbSearcher)
 	mediaTools := mediatools.New(mediatools.OSExecutor{})

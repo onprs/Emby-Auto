@@ -961,11 +961,12 @@ SELECT
                    OR acquisition.rss_entry_id IS DISTINCT FROM sqlc.narg(excluded_rss_entry_id)::uuid)
               AND (
                   task.state NOT IN ('imported', 'rejected', 'cancelled')
-                  OR (
-                      task.state = 'cancelled'
-                      AND (task.video_state = 'failed' OR task.subtitle_state = 'failed')
-                      AND task.video_state IN ('failed', 'video_ready')
-                      AND task.subtitle_state IN ('failed', 'ass_ready')
+                  OR EXISTS (
+                      SELECT 1 FROM operations AS operation
+                      WHERE operation.resource_type = 'episode_task'
+                        AND operation.resource_id = task.id
+                        AND operation.status IN ('queued', 'running')
+                        AND (operation.cancel_requested_at IS NOT NULL OR operation.kind = 'task.cancel')
                   )
               )
         )
@@ -991,7 +992,12 @@ SELECT
               AND acquisition.deletion_requested_at IS NULL
               AND (sqlc.narg(excluded_rss_entry_id)::uuid IS NULL
                    OR acquisition.rss_entry_id IS DISTINCT FROM sqlc.narg(excluded_rss_entry_id)::uuid)
-              AND download.status <> 'cancelled'
+              AND (download.status <> 'cancelled' OR EXISTS (
+                  SELECT 1 FROM operations AS operation
+                  WHERE operation.resource_type = 'download' AND operation.resource_id = download.id
+                    AND operation.status IN ('queued', 'running')
+                    AND (operation.cancel_requested_at IS NOT NULL OR operation.kind = 'download.cancel')
+              ))
               AND NOT EXISTS (SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id)
         )
         OR EXISTS (
@@ -1019,7 +1025,12 @@ SELECT
               AND owner_mapping.source_episode_fraction_hundredths = COALESCE(CASE
                     WHEN COALESCE(acquisition.source_payload->>'sourceEpisodeFractionHundredths', '0') ~ '^(?:0|[1-9][0-9]?)$'
                     THEN COALESCE((acquisition.source_payload->>'sourceEpisodeFractionHundredths')::integer, 0) END, 0)
-              AND download.status <> 'cancelled'
+              AND (download.status <> 'cancelled' OR EXISTS (
+                  SELECT 1 FROM operations AS operation
+                  WHERE operation.resource_type = 'download' AND operation.resource_id = download.id
+                    AND operation.status IN ('queued', 'running')
+                    AND (operation.cancel_requested_at IS NOT NULL OR operation.kind = 'download.cancel')
+              ))
               AND NOT EXISTS (SELECT 1 FROM episode_tasks AS task WHERE task.acquisition_id = acquisition.id)
         )
         OR EXISTS (
@@ -1041,7 +1052,12 @@ SELECT
               AND (sqlc.narg(excluded_rss_entry_id)::uuid IS NULL
                    OR acquisition.rss_entry_id IS DISTINCT FROM sqlc.narg(excluded_rss_entry_id)::uuid)
               AND download.deleted_at IS NULL
-              AND download.status <> 'cancelled'
+              AND (download.status <> 'cancelled' OR EXISTS (
+                  SELECT 1 FROM operations AS operation
+                  WHERE operation.resource_type = 'download' AND operation.resource_id = download.id
+                    AND operation.status IN ('queued', 'running')
+                    AND (operation.cancel_requested_at IS NOT NULL OR operation.kind = 'download.cancel')
+              ))
               AND download.id = (
                   SELECT candidate.id FROM downloads AS candidate
                   WHERE candidate.acquisition_id = acquisition.id AND candidate.deleted_at IS NULL
@@ -1442,29 +1458,6 @@ WHERE entry.subscription_id = sqlc.arg(subscription_id)
       WHERE cleanup.task_id = task.id
   )
 ORDER BY task.created_at, task.id;
-
--- name: ListRSSImportedEntryAcquisitions :many
-SELECT DISTINCT ON (provenance.rss_entry_id)
-    provenance.rss_entry_id AS entry_id,
-    provenance.acquisition_id,
-    provenance.imported_at
-FROM rss_acquisition_provenance AS provenance
-JOIN rss_entries AS entry ON entry.id = provenance.rss_entry_id
-WHERE entry.subscription_id = sqlc.arg(subscription_id)
-  AND entry.imported_at IS NOT NULL
-  AND provenance.task_id IS NOT NULL
-  AND provenance.imported_at IS NOT NULL
-ORDER BY provenance.rss_entry_id, provenance.imported_at DESC, provenance.acquisition_created_at DESC, provenance.acquisition_id;
-
--- name: GetRSSSubscriptionImportedCount :one
-SELECT
-    count(DISTINCT entry.source_episode) FILTER (WHERE entry.imported_at IS NOT NULL)::bigint AS imported_count
-FROM rss_subscriptions AS subscription
-LEFT JOIN rss_entries AS entry
-  ON entry.subscription_id = subscription.id
- AND entry.source_season = subscription.source_season
-WHERE subscription.id = sqlc.arg(id)
-GROUP BY subscription.id;
 
 -- name: ListRSSSubscriptionImportedCountsBySubscriptionIDs :many
 SELECT
@@ -1987,11 +1980,6 @@ INSERT INTO rss_preacquisition_mapping_sources (
     sqlc.arg(scope_id), sqlc.arg(entry_id), sqlc.arg(source_season), sqlc.arg(source_episode)
 )
 ON CONFLICT (scope_id, entry_id) DO NOTHING;
-
--- name: GetRSSPreacquisitionMappingScope :one
-SELECT *
-FROM rss_preacquisition_mapping_scopes
-WHERE id = sqlc.arg(id);
 
 -- name: ListRSSPreacquisitionMappingSources :many
 SELECT source.*

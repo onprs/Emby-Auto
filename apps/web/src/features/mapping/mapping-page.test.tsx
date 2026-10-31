@@ -328,6 +328,7 @@ describe('MappingPage', () => {
     const operationId = '91000000-0000-4000-8000-000000000007';
     let syncCalls = 0;
     server.use(
+      http.get(`*/api/v1/operations/${operationId}`, () => HttpResponse.json({ id: operationId, kind: 'tmdb.sync', status: 'running' })),
       http.post('*/api/v1/tmdb/series/42/sync', async () => {
         syncCalls++;
         await syncGate.pending;
@@ -365,7 +366,9 @@ describe('MappingPage', () => {
     expect(syncCalls).toBe(1);
     syncGate.release();
 
-    await waitFor(() => expect(router.state.location.pathname).toBe(`/operations/${operationId}`));
+    await screen.findByText('操作已提交，正在处理');
+    expect(router.state.location.pathname).toBe(`/acquisitions/${acquisitionId}/mapping`);
+    expect(syncButton).toBeDisabled();
   });
 
   it('discards a delayed preview when the source plan changes and locks mapping controls while pending', async () => {

@@ -1,6 +1,6 @@
 # Agent 边界、协议与性能测试记录
 
-本文面向开发维护环境，记录 2026-10-18 对 Agent API 客户端、工具循环、7 类业务能力及相关 Service、Worker、HTTP API 的测试。源码基线为 `0841daa`，修复后的结果以工作区代码为准。
+本文面向开发维护环境，记录 2026-10-18 对 Agent API 客户端、工具循环、7 类业务能力及相关 Service、Worker、HTTP API 的测试。源码基线为 `0841daa`，以下版本、用例计数和性能数据保留测试当时的记录。当前开发要求见 [开发与发布维护](development.md)。
 
 测试环境为 Linux/amd64、Go 1.27.2、独立 PostgreSQL 18.4 测试实例；另使用 Go 1.26.1 完成全仓库检查，并在独立 PostgreSQL 17 实例运行完整集成检查。测试数据库和模拟服务均与实际业务服务隔离。
 
@@ -113,7 +113,7 @@ go -C backend test ./internal/platform/agentapi -run '^$' -bench 'BenchmarkToolL
 
 go -C backend test ./internal/service -run '^$' -bench 'BenchmarkAgent' -benchmem -benchtime=150ms -count=3
 
-GOTOOLCHAIN=go1.26.1 npm run lint:go
+npm run lint:go
 npm run test --workspace @emby-auto/web -- src/lib/presentation.test.ts
 npm run typecheck --workspace @emby-auto/web
 ```

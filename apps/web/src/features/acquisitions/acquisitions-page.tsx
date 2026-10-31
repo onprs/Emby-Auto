@@ -5,7 +5,7 @@ import { useState } from 'react';
 import type { Acquisition } from '@/api/generated/types.gen';
 import { fetchAcquisitions, type AcquisitionPhase, type AcquisitionSortBy, type SortOrder } from '@/features/acquisitions/api';
 import { TaskProgress } from '@/features/acquisitions/task-progress';
-import { acquisitionCanDelete, acquisitionHasActiveWork, cancelAcquisitionWork, deleteAcquisition, retryAcquisition } from '@/features/acquisitions/acquisition-actions';
+import { acquisitionHasActiveWork, cancelAcquisitionWork, deleteAcquisition, retryAcquisition } from '@/features/acquisitions/acquisition-actions';
 import { DeletionBatchBar } from '@/features/deletions/deletion-batch-bar';
 import { DeletionFeedback, type DeletionSubmission } from '@/features/deletions/deletion-feedback';
 import { acquisitionFailureInfo } from '@/features/tasks/task-failure';
@@ -149,33 +149,31 @@ export function AcquisitionsPage() {
         },
       });
     }
-    if (acquisitionCanDelete(item)) {
-      actions.push({
-        key: 'delete',
-        label: '删除',
-        danger: true,
-        confirmLines: [
-          '停止这个内容正在进行的下载、转码或处理。',
-          '删除尚未入库的下载源文件、种子任务和临时缓存。',
-          '已经成功入库到 Emby 的正式资源不会被删除。',
-        ],
-        confirmLabel: '确认删除',
-        run: async () => {
-          const result = await deleteAcquisition(item, holder.get());
-          holder.reset();
-          recordDeletion(item, result);
-          if (result.ok) refresh();
-          return null;
-        },
-      });
-    }
+    actions.push({
+      key: 'delete',
+      label: '删除',
+      danger: true,
+      confirmLines: [
+        '停止这个内容正在进行的下载、转码或处理。',
+        '删除尚未入库的下载源文件、种子任务和临时缓存。',
+        '已经成功入库到 Emby 的正式资源不会被删除。',
+      ],
+      confirmLabel: '确认删除',
+      run: async () => {
+        const result = await deleteAcquisition(item, holder.get());
+        holder.reset();
+        recordDeletion(item, result);
+        if (result.ok) refresh();
+        return null;
+      },
+    });
     return actions;
   };
 
   return (
     <PageBody>
       <PageHeader
-        title={phase === 'mapping_pending' ? '需要设置剧集对应关系' : '任务'}
+        title={phase === 'mapping_pending' ? '需要设置剧集对应关系' : '获取记录'}
         description={phase === 'mapping_pending' ? '这些内容需要确认集数后才能继续' : '查看内容从下载到入库的处理进度'}
         actions={phase === 'mapping_pending' ? <Link to="/acquisitions" search={{}} className="text-sm font-medium text-emerald-700 hover:underline">返回全部</Link> : undefined}
       />
@@ -203,7 +201,7 @@ export function AcquisitionsPage() {
       {selectedItems.length > 0 ? (
         <DeletionBatchBar
           count={selectedItems.length}
-          noun="任务"
+          noun="获取记录"
           running={batchRunning}
           lines={[
             '停止选中内容正在进行的下载、转码或处理。',
@@ -223,9 +221,9 @@ export function AcquisitionsPage() {
         <EmptyState title="暂无处理内容" description="通过搜索添加或 RSS 订阅开始" />
       ) : (
         <>
-          <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 border-y border-zinc-200 bg-white px-3 py-1 sm:hidden" role="group" aria-label="任务列表控制">
+          <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 border-y border-zinc-200 bg-white px-3 py-1 sm:hidden" role="group" aria-label="获取记录列表控制">
             <label className="inline-flex min-h-8 items-center gap-1.5 text-xs font-medium text-zinc-600">
-              <input type="checkbox" aria-label="全选当前页任务" checked={allChecked} onChange={toggleAll} className="size-4 accent-emerald-700" />
+              <input type="checkbox" aria-label="全选当前页获取记录" checked={allChecked} onChange={toggleAll} className="size-4 accent-emerald-700" />
               全选
             </label>
             {sortHeader('内容', 'content')}
@@ -278,7 +276,7 @@ export function AcquisitionsPage() {
           </div>
           <div className="hidden sm:block">
           <DataTable head={[
-            <input key="all" type="checkbox" aria-label="全选当前页任务" checked={allChecked} onChange={toggleAll} className="size-4 accent-emerald-700" />,
+            <input key="all" type="checkbox" aria-label="全选当前页获取记录" checked={allChecked} onChange={toggleAll} className="size-4 accent-emerald-700" />,
             sortHeader('内容', 'content'),
             sortHeader('添加方式', 'source_kind'),
             sortHeader('整体进度', 'progress'),

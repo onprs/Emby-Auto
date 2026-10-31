@@ -77,8 +77,8 @@ describe('TaskFailurePanel dual branch', () => {
     expect(screen.getAllByText(/视频转码失败/).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText(/字幕.*失败|FFmpeg 未能准备字幕/).length).toBeGreaterThanOrEqual(1);
     // each branch operation link correctly associated
-    expect(screen.getByRole('link', { name: '查看视频转码运行记录' })).toHaveAttribute('href', expect.stringContaining('aaaaaaa1-aaaa-aaaa-aaaa-aaaaaaaaaaa1'));
-    expect(screen.getByRole('link', { name: '查看字幕处理运行记录' })).toHaveAttribute('href', expect.stringContaining('bbbbbbb2-bbbb-bbbb-bbbb-bbbbbbbbbbb2'));
+    expect(screen.getByRole('link', { name: '查看视频转码操作日志' })).toHaveAttribute('href', expect.stringContaining('aaaaaaa1-aaaa-aaaa-aaaa-aaaaaaaaaaa1'));
+    expect(screen.getByRole('link', { name: '查看字幕处理操作日志' })).toHaveAttribute('href', expect.stringContaining('bbbbbbb2-bbbb-bbbb-bbbb-bbbbbbbbbbb2'));
     // only one retry button
     const retryButtons = screen.getAllByRole('button', { name: /重试任务/ });
     expect(retryButtons).toHaveLength(1);

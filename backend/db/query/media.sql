@@ -416,11 +416,6 @@ WHERE id = sqlc.arg(id)
   AND state = 'finalizing'
 RETURNING *;
 
--- name: GetArtifactByID :one
-SELECT *
-FROM media_artifacts
-WHERE id = sqlc.arg(id);
-
 -- name: GetArtifactContent :one
 SELECT artifact.task_id,
        artifact.kind,
@@ -444,36 +439,6 @@ LEFT JOIN imports AS imported
          AND artifact.id IN (paired.video_artifact_id, paired.subtitle_artifact_id)
    )
 WHERE artifact.id = sqlc.arg(id);
-
--- name: RequeueTaskVideoBranch :one
-UPDATE episode_tasks
-SET state = 'processing',
-    video_state = 'transcode_queued',
-    failure_stage = NULL,
-    error_code = NULL,
-    error_message = NULL,
-    version = version + 1,
-    updated_at = now()
-WHERE id = sqlc.arg(id)
-  AND state = 'failed'
-  AND video_state = 'failed'
-  AND failure_stage = 'video'
-RETURNING *;
-
--- name: RequeueTaskSubtitleBranch :one
-UPDATE episode_tasks
-SET state = 'processing',
-    subtitle_state = 'subtitle_queued',
-    failure_stage = NULL,
-    error_code = NULL,
-    error_message = NULL,
-    version = version + 1,
-    updated_at = now()
-WHERE id = sqlc.arg(id)
-  AND state = 'failed'
-  AND subtitle_state = 'failed'
-  AND failure_stage = 'subtitle'
-RETURNING *;
 
 -- name: RequeueTaskFinalizeBranch :one
 UPDATE episode_tasks
@@ -511,8 +476,8 @@ RETURNING episode_tasks.*;
 -- name: RequeueTaskFailedMediaBranches :one
 UPDATE episode_tasks
 SET state = CASE WHEN state IN ('failed', 'cancelled') THEN 'processing' ELSE state END,
-    video_state = CASE WHEN video_state = 'failed' THEN 'transcode_queued' ELSE video_state END,
-    subtitle_state = CASE WHEN subtitle_state = 'failed' THEN 'subtitle_queued' ELSE subtitle_state END,
+    video_state = CASE WHEN video_state = 'failed' OR (state = 'cancelled' AND video_state = 'cancelled') THEN 'transcode_queued' ELSE video_state END,
+    subtitle_state = CASE WHEN subtitle_state = 'failed' OR (state = 'cancelled' AND subtitle_state = 'cancelled') THEN 'subtitle_queued' ELSE subtitle_state END,
     failure_stage = NULL,
     error_code = NULL,
     error_message = NULL,
@@ -523,7 +488,7 @@ WHERE id = sqlc.arg(id)
   AND (
       (state = 'failed' AND (video_state = 'failed' OR subtitle_state = 'failed'))
       OR (state = 'processing' AND (video_state = 'failed' OR subtitle_state = 'failed'))
-      OR (state = 'cancelled' AND (video_state = 'failed' OR subtitle_state = 'failed') AND video_state IN ('failed', 'video_ready') AND subtitle_state IN ('failed', 'ass_ready'))
+      OR (state = 'cancelled' AND (video_state IN ('failed', 'cancelled') OR subtitle_state IN ('failed', 'cancelled')) AND video_state IN ('failed', 'cancelled', 'video_ready') AND subtitle_state IN ('failed', 'cancelled', 'ass_ready'))
   )
 RETURNING *;
 
@@ -538,6 +503,6 @@ SET state = 'cancelled',
     version = version + 1,
     updated_at = now()
 WHERE id = sqlc.arg(id)
-  AND state NOT IN ('imported', 'failed', 'cancelled', 'rejected')
+  AND state NOT IN ('imported', 'cancelled', 'rejected')
   AND version = sqlc.arg(expected_version)
 RETURNING *;

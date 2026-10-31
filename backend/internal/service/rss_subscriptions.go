@@ -866,13 +866,57 @@ func (workflow *RSSWorkflow) RetryEntry(
 		if rssEntryVersion(entry.EnqueueAttempts) != int(expectedVersion) {
 			return NewError("state_conflict", "the RSS entry was modified by another request", ErrStateConflict, map[string]any{"expectedVersion": expectedVersion})
 		}
-		if !entry.Downloadable || entry.Status != string(domain.RSSEnqueueFailed) || !entry.LastErrorRetryable {
-			return NewError("invalid_state", "only a retryable RSS enqueue failure can be retried", ErrStateConflict, map[string]any{"status": entry.Status})
+		skippedForProcessing := len(entry.RejectionReasons) == 1 && entry.RejectionReasons[0] == rssTargetProcessingReason && !entry.ImportedAt.Valid
+		retryableDiscovery := entry.Downloadable && (entry.Status == string(domain.RSSDiscovered) || entry.Status == string(domain.RSSEnqueued) || entry.Status == string(domain.RSSEnqueueing)) && !entry.ImportedAt.Valid
+		if !skippedForProcessing && !retryableDiscovery && (!entry.Downloadable || entry.Status != string(domain.RSSEnqueueFailed) || !entry.LastErrorRetryable) {
+			return NewError("invalid_state", "the RSS entry cannot be retried in its current state", ErrStateConflict, map[string]any{"status": entry.Status})
 		}
 		if _, err := scope.Queries.GetRSSEntryRelations(ctx, entry.ID); err == nil {
 			return NewError("state_conflict", "the RSS entry already has an acquisition; retry its download or media task", ErrStateConflict, map[string]any{})
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("check RSS entry retry relations: %w", err)
+		}
+
+		pending, err := scope.Queries.ListRSSPendingEntryRetries(ctx, subscription.ID)
+		if err != nil {
+			return fmt.Errorf("check pending RSS entry retry: %w", err)
+		}
+		for _, id := range pending {
+			if id == entry.ID {
+				return NewError("operation_in_progress", "the RSS entry retry is already queued or running", ErrStateConflict, map[string]any{})
+			}
+		}
+		if skippedForProcessing {
+			analysis := domain.AnalyzeRSSRelease(entry.Title, valueOrEmpty(entry.DownloadUri), int(subscription.SourceSeason), subscription.IncludeKeywords, subscription.ExcludeKeywords)
+			downloadable := analysis.Downloadable
+			if !downloadable && valueOrEmpty(entry.CoordinateSource) == "agent" && entry.SourceSeason != nil && entry.SourceEpisode != nil {
+				downloadable = true
+				for _, reason := range analysis.RejectionReasons {
+					if reason != "episode_not_detected" && reason != "episode_ambiguous" {
+						downloadable = false
+					}
+				}
+			}
+			if !downloadable {
+				return NewError("invalid_state", "the RSS release no longer matches the subscription", ErrStateConflict, map[string]any{})
+			}
+			updated, err := scope.Queries.ResetSkippedRSSEntryForRetry(ctx, entry.ID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return NewError("state_conflict", "the skipped RSS entry changed before retry", ErrStateConflict, map[string]any{})
+			}
+			if err != nil {
+				return fmt.Errorf("reset skipped RSS entry: %w", err)
+			}
+			expectedVersion = int32(rssEntryVersion(updated.EnqueueAttempts))
+		} else {
+			updated, err := scope.Queries.ReserveRSSEntryRetry(ctx, entry.ID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return NewError("state_conflict", "the RSS entry changed before retry", ErrStateConflict, map[string]any{})
+			}
+			if err != nil {
+				return fmt.Errorf("reserve RSS entry retry: %w", err)
+			}
+			expectedVersion = int32(rssEntryVersion(updated.EnqueueAttempts))
 		}
 
 		scheduled, err := workflow.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{

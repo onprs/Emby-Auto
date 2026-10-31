@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
+	"github.com/onprs/emby-auto/backend/internal/platform/database"
 	"github.com/onprs/emby-auto/backend/internal/repository"
 	"github.com/onprs/emby-auto/backend/internal/testutil"
 )
@@ -18,7 +19,7 @@ func TestSyntheticReadModelCapacityBaselineIntegration(t *testing.T) {
 	defer cancel()
 	_, pool := testutil.NewMigratedPostgres(t)
 	queries := db.New(pool)
-	reads := NewReadService(queries)
+	reads := NewReadService(queries, database.NewTransactor(pool))
 
 	seriesID, acquisitionID, downloadID, subscriptionID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	resourceID := uuid.New()

@@ -96,6 +96,7 @@ function mockConfig() {
           mappingPending: 0,
         },
         attentionItems: [],
+        recentTasks: [],
         recentOperations: [],
         recentImports: [],
         recentScans: [],

@@ -597,7 +597,7 @@ VALUES ($1, $3, 'rss', $4), ($2, $3, 'rss', $5)`, firstAcquisitionID, secondAcqu
 		t.Fatalf("subscription progress = %f, want mean of 0.02 and 0.16", progressSubscription.OverallProgress)
 	}
 
-	entryPage, err := NewReadService(db.New(pool)).ListRSSEntries(ctx, progressSubscriptionID, nil, 10, nil, nil, nil, nil, nil, nil)
+	entryPage, err := NewReadService(db.New(pool), database.NewTransactor(pool)).ListRSSEntries(ctx, progressSubscriptionID, nil, 10, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("ListRSSEntries() error = %v", err)
 	}

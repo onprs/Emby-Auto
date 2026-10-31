@@ -17,14 +17,14 @@ export function ResourceOperationHistory({ resourceType, resourceId }: { resourc
 
   return (
     <Card>
-      <CardHeader><CardTitle>运行记录</CardTitle></CardHeader>
+      <CardHeader><CardTitle>操作日志</CardTitle></CardHeader>
       <CardContent>
         {operations.isPending ? (
-          <LoadingState label="正在读取运行记录" />
+          <LoadingState label="正在读取操作日志" />
         ) : operations.error ? (
           <ErrorState message={operations.error.message} onRetry={() => operations.refetch()} />
         ) : operations.data.items.length === 0 ? (
-          <EmptyState title="暂无运行记录" />
+          <EmptyState title="暂无操作日志" />
         ) : (
           <DataTable head={['类型', '状态', '尝试', '错误', '更新时间']}>
             {operations.data.items.map((operation) => (

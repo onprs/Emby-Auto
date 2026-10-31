@@ -1,5 +1,5 @@
 import { AlertTriangle, X } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 
 import { ActionMenu, type ActionMenuItem } from '@/components/ui/action-menu';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
@@ -24,16 +24,19 @@ export interface RecordAction {
 }
 
 export function RecordActions({ actions, onChanged }: { actions: RecordAction[]; onChanged?: () => void }) {
+  const executing = useRef(false);
   const [pending, setPending] = useState<RecordAction | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const execute = async (action: RecordAction) => {
+    if (executing.current || action.disabled) return;
     setError(null);
     if (action.confirmLines && pending?.key !== action.key) {
       setPending(action);
       return;
     }
+    executing.current = true;
     setRunning(true);
     try {
       const failure = await action.run();
@@ -42,9 +45,12 @@ export function RecordActions({ actions, onChanged }: { actions: RecordAction[];
         return;
       }
       setPending(null);
-      onChanged?.();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '操作失败');
     } finally {
+      executing.current = false;
       setRunning(false);
+      onChanged?.();
     }
   };
 

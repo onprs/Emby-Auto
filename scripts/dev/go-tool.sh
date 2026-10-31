@@ -12,6 +12,15 @@ fi
 tool_name=$1
 shift
 
+if [ -z "${GOTOOLCHAIN:-}" ]; then
+  while read -r directive version _; do
+    if [ "$directive" = "go" ]; then
+      export GOTOOLCHAIN="go$version"
+      break
+    fi
+  done < "$repo_root/tools/go.mod"
+fi
+
 cd "$repo_root/backend"
 if [ "$tool_name" = "migrate" ]; then
   GOWORK=off exec go run -modfile=../tools/go.mod -tags=postgres \

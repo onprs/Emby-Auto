@@ -90,7 +90,7 @@ export function TaskFailurePanel({ task, onChanged }: { task: Task; onChanged: (
                   { label: `${branch.stageLabel}失败原因`, value: branch.detail },
                   { label: `${branch.stageLabel}建议`, value: branch.recommendation },
                   { label: `${branch.stageLabel}最近执行`, value: branch.attemptLabel },
-                  ...(op ? [{ label: `${branch.stageLabel}运行记录`, value: `${operationLabel(op.kind)} · ${op.status}` }] : []),
+                  ...(op ? [{ label: `${branch.stageLabel}操作日志`, value: `${operationLabel(op.kind)} · ${op.status}` }] : []),
                 ];
               })}
             />
@@ -101,7 +101,7 @@ export function TaskFailurePanel({ task, onChanged }: { task: Task; onChanged: (
                 return (
                   <Button key={branch.stage} type="button" variant="ghost" size="sm" asChild>
                     <ContextLink to="/operations/$operationId" params={{ operationId: op.id }}>
-                      查看{branch.stageLabel}运行记录
+                      查看{branch.stageLabel}操作日志
                     </ContextLink>
                   </Button>
                 );
@@ -158,7 +158,7 @@ function RetrySubmitted({ operationId }: { operationId: string }) {
   return (
     <div className="flex items-start gap-2 border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-800" role="status">
       <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-      <p className="min-w-0 flex-1">重试请求已提交，任务状态和运行记录正在刷新。</p>
+      <p className="min-w-0 flex-1">重试请求已提交，任务状态和操作日志正在刷新。</p>
       <ContextLink to="/operations/$operationId" params={{ operationId }} className="shrink-0 font-medium hover:underline">查看运行</ContextLink>
     </div>
   );

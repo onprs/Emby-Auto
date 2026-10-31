@@ -63,14 +63,6 @@ WHERE id = sqlc.arg(id)
   AND status = 'pending'
 RETURNING *;
 
--- name: ExpireSubtitleVideoMatchScope :one
-UPDATE subtitle_video_match_scopes
-SET status = 'expired',
-    updated_at = now()
-WHERE id = sqlc.arg(id)
-  AND status = 'pending'
-RETURNING *;
-
 -- name: GetSubtitleVideoMatchSelection :one
 SELECT
     scope.task_id,
@@ -83,10 +75,3 @@ LEFT JOIN subtitle_video_match_candidates AS selected
  AND selected.candidate_id = scope.selected_candidate_id
 WHERE scope.task_id = sqlc.arg(task_id)
   AND scope.status = 'applied';
-
--- name: IsCurrentSubtitleVideoMatchScope :one
-SELECT
-    scope.status = 'pending'
-    AND scope.task_id = sqlc.arg(task_id) AS current
-FROM subtitle_video_match_scopes AS scope
-WHERE scope.id = sqlc.arg(scope_id);

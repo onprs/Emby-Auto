@@ -5,8 +5,9 @@ import { useEffect, useState } from 'react';
 
 import { ApiFailure } from '@/api/app-client';
 import type { RssEntry, RssSubscription } from '@/api/generated/types.gen';
-import { appNavigationState, currentAppLocation, useListScrollRestoration } from '@/app/navigation-context';
+import { currentAppLocation, useListScrollRestoration } from '@/app/navigation-context';
 import { ContextLink } from '@/components/context-link';
+import { OperationFeedback } from '@/components/operation-feedback';
 import { RecordActions, type RecordAction } from '@/components/record-actions';
 import { TaskProgress } from '@/features/acquisitions/task-progress';
 import { fetchAcquisition } from '@/features/acquisitions/api';
@@ -44,7 +45,8 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
   const sortBy = search.sortBy ?? 'discovered_at';
   const sortOrder = search.sortOrder ?? 'desc';
   const [queryInput, setQueryInput] = useState(search.query ?? '');
-  const retryHolder = useState(() => new IdempotencyKeyHolder())[0];
+  const [retryOperationId, setRetryOperationId] = useState<string>();
+  const retryHolders = useState(() => new Map<string, IdempotencyKeyHolder>())[0];
   useEffect(() => setQueryInput(search.query ?? ''), [search.query]);
   const subscription = useQuery({
     queryKey: ['rss', subscriptionId],
@@ -76,35 +78,42 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
     void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
   };
   const retryEntry = async (entry: RssEntry): Promise<string | null> => {
+    let retryHolder = retryHolders.get(entry.id);
+    if (!retryHolder) {
+      retryHolder = new IdempotencyKeyHolder();
+      retryHolders.set(entry.id, retryHolder);
+    }
     try {
       const key = retryHolder.get();
       if (!entry.acquisitionId) {
-        await retryEntryCommand(subscriptionId, entry.id, key, entry.version);
+        const result = await retryEntryCommand(subscriptionId, entry.id, key, entry.version);
+        setRetryOperationId(result.operationId);
         retryHolder.reset();
         return null;
       }
       const acquisition = await fetchAcquisition(entry.acquisitionId);
       const result = await retryAcquisition(acquisition, `${key}:${entry.id}`);
-      retryHolder.reset();
       if (!result.ok) {
         refresh();
         return result.error ?? '重试失败';
       }
+      retryHolder.reset();
+      if (result.operationId) setRetryOperationId(result.operationId);
       return null;
     } catch (cause) {
-      retryHolder.reset();
+      if (cause instanceof ApiFailure && cause.isConflict) retryHolder.reset();
       refresh();
       return cause instanceof ApiFailure ? friendlyError(cause.code, cause.message) : cause instanceof Error ? cause.message : '重试失败';
     }
   };
   const entryActions = (entry: RssEntry): RecordAction[] => {
-    if (!entry.canRetry || entryWasSkipped(entry)) {
+    if (!entry.canRetry || !subscription.data?.enabled || subscription.data.completedAt) {
       return [];
     }
     return [{
       key: 'retry',
       label: '重试任务',
-      title: '重新执行失败的下载或媒体处理任务',
+      title: '重新检查这集并恢复未完成的下载或处理',
       run: () => retryEntry(entry),
     }];
   };
@@ -184,6 +193,7 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
         <SubscriptionCommands subscription={value} onChanged={refresh} />
       </div>
 
+      <OperationFeedback operationId={retryOperationId} onSettled={refresh} />
       <Card className="mt-6">
         <CardHeader>
           <CardTitle>已确认的 RSS 任务</CardTitle>
@@ -346,6 +356,7 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
                     <p className="mt-1 text-sm text-zinc-500">{episodeLabel(entry.sourceSeason, entry.sourceEpisode, entry.sourceEpisodeFractionHundredths)} · {formatDateTime(entry.createdAt)}</p>
                     {entry.coordinateSource ? <p className="mt-1 text-xs text-zinc-500">{decisionSourceLabel(entry.coordinateSource)}</p> : null}
                     <p className="mt-2 text-sm text-zinc-600">{reasonLabel(entry.rejectReason) || '不符合自动获取规则'}</p>
+                    {entry.canRetry ? <div className="mt-2 flex justify-end"><RecordActions actions={entryActions(entry)} onChanged={refresh} /></div> : null}
                   </div>
                 ))}
               </div>
@@ -356,6 +367,7 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
                   skippedSortHeader('处理进度', 'progress'),
                   '跳过原因',
                   skippedSortHeader('发现时间', 'discovered_at'),
+                  '操作',
                 ]}>
                   {skippedEntries.data.items.map((entry) => (
                     <tr key={entry.id}>
@@ -366,6 +378,7 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
                         {reasonLabel(entry.rejectReason) || '不符合自动获取规则'}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-zinc-600">{formatDateTime(entry.createdAt)}</td>
+                      <td className="w-12 px-2 py-3 text-right">{entry.canRetry ? <RecordActions actions={entryActions(entry)} onChanged={refresh} /> : null}</td>
                     </tr>
                   ))}
                 </DataTable>
@@ -443,9 +456,7 @@ function EntryProgress({ entry }: { entry: RssEntry }) {
 }
 
 function SubscriptionCommands({ subscription, onChanged }: { subscription: RssSubscription; onChanged: () => void }) {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const source = currentAppLocation(location.href);
+  const [operationId, setOperationId] = useState<string>();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -500,15 +511,8 @@ function SubscriptionCommands({ subscription, onChanged }: { subscription: RssSu
         }
         return;
       }
+      if (action === 'poll' && result && 'operationId' in result) setOperationId(result.operationId);
       onChanged();
-      if (action === 'poll' && result && 'operationId' in result) {
-        void navigate({
-          to: '/operations/$operationId',
-          params: { operationId: result.operationId },
-          search: { from: source },
-          state: appNavigationState(source),
-        });
-      }
     },
     onError: (cause) => setError(cause instanceof ApiFailure ? friendlyError(cause.code, cause.message) : cause instanceof Error ? cause.message : '操作失败'),
   });
@@ -525,6 +529,7 @@ function SubscriptionCommands({ subscription, onChanged }: { subscription: RssSu
             void queryClient.invalidateQueries({ queryKey: ['acquisitions'] });
           }}
         />
+        <OperationFeedback operationId={operationId} onSettled={onChanged} />
         {error ? <ErrorState className="mb-4" message={error} /> : null}
         <ConfirmDialog
           open={confirmDelete}

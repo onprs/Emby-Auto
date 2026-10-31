@@ -70,30 +70,6 @@ func (q *Queries) CreateSubtitleVideoMatchScope(ctx context.Context, arg CreateS
 	return i, err
 }
 
-const expireSubtitleVideoMatchScope = `-- name: ExpireSubtitleVideoMatchScope :one
-UPDATE subtitle_video_match_scopes
-SET status = 'expired',
-    updated_at = now()
-WHERE id = $1
-  AND status = 'pending'
-RETURNING id, task_id, status, selected_candidate_id, agent_resolution_id, created_at, updated_at
-`
-
-func (q *Queries) ExpireSubtitleVideoMatchScope(ctx context.Context, id pgtype.UUID) (SubtitleVideoMatchScope, error) {
-	row := q.db.QueryRow(ctx, expireSubtitleVideoMatchScope, id)
-	var i SubtitleVideoMatchScope
-	err := row.Scan(
-		&i.ID,
-		&i.TaskID,
-		&i.Status,
-		&i.SelectedCandidateID,
-		&i.AgentResolutionID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
 const getSubtitleVideoMatchContext = `-- name: GetSubtitleVideoMatchContext :one
 SELECT
     scope.id AS scope_id,
@@ -227,26 +203,6 @@ func (q *Queries) InsertSubtitleVideoMatchCandidate(ctx context.Context, arg Ins
 		arg.Path,
 	)
 	return err
-}
-
-const isCurrentSubtitleVideoMatchScope = `-- name: IsCurrentSubtitleVideoMatchScope :one
-SELECT
-    scope.status = 'pending'
-    AND scope.task_id = $1 AS current
-FROM subtitle_video_match_scopes AS scope
-WHERE scope.id = $2
-`
-
-type IsCurrentSubtitleVideoMatchScopeParams struct {
-	TaskID  pgtype.UUID `db:"task_id" json:"task_id"`
-	ScopeID pgtype.UUID `db:"scope_id" json:"scope_id"`
-}
-
-func (q *Queries) IsCurrentSubtitleVideoMatchScope(ctx context.Context, arg IsCurrentSubtitleVideoMatchScopeParams) (*bool, error) {
-	row := q.db.QueryRow(ctx, isCurrentSubtitleVideoMatchScope, arg.TaskID, arg.ScopeID)
-	var current *bool
-	err := row.Scan(&current)
-	return current, err
 }
 
 const listSubtitleVideoMatchCandidates = `-- name: ListSubtitleVideoMatchCandidates :many

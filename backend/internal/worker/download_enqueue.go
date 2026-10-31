@@ -261,7 +261,7 @@ func (handler *DownloadEnqueueHandler) Handle(ctx context.Context, operation dom
 			SizeBytes:    file.Size,
 		})
 	}
-	if !handler.manifestResolutionEnabled {
+	if !handler.manifestResolutionEnabled && !command.HasResolvedManifest {
 		if err := handler.completeLegacyEnqueue(ctx, operation, command, settings, client, resolution.Hash, savePath, correlationCategory, downloadFiles, selectionOptions); err != nil {
 			return err
 		}
@@ -301,12 +301,19 @@ func (handler *DownloadEnqueueHandler) Handle(ctx context.Context, operation dom
 		if errors.Is(err, domain.ErrDuplicateTorrent) {
 			return permanentFailure("duplicate_torrent", "the torrent has already been downloaded", err)
 		}
+		var stateError *service.Error
+		if errors.As(err, &stateError) && stateError.Code == "download_manifest_changed" {
+			return permanentFailure(stateError.Code, "the source files changed; confirm the episode mapping again", err)
+		}
 		return retryableFailure("download_storage_unavailable", "the download manifest could not be persisted", err)
 	}
 	torrentOwnedByOperation = false
 	categoryNeedsCleanup = false
-	if outcome == domain.DownloadManifestUnresolved {
+	if outcome == domain.DownloadManifestUnresolved && !command.HasResolvedManifest {
 		return handler.ensureDownloadAgentResolution(ctx, command.DownloadID)
+	}
+	if !handler.manifestResolutionEnabled {
+		return handler.ensureAutomaticEpisodeMapping(ctx, command.AcquisitionID)
 	}
 	return nil
 }

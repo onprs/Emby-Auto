@@ -1,0 +1,12 @@
+DROP FUNCTION list_rss_entry_page_ids(uuid, text, text, text, text, text, boolean, uuid, integer);
+DROP FUNCTION list_acquisition_page_ids(text, bigint, text, text, boolean, uuid, integer);
+DROP FUNCTION list_download_page_ids(text, text, text, text, boolean, uuid, integer);
+DROP VIEW rss_entry_list_items;
+DROP VIEW acquisition_list_items;
+DROP VIEW download_list_items;
+DROP INDEX download_list_status_idx;
+DROP INDEX download_list_client_idx;
+DROP INDEX download_list_progress_idx;
+DROP INDEX download_list_attempt_idx;
+DROP INDEX download_list_status_updated_idx;
+DROP INDEX download_list_updated_idx;
