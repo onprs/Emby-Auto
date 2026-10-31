@@ -36,12 +36,12 @@ export function SettingsStoragePage() {
   } = useSettingsData();
 
   if (configurationPending) {
-    return <DetailLoadingState title="存储与媒体工具" label="正在读取配置" />;
+    return <DetailLoadingState title="存储与工具" label="正在读取配置" />;
   }
   if (configurationError || !configuration) {
     return (
       <DetailErrorState
-        title="存储与媒体工具"
+        title="存储与工具"
         message={configurationError?.message ?? "无法读取配置"}
         onRetry={() => refetchConfiguration()}
       />
@@ -73,7 +73,7 @@ function StorageForm({
   return (
     <PageBody>
       <PageHeader
-        title="存储与媒体工具"
+        title="存储与工具"
         description="服务器上的目录与 FFmpeg 路径，所有运行环境使用相同挂载路径"
       />
       <SettingsFeedback conflict={conflict} error={error} savedAt={savedAt} />

@@ -246,23 +246,6 @@ function NavigationList({
                 <Icon className={cn('size-4 shrink-0 transition-transform duration-150', !active && 'group-hover:scale-110')} aria-hidden="true" />
                 {!collapsed ? <span className="truncate">{item.label}</span> : null}
               </Link>
-              {active && item.children && !collapsed ? (
-                <ul className="ml-7 mt-1 animate-fade-in space-y-1 border-l border-white/10 pl-3">
-                  {item.children.map((child) => (
-                    <li key={child.to}>
-                      <Link
-                        to={child.to}
-                        onClick={onNavigate}
-                        activeOptions={{ exact: child.to === item.to, includeSearch: false }}
-                        className="block truncate rounded px-2 py-1.5 text-xs text-zinc-400 transition-colors hover:bg-white/5 hover:text-white"
-                        activeProps={{ className: 'bg-white/10 font-medium text-white' }}
-                      >
-                        {child.label}
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
             </li>
           );
         })}

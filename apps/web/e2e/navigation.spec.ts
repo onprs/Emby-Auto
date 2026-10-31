@@ -81,6 +81,7 @@ test('uses one route-aware shell and accessible mobile or desktop navigation', a
     await expect(navigation.getByRole('link', { name: label, exact: true })).toBeVisible();
   }
   await expect(navigation.getByRole('link', { name: '下载', exact: true })).toHaveCount(0);
+  await expect(navigation.getByRole('link', { name: '总览', exact: true })).toHaveCount(0);
   await expect(navigation.getByRole('link', { name: '仪表盘', exact: true })).toHaveAttribute('aria-current', 'page');
 
   if (mobile) {

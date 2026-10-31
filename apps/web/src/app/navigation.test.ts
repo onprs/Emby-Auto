@@ -20,8 +20,6 @@ describe('application navigation manifest', () => {
       ['operations', '运行记录', '/operations'],
       ['settings', '系统设置', '/settings'],
     ]);
-    expect(appNavigation.find((item) => item.id === 'tasks')?.children).toBeUndefined();
-    expect(appNavigation.find((item) => item.id === 'operations')?.children).toBeUndefined();
   });
 
   it.each([
@@ -34,6 +32,12 @@ describe('application navigation manifest', () => {
     ['/rss/11111111-1111-4111-8111-111111111111', 'rss'],
     ['/emby/scans/11111111-1111-4111-8111-111111111111', 'emby'],
     ['/operations/11111111-1111-4111-8111-111111111111', 'operations'],
+    ['/settings', 'settings'],
+    ['/settings/services', 'settings'],
+    ['/settings/agent', 'settings'],
+    ['/settings/storage', 'settings'],
+    ['/settings/subtitle-groups', 'settings'],
+    ['/settings/transcode', 'settings'],
   ])('maps %s to the %s module', (pathname, moduleId) => {
     expect(moduleForPathname(pathname)).toBe(moduleId);
   });

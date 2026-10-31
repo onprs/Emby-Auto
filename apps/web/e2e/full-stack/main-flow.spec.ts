@@ -81,7 +81,7 @@ async function configure(page: Page) {
   }
 
   await page.goto('/settings/storage');
-  await expect(page.getByRole('heading', { name: '存储与媒体工具' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '存储与工具' })).toBeVisible();
   const currentDownloadRoot = await page.locator('#downloadRoot').inputValue();
   if (currentDownloadRoot !== manifest.paths.downloadRoot) {
     await page.locator('#downloadRoot').fill(manifest.paths.downloadRoot);

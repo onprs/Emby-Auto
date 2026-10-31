@@ -12,10 +12,10 @@ export function SettingsTranscodePage() {
   const { configuration, configurationPending, configurationError, refetchConfiguration } = useSettingsData();
 
   if (configurationPending) {
-    return <DetailLoadingState title="转码配置" label="正在读取配置" />;
+    return <DetailLoadingState title="转码" label="正在读取配置" />;
   }
   if (configurationError || !configuration) {
-    return <DetailErrorState title="转码配置" message={configurationError?.message ?? '无法读取配置'} onRetry={() => refetchConfiguration()} />;
+    return <DetailErrorState title="转码" message={configurationError?.message ?? '无法读取配置'} onRetry={() => refetchConfiguration()} />;
   }
   return <TranscodeForm configuration={configuration} />;
 }
@@ -31,7 +31,7 @@ function TranscodeForm({ configuration }: { configuration: NonNullable<ReturnTyp
 
   return (
     <PageBody>
-      <PageHeader title="转码配置" description="视频编码、质量、音频策略与并发；参数选项会根据编码器与封装格式保持兼容" />
+      <PageHeader title="转码" description="视频编码、质量、音频策略与并发；参数选项会根据编码器与封装格式保持兼容" />
       <SettingsFeedback conflict={conflict} error={error} savedAt={savedAt} />
 
       <Card>

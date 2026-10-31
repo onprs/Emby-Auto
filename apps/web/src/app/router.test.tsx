@@ -35,6 +35,9 @@ vi.mock('@/features/dashboard/dashboard-page', () => ({
 vi.mock('@/features/acquisitions/acquisition-detail-page', () => ({
   AcquisitionDetailPage: ({ acquisitionId }: { acquisitionId: string }) => <h1>acquisition {acquisitionId}</h1>,
 }));
+vi.mock('@/features/configuration/settings-services-page', () => ({
+  SettingsServicesPage: () => <h1>settings services</h1>,
+}));
 vi.mock('@/features/setup/setup-wizard', () => ({
   SetupWizard: () => <h1>lazy setup</h1>,
 }));
@@ -133,6 +136,17 @@ describe('application router lazy boundaries', () => {
     expect(await screen.findByRole('heading', { name: `acquisition ${acquisitionId}` })).toBeVisible();
     expect(screen.getByTestId('app-shell')).toBeVisible();
     expect(stream.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('redirects the settings root to the default section', async () => {
+    useSetupResponse();
+    useSessionResponse(true);
+
+    const appRouter = renderApp('/settings');
+
+    expect(await screen.findByRole('heading', { name: 'settings services' })).toBeVisible();
+    await waitFor(() => expect(appRouter.state.location.pathname).toBe('/settings/services'));
+    expect(screen.getByRole('navigation', { name: '系统设置' })).toBeVisible();
   });
 
   it('keeps one shell, event stream, and query cache while lazy routes change', async () => {

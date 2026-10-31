@@ -54,10 +54,10 @@ export function SettingsSubtitleGroupsPage() {
   });
 
   if (groups.isPending) {
-    return <DetailLoadingState title="字幕组列表" label="正在读取字幕组" />;
+    return <DetailLoadingState title="字幕组" label="正在读取字幕组" />;
   }
   if (groups.error || !groups.data) {
-    return <DetailErrorState title="字幕组列表" message={groups.error?.message ?? '无法读取字幕组列表'} onRetry={() => groups.refetch()} />;
+    return <DetailErrorState title="字幕组" message={groups.error?.message ?? '无法读取字幕组列表'} onRetry={() => groups.refetch()} />;
   }
 
   const submit = (event: FormEvent) => {
@@ -69,7 +69,7 @@ export function SettingsSubtitleGroupsPage() {
 
   return (
     <PageBody>
-      <PageHeader title="字幕组列表" description="RSS 订阅名称识别" />
+      <PageHeader title="字幕组" description="RSS 订阅名称识别" />
       <Card>
         <CardHeader>
           <CardTitle>已维护的字幕组</CardTitle>

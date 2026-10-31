@@ -629,7 +629,11 @@ test.describe('application shell', () => {
       await page.getByRole('button', { name: '打开主导航' }).click();
     }
     await page.getByRole('link', { name: '系统设置', exact: true }).click();
-    await expect(page.getByRole('heading', { name: '设置' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '外部服务' })).toBeVisible();
+    await expect(page).toHaveURL(/\/settings\/services$/);
+    const settingsNavigation = page.getByRole('navigation', { name: '系统设置' });
+    await expect(settingsNavigation.getByRole('link', { name: '外部服务', exact: true })).toHaveAttribute('aria-current', 'page');
+    await expect(settingsNavigation.getByRole('link', { name: '转码', exact: true })).toBeVisible();
   });
 });
 

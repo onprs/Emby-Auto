@@ -20,6 +20,7 @@ import { normalizeInternalLocation } from '@/app/navigation';
 import { EventStream } from '@/app/sse';
 import { registerSessionLossHandler, reportSessionLoss } from '@/app/session-runtime';
 import { Button } from '@/components/ui/button';
+import { SettingsLayout } from '@/features/configuration/settings-shell';
 
 const AcquisitionsPage = lazyRouteComponent(
   () => import('@/features/acquisitions/acquisitions-page'),
@@ -60,10 +61,6 @@ const SearchesPage = lazyRouteComponent(() => import('@/features/searches/search
 const SettingsAgentPage = lazyRouteComponent(
   () => import('@/features/configuration/settings-agent-page'),
   'SettingsAgentPage',
-);
-const SettingsHubPage = lazyRouteComponent(
-  () => import('@/features/configuration/settings-hub-page'),
-  'SettingsHubPage',
 );
 const SettingsServicesPage = lazyRouteComponent(
   () => import('@/features/configuration/settings-services-page'),
@@ -337,38 +334,45 @@ const operationDetailRoute = createRoute({
     return <OperationDetailPage operationId={operationId} />;
   },
 });
+const settingsLayoutRoute = createRoute({
+  getParentRoute: () => appRoute,
+  id: 'settings-layout',
+  component: SettingsLayout,
+});
 const settingsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/settings',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
-  component: SettingsHubPage,
+  beforeLoad: ({ search }) => {
+    throw redirect({ to: '/settings/services', search, replace: true });
+  },
 });
 const settingsServicesRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => settingsLayoutRoute,
   path: '/settings/services',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: SettingsServicesPage,
 });
 const settingsAgentRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => settingsLayoutRoute,
   path: '/settings/agent',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: SettingsAgentPage,
 });
 const settingsStorageRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => settingsLayoutRoute,
   path: '/settings/storage',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: SettingsStoragePage,
 });
 const settingsSubtitleGroupsRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => settingsLayoutRoute,
   path: '/settings/subtitle-groups',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: SettingsSubtitleGroupsPage,
 });
 const settingsTranscodeRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => settingsLayoutRoute,
   path: '/settings/transcode',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: SettingsTranscodePage,
@@ -395,11 +399,13 @@ const routeTree = rootRoute.addChildren([
     operationsRoute,
     operationDetailRoute,
     settingsRoute,
-    settingsServicesRoute,
-    settingsAgentRoute,
-    settingsStorageRoute,
-    settingsSubtitleGroupsRoute,
-    settingsTranscodeRoute,
+    settingsLayoutRoute.addChildren([
+      settingsServicesRoute,
+      settingsAgentRoute,
+      settingsStorageRoute,
+      settingsSubtitleGroupsRoute,
+      settingsTranscodeRoute,
+    ]),
     forbiddenRoute,
   ]),
 ]);

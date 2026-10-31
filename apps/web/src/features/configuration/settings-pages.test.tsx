@@ -8,7 +8,6 @@ import type {
   UpdateConfigurationRequest,
 } from "@/api/generated/types.gen";
 import { SettingsAgentPage } from "@/features/configuration/settings-agent-page";
-import { SettingsHubPage } from "@/features/configuration/settings-hub-page";
 import { SettingsServicesPage } from "@/features/configuration/settings-services-page";
 import { SettingsStoragePage } from "@/features/configuration/settings-storage-page";
 import { SettingsTranscodePage } from "@/features/configuration/settings-transcode-page";
@@ -121,34 +120,6 @@ function mockConfig() {
     ),
   );
 }
-
-describe("SettingsHubPage", () => {
-  it("shows per-service configuration status and links to each section", async () => {
-    mockConfig();
-    renderWithProviders(<SettingsHubPage />);
-
-    expect(
-      await screen.findByRole("heading", { name: "设置" }),
-    ).toBeInTheDocument();
-    expect(
-      (await screen.findAllByText("qBittorrent")).length,
-    ).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("Emby").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("TMDb").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("网络代理").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("已配置").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("Token 未配置")).toBeInTheDocument();
-    expect(screen.getByText("未启用")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /qBittorrent/ })).toHaveAttribute(
-      "href",
-      "/settings/services",
-    );
-    expect(screen.getByRole("link", { name: /转码配置/ })).toHaveAttribute(
-      "href",
-      "/settings/transcode",
-    );
-  });
-});
 
 describe("SettingsServicesPage", () => {
   const fullyConfigured: Configuration = {

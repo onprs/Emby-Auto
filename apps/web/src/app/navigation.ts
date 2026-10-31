@@ -19,7 +19,6 @@ export interface AppNavigationItem {
   shortLabel: string;
   to: string;
   icon: LucideIcon;
-  children?: Array<{ label: string; to: string }>;
   visible: (session: Session) => boolean;
 }
 
@@ -33,22 +32,7 @@ export const appNavigation: AppNavigationItem[] = [
   { id: 'tasks', label: '任务', shortLabel: '任务', to: '/acquisitions', icon: ListChecks, visible: authenticated },
   { id: 'emby', label: '媒体库', shortLabel: '媒体库', to: '/emby', icon: Film, visible: authenticated },
   { id: 'operations', label: '运行记录', shortLabel: '运行', to: '/operations', icon: ScrollText, visible: authenticated },
-  {
-    id: 'settings',
-    label: '系统设置',
-    shortLabel: '设置',
-    to: '/settings',
-    icon: Settings,
-    children: [
-      { label: '总览', to: '/settings' },
-      { label: '外部服务', to: '/settings/services' },
-      { label: 'Agent', to: '/settings/agent' },
-      { label: '存储与工具', to: '/settings/storage' },
-      { label: '字幕组', to: '/settings/subtitle-groups' },
-      { label: '转码', to: '/settings/transcode' },
-    ],
-    visible: authenticated,
-  },
+  { id: 'settings', label: '系统设置', shortLabel: '设置', to: '/settings', icon: Settings, visible: authenticated },
 ];
 
 export interface AppRouteRecord {
@@ -81,11 +65,11 @@ const appRoutes: AppRouteRecord[] = [
   { id: 'emby', pattern: /^\/emby\/?$/, module: 'emby', pageLabel: '媒体库', detail: false },
   { id: 'operation-detail', pattern: /^\/operations\/[^/]+\/?$/, module: 'operations', pageLabel: '运行详情', detail: true, defaultReturn: '/operations' },
   { id: 'operations', pattern: /^\/operations\/?$/, module: 'operations', pageLabel: '运行记录', detail: false },
-  { id: 'settings-services', pattern: /^\/settings\/services\/?$/, module: 'settings', pageLabel: '外部服务设置', detail: true, defaultReturn: '/settings' },
-  { id: 'settings-agent', pattern: /^\/settings\/agent\/?$/, module: 'settings', pageLabel: 'Agent 设置', detail: true, defaultReturn: '/settings' },
-  { id: 'settings-storage', pattern: /^\/settings\/storage\/?$/, module: 'settings', pageLabel: '存储与工具设置', detail: true, defaultReturn: '/settings' },
-  { id: 'settings-subtitle-groups', pattern: /^\/settings\/subtitle-groups\/?$/, module: 'settings', pageLabel: '字幕组设置', detail: true, defaultReturn: '/settings' },
-  { id: 'settings-transcode', pattern: /^\/settings\/transcode\/?$/, module: 'settings', pageLabel: '转码设置', detail: true, defaultReturn: '/settings' },
+  { id: 'settings-services', pattern: /^\/settings\/services\/?$/, module: 'settings', pageLabel: '外部服务', detail: false },
+  { id: 'settings-agent', pattern: /^\/settings\/agent\/?$/, module: 'settings', pageLabel: 'Agent', detail: false },
+  { id: 'settings-storage', pattern: /^\/settings\/storage\/?$/, module: 'settings', pageLabel: '存储与工具', detail: false },
+  { id: 'settings-subtitle-groups', pattern: /^\/settings\/subtitle-groups\/?$/, module: 'settings', pageLabel: '字幕组', detail: false },
+  { id: 'settings-transcode', pattern: /^\/settings\/transcode\/?$/, module: 'settings', pageLabel: '转码', detail: false },
   { id: 'settings', pattern: /^\/settings\/?$/, module: 'settings', pageLabel: '系统设置', detail: false },
   { id: 'forbidden', pattern: /^\/forbidden\/?$/, module: 'dashboard', pageLabel: '无权访问', detail: true, defaultReturn: '/' },
 ];
