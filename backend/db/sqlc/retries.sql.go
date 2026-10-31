@@ -74,47 +74,6 @@ func (q *Queries) ListRSSPendingEntryRetries(ctx context.Context, subscriptionID
 	return items, nil
 }
 
-const listRSSSubscriptionEntryAcquisitions = `-- name: ListRSSSubscriptionEntryAcquisitions :many
-SELECT acquisition.id, acquisition.series_id, acquisition.mapping_profile_id, acquisition.source_kind, acquisition.release_candidate_id, acquisition.rss_entry_id, acquisition.source_uri, acquisition.source_payload, acquisition.legacy_id, acquisition.created_by, acquisition.created_at, acquisition.updated_at, acquisition.deletion_requested_at
-FROM acquisitions AS acquisition
-JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
-WHERE entry.subscription_id = $1
-`
-
-func (q *Queries) ListRSSSubscriptionEntryAcquisitions(ctx context.Context, subscriptionID pgtype.UUID) ([]Acquisition, error) {
-	rows, err := q.db.Query(ctx, listRSSSubscriptionEntryAcquisitions, subscriptionID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Acquisition{}
-	for rows.Next() {
-		var i Acquisition
-		if err := rows.Scan(
-			&i.ID,
-			&i.SeriesID,
-			&i.MappingProfileID,
-			&i.SourceKind,
-			&i.ReleaseCandidateID,
-			&i.RssEntryID,
-			&i.SourceUri,
-			&i.SourcePayload,
-			&i.LegacyID,
-			&i.CreatedBy,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.DeletionRequestedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listWorkflowRetryTargets = `-- name: ListWorkflowRetryTargets :many
 SELECT DISTINCT mapping.target_episode_id
 FROM acquisitions AS acquisition

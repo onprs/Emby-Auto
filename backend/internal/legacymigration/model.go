@@ -44,10 +44,6 @@ type ArtifactProfile struct {
 
 type ArtifactProbeFunc func(context.Context, string) (domain.MediaProbe, error)
 
-func (probe ArtifactProbeFunc) Probe(ctx context.Context, path string) (domain.MediaProbe, error) {
-	return probe(ctx, path)
-}
-
 type PlanOptions struct {
 	ProfileExtension string
 	VerifyFiles      bool

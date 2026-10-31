@@ -65,12 +65,12 @@ func TestClassifyRSSEntryTargetOccupancyOverridesHistoricalEnqueueStatus(t *test
 	managedSource := rssFulfillmentManagedImport
 	tests := []struct {
 		name string
-		row  db.ListRSSEntriesRow
+		row  db.ListRSSEntryReadModelsByIDsRow
 		want string
 	}{
 		{
 			name: "catalog fulfillment",
-			row: db.ListRSSEntriesRow{
+			row: db.ListRSSEntryReadModelsByIDsRow{
 				Status: "enqueued", Downloadable: false, FulfillmentSource: &catalogSource,
 				RejectionReasons: []string{rssTargetInLibraryReason},
 			},
@@ -78,7 +78,7 @@ func TestClassifyRSSEntryTargetOccupancyOverridesHistoricalEnqueueStatus(t *test
 		},
 		{
 			name: "managed import occupied alternate",
-			row: db.ListRSSEntriesRow{
+			row: db.ListRSSEntryReadModelsByIDsRow{
 				Status: "enqueued", Downloadable: false, FulfillmentSource: &managedSource,
 				RejectionReasons: []string{rssTargetImportedReason},
 			},
@@ -86,7 +86,7 @@ func TestClassifyRSSEntryTargetOccupancyOverridesHistoricalEnqueueStatus(t *test
 		},
 		{
 			name: "processing occupied alternate",
-			row: db.ListRSSEntriesRow{
+			row: db.ListRSSEntryReadModelsByIDsRow{
 				Status: "enqueued", Downloadable: false,
 				RejectionReasons: []string{rssTargetProcessingReason},
 			},
@@ -94,7 +94,7 @@ func TestClassifyRSSEntryTargetOccupancyOverridesHistoricalEnqueueStatus(t *test
 		},
 		{
 			name: "catalog occupancy overrides pending adjudication",
-			row: db.ListRSSEntriesRow{
+			row: db.ListRSSEntryReadModelsByIDsRow{
 				Status: "enqueued", Downloadable: false, FulfillmentSource: &catalogSource,
 				RejectionReasons: []string{rssTargetInLibraryReason}, AdjudicationState: "pending",
 			},
@@ -102,14 +102,14 @@ func TestClassifyRSSEntryTargetOccupancyOverridesHistoricalEnqueueStatus(t *test
 		},
 		{
 			name: "successful managed import owner keeps workflow history",
-			row: db.ListRSSEntriesRow{
+			row: db.ListRSSEntryReadModelsByIDsRow{
 				Status: "enqueued", Downloadable: true, FulfillmentSource: &managedSource,
 			},
 			want: "enqueued",
 		},
 		{
 			name: "managed import owner keeps completion despite stale occupancy rejection",
-			row: db.ListRSSEntriesRow{
+			row: db.ListRSSEntryReadModelsByIDsRow{
 				Status: "enqueued", Downloadable: false, FulfillmentSource: &managedSource,
 				ImportedAt:              pgtype.Timestamptz{Time: time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC), Valid: true},
 				RejectionReasons:        []string{rssTargetInLibraryReason},
@@ -119,7 +119,7 @@ func TestClassifyRSSEntryTargetOccupancyOverridesHistoricalEnqueueStatus(t *test
 		},
 		{
 			name: "occupied alternate with fulfillment marker stays skipped",
-			row: db.ListRSSEntriesRow{
+			row: db.ListRSSEntryReadModelsByIDsRow{
 				Status: "discovered", Downloadable: false, FulfillmentSource: &managedSource,
 				ImportedAt:       pgtype.Timestamptz{Time: time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC), Valid: true},
 				RejectionReasons: []string{rssTargetImportedReason},
@@ -128,7 +128,7 @@ func TestClassifyRSSEntryTargetOccupancyOverridesHistoricalEnqueueStatus(t *test
 		},
 		{
 			name: "reconciled enqueued conflict entry stays skipped",
-			row: db.ListRSSEntriesRow{
+			row: db.ListRSSEntryReadModelsByIDsRow{
 				Status: "enqueued", Downloadable: false, FulfillmentSource: &managedSource,
 				ImportedAt:       pgtype.Timestamptz{Time: time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC), Valid: true},
 				RejectionReasons: []string{rssTargetImportedReason},

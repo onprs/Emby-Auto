@@ -63,7 +63,7 @@ func TestSubscriptionDeletionWinningTheLockPreventsDownloadRetryIntegration(t *t
 	if err := <-finished; !errors.As(err, &conflict) || conflict.Code != "deletion_in_progress" {
 		t.Fatalf("删除中的订阅仍恢复了下载: %v", err)
 	}
-	view, err := NewReadService(fixture.queries).GetDownload(ctx, downloadID)
+	view, err := NewReadService(fixture.queries, database.NewTransactor(fixture.pool)).GetDownload(ctx, downloadID)
 	if err != nil || view.Status != "cancelled" || view.Version != stopped.Version {
 		t.Fatalf("订阅删除并发修改了停止状态: %#v / %v", view, err)
 	}

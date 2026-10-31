@@ -65,13 +65,13 @@
 
 普通账号运行时跳过的 `TestPrivilegedHelperRejectsUntrustedParent` 和 `TestStagingOwnershipApplyRetryAndRestoreKeepFilesGroupAndMode`，已在无网络、只读根文件系统、临时目录可写的独立 root 容器中补测通过。同时补跑 `TestStagingOwnershipRejectsLinksAndReplacedDirectories` 的 root 分支，确认目录所有权重放与恢复保持文件完整，并拒绝越界、符号链接和被替换的目录。
 
-开发维护环境复测时，应先设置指向隔离数据库的 `TEST_DATABASE_URL`，并确保真实媒体用例需要的 FFmpeg、FFprobe 和 libx264 可用。生成文件一致性检查会重写生成文件，应在浏览器测试之前完成，避免文件刷新干扰 Vite 中的用例。
+以上版本、用例计数和性能数据保留测试当时的记录。开发维护环境复测使用当前项目工具链，先设置指向隔离数据库的 `TEST_DATABASE_URL`，并确保真实媒体用例需要的 FFmpeg、FFprobe 和 libx264 可用。生成文件一致性检查在临时目录中比较结果。
 
 ```bash
-GOTOOLCHAIN=go1.26.0 npm run check
-GOTOOLCHAIN=go1.26.0 go -C backend test -tags=integration -count=1 ./...
-GOTOOLCHAIN=go1.26.0 go -C backend test -race -tags=integration -count=1 ./internal/service ./internal/repository ./internal/worker ./internal/transport/httpapi
-GOTOOLCHAIN=go1.26.0 npm run test:e2e:full
-GOTOOLCHAIN=go1.26.0 go -C backend test ./internal/worker -run '^$' -bench '^BenchmarkImportArtifactPair$' -benchtime=10x -count=7
-GOTOOLCHAIN=go1.26.0 go -C backend test ./internal/worker -run '^$' -bench '^BenchmarkImportArtifactPairLarge$' -benchtime=3x -count=3
+npm run check
+go -C backend test -tags=integration -count=1 ./...
+go -C backend test -race -tags=integration -count=1 ./internal/service ./internal/repository ./internal/worker ./internal/transport/httpapi
+npm run test:e2e:full
+go -C backend test ./internal/worker -run '^$' -bench '^BenchmarkImportArtifactPair$' -benchtime=10x -count=7
+go -C backend test ./internal/worker -run '^$' -bench '^BenchmarkImportArtifactPairLarge$' -benchtime=3x -count=3
 ```

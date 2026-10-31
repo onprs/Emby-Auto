@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/domain"
+	"github.com/onprs/emby-auto/backend/internal/platform/database"
 	appqueue "github.com/onprs/emby-auto/backend/internal/platform/riverqueue"
 )
 
@@ -205,7 +206,7 @@ func TestDashboardRecentTasksExcludesOperationsAndDeletingVideosIntegration(t *t
 			t.Fatal(err)
 		}
 	}
-	summary, err := NewReadService(db.New(fixture.pool)).DashboardSummary(ctx)
+	summary, err := NewReadService(db.New(fixture.pool), database.NewTransactor(fixture.pool)).DashboardSummary(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -146,12 +146,6 @@ JOIN operations AS operation
  AND operation.status IN ('queued', 'running')
 WHERE entry.subscription_id = sqlc.arg(subscription_id);
 
--- name: ListRSSSubscriptionEntryAcquisitions :many
-SELECT acquisition.*
-FROM acquisitions AS acquisition
-JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
-WHERE entry.subscription_id = sqlc.arg(subscription_id);
-
 -- name: DashboardRecentTaskIDs :many
 SELECT task.id
 FROM episode_tasks AS task

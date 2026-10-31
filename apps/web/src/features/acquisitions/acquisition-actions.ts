@@ -15,7 +15,7 @@ import { cancelDownloadCommand, fetchDownload, retryDownloadCommand } from '@/fe
 const ACTIVE_TASK_STATES = new Set(['media_queued', 'processing', 'finalizing', 'awaiting_review', 'approved', 'import_queued', 'importing', 'failed']);
 const ACTIVE_DOWNLOAD_STATES = new Set(['enqueue_pending', 'file_resolution_pending', 'downloading', 'completed', 'selecting_files', 'failed']);
 
-export interface AcquisitionActionResult {
+interface AcquisitionActionResult {
   ok: boolean;
   operationId?: string;
   error?: string;
@@ -33,12 +33,7 @@ export function acquisitionHasActiveWork(item: Acquisition): boolean {
 }
 
 export function acquisitionRetryableTasks(item: Acquisition) {
-  return item.tasks.filter((task) => (task as unknown as { canRetry?: boolean }).canRetry === true);
-}
-
-/** Workflow deletion never includes imported Emby destination paths. */
-export function acquisitionCanDelete(_item: Acquisition): boolean {
-  return true;
+  return item.tasks.filter((task) => task.canRetry === true);
 }
 
 /** Retries the failed download, or every failed media task after download. */

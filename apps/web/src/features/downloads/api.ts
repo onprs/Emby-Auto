@@ -1,6 +1,6 @@
 import { unwrap } from '@/api/app-client';
-import { cancelDownload, deleteDownload, getDownload, listDownloads, retryDownload, saveDownloadFileResolution, saveDownloadFileSelection } from '@/api/generated/sdk.gen';
-import type { CommandAccepted, Download, DownloadCommandAccepted, DownloadFileResolutionItem, DownloadPage, ListDownloadsData } from '@/api/generated/types.gen';
+import { cancelDownload, getDownload, listDownloads, retryDownload, saveDownloadFileResolution, saveDownloadFileSelection } from '@/api/generated/sdk.gen';
+import type { Download, DownloadCommandAccepted, DownloadFileResolutionItem, DownloadPage, ListDownloadsData } from '@/api/generated/types.gen';
 
 export type DownloadFilters = Omit<NonNullable<ListDownloadsData['query']>, 'cursor' | 'limit'>;
 
@@ -21,13 +21,6 @@ export function retryDownloadCommand(downloadId: string, key: string, expectedVe
 
 export function cancelDownloadCommand(downloadId: string, key: string, expectedVersion: number): Promise<DownloadCommandAccepted> {
   return unwrap<DownloadCommandAccepted>(cancelDownload({ path: { downloadId }, headers: { 'Idempotency-Key': key }, body: { expectedVersion } }), '取消失败');
-}
-
-export function deleteDownloadCommand(downloadId: string, key: string, expectedVersion: number): Promise<CommandAccepted> {
-  return unwrap<CommandAccepted>(
-    deleteDownload({ path: { downloadId }, query: { expectedVersion }, headers: { 'Idempotency-Key': key } }),
-    '删除下载失败',
-  );
 }
 
 export function saveFileResolutionCommand(

@@ -1,6 +1,6 @@
 module github.com/onprs/emby-auto/backend
 
-go 1.26.0
+go 1.27.3
 
 require (
 	github.com/getkin/kin-openapi v0.152.0

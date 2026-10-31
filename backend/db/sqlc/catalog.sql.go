@@ -105,18 +105,6 @@ func (q *Queries) CompleteInstallation(ctx context.Context, completedBy pgtype.U
 	return i, err
 }
 
-const countInstallationState = `-- name: CountInstallationState :one
-SELECT count(*)
-FROM installation_state
-`
-
-func (q *Queries) CountInstallationState(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countInstallationState)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const createEmbyScanRun = `-- name: CreateEmbyScanRun :one
 INSERT INTO emby_scan_runs (
     id,
@@ -933,44 +921,6 @@ func (q *Queries) GetInstallationState(ctx context.Context) (InstallationState, 
 	return i, err
 }
 
-const getLatestDownloadForAcquisition = `-- name: GetLatestDownloadForAcquisition :one
-SELECT id, acquisition_id, attempt, client_name, torrent_hash, status, progress, save_path, error_code, error_message, started_at, completed_at, created_at, updated_at, version, failure_stage, client_state, last_synced_at, deletion_requested_at, deleted_at, file_resolution_source, agent_resolution_id
-FROM downloads
-WHERE acquisition_id = $1
-ORDER BY attempt DESC
-LIMIT 1
-`
-
-func (q *Queries) GetLatestDownloadForAcquisition(ctx context.Context, acquisitionID pgtype.UUID) (Download, error) {
-	row := q.db.QueryRow(ctx, getLatestDownloadForAcquisition, acquisitionID)
-	var i Download
-	err := row.Scan(
-		&i.ID,
-		&i.AcquisitionID,
-		&i.Attempt,
-		&i.ClientName,
-		&i.TorrentHash,
-		&i.Status,
-		&i.Progress,
-		&i.SavePath,
-		&i.ErrorCode,
-		&i.ErrorMessage,
-		&i.StartedAt,
-		&i.CompletedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Version,
-		&i.FailureStage,
-		&i.ClientState,
-		&i.LastSyncedAt,
-		&i.DeletionRequestedAt,
-		&i.DeletedAt,
-		&i.FileResolutionSource,
-		&i.AgentResolutionID,
-	)
-	return i, err
-}
-
 const getMappedTargetEpisodeForSource = `-- name: GetMappedTargetEpisodeForSource :one
 SELECT profile.series_id, mapping.target_episode_id
 FROM episode_mapping_profiles AS profile
@@ -1010,24 +960,6 @@ func (q *Queries) GetMappedTargetEpisodeForSource(ctx context.Context, arg GetMa
 	)
 	var i GetMappedTargetEpisodeForSourceRow
 	err := row.Scan(&i.SeriesID, &i.TargetEpisodeID)
-	return i, err
-}
-
-const getMappingProfileAudit = `-- name: GetMappingProfileAudit :one
-SELECT decision_source, agent_resolution_id
-FROM episode_mapping_profiles
-WHERE id = $1
-`
-
-type GetMappingProfileAuditRow struct {
-	DecisionSource    string      `db:"decision_source" json:"decision_source"`
-	AgentResolutionID pgtype.UUID `db:"agent_resolution_id" json:"agent_resolution_id"`
-}
-
-func (q *Queries) GetMappingProfileAudit(ctx context.Context, id pgtype.UUID) (GetMappingProfileAuditRow, error) {
-	row := q.db.QueryRow(ctx, getMappingProfileAudit, id)
-	var i GetMappingProfileAuditRow
-	err := row.Scan(&i.DecisionSource, &i.AgentResolutionID)
 	return i, err
 }
 

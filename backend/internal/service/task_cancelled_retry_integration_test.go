@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/domain"
+	"github.com/onprs/emby-auto/backend/internal/platform/database"
 	appqueue "github.com/onprs/emby-auto/backend/internal/platform/riverqueue"
 )
 
@@ -226,7 +227,7 @@ func TestTaskCancelledReadModelIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	queries := db.New(fixture.pool)
-	readService := NewReadService(queries)
+	readService := NewReadService(queries, database.NewTransactor(fixture.pool))
 	taskWorkflow := NewTaskWorkflow(queries, fixture.transactor, fixture.scheduler)
 
 	cases := []struct {

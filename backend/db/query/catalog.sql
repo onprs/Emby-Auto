@@ -1,7 +1,3 @@
--- name: CountInstallationState :one
-SELECT count(*)
-FROM installation_state;
-
 -- name: GetInstallationState :one
 SELECT *
 FROM installation_state
@@ -166,13 +162,6 @@ SELECT *
 FROM media_series
 WHERE id = sqlc.arg(id)
 FOR UPDATE;
-
--- name: GetLatestDownloadForAcquisition :one
-SELECT *
-FROM downloads
-WHERE acquisition_id = sqlc.arg(acquisition_id)
-ORDER BY attempt DESC
-LIMIT 1;
 
 -- name: ListAcquisitionSelectedVideos :many
 SELECT
@@ -652,11 +641,6 @@ SET mapping_profile_id = sqlc.arg(mapping_profile_id),
     updated_at = now()
 WHERE id = sqlc.arg(id)
 RETURNING *;
-
--- name: GetMappingProfileAudit :one
-SELECT decision_source, agent_resolution_id
-FROM episode_mapping_profiles
-WHERE id = sqlc.arg(id);
 
 -- name: UpdateSelectedFileCoordinateFamily :execrows
 WITH source_file AS (

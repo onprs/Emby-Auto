@@ -33,7 +33,7 @@ func TestRSSStoppedDownloadShowsStoppedAndSkippedEntryCanTakeOverIntegration(t *
 	}, domain.RSSPollPersistOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	reads := NewReadService(fixture.queries)
+	reads := NewReadService(fixture.queries, database.NewTransactor(fixture.pool))
 	group := "skipped"
 	page, err := reads.ListRSSEntries(fixture.ctx, fixture.subscriptionID, nil, 10, nil, &group, nil, nil, nil, nil)
 	if err != nil || len(page.Items) != 1 || !page.Items[0].CanRetry || page.Items[0].RejectReason != rssTargetProcessingReason {

@@ -38,7 +38,7 @@ func TestLifecycleAndRSSColumnSortingAcrossCursorPagesIntegration(t *testing.T) 
 	if _, err := pool.Exec(ctx, `INSERT INTO downloads (id, acquisition_id, status, progress, created_at, updated_at) VALUES ($1, $2, 'downloading', 0.5, $3, $3), ($4, $5, 'completed', 1, $6, $6)`, uuid.New(), acquisitionIDs[1], base.Add(time.Minute), uuid.New(), acquisitionIDs[2], base.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	reads := NewReadService(queries)
+	reads := NewReadService(queries, database.NewTransactor(pool))
 	ascending, descending := "asc", "desc"
 
 	updatedAt := "updated_at"
@@ -211,7 +211,7 @@ func TestRSSEntryListQueryAndRejectReasonFilterIntegration(t *testing.T) {
      ARRAY[]::text[], 1, 2, 'enqueued', $9, $9)`, libraryHit, extraHit, dualHit, normalID, subscriptionID, base, base.Add(time.Minute), base.Add(2*time.Minute), base.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	reads := NewReadService(db.New(pool))
+	reads := NewReadService(db.New(pool), database.NewTransactor(pool))
 
 	matchTitle := "S01E02"
 	page, err := reads.ListRSSEntries(ctx, subscriptionID, nil, 10, nil, nil, &matchTitle, nil, nil, nil)
