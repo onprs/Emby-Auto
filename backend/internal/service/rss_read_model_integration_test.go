@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
+	"github.com/onprs/emby-auto/backend/internal/platform/database"
 	"github.com/onprs/emby-auto/backend/internal/testutil"
 )
 
@@ -40,7 +41,7 @@ INSERT INTO rss_entries (
 		t.Fatal(err)
 	}
 
-	page, err := NewReadService(db.New(pool)).ListRSSEntries(ctx, subscriptionID, nil, 10, nil, nil, nil, nil, nil, nil)
+	page, err := NewReadService(db.New(pool), database.NewTransactor(pool)).ListRSSEntries(ctx, subscriptionID, nil, 10, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("ListRSSEntries() error = %v", err)
 	}
@@ -68,7 +69,7 @@ INSERT INTO rss_entries (
 		t.Fatalf("rejected view = %#v", rejected)
 	}
 
-	readService := NewReadService(db.New(pool))
+	readService := NewReadService(db.New(pool), database.NewTransactor(pool))
 	confirmedGroup, skippedGroup := "confirmed", "skipped"
 	confirmed, err := readService.ListRSSEntries(ctx, subscriptionID, nil, 10, nil, &confirmedGroup, nil, nil, nil, nil)
 	if err != nil || len(confirmed.Items) != 1 || confirmed.Items[0].ID != failedID {
@@ -100,7 +101,7 @@ INSERT INTO rss_entries (
 		t.Fatal(err)
 	}
 
-	readService := NewReadService(db.New(pool))
+	readService := NewReadService(db.New(pool), database.NewTransactor(pool))
 	confirmedGroup, skippedGroup := "confirmed", "skipped"
 	confirmed, err := readService.ListRSSEntries(ctx, subscriptionID, nil, 10, nil, &confirmedGroup, nil, nil, nil, nil)
 	if err != nil || len(confirmed.Items) != 0 {
@@ -177,7 +178,7 @@ INSERT INTO events (id, topic, resource_type, resource_id, data, occurred_at) VA
 		t.Fatal(err)
 	}
 
-	readService := NewReadService(db.New(pool))
+	readService := NewReadService(db.New(pool), database.NewTransactor(pool))
 	page, err := readService.ListRSSEntries(ctx, subscriptionID, nil, 10, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("ListRSSEntries() error = %v", err)

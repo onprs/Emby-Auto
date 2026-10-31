@@ -1223,28 +1223,6 @@ func (q *Queries) GetRSSPollCommand(ctx context.Context, id pgtype.UUID) (GetRSS
 	return i, err
 }
 
-const getRSSPreacquisitionMappingScope = `-- name: GetRSSPreacquisitionMappingScope :one
-SELECT id, subscription_id, subscription_version, source_fingerprint, status, applied_profile_id, created_at, updated_at
-FROM rss_preacquisition_mapping_scopes
-WHERE id = $1
-`
-
-func (q *Queries) GetRSSPreacquisitionMappingScope(ctx context.Context, id pgtype.UUID) (RssPreacquisitionMappingScope, error) {
-	row := q.db.QueryRow(ctx, getRSSPreacquisitionMappingScope, id)
-	var i RssPreacquisitionMappingScope
-	err := row.Scan(
-		&i.ID,
-		&i.SubscriptionID,
-		&i.SubscriptionVersion,
-		&i.SourceFingerprint,
-		&i.Status,
-		&i.AppliedProfileID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
 const getRSSRecoveryScheduleState = `-- name: GetRSSRecoveryScheduleState :one
 SELECT
     entry.status,
@@ -1356,24 +1334,6 @@ func (q *Queries) GetRSSSubscription(ctx context.Context, id pgtype.UUID) (GetRS
 		&i.TmdbSeriesID,
 	)
 	return i, err
-}
-
-const getRSSSubscriptionImportedCount = `-- name: GetRSSSubscriptionImportedCount :one
-SELECT
-    count(DISTINCT entry.source_episode) FILTER (WHERE entry.imported_at IS NOT NULL)::bigint AS imported_count
-FROM rss_subscriptions AS subscription
-LEFT JOIN rss_entries AS entry
-  ON entry.subscription_id = subscription.id
- AND entry.source_season = subscription.source_season
-WHERE subscription.id = $1
-GROUP BY subscription.id
-`
-
-func (q *Queries) GetRSSSubscriptionImportedCount(ctx context.Context, id pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, getRSSSubscriptionImportedCount, id)
-	var imported_count int64
-	err := row.Scan(&imported_count)
-	return imported_count, err
 }
 
 const insertRSSEntry = `-- name: InsertRSSEntry :one
@@ -1954,46 +1914,6 @@ func (q *Queries) ListRSSImportConflictReconciliationCandidates(ctx context.Cont
 			&i.SourceSeason,
 			&i.SourceEpisode,
 		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listRSSImportedEntryAcquisitions = `-- name: ListRSSImportedEntryAcquisitions :many
-SELECT DISTINCT ON (provenance.rss_entry_id)
-    provenance.rss_entry_id AS entry_id,
-    provenance.acquisition_id,
-    provenance.imported_at
-FROM rss_acquisition_provenance AS provenance
-JOIN rss_entries AS entry ON entry.id = provenance.rss_entry_id
-WHERE entry.subscription_id = $1
-  AND entry.imported_at IS NOT NULL
-  AND provenance.task_id IS NOT NULL
-  AND provenance.imported_at IS NOT NULL
-ORDER BY provenance.rss_entry_id, provenance.imported_at DESC, provenance.acquisition_created_at DESC, provenance.acquisition_id
-`
-
-type ListRSSImportedEntryAcquisitionsRow struct {
-	EntryID       pgtype.UUID        `db:"entry_id" json:"entry_id"`
-	AcquisitionID pgtype.UUID        `db:"acquisition_id" json:"acquisition_id"`
-	ImportedAt    pgtype.Timestamptz `db:"imported_at" json:"imported_at"`
-}
-
-func (q *Queries) ListRSSImportedEntryAcquisitions(ctx context.Context, subscriptionID pgtype.UUID) ([]ListRSSImportedEntryAcquisitionsRow, error) {
-	rows, err := q.db.Query(ctx, listRSSImportedEntryAcquisitions, subscriptionID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListRSSImportedEntryAcquisitionsRow{}
-	for rows.Next() {
-		var i ListRSSImportedEntryAcquisitionsRow
-		if err := rows.Scan(&i.EntryID, &i.AcquisitionID, &i.ImportedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -530,11 +530,6 @@ SELECT *
 FROM agent_resolutions
 WHERE id = sqlc.arg(id);
 
--- name: GetAgentResolutionByOperation :one
-SELECT *
-FROM agent_resolutions
-WHERE operation_id = sqlc.arg(operation_id);
-
 -- name: LockAgentResolution :one
 SELECT *
 FROM agent_resolutions
@@ -693,12 +688,6 @@ SET tool_name = EXCLUDED.tool_name,
     duration_milliseconds = EXCLUDED.duration_milliseconds,
     error_code = EXCLUDED.error_code
 RETURNING *;
-
--- name: ListAgentResolutionSteps :many
-SELECT *
-FROM agent_resolution_steps
-WHERE resolution_id = sqlc.arg(resolution_id)
-ORDER BY sequence;
 
 -- name: GetAgentRSSPreacquisitionMappingContext :one
 SELECT

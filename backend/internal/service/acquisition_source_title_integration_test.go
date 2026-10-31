@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
+	"github.com/onprs/emby-auto/backend/internal/platform/database"
 	"github.com/onprs/emby-auto/backend/internal/testutil"
 )
 
@@ -16,7 +17,7 @@ func TestAcquisitionReadModelsKeepPerSourceTitlesIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, pool := testutil.NewMigratedPostgres(t)
-	read := NewReadService(db.New(pool))
+	read := NewReadService(db.New(pool), database.NewTransactor(pool))
 
 	seriesID := uuid.New()
 	searchID, candidateID, searchAcquisitionID := uuid.New(), uuid.New(), uuid.New()

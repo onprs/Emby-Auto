@@ -171,32 +171,6 @@ func (q *Queries) CreateEpisodeTask(ctx context.Context, arg CreateEpisodeTaskPa
 	return i, err
 }
 
-const getArtifactByID = `-- name: GetArtifactByID :one
-SELECT id, task_id, source_file_id, transcode_profile_id, kind, basename, file_path, format, size_bytes, checksum_sha256, metadata, created_at
-FROM media_artifacts
-WHERE id = $1
-`
-
-func (q *Queries) GetArtifactByID(ctx context.Context, id pgtype.UUID) (MediaArtifact, error) {
-	row := q.db.QueryRow(ctx, getArtifactByID, id)
-	var i MediaArtifact
-	err := row.Scan(
-		&i.ID,
-		&i.TaskID,
-		&i.SourceFileID,
-		&i.TranscodeProfileID,
-		&i.Kind,
-		&i.Basename,
-		&i.FilePath,
-		&i.Format,
-		&i.SizeBytes,
-		&i.ChecksumSha256,
-		&i.Metadata,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const getArtifactContent = `-- name: GetArtifactContent :one
 SELECT artifact.task_id,
        artifact.kind,
@@ -1398,86 +1372,6 @@ RETURNING episode_tasks.id, episode_tasks.acquisition_id, episode_tasks.source_v
 
 func (q *Queries) RequeueTaskImportBranch(ctx context.Context, id pgtype.UUID) (EpisodeTask, error) {
 	row := q.db.QueryRow(ctx, requeueTaskImportBranch, id)
-	var i EpisodeTask
-	err := row.Scan(
-		&i.ID,
-		&i.AcquisitionID,
-		&i.SourceVideoFileID,
-		&i.MappingID,
-		&i.TranscodeProfileID,
-		&i.State,
-		&i.VideoState,
-		&i.SubtitleState,
-		&i.Version,
-		&i.ErrorCode,
-		&i.ErrorMessage,
-		&i.LegacyID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.FailureStage,
-		&i.MediaType,
-	)
-	return i, err
-}
-
-const requeueTaskSubtitleBranch = `-- name: RequeueTaskSubtitleBranch :one
-UPDATE episode_tasks
-SET state = 'processing',
-    subtitle_state = 'subtitle_queued',
-    failure_stage = NULL,
-    error_code = NULL,
-    error_message = NULL,
-    version = version + 1,
-    updated_at = now()
-WHERE id = $1
-  AND state = 'failed'
-  AND subtitle_state = 'failed'
-  AND failure_stage = 'subtitle'
-RETURNING id, acquisition_id, source_video_file_id, mapping_id, transcode_profile_id, state, video_state, subtitle_state, version, error_code, error_message, legacy_id, created_at, updated_at, failure_stage, media_type
-`
-
-func (q *Queries) RequeueTaskSubtitleBranch(ctx context.Context, id pgtype.UUID) (EpisodeTask, error) {
-	row := q.db.QueryRow(ctx, requeueTaskSubtitleBranch, id)
-	var i EpisodeTask
-	err := row.Scan(
-		&i.ID,
-		&i.AcquisitionID,
-		&i.SourceVideoFileID,
-		&i.MappingID,
-		&i.TranscodeProfileID,
-		&i.State,
-		&i.VideoState,
-		&i.SubtitleState,
-		&i.Version,
-		&i.ErrorCode,
-		&i.ErrorMessage,
-		&i.LegacyID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.FailureStage,
-		&i.MediaType,
-	)
-	return i, err
-}
-
-const requeueTaskVideoBranch = `-- name: RequeueTaskVideoBranch :one
-UPDATE episode_tasks
-SET state = 'processing',
-    video_state = 'transcode_queued',
-    failure_stage = NULL,
-    error_code = NULL,
-    error_message = NULL,
-    version = version + 1,
-    updated_at = now()
-WHERE id = $1
-  AND state = 'failed'
-  AND video_state = 'failed'
-  AND failure_stage = 'video'
-RETURNING id, acquisition_id, source_video_file_id, mapping_id, transcode_profile_id, state, video_state, subtitle_state, version, error_code, error_message, legacy_id, created_at, updated_at, failure_stage, media_type
-`
-
-func (q *Queries) RequeueTaskVideoBranch(ctx context.Context, id pgtype.UUID) (EpisodeTask, error) {
-	row := q.db.QueryRow(ctx, requeueTaskVideoBranch, id)
 	var i EpisodeTask
 	err := row.Scan(
 		&i.ID,

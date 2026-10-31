@@ -1,10 +1,10 @@
-import type { Acquisition, AcquisitionTaskSummary, OperationSummary, Task } from '@/api/generated/types.gen';
+import type { Acquisition, OperationSummary, Task } from '@/api/generated/types.gen';
 import { downloadWaitsForMapping } from '@/features/downloads/download-presentation';
 import { sanitizeTechnicalDetails } from '@/lib/sanitize';
 
 export { sanitizeTechnicalDetails } from '@/lib/sanitize';
 
-export const unknownFailureReason = '未能识别具体失败原因，请查看技术详情或运行日志。';
+const unknownFailureReason = '未能识别具体失败原因，请查看技术详情或运行日志。';
 
 export type FailureStage = 'download' | 'materialize' | 'video' | 'subtitle' | 'finalize' | 'import' | 'cleanup' | 'unknown';
 export type FailureRetryKind = 'download' | 'task' | 'cleanup' | 'none';
@@ -662,7 +662,7 @@ export function taskFailureInfo(task: Task): TaskFailureInfo | null {
   });
 }
 
-function acquisitionTaskResource(item: Acquisition, task: AcquisitionTaskSummary, stage: FailureStage): string {
+function acquisitionTaskResource(item: Acquisition, stage: FailureStage): string {
   const title = item.mediaType === 'movie' ? (item.movieTitle ?? '当前电影') : (item.seriesTitle ?? '当前剧集');
   if (stage === 'cleanup') return '关联下载、种子任务和转码临时文件';
   if (stage === 'import') return `Emby 服务及《${title}》的待入库文件`;
@@ -690,11 +690,11 @@ export function acquisitionFailureInfo(item: Acquisition): TaskFailureInfo | nul
     });
   }
   // 优先使用后端计算的 canRetry 能力，覆盖 failed/processing/cancelled 的媒体任务；在 failureStage 为空时由分支状态推导阶段
-  const retryableTasks = item.tasks.filter((task) => (task as unknown as { canRetry?: boolean }).canRetry === true);
+  const retryableTasks = item.tasks.filter((task) => task.canRetry === true);
   const retryableTask = retryableTasks[0];
   if (retryableTask) {
     if (retryableTask.state === 'cancelled' && retryableTask.videoState !== 'failed' && retryableTask.subtitleState !== 'failed') {
-      return stoppedProcessingInfo('video', acquisitionTaskResource(item, retryableTask, 'video'), retryableTask.updatedAt);
+      return stoppedProcessingInfo('video', acquisitionTaskResource(item, 'video'), retryableTask.updatedAt);
     }
     // 已导入但清理失败的任务需在媒体分支推导前显式识别，生成清理阶段摘要
     if (retryableTask.state === 'imported' && retryableTask.cleanupStatus === 'failed') {
@@ -758,7 +758,7 @@ export function acquisitionFailureInfo(item: Acquisition): TaskFailureInfo | nul
       attemptLabel: '第 1 次执行',
       baseCanRetry: true,
       retryKind: 'task',
-      relatedResource: acquisitionTaskResource(item, retryableTask, stage),
+      relatedResource: acquisitionTaskResource(item, stage),
     });
     if (retryableTasks.length > 1) {
       info.summary = `${info.summary}（共 ${retryableTasks.length} 个任务）`;
@@ -778,7 +778,7 @@ export function acquisitionFailureInfo(item: Acquisition): TaskFailureInfo | nul
     attemptLabel: '第 1 次执行',
     baseCanRetry: Boolean(failedTask.failureStage),
     retryKind: 'task',
-    relatedResource: acquisitionTaskResource(item, failedTask, stage),
+    relatedResource: acquisitionTaskResource(item, stage),
   });
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/domain"
+	"github.com/onprs/emby-auto/backend/internal/platform/database"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 )
@@ -45,7 +46,7 @@ func TestApprovedReviewQueuesImportAtomicallyIntegration(t *testing.T) {
 	if err := fixture.pool.QueryRow(context.Background(), `SELECT acquisition_id FROM episode_tasks WHERE id = $1`, taskID).Scan(&acquisitionID); err != nil {
 		t.Fatal(err)
 	}
-	acquisition, err := NewReadService(db.New(fixture.pool)).GetAcquisition(context.Background(), acquisitionID)
+	acquisition, err := NewReadService(db.New(fixture.pool), database.NewTransactor(fixture.pool)).GetAcquisition(context.Background(), acquisitionID)
 	if err != nil {
 		t.Fatalf("GetAcquisition(approved) error = %v", err)
 	}

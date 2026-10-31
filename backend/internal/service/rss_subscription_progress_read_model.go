@@ -17,10 +17,9 @@ import (
 
 const (
 	// 修改 deriveAcquisitionLifecycle、dashboardAttentionItem 或订阅汇总语义时
-	// 必须递增此版本，使现存 clean 投影重新进入 reconciliation。
+	// 必须递增此版本，使已计算的投影重新补算。
 	rssSubscriptionProgressModelVersion int32 = 1
-	rssSubscriptionProgressBatchSize          = 100
-	rssSubscriptionProgressHookName           = "rss_subscription_progress"
+	rssSubscriptionProgressBatchSize    int32 = 100
 )
 
 type rssSubscriptionProgressCandidate struct {
@@ -40,20 +39,8 @@ func newRSSSubscriptionProgressReadModel(
 	transactor *database.Transactor,
 ) *rssSubscriptionProgressReadModel {
 	model := &rssSubscriptionProgressReadModel{queries: queries, transactor: transactor}
-	model.registerCommitHook()
+	RegisterProgressCommitHook(transactor)
 	return model
-}
-
-// RegisterRSSSubscriptionProgressCommitHook 让独立维护进程复用与 API/Worker
-// 相同的提交前重算边界，而不要求构造完整 RSS workflow。
-func RegisterRSSSubscriptionProgressCommitHook(transactor *database.Transactor) {
-	(&rssSubscriptionProgressReadModel{transactor: transactor}).registerCommitHook()
-}
-
-func (model *rssSubscriptionProgressReadModel) registerCommitHook() {
-	if model != nil && model.transactor != nil {
-		model.transactor.RegisterBeforeCommitHook(rssSubscriptionProgressHookName, model.recalculateCurrentTransaction)
-	}
 }
 
 // recalculateCurrentTransaction 把触发器在当前事务中标脏的订阅投影

@@ -329,7 +329,7 @@ func (scope *Scope) MigrateStaging(ctx context.Context, targetUID int, backupPat
 				}
 			}
 		} else {
-			backup, result, err = PlanStagingOwnership(ctx, root, taskIDs, targetUID)
+			_, result, err = PlanStagingOwnership(ctx, root, taskIDs, targetUID)
 			if err != nil {
 				return err
 			}

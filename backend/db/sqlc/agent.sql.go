@@ -994,53 +994,6 @@ func (q *Queries) GetAgentResolution(ctx context.Context, id pgtype.UUID) (Agent
 	return i, err
 }
 
-const getAgentResolutionByOperation = `-- name: GetAgentResolutionByOperation :one
-SELECT id, operation_id, version, capability, resource_type, resource_id, resource_version, trigger, status, input_fingerprint, configuration_version, protocol, provider_origin, model, prompt_version, toolset_version, proposal, validation, error_code, error_message, input_tokens, output_tokens, tool_call_count, latency_milliseconds, created_by, reviewed_by, review_decision, created_at, started_at, completed_at, reviewed_at, applied_at, updated_at
-FROM agent_resolutions
-WHERE operation_id = $1
-`
-
-func (q *Queries) GetAgentResolutionByOperation(ctx context.Context, operationID pgtype.UUID) (AgentResolution, error) {
-	row := q.db.QueryRow(ctx, getAgentResolutionByOperation, operationID)
-	var i AgentResolution
-	err := row.Scan(
-		&i.ID,
-		&i.OperationID,
-		&i.Version,
-		&i.Capability,
-		&i.ResourceType,
-		&i.ResourceID,
-		&i.ResourceVersion,
-		&i.Trigger,
-		&i.Status,
-		&i.InputFingerprint,
-		&i.ConfigurationVersion,
-		&i.Protocol,
-		&i.ProviderOrigin,
-		&i.Model,
-		&i.PromptVersion,
-		&i.ToolsetVersion,
-		&i.Proposal,
-		&i.Validation,
-		&i.ErrorCode,
-		&i.ErrorMessage,
-		&i.InputTokens,
-		&i.OutputTokens,
-		&i.ToolCallCount,
-		&i.LatencyMilliseconds,
-		&i.CreatedBy,
-		&i.ReviewedBy,
-		&i.ReviewDecision,
-		&i.CreatedAt,
-		&i.StartedAt,
-		&i.CompletedAt,
-		&i.ReviewedAt,
-		&i.AppliedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
 const getAgentResolutionDashboardStats = `-- name: GetAgentResolutionDashboardStats :one
 SELECT
     count(*)::bigint AS total,
@@ -1608,44 +1561,6 @@ func (q *Queries) ListAgentRSSPreacquisitionTMDbEpisodes(ctx context.Context, sc
 			&i.SeasonNumber,
 			&i.EpisodeNumber,
 			&i.Title,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listAgentResolutionSteps = `-- name: ListAgentResolutionSteps :many
-SELECT id, resolution_id, sequence, tool_name, status, arguments_digest, result_digest, duration_milliseconds, error_code, created_at
-FROM agent_resolution_steps
-WHERE resolution_id = $1
-ORDER BY sequence
-`
-
-func (q *Queries) ListAgentResolutionSteps(ctx context.Context, resolutionID pgtype.UUID) ([]AgentResolutionStep, error) {
-	rows, err := q.db.Query(ctx, listAgentResolutionSteps, resolutionID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []AgentResolutionStep{}
-	for rows.Next() {
-		var i AgentResolutionStep
-		if err := rows.Scan(
-			&i.ID,
-			&i.ResolutionID,
-			&i.Sequence,
-			&i.ToolName,
-			&i.Status,
-			&i.ArgumentsDigest,
-			&i.ResultDigest,
-			&i.DurationMilliseconds,
-			&i.ErrorCode,
-			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}

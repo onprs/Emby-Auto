@@ -5,7 +5,7 @@ import { useState } from 'react';
 import type { Acquisition } from '@/api/generated/types.gen';
 import { fetchAcquisitions, type AcquisitionPhase, type AcquisitionSortBy, type SortOrder } from '@/features/acquisitions/api';
 import { TaskProgress } from '@/features/acquisitions/task-progress';
-import { acquisitionCanDelete, acquisitionHasActiveWork, cancelAcquisitionWork, deleteAcquisition, retryAcquisition } from '@/features/acquisitions/acquisition-actions';
+import { acquisitionHasActiveWork, cancelAcquisitionWork, deleteAcquisition, retryAcquisition } from '@/features/acquisitions/acquisition-actions';
 import { DeletionBatchBar } from '@/features/deletions/deletion-batch-bar';
 import { DeletionFeedback, type DeletionSubmission } from '@/features/deletions/deletion-feedback';
 import { acquisitionFailureInfo } from '@/features/tasks/task-failure';
@@ -149,26 +149,24 @@ export function AcquisitionsPage() {
         },
       });
     }
-    if (acquisitionCanDelete(item)) {
-      actions.push({
-        key: 'delete',
-        label: '删除',
-        danger: true,
-        confirmLines: [
-          '停止这个内容正在进行的下载、转码或处理。',
-          '删除尚未入库的下载源文件、种子任务和临时缓存。',
-          '已经成功入库到 Emby 的正式资源不会被删除。',
-        ],
-        confirmLabel: '确认删除',
-        run: async () => {
-          const result = await deleteAcquisition(item, holder.get());
-          holder.reset();
-          recordDeletion(item, result);
-          if (result.ok) refresh();
-          return null;
-        },
-      });
-    }
+    actions.push({
+      key: 'delete',
+      label: '删除',
+      danger: true,
+      confirmLines: [
+        '停止这个内容正在进行的下载、转码或处理。',
+        '删除尚未入库的下载源文件、种子任务和临时缓存。',
+        '已经成功入库到 Emby 的正式资源不会被删除。',
+      ],
+      confirmLabel: '确认删除',
+      run: async () => {
+        const result = await deleteAcquisition(item, holder.get());
+        holder.reset();
+        recordDeletion(item, result);
+        if (result.ok) refresh();
+        return null;
+      },
+    });
     return actions;
   };
 

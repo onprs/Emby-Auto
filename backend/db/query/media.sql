@@ -416,11 +416,6 @@ WHERE id = sqlc.arg(id)
   AND state = 'finalizing'
 RETURNING *;
 
--- name: GetArtifactByID :one
-SELECT *
-FROM media_artifacts
-WHERE id = sqlc.arg(id);
-
 -- name: GetArtifactContent :one
 SELECT artifact.task_id,
        artifact.kind,
@@ -444,36 +439,6 @@ LEFT JOIN imports AS imported
          AND artifact.id IN (paired.video_artifact_id, paired.subtitle_artifact_id)
    )
 WHERE artifact.id = sqlc.arg(id);
-
--- name: RequeueTaskVideoBranch :one
-UPDATE episode_tasks
-SET state = 'processing',
-    video_state = 'transcode_queued',
-    failure_stage = NULL,
-    error_code = NULL,
-    error_message = NULL,
-    version = version + 1,
-    updated_at = now()
-WHERE id = sqlc.arg(id)
-  AND state = 'failed'
-  AND video_state = 'failed'
-  AND failure_stage = 'video'
-RETURNING *;
-
--- name: RequeueTaskSubtitleBranch :one
-UPDATE episode_tasks
-SET state = 'processing',
-    subtitle_state = 'subtitle_queued',
-    failure_stage = NULL,
-    error_code = NULL,
-    error_message = NULL,
-    version = version + 1,
-    updated_at = now()
-WHERE id = sqlc.arg(id)
-  AND state = 'failed'
-  AND subtitle_state = 'failed'
-  AND failure_stage = 'subtitle'
-RETURNING *;
 
 -- name: RequeueTaskFinalizeBranch :one
 UPDATE episode_tasks

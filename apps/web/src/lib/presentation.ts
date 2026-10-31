@@ -165,11 +165,6 @@ export const cleanupStages: Record<string, { label: string; tone: StageTone }> =
   cancelled: { label: '已取消清理', tone: 'neutral' },
 };
 
-export function cleanupStageLabel(status?: string | null): string {
-  if (!status) return '未清理';
-  return cleanupStages[status]?.label ?? '状态已更新';
-}
-
 /** User-facing task stages for the acquisitions pipeline. */
 export const acquisitionStages: Record<string, { label: string; tone: StageTone }> = {
   pending: { label: '等待下载', tone: 'info' },

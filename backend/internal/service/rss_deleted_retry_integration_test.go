@@ -33,7 +33,7 @@ func TestRSSDeletedAcquisitionCanOnlyBeRestartedByAnExplicitRetryIntegration(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	reads := NewReadService(fixture.queries)
+	reads := NewReadService(fixture.queries, database.NewTransactor(fixture.pool))
 	readEntry := func() domain.RSSEntryView {
 		t.Helper()
 		page, err := reads.ListRSSEntries(fixture.ctx, fixture.subscriptionID, nil, 10, nil, nil, nil, nil, nil, nil)

@@ -550,7 +550,7 @@ describe('AcquisitionsPage task retry actions', () => {
         getCount++;
         return HttpResponse.json(fullTask);
       }),
-      http.post(`*/api/v1/tasks/${taskId}/retry`, async ({ request }) => {
+      http.post(`*/api/v1/tasks/${taskId}/retry`, () => {
         postCount++;
         return HttpResponse.json({ task: { ...fullTask, version: 8 }, operationId: 'ffffffff-ffff-ffff-ffff-ffffffffffff', status: 'queued' }, { status: 202 });
       }),

@@ -89,7 +89,7 @@ func run(arguments []string, input io.Reader, output io.Writer) error {
 	}
 
 	transactor := database.NewTransactor(pool)
-	service.RegisterRSSSubscriptionProgressCommitHook(transactor)
+	service.RegisterProgressCommitHook(transactor)
 	result, err := maintenance.NewRSSHistoryRestorer(transactor).Restore(ctx, request)
 	if err != nil {
 		return err

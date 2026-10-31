@@ -1,0 +1,53 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - depguard
+  settings:
+    depguard:
+      rules:
+        domain:
+          list-mode: lax
+          files:
+            - "**/internal/domain/*.go"
+            - "!$test"
+          allow:
+            - github.com/onprs/emby-auto/backend/internal/domain
+          deny:
+            - pkg: github.com/onprs/emby-auto/backend/
+              desc: 领域模型不能依赖数据库、服务或基础设施实现。
+        infrastructure:
+          list-mode: lax
+          files:
+            - "**/internal/platform/**/*.go"
+            - "**/internal/repository/*.go"
+            - "!$test"
+          deny:
+            - pkg: github.com/onprs/emby-auto/backend/internal/service
+              desc: 基础设施不能反向依赖业务服务。
+            - pkg: github.com/onprs/emby-auto/backend/internal/transport
+              desc: 基础设施不能反向依赖接口层。
+            - pkg: github.com/onprs/emby-auto/backend/internal/worker
+              desc: 基础设施不能反向依赖任务执行层。
+        service:
+          list-mode: lax
+          files:
+            - "**/internal/service/*.go"
+            - "!$test"
+          deny:
+            - pkg: github.com/onprs/emby-auto/backend/internal/transport
+              desc: 业务服务不能依赖接口层。
+            - pkg: github.com/onprs/emby-auto/backend/internal/worker
+              desc: 业务服务不能依赖任务执行层。
+        transport:
+          list-mode: lax
+          files:
+            - "**/internal/transport/**/*.go"
+            - "!$test"
+          allow:
+            - github.com/onprs/emby-auto/backend/internal/domain
+            - github.com/onprs/emby-auto/backend/internal/service
+          deny:
+            - pkg: github.com/onprs/emby-auto/backend/
+              desc: 接口层通过领域模型和业务服务访问应用能力。
