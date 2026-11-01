@@ -15,7 +15,7 @@ import { DataTable, PageBody, PageHeader, PaginationControls } from '@/component
 import { RecordActions, type RecordAction } from '@/components/record-actions';
 import { CleanupStageBadge, StatusBadge } from '@/components/status-badge';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/feedback';
-import { FilterChip } from '@/components/ui/filter-chip';
+import { FilterChip, FilterChipGroup } from '@/components/ui/filter-chip';
 import { formatDateTime } from '@/lib/format';
 import { useCursorPagination } from '@/lib/pagination';
 
@@ -185,7 +185,7 @@ export function TasksPage() {
     <PageBody>
       <PageHeader title="视频任务" description="按每集视频查看转码、字幕和入库进度" />
 
-      <div className="mb-4 flex flex-wrap gap-2" role="group" aria-label="状态筛选">
+      <FilterChipGroup label="状态筛选" activeKey={state || 'all'}>
         {stateFilters.map((filter) => (
           <FilterChip
             key={filter.label}
@@ -200,7 +200,7 @@ export function TasksPage() {
             label={filter.label}
           />
         ))}
-      </div>
+      </FilterChipGroup>
 
       {selectedTasks.length > 0 ? (
         <TaskBatchBar

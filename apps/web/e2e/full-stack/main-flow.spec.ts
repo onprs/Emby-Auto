@@ -75,7 +75,7 @@ async function configure(page: Page) {
   }
 
   for (const title of ['qBittorrent', 'Emby', 'TMDb']) {
-    const card = page.getByRole('heading', { name: title, exact: true }).locator('xpath=../..');
+    const card = page.getByRole('region', { name: title, exact: true });
     await card.getByRole('button', { name: '测试连接' }).click();
     await expect(card.getByText('连接成功', { exact: false })).toBeVisible();
   }
@@ -94,7 +94,7 @@ async function configure(page: Page) {
     await page.getByRole('button', { name: '保存存储配置' }).click();
     await expect(page.getByText('配置已保存', { exact: false })).toBeVisible();
   }
-  const mediaTools = page.getByRole('heading', { name: '媒体工具', exact: true }).locator('xpath=../..');
+  const mediaTools = page.getByRole('region', { name: '媒体工具', exact: true });
   await mediaTools.getByRole('button', { name: '测试连接' }).click();
   await expect(mediaTools.getByText('连接成功', { exact: false })).toBeVisible();
 }

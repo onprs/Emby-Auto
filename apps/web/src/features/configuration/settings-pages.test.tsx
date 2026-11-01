@@ -363,11 +363,7 @@ describe("SettingsServicesPage", () => {
     await waitFor(() =>
       expect(screen.getByLabelText("密码")).toHaveValue("qb-real-password"),
     );
-    const heading = screen.getByRole("heading", { name: "qBittorrent" });
-    const card = heading.parentElement?.parentElement;
-    if (!card) {
-      throw new Error("qBittorrent card was not rendered");
-    }
+    const card = screen.getByRole("region", { name: "qBittorrent" });
     await userEvent.click(
       within(card).getByRole("button", { name: "测试连接" }),
     );
@@ -439,11 +435,7 @@ describe("SettingsServicesPage", () => {
     );
 
     renderWithProviders(<SettingsServicesPage />);
-    const heading = await screen.findByRole("heading", { name: "网络代理" });
-    const card = heading.parentElement?.parentElement;
-    if (!card) {
-      throw new Error("network proxy card was not rendered");
-    }
+    const card = await screen.findByRole("region", { name: "网络代理" });
     const proxy = within(card);
     const testConnection = proxy.getByRole("button", { name: "测试连接" });
     expect(testConnection).toBeDisabled();

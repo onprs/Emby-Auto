@@ -20,11 +20,6 @@ describe('application navigation manifest', () => {
       ['operations', '操作日志', '/operations'],
       ['settings', '系统设置', '/settings'],
     ]);
-    expect(appNavigation.find((item) => item.id === 'tasks')?.children).toEqual([
-      { label: '视频任务', to: '/tasks' }, { label: '获取记录', to: '/acquisitions' }, { label: '下载', to: '/downloads' },
-    ]);
-    expect(appNavigation.find((item) => item.id === 'operations')?.children).toBeUndefined();
-    expect(appNavigation.find((item) => item.id === 'settings')?.children).toBeUndefined();
   });
 
   it.each([

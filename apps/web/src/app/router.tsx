@@ -21,6 +21,7 @@ import { EventStream } from '@/app/sse';
 import { registerSessionLossHandler, reportSessionLoss } from '@/app/session-runtime';
 import { Button } from '@/components/ui/button';
 import { SettingsLayout } from '@/features/configuration/settings-shell';
+import { TasksLayout } from '@/features/tasks/tasks-layout';
 
 const AcquisitionsPage = lazyRouteComponent(
   () => import('@/features/acquisitions/acquisitions-page'),
@@ -207,8 +208,13 @@ const searchDetailRoute = createRoute({
     return <SearchDetailPage searchId={searchId} />;
   },
 });
-const acquisitionsRoute = createRoute({
+const tasksLayoutRoute = createRoute({
   getParentRoute: () => appRoute,
+  id: 'tasks-layout',
+  component: TasksLayout,
+});
+const acquisitionsRoute = createRoute({
+  getParentRoute: () => tasksLayoutRoute,
   path: '/acquisitions',
   validateSearch: (search: Record<string, unknown>): AcquisitionListSearch => ({
     ...cursorSearch(search),
@@ -220,7 +226,7 @@ const acquisitionsRoute = createRoute({
   component: AcquisitionsPage,
 });
 const acquisitionDetailRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => tasksLayoutRoute,
   path: '/acquisitions/$acquisitionId',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: function AcquisitionDetailRoute() {
@@ -229,7 +235,7 @@ const acquisitionDetailRoute = createRoute({
   },
 });
 const acquisitionMappingRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => tasksLayoutRoute,
   path: '/acquisitions/$acquisitionId/mapping',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: function AcquisitionMappingRoute() {
@@ -238,7 +244,7 @@ const acquisitionMappingRoute = createRoute({
   },
 });
 const downloadsRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => tasksLayoutRoute,
   path: '/downloads',
   validateSearch: (search: Record<string, unknown>): DownloadListRouteSearch => ({
     ...cursorSearch(search),
@@ -251,7 +257,7 @@ const downloadsRoute = createRoute({
   component: DownloadsPage,
 });
 const downloadDetailRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => tasksLayoutRoute,
   path: '/downloads/$downloadId',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: function DownloadDetailRoute() {
@@ -287,7 +293,7 @@ const rssDetailRoute = createRoute({
   },
 });
 const tasksRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => tasksLayoutRoute,
   path: '/tasks',
   validateSearch: (search: Record<string, unknown>): TaskListRouteSearch => ({
     ...cursorSearch(search),
@@ -297,7 +303,7 @@ const tasksRoute = createRoute({
   component: TasksPage,
 });
 const taskDetailRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => tasksLayoutRoute,
   path: '/tasks/$taskId',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: function TaskDetailRoute() {
@@ -406,15 +412,17 @@ const routeTree = rootRoute.addChildren([
     indexRoute,
     searchesRoute,
     searchDetailRoute,
-    acquisitionsRoute,
-    acquisitionDetailRoute,
-    acquisitionMappingRoute,
-    downloadsRoute,
-    downloadDetailRoute,
+    tasksLayoutRoute.addChildren([
+      tasksRoute,
+      taskDetailRoute,
+      acquisitionsRoute,
+      acquisitionDetailRoute,
+      acquisitionMappingRoute,
+      downloadsRoute,
+      downloadDetailRoute,
+    ]),
     rssRoute,
     rssDetailRoute,
-    tasksRoute,
-    taskDetailRoute,
     embyRoute,
     embyScanDetailRoute,
     embyLibraryDetailRoute,

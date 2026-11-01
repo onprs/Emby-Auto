@@ -19,7 +19,6 @@ export interface AppNavigationItem {
   shortLabel: string;
   to: string;
   icon: LucideIcon;
-  children?: Array<{ label: string; to: string }>;
   visible: (session: Session) => boolean;
 }
 
@@ -30,9 +29,7 @@ export const appNavigation: AppNavigationItem[] = [
   { id: 'dashboard', label: '仪表盘', shortLabel: '仪表盘', to: '/', icon: LayoutDashboard, visible: authenticated },
   { id: 'searches', label: '搜索添加', shortLabel: '搜索', to: '/searches', icon: Search, visible: authenticated },
   { id: 'rss', label: 'RSS 订阅', shortLabel: 'RSS', to: '/rss', icon: Rss, visible: authenticated },
-  { id: 'tasks', label: '任务', shortLabel: '任务', to: '/tasks', icon: ListChecks, visible: authenticated,
-    children: [{ label: '视频任务', to: '/tasks' }, { label: '获取记录', to: '/acquisitions' }, { label: '下载', to: '/downloads' }],
-  },
+  { id: 'tasks', label: '任务', shortLabel: '任务', to: '/tasks', icon: ListChecks, visible: authenticated },
   { id: 'emby', label: '媒体库', shortLabel: '媒体库', to: '/emby', icon: Film, visible: authenticated },
   { id: 'operations', label: '操作日志', shortLabel: '操作', to: '/operations', icon: ScrollText, visible: authenticated },
   { id: 'settings', label: '系统设置', shortLabel: '设置', to: '/settings', icon: Settings, visible: authenticated },

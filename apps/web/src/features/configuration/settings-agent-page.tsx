@@ -4,10 +4,9 @@ import { useEffect, useState } from 'react';
 import type { AgentConfiguration, DashboardDependencyStatus, SecretUpdate } from '@/api/generated/types.gen';
 import { DetailErrorState, DetailLoadingState, PageBody, PageHeader } from '@/components/resource';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { revealSecrets } from '@/features/configuration/api';
-import { ConfiguredBadge, ConnectivityButton, Field, SecretField, SettingsFeedback } from '@/features/configuration/settings-shared';
+import { ConfiguredBadge, ConnectivityButton, Field, SecretField, SettingsCanvas, SettingsFeedback, SettingsSection } from '@/features/configuration/settings-shared';
 import { secretPayload, useConfigurationSave, useSettingsData } from '@/features/configuration/use-settings';
 import { cn } from '@/lib/utils';
 
@@ -95,22 +94,20 @@ function AgentForm({
       <PageHeader title="Agent" description="确定性规则优先，Agent 仅处理无法唯一判断的异常情况" />
       <SettingsFeedback conflict={conflict} error={error} savedAt={savedAt} />
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(22rem,0.9fr)]">
-        <Card>
-          <CardHeader
-            fill
-            action={
-              <ConfiguredBadge
-                configured={configuration.agent.apiKey.configured}
-                configuredLabel="API key 已配置"
-                missingLabel="API key 未配置"
-              />
-            }
-          >
-            <CardTitle className="flex items-center gap-2"><Bot className="size-4" aria-hidden="true" />连接</CardTitle>
-            <CardDescription>OpenAI-compatible Chat Completions</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-5">
+      <SettingsCanvas>
+        <SettingsSection
+          title="连接"
+          description="OpenAI-compatible Chat Completions"
+          icon={<Bot className="size-4 text-zinc-400" aria-hidden="true" />}
+          action={
+            <ConfiguredBadge
+              configured={configuration.agent.apiKey.configured}
+              configuredLabel="API key 已配置"
+              missingLabel="API key 未配置"
+            />
+          }
+        >
+          <div className="space-y-5">
             <ToggleRow
               id="agent-enabled"
               label="启用 Agent 辅助"
@@ -183,15 +180,14 @@ function AgentForm({
               }}
               disabled={!connectivityReady}
             />
-          </CardContent>
-        </Card>
+          </div>
+        </SettingsSection>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>辅助能力</CardTitle>
-            <CardDescription>开关仅允许兜底介入，不会跳过确定性规则</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-5">
+        <SettingsSection
+          title="辅助能力"
+          description="开关仅允许兜底介入，不会跳过确定性规则"
+        >
+          <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2 xl:grid-cols-3">
             <ToggleRow
               id="agent-rss-filtering"
               label="RSS 发布筛选"
@@ -227,9 +223,9 @@ function AgentForm({
               disabled={!settings.enabled}
               onChange={setSubtitleVideoMatch}
             />
-          </CardContent>
-        </Card>
-      </div>
+          </div>
+        </SettingsSection>
+      </SettingsCanvas>
 
       <div className="sticky bottom-0 z-20 mt-8 flex justify-end border-t border-zinc-200 bg-surface/95 py-4 backdrop-blur-sm">
         <Button

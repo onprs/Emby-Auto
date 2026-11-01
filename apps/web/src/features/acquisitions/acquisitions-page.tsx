@@ -17,7 +17,7 @@ import { SortableColumnHeader } from '@/components/sortable-column-header';
 import { RecordActions, type RecordAction } from '@/components/record-actions';
 import { AcquisitionStageBadge } from '@/components/status-badge';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/feedback';
-import { FilterChip } from '@/components/ui/filter-chip';
+import { FilterChip, FilterChipGroup } from '@/components/ui/filter-chip';
 import { formatDateTime } from '@/lib/format';
 import { acquisitionStageFilters, episodeLabel, sourceKindLabel } from '@/lib/presentation';
 import { useCursorPagination } from '@/lib/pagination';
@@ -178,8 +178,7 @@ export function AcquisitionsPage() {
         actions={phase === 'mapping_pending' ? <Link to="/acquisitions" search={{}} className="text-sm font-medium text-emerald-700 hover:underline">返回全部</Link> : undefined}
       />
 
-      <div className="mb-4">
-        <div className="flex flex-wrap gap-2" role="group" aria-label="阶段筛选">
+      <FilterChipGroup label="阶段筛选" activeKey={phase || 'all'}>
         {acquisitionStageFilters.map((filter) => (
           <FilterChip
             key={filter.label}
@@ -194,8 +193,7 @@ export function AcquisitionsPage() {
             label={filter.label}
           />
         ))}
-        </div>
-      </div>
+      </FilterChipGroup>
 
       <DeletionFeedback items={deletions} onDismiss={() => setDeletions([])} onSettled={refresh} />
       {selectedItems.length > 0 ? (
