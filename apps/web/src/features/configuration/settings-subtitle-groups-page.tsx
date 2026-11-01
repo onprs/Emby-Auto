@@ -3,11 +3,11 @@ import { Check, LoaderCircle, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useRef, useState, type FormEvent } from 'react';
 
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ErrorState } from '@/components/ui/feedback';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { DetailErrorState, DetailLoadingState, PageBody, PageHeader } from '@/components/resource';
+import { SettingsCanvas, SettingsSection } from '@/features/configuration/settings-shared';
 import {
   createSubtitleGroup,
   deleteSubtitleGroup,
@@ -54,10 +54,10 @@ export function SettingsSubtitleGroupsPage() {
   });
 
   if (groups.isPending) {
-    return <DetailLoadingState title="字幕组列表" label="正在读取字幕组" />;
+    return <DetailLoadingState title="字幕组" label="正在读取字幕组" />;
   }
   if (groups.error || !groups.data) {
-    return <DetailErrorState title="字幕组列表" message={groups.error?.message ?? '无法读取字幕组列表'} onRetry={() => groups.refetch()} />;
+    return <DetailErrorState title="字幕组" message={groups.error?.message ?? '无法读取字幕组列表'} onRetry={() => groups.refetch()} />;
   }
 
   const submit = (event: FormEvent) => {
@@ -69,13 +69,13 @@ export function SettingsSubtitleGroupsPage() {
 
   return (
     <PageBody>
-      <PageHeader title="字幕组列表" description="RSS 订阅名称识别" />
-      <Card>
-        <CardHeader>
-          <CardTitle>已维护的字幕组</CardTitle>
-          <CardDescription>添加、修改或删除用于 RSS 识别的名称</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-5">
+      <PageHeader title="字幕组" description="RSS 订阅名称识别" />
+      <SettingsCanvas>
+        <SettingsSection
+          title="已维护的字幕组"
+          description="添加、修改或删除用于 RSS 识别的名称"
+        >
+          <div className="space-y-5">
           <form className="flex flex-col gap-2 sm:flex-row sm:items-end" onSubmit={submit}>
             <div className="min-w-0 flex-1 space-y-2">
               <Label htmlFor="rss-subtitle-group-name">字幕组名称</Label>
@@ -153,8 +153,9 @@ export function SettingsSubtitleGroupsPage() {
           ) : (
             <p className="border border-dashed border-zinc-300 px-4 py-8 text-center text-sm text-zinc-500">暂未维护字幕组</p>
           )}
-        </CardContent>
-      </Card>
+          </div>
+        </SettingsSection>
+      </SettingsCanvas>
     </PageBody>
   );
 }

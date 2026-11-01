@@ -8,7 +8,7 @@ import { fetchOperations } from '@/features/operations/api';
 import { DataTable, PageBody, PageHeader, PaginationControls } from '@/components/resource';
 import { StatusBadge } from '@/components/status-badge';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/feedback';
-import { FilterChip } from '@/components/ui/filter-chip';
+import { FilterChip, FilterChipGroup } from '@/components/ui/filter-chip';
 import { formatDateTime, formatDuration } from '@/lib/format';
 import { friendlyError, operationLabel, resourceTypeLabel } from '@/lib/presentation';
 import { useCursorPagination } from '@/lib/pagination';
@@ -39,7 +39,7 @@ export function OperationsPage() {
     <PageBody>
       <PageHeader title="操作日志" description="最近的处理步骤与执行结果" />
 
-      <div className="mb-4 flex flex-wrap gap-2" role="group" aria-label="状态筛选">
+      <FilterChipGroup label="状态筛选" activeKey={status || 'all'}>
         {statusFilters.map((filter) => (
           <FilterChip
             key={filter.label}
@@ -49,7 +49,7 @@ export function OperationsPage() {
             label={filter.label}
           />
         ))}
-      </div>
+      </FilterChipGroup>
 
       {operations.isPending ? (
         <LoadingState label="正在读取操作日志" />

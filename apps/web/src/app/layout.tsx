@@ -1,14 +1,13 @@
 import { useMutation } from '@tanstack/react-query';
 import { Link, Outlet, useLocation } from '@tanstack/react-router';
 import {
-  Activity,
   LogOut,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
   X,
 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { endSession } from '@/api/app-client';
 import type { Session } from '@/api/generated/types.gen';
@@ -117,11 +116,12 @@ export function AppLayout({ session, events }: { session: Session; events: Event
         )}
         aria-label="桌面主导航"
       >
-        <div className={cn('flex h-16 shrink-0 items-center gap-2.5 border-b border-white/10', sidebarCollapsed ? 'justify-center px-2' : 'px-5')}>
-          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-emerald-500/15 ring-1 ring-emerald-400/30">
-            <Activity className="size-4 text-emerald-400" aria-hidden="true" />
-          </span>
-          {!sidebarCollapsed ? <span className="animate-fade-in truncate font-semibold tracking-tight">Emby Auto</span> : null}
+        <div className={cn('flex h-16 shrink-0 items-center border-b border-white/10', sidebarCollapsed ? 'justify-center px-2' : 'px-5')}>
+          {sidebarCollapsed ? (
+            <img src="/brand/mark.svg" alt="Emby Auto" className="size-9" />
+          ) : (
+            <img src="/brand/wordmark.svg" alt="Emby Auto" className="h-11 w-auto animate-fade-in" />
+          )}
         </div>
         <NavigationList items={visibleNavigation} activeModule={activeModule} collapsed={sidebarCollapsed} />
         <div className="shrink-0 border-t border-white/10 p-3">
@@ -151,12 +151,7 @@ export function AppLayout({ session, events }: { session: Session; events: Event
           />
           <aside ref={mobileDrawerRef} className="relative flex h-full w-[min(84vw,300px)] animate-slide-in-right flex-col bg-zinc-950 text-zinc-100 shadow-2xl" role="dialog" aria-modal="true" aria-label="主导航抽屉">
             <div className="flex h-16 shrink-0 items-center justify-between border-b border-white/10 px-4">
-              <div className="flex items-center gap-2.5">
-                <span className="grid size-8 place-items-center rounded-lg bg-emerald-500/15 ring-1 ring-emerald-400/30">
-                  <Activity className="size-4 text-emerald-400" aria-hidden="true" />
-                </span>
-                <span className="font-semibold tracking-tight">Emby Auto</span>
-              </div>
+              <img src="/brand/wordmark.svg" alt="Emby Auto" className="h-10 w-auto" />
               <Button ref={closeButtonRef} type="button" variant="ghost" size="icon" className="text-zinc-300 hover:bg-white/10 hover:text-white" aria-label="关闭主导航" title="关闭" onClick={() => setMobileOpen(false)}>
                 <X />
               </Button>
@@ -222,51 +217,97 @@ function NavigationList({
   collapsed: boolean;
   onNavigate?: () => void;
 }) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const [highlight, setHighlight] = useState<{ top: number; height: number } | null>(null);
+  const [animated, setAnimated] = useState(false);
+
+  const measure = useCallback(() => {
+    const container = listRef.current;
+    const active = container?.querySelector<HTMLElement>('[data-sliding-active="true"]');
+    if (!container || !active) {
+      setHighlight((current) => (current === null ? current : null));
+      return;
+    }
+    const containerRect = container.getBoundingClientRect();
+    const activeRect = active.getBoundingClientRect();
+    const next = { top: activeRect.top - containerRect.top, height: activeRect.height };
+    setHighlight((current) => (
+      current &&
+      Math.abs(current.top - next.top) < 0.5 &&
+      Math.abs(current.height - next.height) < 0.5
+        ? current
+        : next
+    ));
+  }, []);
+
+  useLayoutEffect(() => {
+    measure();
+  });
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setAnimated(true));
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => {
+    const container = listRef.current;
+    if (!container) return undefined;
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(container);
+    container.querySelectorAll<HTMLElement>('[data-sliding-item]').forEach((item) => observer?.observe(item));
+    window.addEventListener('resize', measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [measure]);
+
   return (
     <nav className="scrollbar-thin min-h-0 flex-1 overflow-y-auto px-3 py-3" aria-label="主导航">
-      <ul className="space-y-1">
-        {items.map((item) => {
-          const active = item.id === activeModule;
-          const Icon = item.icon;
-          return (
-            <li key={item.id}>
-              <Link
-                to={item.to}
-                aria-label={collapsed ? item.label : undefined}
-                aria-current={active ? 'page' : undefined}
-                title={collapsed ? item.label : undefined}
-                onClick={onNavigate}
-                className={cn(
-                  'group relative flex h-10 min-w-0 items-center rounded-lg text-sm transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500',
-                  collapsed ? 'justify-center px-2' : 'gap-3 px-3',
-                  active ? 'bg-white/10 font-medium text-white shadow-sm' : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-100 hover:pl-[0.9rem]',
-                )}
-              >
-                {active ? <span className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgb(52_211_153/0.6)]" aria-hidden="true" /> : null}
-                <Icon className={cn('size-4 shrink-0 transition-transform duration-150', !active && 'group-hover:scale-110')} aria-hidden="true" />
-                {!collapsed ? <span className="truncate">{item.label}</span> : null}
-              </Link>
-              {active && item.children && !collapsed ? (
-                <ul className="ml-7 mt-1 animate-fade-in space-y-1 border-l border-white/10 pl-3">
-                  {item.children.map((child) => (
-                    <li key={child.to}>
-                      <Link
-                        to={child.to}
-                        onClick={onNavigate}
-                        activeOptions={{ exact: child.to === item.to, includeSearch: false }}
-                        className="block truncate rounded px-2 py-1.5 text-xs text-zinc-400 transition-colors hover:bg-white/5 hover:text-white"
-                        activeProps={{ className: 'bg-white/10 font-medium text-white' }}
-                      >
-                        {child.label}
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </li>
-          );
-        })}
-      </ul>
+      <div ref={listRef} className="relative">
+        <span
+          aria-hidden="true"
+          data-sidebar-indicator
+          className="pointer-events-none absolute inset-x-0 z-0 rounded-lg bg-white/10 shadow-sm"
+          style={{
+            height: highlight?.height ?? 0,
+            opacity: highlight ? 1 : 0,
+            transform: highlight ? `translate3d(0, ${highlight.top}px, 0)` : 'translate3d(0, 0, 0)',
+            transition: animated
+              ? 'transform 280ms cubic-bezier(0.22, 1, 0.36, 1), height 280ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease'
+              : 'none',
+          }}
+        >
+          <span className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgb(52_211_153/0.6)]" />
+        </span>
+        <ul className="relative z-10 space-y-1">
+          {items.map((item) => {
+            const active = item.id === activeModule;
+            const Icon = item.icon;
+            return (
+              <li key={item.id}>
+                <Link
+                  to={item.to}
+                  data-sliding-item
+                  data-sliding-active={active ? 'true' : undefined}
+                  aria-label={collapsed ? item.label : undefined}
+                  aria-current={active ? 'page' : undefined}
+                  title={collapsed ? item.label : undefined}
+                  onClick={onNavigate}
+                  className={cn(
+                    'group relative flex h-10 min-w-0 items-center rounded-lg text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500',
+                    collapsed ? 'justify-center px-2' : 'gap-3 px-3',
+                    active ? 'font-medium text-white' : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-100',
+                  )}
+                >
+                  <Icon className={cn('size-4 shrink-0 transition-transform duration-150', !active && 'group-hover:scale-110')} aria-hidden="true" />
+                  {!collapsed ? <span className="truncate">{item.label}</span> : null}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
     </nav>
   );
 }

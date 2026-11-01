@@ -8,7 +8,7 @@ import { fetchLibraryItems } from '@/features/emby/api';
 import { DataTable, PageBody, PageHeader, PaginationControls } from '@/components/resource';
 import { StatusBadge } from '@/components/status-badge';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/feedback';
-import { FilterChip } from '@/components/ui/filter-chip';
+import { FilterChip, FilterChipGroup } from '@/components/ui/filter-chip';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { formatDateTime } from '@/lib/format';
@@ -78,31 +78,35 @@ export function EmbyLibraryDetailPage({ libraryId }: { libraryId: string }) {
         <Input aria-label="Provider ID 筛选" value={providerId} onChange={(event) => setProviderId(event.target.value)} placeholder="TMDb / TVDb / IMDb ID" />
         <Button type="submit" variant="outline">筛选</Button>
       </form>
-      <div className="mb-4 flex flex-wrap gap-2" role="group" aria-label="类型与存在状态筛选">
-        {typeFilters.map((filter) => (
+      <div className="mb-4 space-y-2">
+        <FilterChipGroup label="类型筛选" activeKey={search.itemType ?? 'all'} className="mb-0">
+          {typeFilters.map((filter) => (
+            <FilterChip
+              key={filter.label}
+              to="/emby/libraries/$libraryId"
+              params={{ libraryId }}
+              search={{ ...search, itemType: filter.value || undefined, cursor: undefined, cursorStack: undefined }}
+              active={search.itemType === (filter.value || undefined)}
+              label={filter.label}
+            />
+          ))}
+        </FilterChipGroup>
+        <FilterChipGroup label="存在状态筛选" activeKey={search.present ?? 'all'} className="mb-0">
           <FilterChip
-            key={filter.label}
             to="/emby/libraries/$libraryId"
             params={{ libraryId }}
-            search={{ ...search, itemType: filter.value || undefined, cursor: undefined, cursorStack: undefined }}
-            active={search.itemType === (filter.value || undefined)}
-            label={filter.label}
+            search={{ ...search, present: search.present === 'true' ? undefined : 'true', cursor: undefined, cursorStack: undefined }}
+            active={search.present === 'true'}
+            label="当前存在"
           />
-        ))}
-        <FilterChip
-          to="/emby/libraries/$libraryId"
-          params={{ libraryId }}
-          search={{ ...search, present: search.present === 'true' ? undefined : 'true', cursor: undefined, cursorStack: undefined }}
-          active={search.present === 'true'}
-          label="当前存在"
-        />
-        <FilterChip
-          to="/emby/libraries/$libraryId"
-          params={{ libraryId }}
-          search={{ ...search, present: search.present === 'false' ? undefined : 'false', cursor: undefined, cursorStack: undefined }}
-          active={search.present === 'false'}
-          label="已移除"
-        />
+          <FilterChip
+            to="/emby/libraries/$libraryId"
+            params={{ libraryId }}
+            search={{ ...search, present: search.present === 'false' ? undefined : 'false', cursor: undefined, cursorStack: undefined }}
+            active={search.present === 'false'}
+            label="已移除"
+          />
+        </FilterChipGroup>
       </div>
 
       {items.isPending ? (

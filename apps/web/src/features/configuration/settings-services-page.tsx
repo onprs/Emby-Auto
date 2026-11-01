@@ -9,20 +9,15 @@ import {
   PageHeader,
 } from "@/components/resource";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   ConfiguredBadge,
   ConnectivityButton,
   Field,
   SecretField,
+  SettingsCanvas,
   SettingsFeedback,
+  SettingsSection,
 } from "@/features/configuration/settings-shared";
 import { fetchEventStats, revealSecrets } from "@/features/configuration/api";
 import {
@@ -178,24 +173,19 @@ function ServicesForm({
       />
       <SettingsFeedback conflict={conflict} error={error} savedAt={savedAt} />
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Card className="flex flex-col">
-          <CardHeader
-            fill
-            action={
-              <ConfiguredBadge
-                configured={configuration.qBittorrent.password.configured}
-                configuredLabel="密码已配置"
-                missingLabel="密码未配置"
-              />
-            }
-          >
-            <CardTitle>qBittorrent</CardTitle>
-            <CardDescription>
-              Bt 下载客户端，负责 RSS 与搜索资源的下载
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-1 flex-col space-y-4">
+      <SettingsCanvas>
+        <SettingsSection
+          title="qBittorrent"
+          description="Bt 下载客户端，负责 RSS 与搜索资源的下载"
+          action={
+            <ConfiguredBadge
+              configured={configuration.qBittorrent.password.configured}
+              configuredLabel="密码已配置"
+              missingLabel="密码未配置"
+            />
+          }
+        >
+          <div className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="URL" htmlFor="qb-url">
                 <Input
@@ -275,38 +265,35 @@ function ServicesForm({
                 },
               }}
             />
-          </CardContent>
-        </Card>
+          </div>
+        </SettingsSection>
 
-        <Card className="flex flex-col">
-          <CardHeader
-            fill
-            action={
-              <ConfiguredBadge
-                configured={configuration.emby.apiKey.configured}
-                configuredLabel="API key 已配置"
-                missingLabel="API key 未配置"
-              />
-            }
-          >
-            <CardTitle>Emby</CardTitle>
-            <CardDescription>
-              媒体服务器，入库完成后自动刷新媒体库
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-1 flex-col space-y-4">
-            <Field label="URL" htmlFor="emby-url">
-              <Input
-                id="emby-url"
-                value={embyUrl}
-                onChange={(event) => setEmbyUrl(event.target.value)}
-              />
-            </Field>
-            <SecretField
-              label="API key"
-              value={embyKey}
-              onChange={setEmbyKey}
+        <SettingsSection
+          title="Emby"
+          description="媒体服务器，入库完成后自动刷新媒体库"
+          action={
+            <ConfiguredBadge
+              configured={configuration.emby.apiKey.configured}
+              configuredLabel="API key 已配置"
+              missingLabel="API key 未配置"
             />
+          }
+        >
+          <div className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="URL" htmlFor="emby-url">
+                <Input
+                  id="emby-url"
+                  value={embyUrl}
+                  onChange={(event) => setEmbyUrl(event.target.value)}
+                />
+              </Field>
+              <SecretField
+                label="API key"
+                value={embyKey}
+                onChange={setEmbyKey}
+              />
+            </div>
             <ConnectivityButton
               target="emby"
               previous={dependencies?.emby}
@@ -314,26 +301,21 @@ function ServicesForm({
                 emby: { url: embyUrl, apiKey: embyKeyPayload() },
               }}
             />
-          </CardContent>
-        </Card>
+          </div>
+        </SettingsSection>
 
-        <Card className="flex flex-col">
-          <CardHeader
-            fill
-            action={
-              <ConfiguredBadge
-                configured={configuration.tmdb.apiToken.configured}
-                configuredLabel="Token 已配置"
-                missingLabel="Token 未配置"
-              />
-            }
-          >
-            <CardTitle>TMDb</CardTitle>
-            <CardDescription>
-              元数据来源，用于搜索作品与剧集映射
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-1 flex-col space-y-4">
+        <SettingsSection
+          title="TMDb"
+          description="元数据来源，用于搜索作品与剧集映射"
+          action={
+            <ConfiguredBadge
+              configured={configuration.tmdb.apiToken.configured}
+              configuredLabel="Token 已配置"
+              missingLabel="Token 未配置"
+            />
+          }
+        >
+          <div className="space-y-4">
             <SecretField
               label="API Read Access Token"
               value={tmdbToken}
@@ -344,32 +326,21 @@ function ServicesForm({
               previous={dependencies?.tmdb}
               payload={{ tmdb: { apiToken: tmdbTokenPayload() } }}
             />
-          </CardContent>
-        </Card>
+          </div>
+        </SettingsSection>
 
-        <Card className="flex flex-col">
-          <CardHeader
-            fill
-            action={
-              networkProxy.enabled ? (
-                <ConfiguredBadge
-                  configured
-                  configuredLabel="已启用"
-                  missingLabel="未启用"
-                />
-              ) : (
-                <ConfiguredBadge
-                  configured={false}
-                  configuredLabel="已启用"
-                  missingLabel="未启用"
-                />
-              )
-            }
-          >
-            <CardTitle>网络代理</CardTitle>
-            <CardDescription>访问外部服务时使用的 HTTP 代理</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-1 flex-col space-y-4">
+        <SettingsSection
+          title="网络代理"
+          description="访问外部服务时使用的 HTTP 代理"
+          action={
+            <ConfiguredBadge
+              configured={networkProxy.enabled}
+              configuredLabel="已启用"
+              missingLabel="未启用"
+            />
+          }
+        >
+          <div className="space-y-4">
             <label
               className="flex items-center gap-3 text-sm font-medium"
               htmlFor="network-proxy-enabled"
@@ -406,17 +377,14 @@ function ServicesForm({
               payload={{ networkProxy }}
               disabled={!networkProxy.enabled || networkProxy.url.trim() === ""}
             />
-          </CardContent>
-        </Card>
+          </div>
+        </SettingsSection>
 
-        <Card className="flex flex-col">
-          <CardHeader fill>
-            <CardTitle>事件历史</CardTitle>
-            <CardDescription>
-              系统事件记录保留策略，由后台定期任务清理过期事件
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-1 flex-col space-y-4">
+        <SettingsSection
+          title="事件历史"
+          description="系统事件记录保留策略，由后台定期任务清理过期事件"
+        >
+          <div className="space-y-4">
             <Field label="保留天数" htmlFor="events-retention-days">
               <Input
                 id="events-retention-days"
@@ -450,9 +418,9 @@ function ServicesForm({
               超过保留天数且可由业务状态恢复的系统事件会被定期删除，业务导入历史由独立记录保留，未知事件类型始终保留；
               设置为 0 时保留全部事件历史。
             </p>
-          </CardContent>
-        </Card>
-      </div>
+          </div>
+        </SettingsSection>
+      </SettingsCanvas>
 
       <div className="sticky bottom-0 z-20 mt-8 flex items-center justify-between gap-3 border-t border-zinc-200 bg-surface/95 py-4 backdrop-blur-sm">
         <p className="hidden text-xs text-zinc-500 sm:block">

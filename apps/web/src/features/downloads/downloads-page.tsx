@@ -13,6 +13,7 @@ import { StatusBadge } from '@/components/status-badge';
 import { Button } from '@/components/ui/button';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/feedback';
 import { Input } from '@/components/ui/input';
+import { SlidingSelection } from '@/components/ui/sliding-selection';
 import { deleteAcquisitionCommand } from '@/features/acquisitions/api';
 import { DeletionFeedback, type DeletionSubmission } from '@/features/deletions/deletion-feedback';
 import { cancelDownloadCommand, fetchDownloads, retryDownloadCommand } from '@/features/downloads/api';
@@ -21,6 +22,7 @@ import { formatDateTime, formatPercent } from '@/lib/format';
 import { IdempotencyKeyHolder } from '@/lib/idempotency';
 import { useCursorPagination } from '@/lib/pagination';
 import { clientStateLabel } from '@/lib/presentation';
+import { cn } from '@/lib/utils';
 
 type DownloadPhase = 'active' | 'waiting' | 'downloading' | 'paused' | 'completed' | 'failed';
 type DownloadListSearch = {
@@ -181,31 +183,38 @@ export function DownloadsPage() {
       <PageHeader title="下载" description="查看 qBittorrent 下载状态并处理暂停、失败或已完成的记录" />
 
       <div className="mb-4 space-y-3">
-        <div className="overflow-x-auto" aria-label="下载阶段筛选">
-          <div className="flex min-w-max border-b border-zinc-200">
-            {phaseFilters.map((filter) => {
-              const active = filter.value ? search.phase === filter.value : !search.phase && !search.status;
-              return (
-                <Link
-                  key={filter.value || 'all'}
-                  to="/downloads"
-                  search={{
-                    ...search,
-                    status: undefined,
-                    phase: filter.value || undefined,
-                    cursor: undefined,
-                    cursorStack: undefined,
-                  }}
-                  className={active
-                    ? 'border-b-2 border-emerald-700 px-3 py-2 text-sm font-medium text-emerald-800'
-                    : 'border-b-2 border-transparent px-3 py-2 text-sm text-zinc-600 hover:border-zinc-300 hover:text-zinc-950'}
-                >
-                  {filter.label}
-                </Link>
-              );
-            })}
-          </div>
-        </div>
+        <SlidingSelection
+          variant="underline"
+          ariaLabel="下载阶段筛选"
+          activeKey={search.phase ?? 'all'}
+          scrollActiveIntoView
+          groupClassName="border-b border-zinc-200"
+        >
+          {phaseFilters.map((filter) => {
+            const active = filter.value ? search.phase === filter.value : !search.phase && !search.status;
+            return (
+              <Link
+                key={filter.value || 'all'}
+                to="/downloads"
+                search={{
+                  ...search,
+                  status: undefined,
+                  phase: filter.value || undefined,
+                  cursor: undefined,
+                  cursorStack: undefined,
+                }}
+                data-sliding-item
+                data-sliding-active={active ? 'true' : undefined}
+                className={cn(
+                  'relative z-10 flex h-10 shrink-0 items-center whitespace-nowrap px-3 text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-600',
+                  active ? 'font-medium text-emerald-800' : 'text-zinc-600 hover:text-zinc-950',
+                )}
+              >
+                {filter.label}
+              </Link>
+            );
+          })}
+        </SlidingSelection>
 
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <form

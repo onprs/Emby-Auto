@@ -16,6 +16,7 @@ import type {
 } from '@/api/generated/types.gen';
 import { DetailErrorState, DetailLoadingState, PageBody, PageHeader } from '@/components/resource';
 import { Button } from '@/components/ui/button';
+import { SlidingSelection } from '@/components/ui/sliding-selection';
 import { ErrorState, LoadingState } from '@/components/ui/feedback';
 import { Select } from '@/components/ui/select';
 import { fetchAcquisition } from '@/features/acquisitions/api';
@@ -226,9 +227,18 @@ export function MappingPage({ acquisitionId }: { acquisitionId: string }) {
         </section>
       ) : null}
 
-      <div className="mb-5 inline-flex max-w-full rounded-lg border border-zinc-300 bg-zinc-100 p-1" role="group" aria-label="映射模式">
+      <SlidingSelection
+        variant="segmented"
+        ariaLabel="映射模式"
+        activeKey={activeMode}
+        scrollActiveIntoView
+        className="mb-5 inline-block max-w-full align-middle"
+        groupClassName="rounded-lg border border-zinc-300 bg-zinc-100 p-1"
+      >
         <button
           type="button"
+          data-sliding-item
+          data-sliding-active={activeMode === 'anchor' ? 'true' : undefined}
           aria-pressed={activeMode === 'anchor'}
           className={modeButtonClass(activeMode === 'anchor')}
           disabled={commandPending || hasFractionalSource}
@@ -238,6 +248,8 @@ export function MappingPage({ acquisitionId }: { acquisitionId: string }) {
         </button>
         <button
           type="button"
+          data-sliding-item
+          data-sliding-active={activeMode === 'explicit' ? 'true' : undefined}
           aria-pressed={activeMode === 'explicit'}
           className={modeButtonClass(activeMode === 'explicit')}
           disabled={commandPending}
@@ -245,7 +257,7 @@ export function MappingPage({ acquisitionId }: { acquisitionId: string }) {
         >
           <ListTree className="size-4" aria-hidden="true" />逐个文件
         </button>
-      </div>
+      </SlidingSelection>
 
       <OperationFeedback operationId={operationId} onPendingChange={setSyncOperationPending} onSettled={() => { void catalog.refetch(); }} />
       {catalog.error ? <ErrorState className="mb-4" message="暂时没有剧集信息，请更新后重试。" onRetry={() => catalog.refetch()} /> : null}
@@ -493,9 +505,17 @@ function ExplicitMappingPanel({
               </div>
               {targetsAvailable ? (
                 <>
-                  <div className="inline-flex w-fit rounded-lg border border-zinc-300 bg-zinc-100 p-0.5" role="group" aria-label={`${file.relativePath} 的处置`}>
+                  <SlidingSelection
+                    variant="segmented"
+                    ariaLabel={`${file.relativePath} 的处置`}
+                    activeKey={draft.action || 'unset'}
+                    className="w-fit max-w-full"
+                    groupClassName="rounded-lg border border-zinc-300 bg-zinc-100 p-0.5"
+                  >
                     <button
                       type="button"
+                      data-sliding-item
+                      data-sliding-active={draft.action === 'map' ? 'true' : undefined}
                       aria-pressed={draft.action === 'map'}
                       className={actionButtonClass(draft.action === 'map')}
                       disabled={interactionPending}
@@ -503,12 +523,14 @@ function ExplicitMappingPanel({
                     >映射</button>
                     <button
                       type="button"
+                      data-sliding-item
+                      data-sliding-active={draft.action === 'exclude' ? 'true' : undefined}
                       aria-pressed={draft.action === 'exclude'}
                       className={actionButtonClass(draft.action === 'exclude')}
                       disabled={interactionPending}
                       onClick={() => onChange(file.id, { action: 'exclude', target: '' })}
                     >排除</button>
-                  </div>
+                  </SlidingSelection>
                   {draft.action === 'map' ? (
                     <Select
                       value={draft.target}
@@ -648,14 +670,14 @@ function targetValue(season: number, episode: number): string {
 
 function modeButtonClass(active: boolean): string {
   return cn(
-    'inline-flex min-h-9 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60',
-    active ? 'bg-white text-zinc-950 shadow-sm' : 'text-zinc-600 hover:text-zinc-950',
+    'relative z-10 inline-flex min-h-9 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+    active ? 'text-zinc-950' : 'text-zinc-600 hover:text-zinc-950',
   );
 }
 
 function actionButtonClass(active: boolean): string {
   return cn(
-    'min-h-8 rounded-md px-2.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60',
-    active ? 'bg-white text-zinc-950 shadow-sm' : 'text-zinc-600 hover:text-zinc-950',
+    'relative z-10 min-h-8 rounded-md px-2.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+    active ? 'text-zinc-950' : 'text-zinc-600 hover:text-zinc-950',
   );
 }

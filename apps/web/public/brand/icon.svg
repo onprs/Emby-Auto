@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Emby Auto</title>
+  <defs>
+    <linearGradient id="i2-bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#020617"/>
+    </linearGradient>
+    <linearGradient id="i2-mark" x1="24" y1="14" x2="52" y2="50" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6ee7b7"/>
+      <stop offset=".5" stop-color="#10b981"/>
+      <stop offset="1" stop-color="#047857"/>
+    </linearGradient>
+    <linearGradient id="i2-flow" x1="8" y1="32" x2="24" y2="32" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#34d399" stop-opacity=".35"/>
+      <stop offset="1" stop-color="#6ee7b7"/>
+    </linearGradient>
+    <radialGradient id="i2-glow" cx="0" cy="0" r="1" gradientTransform="translate(38 32) scale(24 20)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#10b981" stop-opacity=".25"/>
+      <stop offset="1" stop-color="#10b981" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="1.5" y="1.5" width="61" height="61" rx="16" fill="url(#i2-bg)" stroke="#ffffff" stroke-opacity=".08" stroke-width="1.5"/>
+  <ellipse cx="38" cy="32" rx="24" ry="20" fill="url(#i2-glow)"/>
+  <circle cx="9.5" cy="32" r="2.5" fill="#34d399"/>
+  <path d="M14.5 21.5h6.5M13 32h8.5M14.5 42.5h6.5" fill="none" stroke="url(#i2-flow)" stroke-width="3.5" stroke-linecap="round"/>
+  <polygon points="27,17 27,47 50,32" fill="url(#i2-mark)" stroke="url(#i2-mark)" stroke-width="5" stroke-linejoin="round"/>
+</svg>

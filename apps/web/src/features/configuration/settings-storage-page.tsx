@@ -8,18 +8,13 @@ import {
   PageHeader,
 } from "@/components/resource";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   ConnectivityButton,
   Field,
+  SettingsCanvas,
   SettingsFeedback,
+  SettingsSection,
 } from "@/features/configuration/settings-shared";
 import {
   useConfigurationSave,
@@ -36,12 +31,12 @@ export function SettingsStoragePage() {
   } = useSettingsData();
 
   if (configurationPending) {
-    return <DetailLoadingState title="存储与媒体工具" label="正在读取配置" />;
+    return <DetailLoadingState title="存储与工具" label="正在读取配置" />;
   }
   if (configurationError || !configuration) {
     return (
       <DetailErrorState
-        title="存储与媒体工具"
+        title="存储与工具"
         message={configurationError?.message ?? "无法读取配置"}
         onRetry={() => refetchConfiguration()}
       />
@@ -73,20 +68,17 @@ function StorageForm({
   return (
     <PageBody>
       <PageHeader
-        title="存储与媒体工具"
+        title="存储与工具"
         description="服务器上的目录与 FFmpeg 路径，所有运行环境使用相同挂载路径"
       />
       <SettingsFeedback conflict={conflict} error={error} savedAt={savedAt} />
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Card className="flex flex-col">
-          <CardHeader>
-            <CardTitle>存储路径</CardTitle>
-            <CardDescription>
-              下载缓存、工作目录与最终媒体库根目录
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="grid flex-1 content-start gap-4 sm:grid-cols-2">
+      <SettingsCanvas>
+        <SettingsSection
+          title="存储路径"
+          description="下载缓存、工作目录与最终媒体库根目录"
+        >
+          <div className="grid gap-4 sm:grid-cols-2">
             <Field label="下载根目录" htmlFor="downloadRoot">
               <Input
                 id="downloadRoot"
@@ -132,43 +124,42 @@ function StorageForm({
                 }
               />
             </Field>
-          </CardContent>
-        </Card>
+          </div>
+        </SettingsSection>
 
-        <Card className="flex flex-col">
-          <CardHeader>
-            <CardTitle>媒体工具</CardTitle>
-            <CardDescription>
-              FFmpeg 与 ffprobe 路径（服务器路径）
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-1 flex-col space-y-4">
-            <Field label="FFmpeg 路径" htmlFor="ffmpeg">
-              <Input
-                id="ffmpeg"
-                value={paths.ffmpegPath}
-                onChange={(event) =>
-                  setPaths({ ...paths, ffmpegPath: event.target.value })
-                }
-              />
-            </Field>
-            <Field label="ffprobe 路径" htmlFor="ffprobe">
-              <Input
-                id="ffprobe"
-                value={paths.ffprobePath}
-                onChange={(event) =>
-                  setPaths({ ...paths, ffprobePath: event.target.value })
-                }
-              />
-            </Field>
+        <SettingsSection
+          title="媒体工具"
+          description="FFmpeg 与 ffprobe 路径（服务器路径）"
+        >
+          <div className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="FFmpeg 路径" htmlFor="ffmpeg">
+                <Input
+                  id="ffmpeg"
+                  value={paths.ffmpegPath}
+                  onChange={(event) =>
+                    setPaths({ ...paths, ffmpegPath: event.target.value })
+                  }
+                />
+              </Field>
+              <Field label="ffprobe 路径" htmlFor="ffprobe">
+                <Input
+                  id="ffprobe"
+                  value={paths.ffprobePath}
+                  onChange={(event) =>
+                    setPaths({ ...paths, ffprobePath: event.target.value })
+                  }
+                />
+              </Field>
+            </div>
             <ConnectivityButton
               target="media_tools"
               previous={dependencies?.mediaTools}
               payload={{}}
             />
-          </CardContent>
-        </Card>
-      </div>
+          </div>
+        </SettingsSection>
+      </SettingsCanvas>
 
       <div className="sticky bottom-0 z-20 mt-8 flex items-center justify-between gap-3 border-t border-zinc-200 bg-surface/95 py-4 backdrop-blur-sm">
         <p className="hidden text-xs text-zinc-500 sm:block">

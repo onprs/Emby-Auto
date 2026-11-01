@@ -84,6 +84,7 @@ test('uses one route-aware shell and accessible mobile or desktop navigation', a
     await expect(navigation.getByRole('link', { name: label, exact: true })).toBeVisible();
   }
   await expect(navigation.getByRole('link', { name: '下载', exact: true })).toHaveCount(0);
+  await expect(navigation.getByRole('link', { name: '总览', exact: true })).toHaveCount(0);
   await expect(navigation.getByRole('link', { name: '仪表盘', exact: true })).toHaveAttribute('aria-current', 'page');
 
   if (mobile) {
@@ -103,12 +104,46 @@ test('uses one route-aware shell and accessible mobile or desktop navigation', a
     await expect(page.getByRole('button', { name: '展开侧边栏' })).toBeVisible();
     await page.reload();
     await expect(page.getByRole('button', { name: '展开侧边栏' })).toBeVisible();
+    const sidebarIndicator = page.locator('[data-sidebar-indicator]');
+    const indicatorBefore = await sidebarIndicator.evaluate((element) => element.style.transform);
+    expect(await sidebarIndicator.evaluate((element) => element.style.transition)).toContain('transform 280ms');
     await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '任务', exact: true }).click();
     await expect(page).toHaveURL(/\/tasks$/);
     await expect(page.getByRole('heading', { name: '视频任务', exact: true })).toBeVisible();
+    await expect.poll(() => sidebarIndicator.evaluate((element) => element.style.transform)).not.toBe(indicatorBefore);
   }
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(browserErrors).toEqual([]);
+});
+
+test('selects task sections from the header instead of sidebar submenus', async ({ page }, testInfo) => {
+  await stubNavigationApi(page);
+  const mobile = testInfo.project.name === 'mobile';
+
+  await page.goto('/tasks');
+  await expect(page.getByRole('heading', { name: '视频任务', exact: true })).toBeVisible();
+  const sectionNavigation = page.getByRole('navigation', { name: '任务' });
+  await expect(sectionNavigation.getByRole('link', { name: '视频任务', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(sectionNavigation.getByRole('link', { name: '获取记录', exact: true })).toBeVisible();
+  await expect(sectionNavigation.getByRole('link', { name: '下载', exact: true })).toBeVisible();
+
+  const mainNavigation = await openMainNavigation(page, mobile);
+  await expect(mainNavigation.getByRole('link', { name: '获取记录', exact: true })).toHaveCount(0);
+  await expect(mainNavigation.getByRole('link', { name: '下载', exact: true })).toHaveCount(0);
+  if (mobile) {
+    await page.getByRole('button', { name: '关闭主导航', exact: true }).click();
+  }
+
+  await sectionNavigation.getByRole('link', { name: '获取记录', exact: true }).click();
+  await expect(page).toHaveURL(/\/acquisitions$/);
+  await expect(page.getByRole('heading', { name: '获取记录', exact: true })).toBeVisible();
+  await expect(sectionNavigation.getByRole('link', { name: '获取记录', exact: true })).toHaveAttribute('aria-current', 'page');
+
+  await sectionNavigation.getByRole('link', { name: '下载', exact: true }).click();
+  await expect(page).toHaveURL(/\/downloads$/);
+  await expect(page.getByRole('heading', { name: '下载', exact: true })).toBeVisible();
+  await expect(sectionNavigation.getByRole('link', { name: '下载', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test('no longer renders the removed single-child submenu while the operations module is active', async ({ page }, testInfo) => {

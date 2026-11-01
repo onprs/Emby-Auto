@@ -5,6 +5,7 @@ import {
   createRouter,
   lazyRouteComponent,
   Outlet,
+  redirect,
   useParams,
   type ErrorComponentProps,
   type RouterHistory,
@@ -19,6 +20,8 @@ import { normalizeInternalLocation } from '@/app/navigation';
 import { EventStream } from '@/app/sse';
 import { registerSessionLossHandler, reportSessionLoss } from '@/app/session-runtime';
 import { Button } from '@/components/ui/button';
+import { SettingsLayout } from '@/features/configuration/settings-shell';
+import { TasksLayout } from '@/features/tasks/tasks-layout';
 
 const AcquisitionsPage = lazyRouteComponent(
   () => import('@/features/acquisitions/acquisitions-page'),
@@ -60,10 +63,6 @@ const SearchesPage = lazyRouteComponent(() => import('@/features/searches/search
 const SettingsAgentPage = lazyRouteComponent(
   () => import('@/features/configuration/settings-agent-page'),
   'SettingsAgentPage',
-);
-const SettingsHubPage = lazyRouteComponent(
-  () => import('@/features/configuration/settings-hub-page'),
-  'SettingsHubPage',
 );
 const SettingsServicesPage = lazyRouteComponent(
   () => import('@/features/configuration/settings-services-page'),
@@ -209,8 +208,13 @@ const searchDetailRoute = createRoute({
     return <SearchDetailPage searchId={searchId} />;
   },
 });
-const acquisitionsRoute = createRoute({
+const tasksLayoutRoute = createRoute({
   getParentRoute: () => appRoute,
+  id: 'tasks-layout',
+  component: TasksLayout,
+});
+const acquisitionsRoute = createRoute({
+  getParentRoute: () => tasksLayoutRoute,
   path: '/acquisitions',
   validateSearch: (search: Record<string, unknown>): AcquisitionListSearch => ({
     ...cursorSearch(search),
@@ -222,7 +226,7 @@ const acquisitionsRoute = createRoute({
   component: AcquisitionsPage,
 });
 const acquisitionDetailRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => tasksLayoutRoute,
   path: '/acquisitions/$acquisitionId',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: function AcquisitionDetailRoute() {
@@ -231,7 +235,7 @@ const acquisitionDetailRoute = createRoute({
   },
 });
 const acquisitionMappingRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => tasksLayoutRoute,
   path: '/acquisitions/$acquisitionId/mapping',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: function AcquisitionMappingRoute() {
@@ -240,7 +244,7 @@ const acquisitionMappingRoute = createRoute({
   },
 });
 const downloadsRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => tasksLayoutRoute,
   path: '/downloads',
   validateSearch: (search: Record<string, unknown>): DownloadListRouteSearch => ({
     ...cursorSearch(search),
@@ -253,7 +257,7 @@ const downloadsRoute = createRoute({
   component: DownloadsPage,
 });
 const downloadDetailRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => tasksLayoutRoute,
   path: '/downloads/$downloadId',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: function DownloadDetailRoute() {
@@ -289,7 +293,7 @@ const rssDetailRoute = createRoute({
   },
 });
 const tasksRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => tasksLayoutRoute,
   path: '/tasks',
   validateSearch: (search: Record<string, unknown>): TaskListRouteSearch => ({
     ...cursorSearch(search),
@@ -299,7 +303,7 @@ const tasksRoute = createRoute({
   component: TasksPage,
 });
 const taskDetailRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => tasksLayoutRoute,
   path: '/tasks/$taskId',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: function TaskDetailRoute() {
@@ -358,38 +362,45 @@ const operationDetailRoute = createRoute({
     return <OperationDetailPage operationId={operationId} />;
   },
 });
+const settingsLayoutRoute = createRoute({
+  getParentRoute: () => appRoute,
+  id: 'settings-layout',
+  component: SettingsLayout,
+});
 const settingsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/settings',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
-  component: SettingsHubPage,
+  beforeLoad: ({ search }) => {
+    throw redirect({ to: '/settings/services', search, replace: true });
+  },
 });
 const settingsServicesRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => settingsLayoutRoute,
   path: '/settings/services',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: SettingsServicesPage,
 });
 const settingsAgentRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => settingsLayoutRoute,
   path: '/settings/agent',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: SettingsAgentPage,
 });
 const settingsStorageRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => settingsLayoutRoute,
   path: '/settings/storage',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: SettingsStoragePage,
 });
 const settingsSubtitleGroupsRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => settingsLayoutRoute,
   path: '/settings/subtitle-groups',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: SettingsSubtitleGroupsPage,
 });
 const settingsTranscodeRoute = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => settingsLayoutRoute,
   path: '/settings/transcode',
   validateSearch: (search: Record<string, unknown>) => detailSourceSearch(search),
   component: SettingsTranscodePage,
@@ -401,26 +412,30 @@ const routeTree = rootRoute.addChildren([
     indexRoute,
     searchesRoute,
     searchDetailRoute,
-    acquisitionsRoute,
-    acquisitionDetailRoute,
-    acquisitionMappingRoute,
-    downloadsRoute,
-    downloadDetailRoute,
+    tasksLayoutRoute.addChildren([
+      tasksRoute,
+      taskDetailRoute,
+      acquisitionsRoute,
+      acquisitionDetailRoute,
+      acquisitionMappingRoute,
+      downloadsRoute,
+      downloadDetailRoute,
+    ]),
     rssRoute,
     rssDetailRoute,
-    tasksRoute,
-    taskDetailRoute,
     embyRoute,
     embyScanDetailRoute,
     embyLibraryDetailRoute,
     operationsRoute,
     operationDetailRoute,
     settingsRoute,
-    settingsServicesRoute,
-    settingsAgentRoute,
-    settingsStorageRoute,
-    settingsSubtitleGroupsRoute,
-    settingsTranscodeRoute,
+    settingsLayoutRoute.addChildren([
+      settingsServicesRoute,
+      settingsAgentRoute,
+      settingsStorageRoute,
+      settingsSubtitleGroupsRoute,
+      settingsTranscodeRoute,
+    ]),
     forbiddenRoute,
   ]),
 ]);

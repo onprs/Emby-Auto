@@ -9,7 +9,7 @@ import {
   Unplug,
   XCircle,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 
 import { testConnection } from "@/features/configuration/api";
 import type { DashboardDependencyStatus } from "@/api/generated/types.gen";
@@ -19,6 +19,49 @@ import { ErrorState } from "@/components/ui/feedback";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatDateTime } from "@/lib/format";
+import { cn } from "@/lib/utils";
+
+export function SettingsCanvas({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <div className={cn("divide-y divide-zinc-200/80 overflow-hidden rounded-xl border border-zinc-200/90 bg-white shadow-card", className)}>
+      {children}
+    </div>
+  );
+}
+
+export function SettingsSection({
+  title,
+  description,
+  action,
+  icon,
+  children,
+  className,
+}: {
+  title: string;
+  description?: string;
+  action?: ReactNode;
+  icon?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  const titleId = useId();
+
+  return (
+    <section aria-labelledby={titleId} className={cn("px-5 py-5 sm:px-6", className)}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 id={titleId} className="flex items-center gap-2 text-base font-semibold tracking-tight text-zinc-950">
+            {icon}
+            {title}
+          </h2>
+          {description ? <p className="mt-1 max-w-3xl text-sm leading-6 text-zinc-500">{description}</p> : null}
+        </div>
+        {action ? <div className="shrink-0">{action}</div> : null}
+      </div>
+      <div className="mt-4">{children}</div>
+    </section>
+  );
+}
 
 export function SettingsFeedback({
   conflict,
