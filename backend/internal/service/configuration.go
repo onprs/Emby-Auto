@@ -27,6 +27,20 @@ func NewConfigurationService(store ConfigurationStore, cipher *SecretCipher) *Co
 	return &ConfigurationService{store: store, cipher: cipher}
 }
 
+// LoadLibraryRoots 供 TaskWorkflow.BeginImport 在事务内解析目标路径锁；
+// 返回与导入补偿、CompleteImport 相同的库根配置视图。
+func (configurationService *ConfigurationService) LoadLibraryRoots(ctx context.Context) (domain.PathSettings, error) {
+	configuration, err := configurationService.Load(ctx)
+	if err != nil {
+		var serviceErr *Error
+		if errors.As(err, &serviceErr) {
+			return domain.PathSettings{}, serviceErr
+		}
+		return domain.PathSettings{}, err
+	}
+	return configuration.Settings.Paths, nil
+}
+
 func (configurationService *ConfigurationService) Load(ctx context.Context) (domain.Configuration, error) {
 	configuration, err := configurationService.store.Load(ctx)
 	if err != nil {

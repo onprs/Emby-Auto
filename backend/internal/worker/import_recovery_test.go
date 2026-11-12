@@ -120,7 +120,9 @@ func TestEmbyImportCompensatesAfterCancellation(t *testing.T) {
 		command:     fixture.command,
 		completeErr: context.Canceled,
 		onComplete:  func() { cancel(errors.New("user cancelled the task")) },
-		recovery:    domain.ImportRecoveryState{TaskState: domain.TaskCancelled, ImportState: "failed"},
+		// 真实取消路径上 import 行仍是 running（MarkActiveImportTerminalFailure
+		// 只在 River 终态时执行），失败不可重试的补偿仍应回滚。
+		recovery: domain.ImportRecoveryState{TaskState: domain.TaskCancelled, ImportState: "running"},
 	}
 	err := fixture.handler(store).Handle(ctx, fixture.operation())
 	var failure *Failure
@@ -138,7 +140,9 @@ func TestEmbyImportKeepsFilesForRetryableStoreFailureThenAdoptsOnRetry(t *testin
 	store := &taskImportStoreStub{
 		command:     fixture.command,
 		completeErr: errors.New("db connection lost"),
-		recovery:    domain.ImportRecoveryState{TaskState: domain.TaskImporting, ImportState: "running"},
+		// 可重试失败：无论导入行是否仍在 running（真实取消/失败路径上
+		// River 终态未写时就是 running），保留文件供重试采用。
+		recovery: domain.ImportRecoveryState{TaskState: domain.TaskImporting, ImportState: "running"},
 	}
 	err := fixture.handler(store).Handle(context.Background(), fixture.operation())
 	var failure *Failure

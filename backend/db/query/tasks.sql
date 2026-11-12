@@ -357,6 +357,54 @@ JOIN media_artifacts AS subtitle ON subtitle.id = artifact_set.subtitle_artifact
 WHERE task.id = sqlc.arg(task_id)
   AND import.id = sqlc.arg(import_id);
 
+-- name: BeginImport :one
+-- 目标路径 advisory 锁由 BeginImportLockDestinations 单独调用，
+-- 保证调用方可按“先锁后读命令”的固定顺序编排。
+SELECT
+    task.id AS task_id,
+    task.state,
+    import.id AS import_id,
+    import.status AS import_status,
+    task.media_type,
+    series.title AS series_title,
+    series.release_year,
+    season.season_number AS target_season,
+    artifact_set.basename,
+    video.id AS video_artifact_id,
+    video.file_path AS video_file_path,
+    video.format AS video_format,
+    video.size_bytes AS video_size_bytes,
+    video.checksum_sha256 AS video_checksum_sha256,
+    subtitle.id AS subtitle_artifact_id,
+    subtitle.file_path AS subtitle_file_path,
+    subtitle.format AS subtitle_format,
+    subtitle.size_bytes AS subtitle_size_bytes,
+    subtitle.checksum_sha256 AS subtitle_checksum_sha256
+FROM episode_tasks AS task
+JOIN imports AS import ON import.task_id = task.id
+JOIN acquisitions AS acquisition ON acquisition.id = task.acquisition_id
+JOIN media_series AS series ON series.id = acquisition.series_id
+LEFT JOIN episode_mappings AS mapping ON mapping.id = task.mapping_id
+LEFT JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
+LEFT JOIN tmdb_seasons AS season ON season.id = episode.season_id
+JOIN artifact_sets AS artifact_set ON artifact_set.task_id = task.id
+JOIN media_artifacts AS video ON video.id = artifact_set.video_artifact_id AND video.kind = 'video'
+JOIN media_artifacts AS subtitle ON subtitle.id = artifact_set.subtitle_artifact_id AND subtitle.kind = 'subtitle' AND lower(subtitle.format) = 'ass'
+WHERE task.id = sqlc.arg(task_id)
+  AND import.id = sqlc.arg(import_id);
+
+-- name: BeginImportLockDestinations :execrows
+-- BeginImport 先对本次导入的目标路径取事务级 advisory 锁（与 CompleteImport、
+-- 补偿观察共享同一锁域）。文件系统的复制/采用发生在该锁持有期间，
+-- 使“创建/采用文件”与“观察+删除”两个临界区在目标路径上串行；
+-- 双路径按固定顺序（视频→字幕）取锁，与其它调用方一致，无死锁环。
+SELECT pg_advisory_xact_lock(
+    hashtextextended('import-destination:' || sqlc.arg(destination_video_path)::text, 0)
+),
+pg_advisory_xact_lock(
+    hashtextextended('import-destination:' || sqlc.arg(destination_subtitle_path)::text, 0)
+);
+
 -- name: GetTaskImportRecoveryState :one
 SELECT
     COALESCE((SELECT task.state FROM episode_tasks AS task WHERE task.id = sqlc.arg(task_id)), '')::text AS task_state,

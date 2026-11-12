@@ -195,7 +195,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, checkOnly 
 	}
 	searchWorkflow := service.NewSearchWorkflow(queries, transactor, operationScheduler)
 	mediaWorkflow := service.NewMediaWorkflow(queries, transactor, operationScheduler)
-	taskWorkflow := service.NewTaskWorkflow(queries, transactor, operationScheduler)
+	taskWorkflow := service.NewTaskWorkflowWithLibraryRoots(queries, transactor, operationScheduler, configuration)
 	catalogWorkflow := service.NewCatalogWorkflow(queries, transactor, operationScheduler)
 	agentTMDbSearcher := service.NewTMDbClientSearcher(configuration, cfg.TMDbBaseURL)
 	agentResolutions := service.NewAgentResolutionService(

@@ -103,6 +103,32 @@ func (stub *taskImportStoreStub) ObserveImportRecovery(
 	return stub.recovery, stub.recoveryErr
 }
 
+func (stub *taskImportStoreStub) RunImportCompensation(
+	_ context.Context,
+	_ domain.ImportCompletion,
+	failureRetryable bool,
+	rollback func() bool,
+) (domain.ImportRecoveryState, error) {
+	stub.recoveryCalls++
+	if stub.onRecovery != nil {
+		if err := stub.onRecovery(stub.completion); err != nil {
+			return domain.ImportRecoveryState{}, err
+		}
+	}
+	state := stub.recovery
+	if state.Succeeded || state.DestinationClaimed || stub.recoveryErr != nil {
+		return state, stub.recoveryErr
+	}
+	// 桩语义与真实服务 observeImportRecoveryLocked 一致：
+	// - 失败可重试且任务仍活跃（非取消）→ 保留文件供重试采用；
+	// - 失败不可重试，或任务已取消（确知不会重试）→ 持锁回滚。
+	if failureRetryable && state.TaskState != domain.TaskCancelled {
+		return state, nil
+	}
+	rollback()
+	return state, nil
+}
+
 type cleanupStoreStub struct {
 	command     domain.CleanupCommand
 	beginErr    error

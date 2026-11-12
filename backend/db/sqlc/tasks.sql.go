@@ -11,6 +11,123 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const beginImport = `-- name: BeginImport :one
+SELECT
+    task.id AS task_id,
+    task.state,
+    import.id AS import_id,
+    import.status AS import_status,
+    task.media_type,
+    series.title AS series_title,
+    series.release_year,
+    season.season_number AS target_season,
+    artifact_set.basename,
+    video.id AS video_artifact_id,
+    video.file_path AS video_file_path,
+    video.format AS video_format,
+    video.size_bytes AS video_size_bytes,
+    video.checksum_sha256 AS video_checksum_sha256,
+    subtitle.id AS subtitle_artifact_id,
+    subtitle.file_path AS subtitle_file_path,
+    subtitle.format AS subtitle_format,
+    subtitle.size_bytes AS subtitle_size_bytes,
+    subtitle.checksum_sha256 AS subtitle_checksum_sha256
+FROM episode_tasks AS task
+JOIN imports AS import ON import.task_id = task.id
+JOIN acquisitions AS acquisition ON acquisition.id = task.acquisition_id
+JOIN media_series AS series ON series.id = acquisition.series_id
+LEFT JOIN episode_mappings AS mapping ON mapping.id = task.mapping_id
+LEFT JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
+LEFT JOIN tmdb_seasons AS season ON season.id = episode.season_id
+JOIN artifact_sets AS artifact_set ON artifact_set.task_id = task.id
+JOIN media_artifacts AS video ON video.id = artifact_set.video_artifact_id AND video.kind = 'video'
+JOIN media_artifacts AS subtitle ON subtitle.id = artifact_set.subtitle_artifact_id AND subtitle.kind = 'subtitle' AND lower(subtitle.format) = 'ass'
+WHERE task.id = $1
+  AND import.id = $2
+`
+
+type BeginImportParams struct {
+	TaskID   pgtype.UUID `db:"task_id" json:"task_id"`
+	ImportID pgtype.UUID `db:"import_id" json:"import_id"`
+}
+
+type BeginImportRow struct {
+	TaskID                 pgtype.UUID `db:"task_id" json:"task_id"`
+	State                  string      `db:"state" json:"state"`
+	ImportID               pgtype.UUID `db:"import_id" json:"import_id"`
+	ImportStatus           string      `db:"import_status" json:"import_status"`
+	MediaType              string      `db:"media_type" json:"media_type"`
+	SeriesTitle            string      `db:"series_title" json:"series_title"`
+	ReleaseYear            *int32      `db:"release_year" json:"release_year"`
+	TargetSeason           *int32      `db:"target_season" json:"target_season"`
+	Basename               string      `db:"basename" json:"basename"`
+	VideoArtifactID        pgtype.UUID `db:"video_artifact_id" json:"video_artifact_id"`
+	VideoFilePath          string      `db:"video_file_path" json:"video_file_path"`
+	VideoFormat            string      `db:"video_format" json:"video_format"`
+	VideoSizeBytes         int64       `db:"video_size_bytes" json:"video_size_bytes"`
+	VideoChecksumSha256    []byte      `db:"video_checksum_sha256" json:"video_checksum_sha256"`
+	SubtitleArtifactID     pgtype.UUID `db:"subtitle_artifact_id" json:"subtitle_artifact_id"`
+	SubtitleFilePath       string      `db:"subtitle_file_path" json:"subtitle_file_path"`
+	SubtitleFormat         string      `db:"subtitle_format" json:"subtitle_format"`
+	SubtitleSizeBytes      int64       `db:"subtitle_size_bytes" json:"subtitle_size_bytes"`
+	SubtitleChecksumSha256 []byte      `db:"subtitle_checksum_sha256" json:"subtitle_checksum_sha256"`
+}
+
+// 目标路径 advisory 锁由 BeginImportLockDestinations 单独调用，
+// 保证调用方可按“先锁后读命令”的固定顺序编排。
+func (q *Queries) BeginImport(ctx context.Context, arg BeginImportParams) (BeginImportRow, error) {
+	row := q.db.QueryRow(ctx, beginImport, arg.TaskID, arg.ImportID)
+	var i BeginImportRow
+	err := row.Scan(
+		&i.TaskID,
+		&i.State,
+		&i.ImportID,
+		&i.ImportStatus,
+		&i.MediaType,
+		&i.SeriesTitle,
+		&i.ReleaseYear,
+		&i.TargetSeason,
+		&i.Basename,
+		&i.VideoArtifactID,
+		&i.VideoFilePath,
+		&i.VideoFormat,
+		&i.VideoSizeBytes,
+		&i.VideoChecksumSha256,
+		&i.SubtitleArtifactID,
+		&i.SubtitleFilePath,
+		&i.SubtitleFormat,
+		&i.SubtitleSizeBytes,
+		&i.SubtitleChecksumSha256,
+	)
+	return i, err
+}
+
+const beginImportLockDestinations = `-- name: BeginImportLockDestinations :execrows
+SELECT pg_advisory_xact_lock(
+    hashtextextended('import-destination:' || $1::text, 0)
+),
+pg_advisory_xact_lock(
+    hashtextextended('import-destination:' || $2::text, 0)
+)
+`
+
+type BeginImportLockDestinationsParams struct {
+	DestinationVideoPath    string `db:"destination_video_path" json:"destination_video_path"`
+	DestinationSubtitlePath string `db:"destination_subtitle_path" json:"destination_subtitle_path"`
+}
+
+// BeginImport 先对本次导入的目标路径取事务级 advisory 锁（与 CompleteImport、
+// 补偿观察共享同一锁域）。文件系统的复制/采用发生在该锁持有期间，
+// 使“创建/采用文件”与“观察+删除”两个临界区在目标路径上串行；
+// 双路径按固定顺序（视频→字幕）取锁，与其它调用方一致，无死锁环。
+func (q *Queries) BeginImportLockDestinations(ctx context.Context, arg BeginImportLockDestinationsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, beginImportLockDestinations, arg.DestinationVideoPath, arg.DestinationSubtitlePath)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const cancelActiveCleanup = `-- name: CancelActiveCleanup :one
 UPDATE cleanup_runs
 SET status = 'cancelled',

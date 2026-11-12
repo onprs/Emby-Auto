@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,10 +23,75 @@ type TaskWorkflow struct {
 	queries    *db.Queries
 	transactor *database.Transactor
 	operations *OperationScheduler
+	// libraryRoots 提供当前配置的媒体库根目录；BeginImport 需要在事务内
+	// 依据导入命令解析目标路径并取路径锁。可为 nil（历史调用/测试）。
+	libraryRoots LibraryRootProvider
+}
+
+// LibraryRootProvider 按需读取媒体库根目录配置。
+type LibraryRootProvider interface {
+	LoadLibraryRoots(ctx context.Context) (domain.PathSettings, error)
 }
 
 func NewTaskWorkflow(queries *db.Queries, transactor *database.Transactor, operations *OperationScheduler) *TaskWorkflow {
 	return &TaskWorkflow{queries: queries, transactor: transactor, operations: operations}
+}
+
+// NewTaskWorkflowWithLibraryRoots 构造带库根配置读取的 TaskWorkflow，
+// 供 BeginImport 在目标路径锁域内解析实际库目标。
+func NewTaskWorkflowWithLibraryRoots(
+	queries *db.Queries,
+	transactor *database.Transactor,
+	operations *OperationScheduler,
+	libraryRoots LibraryRootProvider,
+) *TaskWorkflow {
+	return &TaskWorkflow{queries: queries, transactor: transactor, operations: operations, libraryRoots: libraryRoots}
+}
+
+// importLibraryRootForCommand 按导入命令的媒体类型返回对应的库根；
+// 配置不可用时返回空串，BeginImport 跳过路径锁（回退为无目标锁的旧行为，
+// 后续 CompleteImport 仍会取锁，补偿在锁内执行）。
+func (workflow *TaskWorkflow) importLibraryRootForCommand(command domain.ImportCommand) string {
+	if workflow.libraryRoots == nil {
+		return ""
+	}
+	settings, err := workflow.libraryRoots.LoadLibraryRoots(context.Background())
+	if err != nil {
+		return ""
+	}
+	if command.MediaType == domain.TaskMediaMovie {
+		return strings.TrimSpace(settings.MovieLibraryRoot)
+	}
+	return strings.TrimSpace(settings.EffectiveAnimeLibraryRoot())
+}
+
+// importRelativePaths 计算导入命令的库内相对路径，与 Worker 侧
+// BuildLibraryRelativePaths/BuildMovieLibraryRelativePaths 保持一致。
+func (workflow *TaskWorkflow) importRelativePaths(command domain.ImportCommand, videoName, subtitleName string) (domain.LibraryRelativePaths, error) {
+	if command.MediaType == domain.TaskMediaMovie {
+		return domain.BuildMovieLibraryRelativePaths(command.MovieTitle, command.ReleaseYear, videoName, subtitleName)
+	}
+	return domain.BuildLibraryRelativePaths(command.SeriesTitle, command.Season, videoName, subtitleName)
+}
+
+// secureImportPath 与 Worker 侧 secureJoin 语义一致，防止相对路径逃逸库根。
+func secureImportPath(basePath, relativePath string) (string, error) {
+	if strings.TrimSpace(basePath) == "" || strings.TrimSpace(relativePath) == "" || filepath.IsAbs(relativePath) {
+		return "", fmt.Errorf("base path and safe relative path are required")
+	}
+	base, err := filepath.Abs(filepath.Clean(basePath))
+	if err != nil {
+		return "", err
+	}
+	candidate, err := filepath.Abs(filepath.Join(base, filepath.FromSlash(strings.ReplaceAll(relativePath, `\`, "/"))))
+	if err != nil {
+		return "", err
+	}
+	relative, err := filepath.Rel(base, candidate)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes configured base")
+	}
+	return candidate, nil
 }
 
 func (workflow *TaskWorkflow) GetTask(ctx context.Context, id uuid.UUID) (domain.EpisodeTask, error) {
@@ -366,6 +432,29 @@ func (workflow *TaskWorkflow) BeginImport(ctx context.Context, taskID, importID 
 		if err != nil {
 			return fmt.Errorf("load task import command: %w", err)
 		}
+		// 目标路径 advisory 锁在读取命令后、文件系统操作前取得，与
+		// CompleteImport、补偿观察共享同一锁域。锁保持到本事务结束，
+		// 覆盖 Handle 后续的全部文件系统复制/采用阶段；同目标的两个导入
+		// 或导入与补偿删除被串行化，“创建/采用文件”与“观察+删除”不再交错。
+		prepared := importCommandFromRow(row)
+		libraryRoot := workflow.importLibraryRootForCommand(prepared)
+		videoName := filepath.Base(prepared.Video.FilePath)
+		subtitleName := filepath.Base(prepared.Subtitle.FilePath)
+		if strings.TrimSpace(libraryRoot) != "" {
+			relative, pathErr := workflow.importRelativePaths(prepared, videoName, subtitleName)
+			if pathErr == nil {
+				destinationVideo, joinErr := secureImportPath(libraryRoot, relative.Video)
+				destinationSubtitle, joinErr2 := secureImportPath(libraryRoot, relative.Subtitle)
+				if joinErr == nil && joinErr2 == nil {
+					if _, err := scope.Queries.LockImportRecoveryDestinations(ctx, db.LockImportRecoveryDestinationsParams{
+						DestinationVideoPath:    destinationVideo,
+						DestinationSubtitlePath: destinationSubtitle,
+					}); err != nil {
+						return fmt.Errorf("lock import destination paths: %w", err)
+					}
+				}
+			}
+		}
 		command = importCommandFromRow(row)
 		if locked.State == string(domain.TaskImported) && row.ImportStatus == "succeeded" {
 			return nil
@@ -487,33 +576,45 @@ func (workflow *TaskWorkflow) ObserveImportRecovery(
 	taskID, importID uuid.UUID,
 	destinationVideoPath, destinationSubtitlePath string,
 ) (domain.ImportRecoveryState, error) {
-	state, _, err := workflow.observeImportRecoveryLocked(ctx, taskID, importID, destinationVideoPath, destinationSubtitlePath, nil)
+	state, _, err := workflow.observeImportRecoveryLocked(ctx, taskID, importID, destinationVideoPath, destinationSubtitlePath, nil, false)
 	return state, err
 }
 
-// RunImportCompensation 在持有目标路径 advisory 锁的单一事务内完成观察与
-// 补偿删除：rollback 在事务内、锁释放前被调用，读取确认未成功且未被占用时
-// 返回 true 并执行文件删除。回滚闭包失败只会影响文件系统状态，不影响事务
-// 提交（读取确认仍然有效，保守方向是文件已删除但状态确知未成功）。
+// RunImportCompensation 在持有目标路径 advisory 锁的单一事务内完成补偿决策：
+// retryableForCompensation 用于锁内判断可重试保留语义；rollback 返回 true 表示
+// 锁内读取确认可以删除且已执行；返回 false 表示观察到不应删除（已成功、被占用
+// 或可重试保留），文件原样保留。
 func (workflow *TaskWorkflow) RunImportCompensation(
 	ctx context.Context,
 	completion domain.ImportCompletion,
+	retryableForCompensation bool,
 	rollback func() bool,
 ) (domain.ImportRecoveryState, error) {
 	state, _, err := workflow.observeImportRecoveryLocked(
 		ctx, completion.TaskID, completion.ImportID,
-		completion.DestinationVideoPath, completion.DestinationSubtitlePath, rollback,
+		completion.DestinationVideoPath, completion.DestinationSubtitlePath, rollback, retryableForCompensation,
 	)
 	return state, err
 }
 
-// observeImportRecoveryLocked 是补偿观察的临界区实现：双路径 advisory 锁、
-// 状态读取、以及（可选的）持锁回滚共享同一事务。
+// observeImportRecoveryLocked 是补偿的临界区实现：双路径 advisory 锁、
+// 状态读取、以及（可选的）持锁回滚共享同一事务。删除决策在此处基于
+// 持锁读取的当前值做出，覆盖完整补偿协议：
+//   - 已成功（Succeeded）：提交实际生效，不删除；
+//   - 目标已被任一成功导入占用（DestinationClaimed）：不删除；
+//   - 失败可重试：保留文件供重试采用（重试的 BeginImport/采用阶段与
+//     补偿共享同一锁域，保留不会造成观察后窗口）；
+//   - 失败不可重试（取消/状态冲突/重试耗尽等）且目标未被占用：锁内删除。
+//     导入行的 running 只表示 River 终态尚未写入，不构成“重试可能采用”
+//     的证据：重试入口只接受 status='failed' 的导入行。
+//
+// 锁随事务提交/回滚自动释放；ctx 取消不会提前放锁（xact 锁语义）。
 func (workflow *TaskWorkflow) observeImportRecoveryLocked(
 	ctx context.Context,
 	taskID, importID uuid.UUID,
 	destinationVideoPath, destinationSubtitlePath string,
 	rollback func() bool,
+	failureRetryable bool,
 ) (domain.ImportRecoveryState, bool, error) {
 	if taskID == uuid.Nil || importID == uuid.Nil {
 		return domain.ImportRecoveryState{}, false, fmt.Errorf("import recovery observation requires task and import IDs")
@@ -521,7 +622,7 @@ func (workflow *TaskWorkflow) observeImportRecoveryLocked(
 	state := domain.ImportRecoveryState{}
 	rolledBack := false
 	err := workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
-		// 双路径按稳定顺序取锁（与 LockImportRecoveryDestinations 的 SQL 顺序一致），
+		// 双路径按稳定顺序取锁（与 CompleteImport/BeginImport 的取锁顺序一致），
 		// 避免不同调用方以相反顺序取锁造成死锁。
 		if _, err := scope.Queries.LockImportRecoveryDestinations(ctx, db.LockImportRecoveryDestinationsParams{
 			DestinationVideoPath:    destinationVideoPath,
@@ -547,14 +648,24 @@ func (workflow *TaskWorkflow) observeImportRecoveryLocked(
 		if rollback == nil {
 			return nil
 		}
-		// 只有确知未成功、未被占用时才在临界区内删除；导入行 running 表示
-		// 可重试/取消重试可能重新采用同一内容，此时保留文件。
 		if state.Succeeded || state.DestinationClaimed {
+			// 已成功或被占用：文件当前被有效引用，不删除。
 			return nil
 		}
-		if state.ImportState == "running" {
+		// 可重试判定必须结合任务状态：取消类失败（CancelEpisodeTaskIfActive
+		// 已写 task.state='cancelled'）的 failure.Retryable 同样为 true
+		// （classifyFailure 包装 cause），但 runtime 按 cause 走 CancelAttempt
+		// 终态，不会重试；此时保留文件会复现原 EM-01 孤儿缺陷。只有任务
+		// 仍处于活跃处理状态（importing/queued 等）且失败可重试时，文件才
+		// 会被重试采用，需要保留。重试入口只接受 status='failed' 的导入行，
+		// 且 BeginImport 的采用阶段与本补偿共享同一锁域，不会交错。
+		if failureRetryable && state.TaskState != domain.TaskCancelled {
 			return nil
 		}
+		// 失败不可重试，或任务已取消（确知未成功且不会重试）：目标未被占用，
+		// BeginImport 已把文件复制/采用纳入同一锁域，持锁读取保证删除期间
+		// 没有新成功引用插入，安全回滚。导入行的 running 只表示 River 终态
+		// 尚未写入，不构成“重试可能采用”的证据。
 		if rollback() {
 			rolledBack = true
 		}

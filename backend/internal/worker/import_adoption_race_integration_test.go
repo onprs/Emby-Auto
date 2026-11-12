@@ -330,3 +330,176 @@ func checksumFor(content []byte) []byte {
 	sum := sha256.Sum256(content)
 	return sum[:]
 }
+
+// 真实取消路径（RR1）：真实 ReviewTask/BeginImport/文件提交后取消任务，
+// CompleteImport 永久失败；补偿必须回滚本次创建的文件（原 EM-01 常规缺陷）。
+// 真实取消后 task.state='cancelled'、import 行仍 running（River 终态未写），
+// 服务层不得因 running 无条件保留。
+func TestCompensationRollsBackAfterRealCancellationIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	_, pool := testutil.NewMigratedPostgres(t)
+
+	seriesID, profileID, actorID := uuid.New(), uuid.New(), uuid.New()
+	seedAdoptionBase(t, ctx, pool, seriesID, profileID, actorID)
+	taskA := seedAdoptionTask(t, ctx, pool, seriesID, profileID, actorID, "-A")
+
+	transactor := database.NewTransactor(pool)
+	workflowA := service.NewTaskWorkflow(db.New(pool), transactor, service.NewOperationScheduler(transactor, &probeJobInserter{}))
+
+	baseName := "Adoption Show - S01E01 - Pilot"
+	libraryRoot := t.TempDir()
+	destinationVideo := filepath.Join(libraryRoot, "Adoption Show", "Season1", baseName+".mkv")
+	destinationSubtitle := filepath.Join(libraryRoot, "Adoption Show", "Season1", baseName+".ass")
+
+	videoContent := []byte("cancel-video-bytes")
+	subtitleContent := []byte("[Script Info]\nDialogue: cancel\n")
+	staging := t.TempDir()
+	videoPath := filepath.Join(staging, "cancel.mkv")
+	subtitlePath := filepath.Join(staging, "cancel.ass")
+	if err := os.WriteFile(videoPath, videoContent, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subtitlePath, subtitleContent, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	videoArtifact := domain.MediaArtifact{TaskID: taskA, Kind: domain.MediaVideo, BaseName: baseName,
+		FilePath: videoPath, Format: "matroska", SizeBytes: int64(len(videoContent)), ChecksumSHA256: checksumFor(videoContent)}
+	subtitleArtifact := domain.MediaArtifact{TaskID: taskA, Kind: domain.MediaSubtitle, BaseName: baseName,
+		FilePath: subtitlePath, Format: "ass", SizeBytes: int64(len(subtitleContent)), ChecksumSHA256: checksumFor(subtitleContent)}
+
+	if _, err := workflowA.ReviewTask(ctx, domain.ReviewTask{
+		TaskID: taskA, ExpectedVersion: 1, Decision: domain.TaskApproved,
+		IdempotencyKey: "cancel-a-review", ActorUserID: actorID,
+	}); err != nil {
+		t.Fatalf("ReviewTask(A) error = %v", err)
+	}
+	importA := latestImportID(t, ctx, pool, taskA)
+	if _, err := workflowA.BeginImport(ctx, taskA, importA); err != nil {
+		t.Fatalf("BeginImport(A) error = %v", err)
+	}
+	created, pairErr := importArtifactPair(ctx, videoArtifact, subtitleArtifact, libraryRoot,
+		destinationVideo, destinationSubtitle, uuid.New(), newTestImportedLibraryAccess())
+	if pairErr != nil {
+		t.Fatalf("importArtifactPair(A) error = %v", pairErr)
+	}
+	if len(created) != 2 {
+		t.Fatalf("created = %d, want 2", len(created))
+	}
+
+	// 真实取消语义：与 CancelEpisodeTaskIfActive 相同条件与字段。
+	if _, err := pool.Exec(ctx, `UPDATE episode_tasks SET state='cancelled', version=version+1 WHERE id=$1 AND state NOT IN ('imported','cancelled','rejected')`, taskA); err != nil {
+		t.Fatalf("cancel task A: %v", err)
+	}
+	completeErrA := workflowA.CompleteImport(ctx, domain.ImportCompletion{
+		TaskID: taskA, ImportID: importA, OperationID: latestImportOperationID(t, ctx, pool, taskA),
+		DestinationVideoPath: destinationVideo, DestinationSubtitlePath: destinationSubtitle,
+	})
+	var workflowErr *domain.MediaWorkflowError
+	if !errors.As(completeErrA, &workflowErr) || workflowErr.Code != "task_import_state_conflict" {
+		t.Fatalf("CompleteImport(A) error = %#v, want task_import_state_conflict", completeErrA)
+	}
+
+	// 真实取消路径的 failure 分类与 Handle 一致：task_import_state_conflict 为
+	// 不可重试（mediaStoreFailure 只包装cause，业务错误保留原分类）。
+	classified := mediaStoreFailure("import", completeErrA).(*Failure)
+	if classified.Retryable {
+		t.Fatalf("永久状态冲突不应重试，实际 %#v", classified)
+	}
+
+	handler := &EmbyImportHandler{store: workflowA, libraryAccess: newTestImportedLibraryAccess()}
+	compensationErr := handler.compensateFailedImport(ctx, domain.ImportCompletion{
+		TaskID: taskA, ImportID: importA,
+		DestinationVideoPath: destinationVideo, DestinationSubtitlePath: destinationSubtitle,
+	}, created, classified)
+	var failure *Failure
+	if compensationErr == nil || !errors.As(compensationErr, &failure) || failure.Code != "task_import_state_conflict" {
+		t.Fatalf("compensate() error = %#v, want task_import_state_conflict", compensationErr)
+	}
+
+	// 原 EM-01 常规缺陷断言：取消后库内不留孤儿文件。
+	for _, path := range []string{destinationVideo, destinationSubtitle} {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("取消后补偿未回滚 %q（原 EM-01 复现）: %v", path, statErr)
+		}
+	}
+	assertFileContent(t, videoPath, videoContent)
+}
+
+// ACK 丢失恢复（RR2）：真实 CompleteImport 成功写入 succeeded，随后
+// “连接故障”使 Handle 以为失败；补偿必须识别 Succeeded 并按成功返回 nil。
+func TestCompensationReturnsSuccessAfterAcknowledgementLossIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	_, pool := testutil.NewMigratedPostgres(t)
+
+	seriesID, profileID, actorID := uuid.New(), uuid.New(), uuid.New()
+	seedAdoptionBase(t, ctx, pool, seriesID, profileID, actorID)
+	taskA := seedAdoptionTask(t, ctx, pool, seriesID, profileID, actorID, "-A")
+
+	transactor := database.NewTransactor(pool)
+	workflowA := service.NewTaskWorkflow(db.New(pool), transactor, service.NewOperationScheduler(transactor, &probeJobInserter{}))
+
+	baseName := "Adoption Show - S01E01 - Pilot"
+	libraryRoot := t.TempDir()
+	destinationVideo := filepath.Join(libraryRoot, "Adoption Show", "Season1", baseName+".mkv")
+	destinationSubtitle := filepath.Join(libraryRoot, "Adoption Show", "Season1", baseName+".ass")
+
+	videoContent := []byte("ack-video-bytes")
+	subtitleContent := []byte("[Script Info]\nDialogue: ack\n")
+	staging := t.TempDir()
+	videoPath := filepath.Join(staging, "ack.mkv")
+	subtitlePath := filepath.Join(staging, "ack.ass")
+	if err := os.WriteFile(videoPath, videoContent, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subtitlePath, subtitleContent, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	videoArtifact := domain.MediaArtifact{TaskID: taskA, Kind: domain.MediaVideo, BaseName: baseName,
+		FilePath: videoPath, Format: "matroska", SizeBytes: int64(len(videoContent)), ChecksumSHA256: checksumFor(videoContent)}
+	subtitleArtifact := domain.MediaArtifact{TaskID: taskA, Kind: domain.MediaSubtitle, BaseName: baseName,
+		FilePath: subtitlePath, Format: "ass", SizeBytes: int64(len(subtitleContent)), ChecksumSHA256: checksumFor(subtitleContent)}
+
+	if _, err := workflowA.ReviewTask(ctx, domain.ReviewTask{
+		TaskID: taskA, ExpectedVersion: 1, Decision: domain.TaskApproved,
+		IdempotencyKey: "ack-a-review", ActorUserID: actorID,
+	}); err != nil {
+		t.Fatalf("ReviewTask(A) error = %v", err)
+	}
+	importA := latestImportID(t, ctx, pool, taskA)
+	if _, err := workflowA.BeginImport(ctx, taskA, importA); err != nil {
+		t.Fatalf("BeginImport(A) error = %v", err)
+	}
+	created, pairErr := importArtifactPair(ctx, videoArtifact, subtitleArtifact, libraryRoot,
+		destinationVideo, destinationSubtitle, uuid.New(), newTestImportedLibraryAccess())
+	if pairErr != nil {
+		t.Fatalf("importArtifactPair(A) error = %v", pairErr)
+	}
+
+	// 真实 CompleteImport 成功（succeeded 已提交），随后注入连接故障。
+	if err := workflowA.CompleteImport(ctx, domain.ImportCompletion{
+		TaskID: taskA, ImportID: importA, OperationID: latestImportOperationID(t, ctx, pool, taskA),
+		DestinationVideoPath: destinationVideo, DestinationSubtitlePath: destinationSubtitle,
+	}); err != nil {
+		t.Fatalf("CompleteImport(A) error = %v", err)
+	}
+	injected := errors.New("connection reset after commit (injected)")
+
+	handler := &EmbyImportHandler{store: workflowA, libraryAccess: newTestImportedLibraryAccess()}
+	compensationErr := handler.compensateFailedImport(ctx, domain.ImportCompletion{
+		TaskID: taskA, ImportID: importA,
+		DestinationVideoPath: destinationVideo, DestinationSubtitlePath: destinationSubtitle,
+	}, created, &Failure{Code: "media_storage_unavailable", Message: injected.Error(), Retryable: true, Cause: injected})
+	if compensationErr != nil {
+		t.Fatalf("ACK 丢失后补偿应按成功返回 nil，实际 %#v", compensationErr)
+	}
+
+	// 文件保持，导入记录确知成功。
+	assertFileContent(t, destinationVideo, videoContent)
+	assertFileContent(t, destinationSubtitle, subtitleContent)
+	state, err := workflowA.ObserveImportRecovery(ctx, taskA, importA, destinationVideo, destinationSubtitle)
+	if err != nil || !state.Succeeded || !state.DestinationClaimed {
+		t.Fatalf("Observe(A) = %#v, %v, want succeeded+claimed", state, err)
+	}
+}
