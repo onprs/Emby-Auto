@@ -59,9 +59,13 @@ func (handler *TranscodeRunHandler) Handle(ctx context.Context, operation domain
 	}
 	defer func() { _ = os.Remove(paths.Temporary) }()
 
-	inputProbe, err := handler.tools.Probe(ctx, settings.Paths.FFprobePath, sourcePath)
+	inputProbe, err := handler.tools.ProbeWithPacketCounts(ctx, settings.Paths.FFprobePath, sourcePath)
 	if err != nil {
 		return retryableFailure("source_video_probe_failed", "the source video could not be probed", err)
+	}
+	mainVideo, ok := domain.SelectMainVideoStream(inputProbe)
+	if !ok {
+		return permanentFailure("source_video_without_main_stream", "the source video has no main video stream", nil)
 	}
 	expectation, err := domain.BuildTranscodeProbeExpectation(command.TranscodeProfile)
 	if err != nil {
@@ -70,14 +74,14 @@ func (handler *TranscodeRunHandler) Handle(ctx context.Context, operation domain
 
 	outputPath := paths.Final
 	if _, statErr := os.Stat(paths.Final); os.IsNotExist(statErr) {
-		args, err := domain.BuildTranscodeFFmpegArgs(command.TranscodeProfile, sourcePath, paths.Temporary)
+		args, err := domain.BuildTranscodeFFmpegArgs(command.TranscodeProfile, sourcePath, paths.Temporary, mainVideo.Index)
 		if err != nil {
 			return permanentFailure("transcode_profile_invalid", "the task transcode command is invalid", err)
 		}
 		if err := handler.tools.RunFFmpeg(ctx, settings.Paths.FFmpegPath, args); err != nil {
 			return retryableFailure("ffmpeg_transcode_failed", "FFmpeg video transcoding failed", err)
 		}
-		outputProbe, err := handler.tools.Probe(ctx, settings.Paths.FFprobePath, paths.Temporary)
+		outputProbe, err := handler.tools.ProbeWithPacketCounts(ctx, settings.Paths.FFprobePath, paths.Temporary)
 		if err != nil {
 			return retryableFailure("transcode_output_probe_failed", "the temporary video output could not be probed", err)
 		}
@@ -90,7 +94,7 @@ func (handler *TranscodeRunHandler) Handle(ctx context.Context, operation domain
 	} else if statErr != nil {
 		return retryableFailure("staging_unavailable", "the existing video output could not be inspected", statErr)
 	} else {
-		outputProbe, err := handler.tools.Probe(ctx, settings.Paths.FFprobePath, paths.Final)
+		outputProbe, err := handler.tools.ProbeWithPacketCounts(ctx, settings.Paths.FFprobePath, paths.Final)
 		if err != nil {
 			return retryableFailure("transcode_output_probe_failed", "the existing video output could not be probed", err)
 		}

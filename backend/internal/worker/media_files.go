@@ -19,6 +19,7 @@ type MediaConfiguration interface {
 
 type MediaTools interface {
 	Probe(context.Context, string, string) (domain.MediaProbe, error)
+	ProbeWithPacketCounts(context.Context, string, string) (domain.MediaProbe, error)
 	RunFFmpeg(context.Context, string, []string) error
 }
 
