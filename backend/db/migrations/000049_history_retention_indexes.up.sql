@@ -44,6 +44,11 @@ SELECT resolution.id, resolution.completed_at, resolution.updated_at
 FROM agent_resolutions AS resolution
 WHERE resolution.status IN ('failed', 'cancelled', 'expired')
   AND NOT EXISTS (
+      SELECT 1 FROM operations AS operation
+      WHERE operation.id = resolution.operation_id
+        AND operation.status IN ('queued', 'running')
+  )
+  AND NOT EXISTS (
       SELECT 1 FROM episode_mapping_profiles AS profile
       WHERE profile.agent_resolution_id = resolution.id
   )
