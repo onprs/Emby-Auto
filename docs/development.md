@@ -21,6 +21,8 @@ npm run db:migrate
 npm run db:river:migrate
 ~~~
 
+根 `package.json` 的 `overrides` 把传递依赖 `js-yaml` 固定到 4.3.2。SDK 生成器依赖的 `@hey-api/json-schema-ref-parser` 精确声明了仍受 YAML 解析 CPU 耗尽公告影响的 4.2.0，生成与 `check:generated` 都经该链路解析 `contracts/openapi.yaml`。上游改用修复版本后，移除该覆盖并重跑 `npm run generate` 与 `npm run check:generated`。
+
 分别启动 API、Worker 和 Web：
 
 ~~~bash
