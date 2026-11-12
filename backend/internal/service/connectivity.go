@@ -232,6 +232,7 @@ func (service *ConnectivityService) testAgent(ctx context.Context, configuration
 	client, err := agentapi.NewClient(agentapi.ClientOptions{
 		BaseURL: settings.BaseURL, APIKey: apiKey, Model: settings.Model,
 		RequestTimeout: connectivityTimeout, HTTPClient: httpClient,
+		ProxyEnabled: settings.UseNetworkProxy,
 	})
 	if err != nil {
 		return err

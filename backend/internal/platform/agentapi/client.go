@@ -44,15 +44,19 @@ type ClientOptions struct {
 	RequestTimeout time.Duration
 	HTTPClient     *http.Client
 	Resolver       *net.Resolver
+	// ProxyEnabled 表示已启用网络代理。代理会代理解析目标域名，
+	// 本地解析失败不应阻止请求；本地能解析到禁用地址时仍然拒绝。
+	ProxyEnabled bool
 }
 
 type Client struct {
-	endpoint *url.URL
-	apiKey   string
-	model    string
-	timeout  time.Duration
-	http     *http.Client
-	resolver *net.Resolver
+	endpoint     *url.URL
+	apiKey       string
+	model        string
+	timeout      time.Duration
+	http         *http.Client
+	resolver     *net.Resolver
+	proxyEnabled bool
 }
 
 func NewClient(options ClientOptions) (*Client, error) {
@@ -100,12 +104,13 @@ func NewClient(options ClientOptions) (*Client, error) {
 		resolver = net.DefaultResolver
 	}
 	return &Client{
-		endpoint: endpoint,
-		apiKey:   options.APIKey,
-		model:    strings.TrimSpace(options.Model),
-		timeout:  timeout,
-		http:     &clientCopy,
-		resolver: resolver,
+		endpoint:     endpoint,
+		apiKey:       options.APIKey,
+		model:        strings.TrimSpace(options.Model),
+		timeout:      timeout,
+		http:         &clientCopy,
+		resolver:     resolver,
+		proxyEnabled: options.ProxyEnabled,
 	}, nil
 }
 
@@ -177,7 +182,7 @@ func (client *Client) completeWithEncoder(ctx context.Context, payload chatReque
 	if err := ctx.Err(); err != nil {
 		return chatResponse{}, requestError(ctx, err)
 	}
-	if err := validateResolvedEndpoint(ctx, client.resolver, client.endpoint); err != nil {
+	if err := validateResolvedEndpoint(ctx, client.resolver, client.endpoint, client.proxyEnabled); err != nil {
 		if ctx.Err() != nil {
 			return chatResponse{}, requestError(ctx, err)
 		}
@@ -303,7 +308,7 @@ func chatCompletionsURL(rawBaseURL string) (*url.URL, error) {
 	return parsed, nil
 }
 
-func validateResolvedEndpoint(ctx context.Context, resolver *net.Resolver, endpoint *url.URL) error {
+func validateResolvedEndpoint(ctx context.Context, resolver *net.Resolver, endpoint *url.URL, proxyEnabled bool) error {
 	host := endpoint.Hostname()
 	if address, err := netip.ParseAddr(host); err == nil {
 		if forbiddenAddress(address) {
@@ -313,6 +318,10 @@ func validateResolvedEndpoint(ctx context.Context, resolver *net.Resolver, endpo
 	}
 	addresses, err := resolver.LookupNetIP(ctx, "ip", host)
 	if err != nil || len(addresses) == 0 {
+		if proxyEnabled {
+			// 代理负责解析目标域名；本地解析失败不代表目标不可达。
+			return nil
+		}
 		return &Error{Code: "agent_request_failed", Retryable: true, Cause: err}
 	}
 	for _, address := range addresses {
