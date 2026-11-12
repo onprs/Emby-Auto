@@ -75,7 +75,7 @@ sqlc 查询发生变化时，应更新 `backend/db/query` 中的源查询并重�
 | 并发敏感的 Go 代码 | `npm run test:race` |
 | Web 交互 | `npm run test:e2e --workspace @emby-auto/web` |
 | 跨进程完整流程 | `npm run test:e2e:full` |
-| Docker 部署模板 | `npm run deploy:check`、`npm run deploy:build`、`npm run deploy:check-release` |
+| Docker 部署模板 | `npm run deploy:check`、`npm run deploy:build`、`npm run deploy:bundle:build`、`npm run deploy:check-release` |
 | Linux 直接部署模板 | `npm run deploy:direct:check`、`npm run deploy:direct:build`、`npm run deploy:direct:check-release` |
 
 完整 E2E 必须使用隔离测试环境。自动测试不得连接生产 qBittorrent、Emby、TMDb 账户或正式媒体目录。外部服务验收所需凭据只能通过进程环境注入。
@@ -114,7 +114,7 @@ Pull Request 应包含：
 - 所有 PR 必须通过 CI 全部状态检查：`verify`、`container-build`、`direct-build (amd64)`、`direct-build (arm64)`。
 - 必须由至少 1 名维护者 review 并 approve，对话全部解决，且分支基于最新 `main`。
 - 只允许 squash merge，保持 `main` 线性历史；禁止直接推送 `main`。
-- 版本发布使用 `v0.x.y` 标签，`v*` 标签触发 CI 构建公开发布包并附加到 GitHub Release；发布节奏与内容由维护者决定。
+- 版本发布使用 `v0.x.y` 标签，`v*` 标签触发 CI 构建公开发布包并附加到 GitHub Release；发布节奏与内容由维护者决定。带预发布后缀的标签（例如 `v0.2.0-rc.1`）发布为 GitHub 预发布，不更新 `releases/latest`。
 
 ## 仓库数据边界
 

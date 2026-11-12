@@ -4,6 +4,11 @@
 
 This guide describes how to deploy Emby Auto with the provided Docker Compose configuration. Compose manages PostgreSQL, the API, the Worker, and the Web interface. qBittorrent and Emby Server remain external services.
 
+There are two ways to obtain the Compose deployment, and the commands in this guide work in either directory:
+
+- Clone the repository and run from its root; configuration files live in `deploy/`.
+- Download the `emby-auto-compose-<version>.tar.gz` release bundle, extract it, and run from the bundle root. The bundle already contains the sources required for the build and the `deploy/` directory, so no repository clone is needed.
+
 ## Deployment Topology
 
 | Service | Network entry point | Persistent data |
@@ -23,6 +28,7 @@ The API and Worker are separate processes that share PostgreSQL, installation co
 - Reachable qBittorrent Web API and Emby Server instances.
 - A TMDb API Read Access Token.
 - Five absolute directories writable by the application.
+- Network access to Docker Hub and the npm and Go module sources for the first build.
 
 ## 1. Configure the Environment
 
@@ -157,10 +163,17 @@ Encrypt backups and restrict access whenever they contain database connections o
 
 ### Upgrade
 
-After confirming that the application is idle and backups are complete, run:
+After confirming that the application is idle and backups are complete, obtain the new version and rebuild:
 
 ```bash
+# Repository clone
 git pull --ff-only
+
+# Release bundle: extract the new version in the bundle root and keep the existing deploy/.env
+tar -xzf emby-auto-compose-vNEW_VERSION.tar.gz -C .
+```
+
+```bash
 docker compose --env-file deploy/.env -f deploy/compose.yaml build
 docker compose --env-file deploy/.env -f deploy/compose.yaml stop worker
 docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --wait postgres api web
@@ -169,6 +182,8 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml exec -T api \
 docker compose --env-file deploy/.env -f deploy/compose.yaml up -d worker
 docker compose --env-file deploy/.env -f deploy/compose.yaml ps
 ```
+
+Extract release bundles in the original directory. Docker Compose uses the directory name as the project name by default; starting from a new directory creates new volumes and does not migrate the existing data.
 
 The API applies application migrations and River migrations in sequence during startup. If readiness fails, leave the Worker stopped and inspect the API logs. Never run an old Worker against a failed or incompatible database migration.
 
