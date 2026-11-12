@@ -58,7 +58,7 @@ func (workflow *MediaWorkflow) MaterializeDownload(
 		if locked.Status == string(domain.DownloadMaterialized) {
 			return nil
 		}
-		if locked.Status != string(domain.DownloadCompleted) {
+		if locked.Status != string(domain.DownloadCompleted) && locked.Status != string(domain.DownloadSelectingFiles) {
 			return mediaWorkflowError("download_state_conflict", fmt.Sprintf("download cannot materialize from state %q", locked.Status), false)
 		}
 		mediaType := domain.TaskMediaEpisode
@@ -100,8 +100,10 @@ func (workflow *MediaWorkflow) MaterializeDownload(
 				return err
 			}
 		}
-		if _, err := scope.Queries.MarkDownloadSelectingFiles(ctx, repository.UUIDToPG(downloadID)); err != nil {
-			return fmt.Errorf("mark download selecting files: %w", err)
+		if locked.Status == string(domain.DownloadCompleted) {
+			if _, err := scope.Queries.MarkDownloadSelectingFiles(ctx, repository.UUIDToPG(downloadID)); err != nil {
+				return fmt.Errorf("mark download selecting files: %w", err)
+			}
 		}
 
 		for _, video := range videos {

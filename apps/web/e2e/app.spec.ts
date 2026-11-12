@@ -415,6 +415,89 @@ test.describe('application shell', () => {
     expect(pageErrors).toEqual([]);
   });
 
+  test('confirms detected download files without requiring a manual edit', async ({ page }) => {
+    await stubAuthenticatedApp(page);
+    const downloadId = '21000000-0000-0000-0000-000000000001';
+    const acquisitionId = '21000000-0000-0000-0000-000000000002';
+    const operationId = '21000000-0000-0000-0000-000000000003';
+    const videoId = '21000000-0000-0000-0000-000000000004';
+    const subtitleId = '21000000-0000-0000-0000-000000000005';
+    const extraId = '21000000-0000-0000-0000-000000000006';
+    const now = new Date().toISOString();
+    const download = {
+      id: downloadId,
+      acquisitionId,
+      attempt: 1,
+      clientName: 'qbittorrent',
+      clientState: 'pausedDL',
+      status: 'file_resolution_pending',
+      progress: 0.5,
+      savePath: '/downloads/selection',
+      version: 4,
+      fileResolutionSource: 'deterministic',
+      createdAt: now,
+      updatedAt: now,
+      files: [
+        { id: videoId, fileIndex: 0, relativePath: 'Selection.S01E01.mkv', sizeBytes: 2048, mediaKind: 'video', selected: true, sourceSeason: 1, sourceEpisode: 1, sourceEpisodeFractionHundredths: 0 },
+        { id: subtitleId, fileIndex: 1, relativePath: 'Selection.S01E01.zh-Hans.ass', sizeBytes: 512, mediaKind: 'subtitle', selected: true, sourceSeason: 1, sourceEpisode: 1, sourceEpisodeFractionHundredths: 0 },
+        { id: extraId, fileIndex: 2, relativePath: 'Selection.S01E01.nfo', sizeBytes: 64, mediaKind: 'extra', selected: false, exclusionReason: 'not_media' },
+      ],
+      actions: { canRetry: false, canCancel: true, canDelete: false, canEditFileSelection: false, canResolveFiles: true, canRequestAgent: false },
+    };
+    type ResolutionSubmission = { expectedVersion: number; files: Array<Record<string, unknown>> };
+    let submitted: ResolutionSubmission | undefined;
+    await page.route(`**/api/v1/downloads/${downloadId}**`, (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(download) }),
+    );
+    await page.route(`**/api/v1/downloads/${downloadId}/file-resolution`, (route) => {
+      submitted = route.request().postDataJSON() as ResolutionSubmission;
+      return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ operationId, status: 'queued' }) });
+    });
+    await page.route('**/api/v1/acquisitions**', (route) => {
+      const body = new URL(route.request().url()).pathname.endsWith(`/${acquisitionId}`)
+        ? {
+            id: acquisitionId,
+            mediaType: 'episode',
+            seriesId: '21000000-0000-0000-0000-000000000007',
+            seriesTitle: '文件选择测试',
+            sourceKind: 'manual',
+            sourceSeason: 1,
+            sourceEpisode: 1,
+            downloadId,
+            tasks: [],
+            mapping: { selectedVideoCount: 1, mappedVideoCount: 1, complete: true },
+            aggregateStatus: 'downloading',
+            createdAt: now,
+            updatedAt: now,
+          }
+        : { items: [] };
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    });
+    await page.route('**/api/v1/operations**', (route) => {
+      const pathname = new URL(route.request().url()).pathname;
+      const body = pathname.endsWith(`/${operationId}`)
+        ? { id: operationId, resourceType: 'download', resourceId: downloadId, kind: 'download.selection.apply', status: 'succeeded', attempt: 1, maxAttempts: 5, createdAt: now, updatedAt: now }
+        : { items: [] };
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    });
+
+    await page.goto(`/downloads/${downloadId}`);
+    const submit = page.getByRole('button', { name: '按检测结果开始下载' });
+    await expect(submit).toBeEnabled();
+    await submit.click();
+
+    await expect.poll(() => Boolean(submitted)).toBe(true);
+    expect(submitted).toEqual({
+      expectedVersion: 4,
+      files: [
+        { fileId: videoId, selected: true, sourceSeason: 1, sourceEpisode: 1, sourceEpisodeFractionHundredths: 0 },
+        { fileId: subtitleId, selected: true, sourceSeason: 1, sourceEpisode: 1, sourceEpisodeFractionHundredths: 0 },
+        { fileId: extraId, selected: false },
+      ],
+    });
+    await expect(page.getByRole('link', { name: '查看操作日志' })).toBeVisible();
+  });
+
   test('sorts lifecycle tasks from column headers and selects the current page', async ({ page }, testInfo) => {
     const pageErrors: string[] = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));

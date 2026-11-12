@@ -63,3 +63,14 @@ export function formatSourceEpisodeInput(episode?: number, fractionHundredths = 
 export function sourceCoordinateLabel(season: number, episode: number, fractionHundredths = 0): string {
   return `S${season}E${formatSourceEpisodeInput(episode, fractionHundredths)}`;
 }
+
+// fileSelectionSubmitState 决定文件选择按钮是否可用；解析待确认时允许直接按检测结果提交。
+export function fileSelectionSubmitState(resolving: boolean, dirty: boolean): {
+  enabled: boolean;
+  label: '保存并开始下载' | '按检测结果开始下载' | '保存并重新物化';
+} {
+  if (resolving) {
+    return { enabled: true, label: dirty ? '保存并开始下载' : '按检测结果开始下载' };
+  }
+  return { enabled: dirty, label: '保存并重新物化' };
+}
