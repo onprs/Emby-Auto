@@ -86,6 +86,13 @@ fi
 compose=(docker compose --env-file "${bundle}/deploy/.env.example" -f "${bundle}/deploy/compose.yaml")
 "${compose[@]}" config --quiet
 
+# 项目名与卷名固定，与部署文档描述一致，防止文档与配置漂移。
+project_name="$(docker compose --env-file "${bundle}/deploy/.env.example" -f "${bundle}/deploy/compose.yaml" config --format json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).name))')"
+[[ "${project_name}" == emby-auto ]] || {
+  printf 'Compose 项目名意外变化：%s（文档固定为 emby-auto）\n' "${project_name}" >&2
+  exit 1
+}
+
 if [[ "${mode}" == build ]]; then
   "${compose[@]}" build
   docker image inspect emby-auto-backend:local emby-auto-web:local >/dev/null

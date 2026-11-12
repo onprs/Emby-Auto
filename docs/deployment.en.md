@@ -183,7 +183,7 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d worker
 docker compose --env-file deploy/.env -f deploy/compose.yaml ps
 ```
 
-Extract release bundles in the original directory. Docker Compose uses the directory name as the project name by default; starting from a new directory creates new volumes and does not migrate the existing data.
+Extract release bundles in the original directory. The Compose file fixes the project name to `emby-auto`, producing volumes named `emby-auto_postgres-data` and `emby-auto_app-data`; the project name does not depend on the directory, so starting the same Compose file from another directory reuses the same named volumes instead of creating new ones or isolating data. Keep the original directory and `deploy/.env` when upgrading, and never point two deployments at the same volume set.
 
 The API applies application migrations and River migrations in sequence during startup. If readiness fails, leave the Worker stopped and inspect the API logs. Never run an old Worker against a failed or incompatible database migration.
 

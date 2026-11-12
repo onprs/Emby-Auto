@@ -183,7 +183,7 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d worker
 docker compose --env-file deploy/.env -f deploy/compose.yaml ps
 ```
 
-发布包必须在原目录解压。Docker Compose 默认以目录名作为项目名，换到新目录启动会创建新卷，原有数据不会自动迁移。
+发布包在原目录解压。Compose 文件固定项目名为 `emby-auto`，卷名为 `emby-auto_postgres-data`、`emby-auto_app-data`；项目名与所在目录无关，从其它目录启动同一 Compose 文件仍会复用同一组命名卷，不会创建新卷或隔离数据。升级时应保留原目录与 `deploy/.env`，不要把两个部署指向同一组卷。
 
 API 启动时会依次执行应用迁移与 River 迁移。就绪检查失败时，应保持 Worker 停止并检查 API 日志；不得让旧 Worker 连接迁移失败或不兼容的数据库。
 
