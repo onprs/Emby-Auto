@@ -6,11 +6,11 @@ const downloadId = '31000000-0000-0000-0000-000000000001';
 const acquisitionId = '31000000-0000-0000-0000-000000000002';
 const now = '2026-11-12T10:00:00Z';
 
-function download(version: number) {
+function download(version: number, id = downloadId, acquisition = acquisitionId, attempt = 1) {
   return {
-    id: downloadId,
-    acquisitionId,
-    attempt: 1,
+    id,
+    acquisitionId: acquisition,
+    attempt,
     clientName: 'qBittorrent',
     clientState: 'downloading',
     status: 'downloading',
@@ -91,7 +91,67 @@ test.describe('列表反馈与实时订阅', () => {
     ).toBe(true);
   });
 
-  test('深分页的游标栈有界，上一页仍可使用', async ({ page }, testInfo) => {
+  test('两行失败提示同时可见、可分别关闭且不互相遮挡', async ({ page }) => {
+    await stubAuthenticatedApp(page);
+    await page.route('**/api/v1/downloads**', async (route) => {
+      if (!isDownloadsList(route)) {
+        await route.fallback();
+        return;
+      }
+      await json(route, {
+        items: [
+          download(1, '41000000-0000-4000-8000-000000000001', '41000000-0000-4000-8000-000000000011', 1),
+          download(2, '41000000-0000-4000-8000-000000000002', '41000000-0000-4000-8000-000000000012', 2),
+        ],
+      });
+    });
+    let cancelCalls = 0;
+    await page.route('**/api/v1/downloads/*/cancel', async (route) => {
+      cancelCalls += 1;
+      await json(
+        route,
+        { code: 'version_conflict', message: `第 ${cancelCalls} 行失败原因`, details: {}, requestId: 'e2e-multi' },
+        409,
+      );
+    });
+
+    await page.goto('/downloads');
+    await expect(page.getByRole('link', { name: '下载记录 1' }).first()).toBeVisible();
+    await expect(page.getByRole('link', { name: '下载记录 2' }).first()).toBeVisible();
+
+    for (let index = 0; index < 2; index += 1) {
+      await page.getByRole('button', { name: '更多操作' }).nth(index).click();
+      await page.getByRole('menuitem', { name: '停止' }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '确认停止' }).click();
+      await expect(page.getByRole('alert')).toHaveCount(index + 1);
+    }
+
+    const alerts = page.getByRole('alert');
+    await expect(alerts).toHaveCount(2);
+    await expect(alerts.nth(0)).toHaveText(/第 1 行失败原因/);
+    await expect(alerts.nth(1)).toHaveText(/第 2 行失败原因/);
+    const visibility = await alerts.evaluateAll((nodes) => nodes.map((node) => {
+      const rect = node.getBoundingClientRect();
+      const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return !(top !== null && node.contains(top));
+    }));
+    expect(visibility).toEqual([false, false]);
+
+    // 关闭第二条不会影响第一条，剩余提示仍在可视层。
+    await alerts.nth(1).getByRole('button', { name: '关闭' }).click();
+    await expect(alerts).toHaveCount(1);
+    await expect(alerts.nth(0)).toHaveText(/第 1 行失败原因/);
+    expect(
+      await alerts.nth(0).evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        return top !== null && node.contains(top);
+      }),
+    ).toBe(true);
+    expect(cancelCalls).toBe(2);
+  });
+
+  test('深分页截断后提供明确的第一页入口，不再静默跳页', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop', '分页交互由桌面项目覆盖');
     test.setTimeout(120_000);
     await stubAuthenticatedApp(page);
@@ -111,11 +171,34 @@ test.describe('列表反馈与实时订阅', () => {
 
     const cursorStack = new URL(page.url()).searchParams.get('cursorStack') ?? '';
     expect(cursorStack.length).toBeLessThanOrEqual(4096);
+    const initialEntries = cursorStack.split(',');
+    const oldestRetained = initialEntries[1];
     await expect(page.getByRole('button', { name: '上一页' })).toBeEnabled();
     await page.getByRole('button', { name: '上一页' }).click();
     await expect
       .poll(() => new URL(page.url()).searchParams.get('cursor'))
       .toBe(cursorFor(114));
+
+    // 继续回退到最老保留页：上一页禁用，历史截断提示与独立“回到第一页”入口可见。
+    for (let step = 0; step < 60; step += 1) {
+      if (!(await page.getByRole('button', { name: '上一页' }).isEnabled())) {
+        break;
+      }
+      const before = new URL(page.url()).searchParams.get('cursor');
+      await page.getByRole('button', { name: '上一页' }).click();
+      await expect.poll(() => new URL(page.url()).searchParams.get('cursor')).not.toBe(before);
+    }
+    await expect(page.getByRole('button', { name: '上一页' })).toBeDisabled();
+    await expect(page.getByText('更早的分页记录已省略')).toBeVisible();
+    expect(new URL(page.url()).searchParams.get('cursor')).toBe(oldestRetained);
+    const firstPage = page.getByRole('button', { name: '回到第一页' });
+    await expect(firstPage).toBeEnabled();
+
+    await firstPage.click();
+    await expect.poll(() => new URL(page.url()).searchParams.get('cursor')).toBeNull();
+    expect(new URL(page.url()).searchParams.get('cursorStack')).toBeNull();
+    expect(new URL(page.url()).searchParams.get('cursorTruncated')).toBeNull();
+    await expect(page.getByText('更早的分页记录已省略')).toHaveCount(0);
   });
 
   test('新会话先收到订阅边界，随后从该水位继续', async ({ page }) => {

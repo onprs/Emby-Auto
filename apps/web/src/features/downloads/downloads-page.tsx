@@ -319,9 +319,12 @@ export function DownloadsPage() {
           </div>
           <PaginationControls
             canGoBack={pagination.canGoBack}
+            canGoFirst={pagination.canGoFirst}
+            historyTruncated={pagination.historyTruncated}
             hasNext={Boolean(downloads.data.nextCursor)}
             onPrevious={pagination.goPrevious}
             onNext={() => pagination.goNext(downloads.data.nextCursor)}
+            onFirst={pagination.reset}
             isFetching={downloads.isFetching}
           />
         </>

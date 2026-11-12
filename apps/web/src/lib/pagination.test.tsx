@@ -40,6 +40,8 @@ function DeepPaginationHarness() {
     <div>
       <output data-testid="cursor">{pagination.cursor ?? 'root'}</output>
       <output data-testid="can-back">{String(pagination.canGoBack)}</output>
+      <output data-testid="can-first">{String(pagination.canGoFirst)}</output>
+      <output data-testid="truncated">{String(pagination.historyTruncated)}</output>
       <button
         type="button"
         onClick={() => {
@@ -50,6 +52,7 @@ function DeepPaginationHarness() {
         next
       </button>
       <button type="button" onClick={pagination.goPrevious}>previous</button>
+      <button type="button" onClick={pagination.reset}>first</button>
     </div>
   );
 }
@@ -100,7 +103,7 @@ describe('useCursorPagination', () => {
     expect(router.state.location.search).toEqual({ status: 'failed' });
   });
 
-  it('caps the cursor stack so deep pages keep a working previous step', async () => {
+  it('marks truncated history and keeps the oldest retained page behind an explicit first-page action', async () => {
     const router = renderDeepPagination();
     expect(await screen.findByTestId('cursor')).toHaveTextContent('root');
 
@@ -110,19 +113,39 @@ describe('useCursorPagination', () => {
     }
 
     const cursorStack = new URL(router.state.location.href, 'http://localhost').searchParams.get('cursorStack') ?? '';
-    // 路由只接受不超过 4096 字符的游标栈；超限后整段丢失会让“上一页”永久禁用。
+    const entries = cursorStack.split(',');
+    // 路由只接受不超过 4096 字符的游标栈；截断必须显式标记，不能依赖整段丢弃。
     expect(cursorStack.length).toBeLessThanOrEqual(4096);
-    expect(cursorStack.split(',')[0]).toBe('_');
+    expect(entries[0]).toBe('_');
+    expect(entries).toHaveLength(50);
+    expect(new URL(router.state.location.href, 'http://localhost').searchParams.get('cursorTruncated')).toBe('truncated');
+    expect(screen.getByTestId('truncated')).toHaveTextContent('true');
     expect(screen.getByTestId('can-back')).toHaveTextContent('true');
 
+    const oldestRetained = entries[1];
     let previousSteps = 0;
-    while (screen.getByTestId('cursor').textContent !== 'root' && previousSteps < 60) {
+    while (screen.getByTestId('can-back').textContent === 'true' && previousSteps < 60) {
       const before = screen.getByTestId('cursor').textContent;
       fireEvent.click(screen.getByText('previous'));
       previousSteps += 1;
       await waitFor(() => expect(screen.getByTestId('cursor').textContent).not.toBe(before));
     }
-    expect(screen.getByTestId('cursor')).toHaveTextContent('root');
-    expect(previousSteps).toBeLessThanOrEqual(51);
+
+    // 最老可返回处：上一页禁用，不能无提示跨段跳到第一页；历史截断状态保持可见。
+    expect(screen.getByTestId('can-back')).toHaveTextContent('false');
+    expect(screen.getByTestId('truncated')).toHaveTextContent('true');
+    expect(screen.getByTestId('cursor')).toHaveTextContent(oldestRetained);
+    expect(screen.getByTestId('can-first')).toHaveTextContent('true');
+
+    const beforeBoundaryClick = screen.getByTestId('cursor').textContent;
+    fireEvent.click(screen.getByText('previous'));
+    await waitFor(() => expect(screen.getByTestId('cursor').textContent).toBe(beforeBoundaryClick));
+
+    fireEvent.click(screen.getByText('first'));
+    await waitFor(() => expect(screen.getByTestId('cursor')).toHaveTextContent('root'));
+    expect(screen.getByTestId('truncated')).toHaveTextContent('false');
+    expect(screen.getByTestId('can-first')).toHaveTextContent('false');
+    expect(screen.getByTestId('can-back')).toHaveTextContent('false');
+    expect(router.state.location.search).toEqual({});
   });
 });

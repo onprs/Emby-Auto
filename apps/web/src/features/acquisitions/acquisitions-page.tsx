@@ -325,9 +325,12 @@ export function AcquisitionsPage() {
           </div>
           <PaginationControls
             canGoBack={pagination.canGoBack}
+            canGoFirst={pagination.canGoFirst}
+            historyTruncated={pagination.historyTruncated}
             hasNext={Boolean(acquisitions.data.nextCursor)}
             onPrevious={pagination.goPrevious}
             onNext={() => pagination.goNext(acquisitions.data.nextCursor)}
+            onFirst={pagination.reset}
             isFetching={acquisitions.isFetching}
           />
         </>
