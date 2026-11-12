@@ -24,11 +24,13 @@ type SubtitleStore interface {
 	CompleteArtifact(context.Context, domain.MediaArtifactCompletion) error
 	CreateSubtitleVideoMatchScope(context.Context, uuid.UUID, []domain.SubtitleMatchCandidate) (uuid.UUID, error)
 	GetSubtitleVideoMatchSelection(context.Context, uuid.UUID) (domain.SubtitleMatchSelection, error)
+	ExpireSubtitleVideoMatchScope(context.Context, uuid.UUID) error
 }
 
 type SubtitleMatchAgentResolutionCreator interface {
 	CapabilityEnabled(context.Context, domain.AgentCapability) (bool, error)
 	CreateAutomatic(context.Context, service.AutomaticAgentResolutionRequest) (service.AgentResolutionCommandResult, error)
+	RetryAutomatic(context.Context, uuid.UUID, int) (service.AgentResolutionCommandResult, error)
 }
 
 type SubtitlePrepareHandler struct {
@@ -147,10 +149,24 @@ func (handler *SubtitlePrepareHandler) Handle(ctx context.Context, operation dom
 					if scopeID == uuid.Nil {
 						return permanentFailure("subtitle_scope_invalid", "the subtitle video match scope could not be created", nil)
 					}
-					if _, agentErr := handler.agentResolutions.CreateAutomatic(ctx, service.AutomaticAgentResolutionRequest{
+					result, agentErr := handler.agentResolutions.CreateAutomatic(ctx, service.AutomaticAgentResolutionRequest{
 						Capability: domain.AgentCapabilitySubtitleVideoMatch, ResourceID: scopeID,
-					}); agentErr != nil && !errors.Is(agentErr, service.ErrStateConflict) {
+					})
+					if agentErr != nil && !errors.Is(agentErr, service.ErrStateConflict) {
 						return retryableFailure("agent_resolution_schedule_failed", "the Agent subtitle matching resolution could not be scheduled", agentErr)
+					}
+					if agentErr == nil {
+						if service.AutomaticAgentResolutionRetryable(result.Resolution) {
+							if _, retryErr := handler.agentResolutions.RetryAutomatic(ctx, result.Resolution.ID, result.Resolution.Version); retryErr != nil && !errors.Is(retryErr, service.ErrStateConflict) {
+								return retryableFailure("agent_resolution_schedule_failed", "the Agent subtitle matching resolution could not be resumed", retryErr)
+							}
+						} else if result.Resolution.Status == domain.AgentResolutionFailed {
+							// 不可自动重试的失败会终止任务字幕分支，避免任务回到 processing 后再次静默等待。
+							if expireErr := handler.store.ExpireSubtitleVideoMatchScope(ctx, scopeID); expireErr != nil {
+								return mediaStoreFailure("subtitle", expireErr)
+							}
+							return permanentFailure("agent_subtitle_match_failed", "the Agent subtitle matching resolution failed", nil)
+						}
 					}
 					// Wait for the Agent to select a candidate; the apply step schedules a
 					// fresh subtitle.prepare that carries the applied selection.

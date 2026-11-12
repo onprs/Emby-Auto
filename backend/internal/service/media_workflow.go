@@ -704,12 +704,17 @@ func (workflow *MediaWorkflow) CreateSubtitleVideoMatchScope(
 			ID: repository.UUIDToPG(scopeID), TaskID: repository.UUIDToPG(taskID),
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
-			// An existing scope under the same task is reused; the caller should
-			// treat this as already-scheduled rather than creating a duplicate.
+			// 已存在 pending 或 applied 的范围时复用既有调度，不创建重复范围。
 			return mediaWorkflowError("subtitle_scope_conflict", "a subtitle video match scope already exists for this task", false)
 		}
 		if err != nil {
 			return mediaWorkflowError("subtitle_scope_unavailable", "the subtitle video match scope could not be created", true)
+		}
+		// 已过期范围的候选集属于上一次失败尝试，换用当前候选集。
+		if repository.UUIDFromPG(created.ID) != scopeID {
+			if err := scope.Queries.DeleteSubtitleVideoMatchCandidates(ctx, created.ID); err != nil {
+				return mediaWorkflowError("subtitle_scope_unavailable", "stale subtitle candidates could not be cleared", true)
+			}
 		}
 		scopeID = repository.UUIDFromPG(created.ID)
 		for _, candidate := range candidates {
@@ -732,6 +737,22 @@ func (workflow *MediaWorkflow) CreateSubtitleVideoMatchScope(
 		return uuid.Nil, err
 	}
 	return scopeID, nil
+}
+
+// ExpireSubtitleVideoMatchScope 作废一个仍处于 pending 的字幕匹配范围。
+// 任务重试时 CreateSubtitleVideoMatchScope 会复用已过期范围并换用新候选集。
+func (workflow *MediaWorkflow) ExpireSubtitleVideoMatchScope(ctx context.Context, scopeID uuid.UUID) error {
+	if scopeID == uuid.Nil {
+		return mediaWorkflowError("subtitle_scope_invalid", "the subtitle video match scope is invalid", false)
+	}
+	_, err := workflow.queries.ExpireSubtitleVideoMatchScope(ctx, repository.UUIDToPG(scopeID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return mediaWorkflowError("subtitle_scope_unavailable", "the subtitle video match scope could not be expired", true)
+	}
+	return nil
 }
 
 // GetSubtitleVideoMatchSelection returns the Agent-selected candidate for a

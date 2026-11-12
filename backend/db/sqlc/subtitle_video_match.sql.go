@@ -46,7 +46,12 @@ func (q *Queries) ApplySubtitleVideoMatchSelection(ctx context.Context, arg Appl
 const createSubtitleVideoMatchScope = `-- name: CreateSubtitleVideoMatchScope :one
 INSERT INTO subtitle_video_match_scopes (id, task_id)
 VALUES ($1, $2)
-ON CONFLICT (task_id) DO NOTHING
+ON CONFLICT (task_id) DO UPDATE
+SET status = 'pending',
+    selected_candidate_id = NULL,
+    agent_resolution_id = NULL,
+    updated_at = now()
+WHERE subtitle_video_match_scopes.status = 'expired'
 RETURNING id, task_id, status, selected_candidate_id, agent_resolution_id, created_at, updated_at
 `
 
@@ -68,6 +73,32 @@ func (q *Queries) CreateSubtitleVideoMatchScope(ctx context.Context, arg CreateS
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const deleteSubtitleVideoMatchCandidates = `-- name: DeleteSubtitleVideoMatchCandidates :exec
+DELETE FROM subtitle_video_match_candidates
+WHERE scope_id = $1
+`
+
+func (q *Queries) DeleteSubtitleVideoMatchCandidates(ctx context.Context, scopeID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteSubtitleVideoMatchCandidates, scopeID)
+	return err
+}
+
+const expireSubtitleVideoMatchScope = `-- name: ExpireSubtitleVideoMatchScope :one
+UPDATE subtitle_video_match_scopes
+SET status = 'expired',
+    updated_at = now()
+WHERE id = $1
+  AND status = 'pending'
+RETURNING task_id
+`
+
+func (q *Queries) ExpireSubtitleVideoMatchScope(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, expireSubtitleVideoMatchScope, id)
+	var task_id pgtype.UUID
+	err := row.Scan(&task_id)
+	return task_id, err
 }
 
 const getSubtitleVideoMatchContext = `-- name: GetSubtitleVideoMatchContext :one

@@ -69,6 +69,8 @@ type subtitleStoreStub struct {
 	selErr          error
 	scopeCalls      int
 	scopeCandidates []domain.SubtitleMatchCandidate
+	expiredScopes   []uuid.UUID
+	expireErr       error
 }
 
 func (stub *subtitleStoreStub) BeginSubtitle(context.Context, uuid.UUID) (domain.TaskMediaCommand, error) {
@@ -85,6 +87,10 @@ func (stub *subtitleStoreStub) CreateSubtitleVideoMatchScope(_ context.Context, 
 }
 func (stub *subtitleStoreStub) GetSubtitleVideoMatchSelection(context.Context, uuid.UUID) (domain.SubtitleMatchSelection, error) {
 	return stub.selection, stub.selErr
+}
+func (stub *subtitleStoreStub) ExpireSubtitleVideoMatchScope(_ context.Context, scopeID uuid.UUID) error {
+	stub.expiredScopes = append(stub.expiredScopes, scopeID)
+	return stub.expireErr
 }
 
 func TestTranscodeRunWritesValidatedAtomicOutputAndPersistsArtifact(t *testing.T) {

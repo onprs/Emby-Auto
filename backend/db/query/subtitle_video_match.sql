@@ -1,8 +1,25 @@
 -- name: CreateSubtitleVideoMatchScope :one
 INSERT INTO subtitle_video_match_scopes (id, task_id)
 VALUES (sqlc.arg(id), sqlc.arg(task_id))
-ON CONFLICT (task_id) DO NOTHING
+ON CONFLICT (task_id) DO UPDATE
+SET status = 'pending',
+    selected_candidate_id = NULL,
+    agent_resolution_id = NULL,
+    updated_at = now()
+WHERE subtitle_video_match_scopes.status = 'expired'
 RETURNING *;
+
+-- name: DeleteSubtitleVideoMatchCandidates :exec
+DELETE FROM subtitle_video_match_candidates
+WHERE scope_id = sqlc.arg(scope_id);
+
+-- name: ExpireSubtitleVideoMatchScope :one
+UPDATE subtitle_video_match_scopes
+SET status = 'expired',
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND status = 'pending'
+RETURNING task_id;
 
 -- name: InsertSubtitleVideoMatchCandidate :exec
 INSERT INTO subtitle_video_match_candidates (

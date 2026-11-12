@@ -554,6 +554,11 @@ func failAgentResolutionResource(
 	if err != nil {
 		return fmt.Errorf("finish Agent resolution resource: %w", err)
 	}
+	if resolution.Capability == "subtitle_video_match" {
+		if err := ReconcileSubtitleVideoMatchTask(ctx, queries, resolution.ResourceID, status, code, message, operation.ID); err != nil {
+			return err
+		}
+	}
 	topic := "agent.resolution_failed"
 	if status == "cancelled" {
 		topic = "agent.resolution_cancelled"
