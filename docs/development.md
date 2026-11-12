@@ -83,7 +83,7 @@ npm run check:generated
 | `npm run test:e2e --workspace @emby-auto/web` | 浏览器测试 |
 | `npm run deploy:check` | Compose 配置 |
 | `npm run deploy:direct:check` | Linux 直接部署模板 |
-| `npm run deploy:install:check` | 安装器语法、安装与重试、校验失败和配置保护 |
+| `npm run deploy:install:check` | 安装器语法、安装与重试、校验失败、共享组目录权限与暂停态重跑 |
 
 读取规则由 `read_service_test.go` 覆盖。`list_sort_integration_test.go` 和 `list_pagination_order_integration_test.go` 检查所有排序方向、跨页完整性、筛选、Unicode 标题和游标边界；排序差分以旧 Go 排序规则为参考。`list_projection_integration_test.go` 和 `list_projection_lock_order_integration_test.go` 检查事务回滚、并发提交快照、批量写入与后台补算的锁顺序、维护 SQL 恢复和版本保护；迁移测试验证回滚后保留业务数据并可重新补算。
 

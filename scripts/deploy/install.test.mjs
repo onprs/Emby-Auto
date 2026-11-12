@@ -26,7 +26,7 @@ function fixture(t) {
   for (const binary of ['api', 'worker', 'migration-check', 'background-runtime', 'release-preflight', 'recover-stale-operations', 'migrate-runtime-addresses', 'migrate-staging-ownership']) {
     writeFileSync(join(payload, 'bin', `emby-auto-${binary}`), '#!/bin/sh\nexit 0\n');
   }
-  writeFileSync(join(payload, 'bin/emby-auto-host-control'), ['#!/bin/sh', 'echo running', ''].join('\n'));
+  writeFileSync(join(payload, 'bin/emby-auto-host-control'), ['#!/bin/sh', 'echo "${EMBY_AUTO_TEST_WORKER_STATUS:-running}"', ''].join('\n'));
   writeFileSync(join(payload, 'web/index.html'), '<!doctype html><title>Emby Auto</title>');
   for (const name of ['emby-auto-api.service', 'emby-auto-worker.service', 'emby-auto-systemd-control.service', 'worker-runtime.sh']) {
     copyFileSync(join(root, 'deploy/direct', name), join(payload, 'config', name));
@@ -59,6 +59,9 @@ command() {
     [[ "\${REUSE_MEDIA_TOOLS:-0}" == 1 ]] && return 0
     return 1
   fi
+  if [[ "$1" == -v && "$2" == setfacl && "\${NO_ACL:-0}" == 1 ]]; then
+    return 1
+  fi
   builtin command "$@"
 }
 id() {
@@ -68,9 +71,17 @@ id() {
   case "$1" in
     -u) printf '%s\\n' "$TEST_UID" ;;
     -g) printf '%s\\n' "$TEST_GID" ;;
+    -gn) printf '%s\\n' "\${TEST_PRIMARY_GROUP:-emby-auto}" ;;
+    -nG) printf '%s\\n' "\${TEST_GROUPS:-emby-auto}" ;;
   esac
 }
 useradd() { touch "$TEST_ROOT/account"; printf '%s\\n' "$*" >>"$TEST_ROOT/useradd.log"; }
+getent() {
+  [[ "$1" == group && "\${NO_SHARE_GROUP:-0}" != 1 ]] || return 2
+  printf '%s:x:%s:\\n' "$2" "\${SHARE_GID:-2000}"
+}
+usermod() { printf '%s\\n' "$*" >>"$TEST_ROOT/usermod.log"; }
+setfacl() { printf '%s\\n' "$*" >>"$TEST_ROOT/setfacl.log"; }
 install() {
   local args=()
   while (( $# )); do
@@ -83,7 +94,14 @@ apt-get() { printf '%s\\n' "$*" >>"$TEST_ROOT/packages.log"; }
 ss() { if [[ "\${BUSY_PORT:-}" != '' && "$*" == *":$BUSY_PORT" ]]; then printf 'LISTEN 0 128\\n'; fi; }
 systemctl() {
   printf '%s\\n' "$*" >>"$TEST_ROOT/service.log"
-  if [[ "\${WORKER_FAIL:-0}" == 1 && "$*" == "is-active --quiet emby-auto-worker.service" ]]; then return 3; fi
+  if [[ "$*" == "is-active --quiet emby-auto-worker.service" ]]; then
+    [[ "\${WORKER_FAIL:-0}" != 1 ]] || return 3
+    [[ "\${WORKER_PAUSED:-0}" != 1 ]] || return 3
+  fi
+  if [[ "$*" == "is-failed --quiet emby-auto-worker.service" ]]; then
+    [[ "\${WORKER_FAILED:-0}" == 1 ]] && return 0
+    return 1
+  fi
 }
 forbidden() { printf '%s\\n' "$*" >>"$TEST_ROOT/forbidden.log"; return 97; }
 nginx() { forbidden nginx "$@"; }
@@ -156,8 +174,92 @@ test('完整安装仅配置应用和 FFmpeg，网页与 API 共用指定端口',
   assert.equal(statSync(join(f.sandbox, 'opt/emby-auto/current/bin/emby-auto-api')).mode & 0o777, 0o755);
   assert.match(readFileSync(join(f.sandbox, 'etc/emby-auto/installer.env'), 'utf8'), /^installer_format=3$/m);
   assert.doesNotMatch(readFileSync(join(f.sandbox, 'etc/emby-auto/installer.env'), 'utf8'), /database_password/);
+  assert.match(readFileSync(join(f.sandbox, 'etc/emby-auto/installer.env'), 'utf8'), /^share_group=$/m);
+  for (const name of ['downloads', 'work', 'staging']) {
+    assert.equal(statSync(join(f.sandbox, 'srv/emby-auto', name)).mode & 0o7777, 0o2770, name);
+  }
+  for (const name of ['anime', 'movies']) {
+    assert.equal(statSync(join(f.sandbox, 'srv/emby-auto/media', name)).mode & 0o7777, 0o2775, name);
+  }
+  assert.ok(!existsSync(join(f.sandbox, 'setfacl.log')));
   assert.ok(!existsSync(join(f.sandbox, 'var/lib/emby-auto/bootstrap.json')));
   assert.ok(!existsSync(join(f.sandbox, 'forbidden.log')));
+});
+
+test('共享组安装为下载目录设置 setgid 与默认 ACL', (t) => {
+  const f = fixture(t);
+  const result = f.run(['--share-group', 'qb-share'], { NO_ACL: '1', SHARE_GID: '2001' });
+  assert.equal(result.status, 0, result.output);
+  assert.match(readFileSync(join(f.sandbox, 'etc/emby-auto/installer.env'), 'utf8'), /^share_group=qb-share$/m);
+  for (const name of ['downloads', 'work', 'staging']) {
+    assert.equal(statSync(join(f.sandbox, 'srv/emby-auto', name)).mode & 0o7777, 0o2770, name);
+  }
+  for (const name of ['anime', 'movies']) {
+    assert.equal(statSync(join(f.sandbox, 'srv/emby-auto/media', name)).mode & 0o7777, 0o2775, name);
+  }
+  const acl = readFileSync(join(f.sandbox, 'setfacl.log'), 'utf8');
+  assert.match(acl, /-m g:qb-share:rwx -m m::rwx .*downloads/);
+  assert.match(acl, /-d -m g:qb-share:rwx -m m::rwx .*downloads/);
+  assert.match(readFileSync(join(f.sandbox, 'usermod.log'), 'utf8'), /-aG qb-share emby-auto/);
+  assert.match(readFileSync(join(f.sandbox, 'packages.log'), 'utf8'), /--no-install-recommends ca-certificates ffmpeg acl/);
+});
+
+test('共享组安装复用已加入该组的账户', (t) => {
+  const f = fixture(t);
+  const result = f.run(['--share-group', 'qb-share'], { SHARE_GID: '2001', TEST_GROUPS: 'emby-auto qb-share' });
+  assert.equal(result.status, 0, result.output);
+  assert.ok(!existsSync(join(f.sandbox, 'usermod.log')));
+});
+
+test('共享组不存在时在下载和修改服务前失败', (t) => {
+  const f = fixture(t);
+  const result = f.run(['--share-group', 'missing-share'], { NO_SHARE_GROUP: '1' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /共享组 missing-share 不存在/);
+  assert.ok(!existsSync(join(f.sandbox, 'packages.log')));
+  assert.ok(!existsSync(join(f.sandbox, 'service.log')));
+});
+
+test('已有安装拒绝不同的共享组参数', (t) => {
+  const f = fixture(t);
+  let result = f.run(['--share-group', 'qb-share'], { SHARE_GID: '2001' });
+  assert.equal(result.status, 0, result.output);
+  result = f.run(['--share-group', 'other-share'], { SHARE_GID: '2002' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /不同的共享组/);
+});
+
+test('安装完成后暂停后台并重跑安装器保留暂停意图', (t) => {
+  const f = fixture(t);
+  let result = f.run();
+  assert.equal(result.status, 0, result.output);
+  const path = join(f.sandbox, 'etc/emby-auto/runtime.env');
+  const environment = readFileSync(path, 'utf8');
+  rmSync(join(f.sandbox, 'service.log'));
+  result = f.run([], { WORKER_PAUSED: '1', EMBY_AUTO_TEST_WORKER_STATUS: 'stopped' });
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.stdout, /后台当前处于暂停状态/);
+  assert.equal(readFileSync(path, 'utf8'), environment);
+  assert.doesNotMatch(readFileSync(join(f.sandbox, 'service.log'), 'utf8'), /stop |start |enable/);
+});
+
+test('后台单元处于失败状态时不按暂停处理', (t) => {
+  const f = fixture(t);
+  let result = f.run();
+  assert.equal(result.status, 0, result.output);
+  result = f.run([], { WORKER_PAUSED: '1', WORKER_FAILED: '1', EMBY_AUTO_TEST_WORKER_STATUS: 'stopped' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /服务未通过启动检查/);
+});
+
+test('迁移完成登记要求 Worker 正在运行', (t) => {
+  const f = fixture(t);
+  let result = f.run(['--no-start']);
+  assert.equal(result.status, 0, result.output);
+  result = f.run(['--finalize'], { WORKER_PAUSED: '1', EMBY_AUTO_TEST_WORKER_STATUS: 'stopped' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /服务未通过启动检查/);
+  assert.ok(!existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
 });
 
 test('用户已有数据库与 Web 服务配置在安装后保持原样', (t) => {
