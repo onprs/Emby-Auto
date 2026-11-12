@@ -5,12 +5,20 @@ import {
   downloadFollowupLabel,
   downloadRetryLabel,
   downloadWaitsForMapping,
+  fileSelectionSubmitState,
   formatSourceEpisodeInput,
   parseSourceEpisodeInput,
   sourceCoordinateLabel,
 } from '@/features/downloads/download-presentation';
 
 describe('download presentation', () => {
+  it('enables unchanged resolution confirmation and keeps the detected values submit label', () => {
+    expect(fileSelectionSubmitState(true, false)).toEqual({ enabled: true, label: '按检测结果开始下载' });
+    expect(fileSelectionSubmitState(true, true)).toEqual({ enabled: true, label: '保存并开始下载' });
+    expect(fileSelectionSubmitState(false, false)).toEqual({ enabled: false, label: '保存并重新物化' });
+    expect(fileSelectionSubmitState(false, true)).toEqual({ enabled: true, label: '保存并重新物化' });
+  });
+
   it('shows a completed transfer with a mapping follow-up instead of a download failure', () => {
     const download = {
       status: 'failed',
