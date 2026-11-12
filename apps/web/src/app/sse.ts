@@ -127,7 +127,7 @@ export class EventStream {
     this.emit('connecting');
     const controller = new AbortController();
     this.abortController = controller;
-    // 无持久化游标时服务端从当前水位开始，并先发送边界帧；有游标时继续增量重放。
+    // 无持久化游标时服务端以当前可见最新事件为边界，并先发送边界帧；有游标时继续增量重放。
     const resumeCursor = this.lastEventId;
     const boundaryExpected = resumeCursor === null;
     this.boundaryPending = boundaryExpected;
@@ -249,7 +249,9 @@ export class EventStream {
 
   /**
    * 处理服务端在无游标订阅时发送的边界帧：记录水位，并全量重读一次已加载的查询。
-   * 初始化读取可能发生在边界之前，边界之后的事件才从该游标开始推送。
+   * 边界只代表当前可见最新事件，不是事务 settled 水位；初始化读取可能发生在边界之前，
+   * 边界后的全量读取可覆盖读取完成前的业务数据。更早取得 sequence、但在边界之后才提交
+   * 的事务不会被该游标重放，需要下一次事件或手动刷新；这是已知的低概率残余。
    */
   private handleStartBoundary(frame: ParsedFrame): void {
     let cursor: string | null = frame.id || null;

@@ -45,8 +45,9 @@ func (server *Server) StreamEvents(
 
 	var cursor *uuid.UUID
 	var initial []domain.Event
-	// 没有游标时从当前最新事件开始，先发一个边界帧；客户端收到边界后全量重读，
-	// 从而既能覆盖初始化读取与订阅之间的间隙，也不会重放整个保留期历史。
+	// 没有游标时以“当前可见最新事件”为边界，先发一个 stream.started 帧；客户端收到边界后
+	// 全量重读，避免重放整个保留期历史。head 是当前可见最大 event_sequence，不是事务
+	// settled 水位：更早取得 sequence、但在边界之后才提交的事务不会被该游标重放。
 	started := request.Params.LastEventID == nil
 	if started {
 		head, err := server.events.Head(ctx)
