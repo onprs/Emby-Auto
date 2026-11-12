@@ -9,6 +9,7 @@ import (
 	"net"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -192,6 +193,62 @@ func TestBootstrapInitializeReleasesSetupLockWhenDatabaseStallsAfterHandshake(t 
 	}
 	if retryErr == nil {
 		t.Fatal("second Initialize() error = nil, want bounded failure")
+	}
+}
+
+// gatedMigrator 首次调用时阻塞，后续调用立即返回错误，用于构造“激活进行中”的状态。
+type gatedMigrator struct {
+	blocked chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (migrator *gatedMigrator) Migrate(ctx context.Context, _ string) error {
+	if migrator.calls.Add(1) == 1 {
+		close(migrator.blocked)
+		select {
+		case <-migrator.release:
+		case <-ctx.Done():
+		}
+	}
+	return errors.New("fixture migration failure")
+}
+
+func TestBootstrapInitializeDoesNotWaitForRunningActivation(t *testing.T) {
+	migrator := &gatedMigrator{blocked: make(chan struct{}), release: make(chan struct{})}
+	bootstrap := NewBootstrap(BootstrapOptions{
+		DatabaseURL:               "postgres://emby_auto:fixture-password@127.0.0.1:1/emby_auto?sslmode=disable",
+		DatabaseManagedExternally: true,
+		Store:                     platformconfig.NewBootstrapStore(filepath.Join(t.TempDir(), "bootstrap.json")),
+		Migrator:                  migrator,
+		Passwords:                 NewPasswordHasher(),
+		OperationTimeout:          time.Minute,
+	})
+
+	activationDone := make(chan error, 1)
+	go func() {
+		_, err := bootstrap.ActivateExisting(context.Background())
+		activationDone <- err
+	}()
+	<-migrator.blocked
+
+	// 激活进行中时，初始化请求不应阻塞在内部互斥上，而是快速尝试并返回依赖错误。
+	started := time.Now()
+	_, err := bootstrap.Initialize(context.Background(), domain.InitializeSetup{
+		AdministratorUsername: "setup-admin",
+		AdministratorPassword: "fixture-password-123",
+	})
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("Initialize() took %s while activation was running, want fast failure", elapsed)
+	}
+	var serviceErr *Error
+	if !errors.As(err, &serviceErr) || serviceErr.Code != "service_unavailable" {
+		t.Fatalf("Initialize() error = %#v, want service_unavailable", err)
+	}
+
+	close(migrator.release)
+	if activationErr := <-activationDone; activationErr == nil {
+		t.Fatal("ActivateExisting() error = nil, want fixture migration failure")
 	}
 }
 

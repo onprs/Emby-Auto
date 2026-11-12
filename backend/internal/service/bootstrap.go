@@ -69,6 +69,7 @@ type Bootstrap struct {
 
 	mu           sync.Mutex
 	initializing bool
+	activating   bool
 }
 
 func NewBootstrap(options BootstrapOptions) *Bootstrap {
@@ -288,11 +289,20 @@ func (bootstrap *Bootstrap) Initialize(
 // ActivateExisting migrates and activates an installation already represented by
 // environment configuration or a completed bootstrap file.
 func (bootstrap *Bootstrap) ActivateExisting(ctx context.Context) (bool, error) {
+	// 只在校验状态标志时持锁：激活可能持续到总预算上限，不能阻塞向导请求。
 	bootstrap.mu.Lock()
-	defer bootstrap.mu.Unlock()
-	if bootstrap.initializing {
+	if bootstrap.initializing || bootstrap.activating {
+		bootstrap.mu.Unlock()
 		return false, nil
 	}
+	bootstrap.activating = true
+	bootstrap.mu.Unlock()
+	defer func() {
+		bootstrap.mu.Lock()
+		bootstrap.activating = false
+		bootstrap.mu.Unlock()
+	}()
+
 	// 启动阶段同样使用初始化总预算：数据库在握手后不响应时，API 以未就绪状态
 	// 继续启动，而不是在开始监听前无限期阻塞。
 	bounded, cancel := bootstrap.operationContext(ctx)
