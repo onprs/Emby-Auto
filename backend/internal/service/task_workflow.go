@@ -399,6 +399,14 @@ func (workflow *TaskWorkflow) CompleteImport(ctx context.Context, completion dom
 		return fmt.Errorf("import completion requires task, import, operation, and destination paths")
 	}
 	return workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+		// 订阅行必须早于任务行与 imports/episode_tasks 写入：000039 的触发器在
+		// 写入时锁定 rss_subscription_progress，后取订阅锁会与入队、订阅编辑、
+		// 任务重试（订阅 → 目标 → 获取记录，再锁任务）形成反向锁序。
+		_, rssErr := scope.Queries.LockRSSSubscriptionForTaskImport(ctx, repository.UUIDToPG(completion.TaskID))
+		isRSSTask := rssErr == nil
+		if rssErr != nil && !errors.Is(rssErr, pgx.ErrNoRows) {
+			return fmt.Errorf("lock RSS subscription for task import: %w", rssErr)
+		}
 		locked, err := scope.Queries.LockEpisodeTask(ctx, repository.UUIDToPG(completion.TaskID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrNotFound
@@ -431,11 +439,6 @@ func (workflow *TaskWorkflow) CompleteImport(ctx context.Context, completion dom
 		updated, err := scope.Queries.MarkTaskImported(ctx, repository.UUIDToPG(completion.TaskID))
 		if err != nil {
 			return fmt.Errorf("mark task imported: %w", err)
-		}
-		_, rssErr := scope.Queries.LockRSSSubscriptionForTaskImport(ctx, repository.UUIDToPG(completion.TaskID))
-		isRSSTask := rssErr == nil
-		if rssErr != nil && !errors.Is(rssErr, pgx.ErrNoRows) {
-			return fmt.Errorf("lock RSS subscription for task import: %w", rssErr)
 		}
 		if !isRSSTask {
 			downloadIDValue, err := scope.Queries.GetTaskDownloadID(ctx, repository.UUIDToPG(completion.TaskID))
