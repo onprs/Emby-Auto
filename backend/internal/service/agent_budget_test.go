@@ -26,7 +26,7 @@ func TestAgentJobTimeoutCoversStepBudget(t *testing.T) {
 		{name: "default", steps: 6, request: 60 * time.Second, wantBudget: 390 * time.Second},
 		{name: "single_step", steps: 1, request: 10 * time.Second, wantBudget: 40 * time.Second},
 		{name: "paged_batch", steps: 20, request: 30 * time.Second, wantBudget: 630 * time.Second},
-		{name: "capped", steps: 64, request: 120 * time.Second, wantBudget: 30 * time.Minute},
+		{name: "capped", steps: 64, request: 120 * time.Second, wantBudget: 60 * time.Minute},
 		{name: "invalid_inputs", steps: 0, request: 0, wantBudget: 90 * time.Second},
 	} {
 		t.Run(test.name, func(t *testing.T) {

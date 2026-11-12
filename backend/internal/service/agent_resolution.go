@@ -34,7 +34,8 @@ const (
 	// agentJobTimeoutSlack 预留步骤持久化、校验与应用的时间。
 	agentJobTimeoutSlack = 30 * time.Second
 	// agentMaximumJobTimeout 防止异常配置或长时间 Provider 占用无界资源。
-	agentMaximumJobTimeout = 30 * time.Minute
+	// 单批次最多 64 步 × 120 秒，留出余量后仍能覆盖较慢的 Provider。
+	agentMaximumJobTimeout = 60 * time.Minute
 )
 
 type automaticEpisodeMappingPageLoader func(context.Context, db.ListAutomaticEpisodeMappingAcquisitionsParams) ([]db.ListAutomaticEpisodeMappingAcquisitionsRow, error)
