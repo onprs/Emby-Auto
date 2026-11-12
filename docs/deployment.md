@@ -117,6 +117,7 @@ Emby URL         http://host.docker.internal:<emby-port>/emby
 
 - `/api/v1/events` 使用长连接 SSE，并禁用响应缓冲。
 - `/api/v1/tasks/{taskId}/artifacts/{video|subtitle}` 透传 `Range` 与 `If-Range`。
+- `/api/` 请求体限制为 1 MiB（`client_max_body_size 1m;`），与应用内上限一致。
 - 其它 `/api/` 请求与 Web 路由均转发到 Web 服务。
 
 TLS 验证完成后，在 `deploy/.env` 中设置：

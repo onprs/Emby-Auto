@@ -1,14 +1,21 @@
 package httpapi
 
 import (
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
+// testLogger 丢弃日志，仅用于让恢复器具备日志依赖。
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
 func TestRecovererWritesStructuredErrorBeforeResponseStarts(t *testing.T) {
-	handler := recoverer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := recoverer(testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic("fixture panic")
 	}))
 	response := httptest.NewRecorder()
@@ -21,7 +28,7 @@ func TestRecovererWritesStructuredErrorBeforeResponseStarts(t *testing.T) {
 }
 
 func TestRecovererDoesNotRewriteStartedResponse(t *testing.T) {
-	handler := recoverer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := recoverer(testLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		panic("late fixture panic")
 	}))
@@ -35,7 +42,7 @@ func TestRecovererDoesNotRewriteStartedResponse(t *testing.T) {
 }
 
 func TestRecovererIgnoresAbortHandlerAfterStreamingStarts(t *testing.T) {
-	handler := recoverer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := recoverer(testLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("event: ready\n\n"))
 		panic(http.ErrAbortHandler)

@@ -117,6 +117,7 @@ The reverse proxy must preserve the following behavior:
 
 - Long-lived, unbuffered SSE connections at `/api/v1/events`.
 - `Range` and `If-Range` headers for `/api/v1/tasks/{taskId}/artifacts/{video|subtitle}`.
+- A 1 MiB request body limit for `/api/` (`client_max_body_size 1m;`), matching the application limit.
 - All other `/api/` requests and Web routes forwarded to the Web service.
 
 After validating TLS, set the following value in `deploy/.env`:

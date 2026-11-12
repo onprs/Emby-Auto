@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -46,6 +47,9 @@ type BootstrapOptions struct {
 	Migrator                  BootstrapMigrator
 	Passwords                 PasswordVerifier
 	Activate                  RuntimeActivator
+	// ConnectTimeout 限制安装流程中单条 PostgreSQL 连接与探测查询的总时长，
+	// 避免未响应的目标在初始化期间长期占用初始化互斥。
+	ConnectTimeout time.Duration
 }
 
 type Bootstrap struct {
@@ -57,6 +61,7 @@ type Bootstrap struct {
 	passwords                 PasswordVerifier
 	activate                  RuntimeActivator
 	random                    io.Reader
+	connectTimeout            time.Duration
 
 	mu           sync.Mutex
 	initializing bool
@@ -72,6 +77,7 @@ func NewBootstrap(options BootstrapOptions) *Bootstrap {
 		passwords:                 options.Passwords,
 		activate:                  options.Activate,
 		random:                    rand.Reader,
+		connectTimeout:            options.ConnectTimeout,
 	}
 }
 
@@ -273,7 +279,7 @@ func (bootstrap *Bootstrap) ActivateExisting(ctx context.Context) (bool, error) 
 	if err := bootstrap.migrator.Migrate(ctx, databaseURL); err != nil {
 		return false, err
 	}
-	pool, err := database.Open(ctx, databaseURL)
+	pool, err := database.OpenWithConnectTimeout(ctx, databaseURL, bootstrap.connectTimeout)
 	if err != nil {
 		return false, err
 	}
@@ -339,7 +345,7 @@ func (bootstrap *Bootstrap) createInstallation(
 	data platformconfig.BootstrapData,
 	configuration domain.SaveConfiguration,
 ) error {
-	pool, err := database.Open(ctx, databaseURL)
+	pool, err := database.OpenWithConnectTimeout(ctx, databaseURL, bootstrap.connectTimeout)
 	if err != nil {
 		return setupUnavailable("postgresql", err)
 	}
@@ -384,7 +390,14 @@ func (bootstrap *Bootstrap) databaseInstallationState(
 	ctx context.Context,
 	databaseURL string,
 ) (bool, uuid.UUID, error) {
-	pool, err := database.Open(ctx, databaseURL)
+	// 安装流程的探测查询只包含计数与单行读取；以连接超时作为上界，
+	// 避免无响应目标让未认证的状态轮询与初始化请求挂起。
+	if bootstrap.connectTimeout > 0 {
+		bounded, cancel := context.WithTimeout(ctx, bootstrap.connectTimeout)
+		defer cancel()
+		ctx = bounded
+	}
+	pool, err := database.OpenWithConnectTimeout(ctx, databaseURL, bootstrap.connectTimeout)
 	if err != nil {
 		return false, uuid.Nil, err
 	}

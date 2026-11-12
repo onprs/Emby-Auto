@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,7 +18,9 @@ import (
 
 const applicationMigrationLock int64 = 0x454d42594d494752
 
-type Migrator struct{}
+type Migrator struct {
+	connectTimeout time.Duration
+}
 
 type MigrationStatus struct {
 	ApplicationCurrent int64
@@ -35,6 +38,12 @@ type applicationMigration struct {
 
 func NewMigrator() *Migrator {
 	return &Migrator{}
+}
+
+// NewMigratorWithConnectTimeout 创建带连接超时的迁移器。connectTimeout 大于 0 时，
+// 迁移器建立单条连接的总时长受限，未响应目标的迁移不会无限挂起。
+func NewMigratorWithConnectTimeout(connectTimeout time.Duration) *Migrator {
+	return &Migrator{connectTimeout: connectTimeout}
 }
 
 func LatestApplicationMigrationVersion() (int64, error) {
@@ -110,7 +119,7 @@ func RequireCurrentMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 }
 
 func (migrator *Migrator) Migrate(ctx context.Context, databaseURL string) error {
-	pool, err := Open(ctx, databaseURL)
+	pool, err := OpenWithConnectTimeout(ctx, databaseURL, migrator.connectTimeout)
 	if err != nil {
 		return fmt.Errorf("open PostgreSQL for migrations: %w", err)
 	}
