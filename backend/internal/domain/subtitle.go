@@ -134,6 +134,49 @@ type SubtitleMatchSelection struct {
 	Path        string
 }
 
+// SubtitleVideoMatchSchedulingState 描述字幕匹配范围当前的 Agent 调度状态。
+// 用于区分“确实已有活动决议承接”与“范围存在但从未成功调度”。
+// CancellationRequested 表示操作已请求取消，此时应等待取消收敛而不是重新调度。
+type SubtitleVideoMatchSchedulingState struct {
+	ScopeID               uuid.UUID
+	ScopeStatus           string
+	TaskVersion           int
+	ResolutionID          *uuid.UUID
+	ResolutionStatus      string
+	ResolutionErrorCode   string
+	ResolutionVersion     int
+	ResolutionTaskVersion *int
+	OperationID           *uuid.UUID
+	OperationStatus       string
+	CancellationRequested bool
+}
+
+// ActiveResolution 表示当前范围内存在仍在推进的决议与操作。终态失败、取消或
+// 过期不由这里判定；调用方需结合 AutomaticAgentResolutionRetryable 决定恢复。
+func (state SubtitleVideoMatchSchedulingState) ActiveResolution() bool {
+	if state.ResolutionID == nil {
+		return false
+	}
+	switch state.ResolutionStatus {
+	case string(AgentResolutionQueued), string(AgentResolutionRunning), string(AgentResolutionProposed),
+		string(AgentResolutionReviewRequired), string(AgentResolutionApplied):
+	default:
+		return false
+	}
+	switch state.OperationStatus {
+	case "", "queued", "running", "succeeded":
+		return true
+	default:
+		return false
+	}
+}
+
+// CoversTaskVersion 判断活动决议是否属于当前任务版本。字幕候选集在范围
+// 复活时更换，旧 generation 的决议不得回收新范围。
+func (state SubtitleVideoMatchSchedulingState) CoversTaskVersion() bool {
+	return state.ResolutionTaskVersion != nil && *state.ResolutionTaskVersion == state.TaskVersion
+}
+
 // CandidateID returns the stable identifier used to reference a subtitle
 // candidate across scope persistence, the Agent context, and the inspection
 // tool. Embedded streams are keyed by their stream index; external files use

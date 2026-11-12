@@ -509,6 +509,30 @@ INSERT INTO agent_resolutions (
 )
 ON CONFLICT (id) DO UPDATE
 SET id = agent_resolutions.id
+RETURNING (xmax = 0) AS inserted;
+
+-- name: RequeueInactiveAgentResolution :one
+UPDATE agent_resolutions
+SET status = 'queued',
+    operation_id = sqlc.arg(operation_id),
+    proposal = '{}'::jsonb,
+    validation = '{}'::jsonb,
+    error_code = NULL,
+    error_message = NULL,
+    input_tokens = NULL,
+    output_tokens = NULL,
+    tool_call_count = 0,
+    latency_milliseconds = NULL,
+    reviewed_by = NULL,
+    review_decision = NULL,
+    reviewed_at = NULL,
+    completed_at = NULL,
+    started_at = NULL,
+    version = version + 1,
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND status IN ('cancelled', 'expired')
+  AND version < 10
 RETURNING *;
 
 -- name: GetAgentResolutionDashboardStats :one

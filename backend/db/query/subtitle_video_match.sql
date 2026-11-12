@@ -1,8 +1,25 @@
 -- name: CreateSubtitleVideoMatchScope :one
 INSERT INTO subtitle_video_match_scopes (id, task_id)
 VALUES (sqlc.arg(id), sqlc.arg(task_id))
-ON CONFLICT (task_id) DO NOTHING
+ON CONFLICT (task_id) DO UPDATE
+SET status = 'pending',
+    selected_candidate_id = NULL,
+    agent_resolution_id = NULL,
+    updated_at = now()
+WHERE subtitle_video_match_scopes.status = 'expired'
 RETURNING *;
+
+-- name: DeleteSubtitleVideoMatchCandidates :exec
+DELETE FROM subtitle_video_match_candidates
+WHERE scope_id = sqlc.arg(scope_id);
+
+-- name: ExpireSubtitleVideoMatchScope :one
+UPDATE subtitle_video_match_scopes
+SET status = 'expired',
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND status = 'pending'
+RETURNING task_id;
 
 -- name: InsertSubtitleVideoMatchCandidate :exec
 INSERT INTO subtitle_video_match_candidates (
@@ -75,3 +92,52 @@ LEFT JOIN subtitle_video_match_candidates AS selected
  AND selected.candidate_id = scope.selected_candidate_id
 WHERE scope.task_id = sqlc.arg(task_id)
   AND scope.status = 'applied';
+
+-- name: GetSubtitleVideoMatchSchedulingState :one
+SELECT
+    scope.id AS scope_id,
+    scope.status AS scope_status,
+    task.version AS task_version,
+    resolution.id AS resolution_id,
+    COALESCE(resolution.status, '')::text AS resolution_status,
+    COALESCE(resolution.error_code, '')::text AS resolution_error_code,
+    COALESCE(resolution.version, 0)::integer AS resolution_version,
+    resolution.resource_version AS resolution_task_version,
+    operation.id AS operation_id,
+    COALESCE(operation.status, '')::text AS operation_status,
+    COALESCE(operation.cancel_requested_at IS NOT NULL, false)::boolean AS cancellation_requested
+FROM subtitle_video_match_scopes AS scope
+JOIN episode_tasks AS task ON task.id = scope.task_id
+LEFT JOIN LATERAL (
+    SELECT candidate.*
+    FROM agent_resolutions AS candidate
+    WHERE candidate.resource_type = 'episode_task'
+      AND candidate.resource_id = scope.id
+      AND candidate.capability = 'subtitle_video_match'
+    ORDER BY candidate.created_at DESC, candidate.id DESC
+    LIMIT 1
+) AS resolution ON true
+LEFT JOIN operations AS operation ON operation.id = resolution.operation_id
+WHERE scope.task_id = sqlc.arg(task_id);
+
+-- name: GetSubtitleVideoMatchTaskVersion :one
+SELECT task.version
+FROM subtitle_video_match_scopes AS scope
+JOIN episode_tasks AS task ON task.id = scope.task_id
+WHERE scope.id = sqlc.arg(scope_id);
+
+-- 作废已被新候选集或新任务版本取代的活动决议，避免旧操作在后续失败时
+-- 回收新 generation 的范围与任务。
+-- name: SupersedeSubtitleVideoMatchResolutions :execrows
+UPDATE agent_resolutions
+SET status = 'cancelled',
+    error_code = 'agent_resolution_superseded',
+    error_message = 'a newer subtitle video match scope generation replaced this resolution',
+    completed_at = now(),
+    version = version + 1,
+    updated_at = now()
+WHERE resource_type = 'episode_task'
+  AND resource_id = sqlc.arg(scope_id)
+  AND capability = 'subtitle_video_match'
+  AND status IN ('queued', 'running', 'proposed', 'review_required')
+  AND (sqlc.narg(task_version)::integer IS NULL OR resource_version IS NULL OR resource_version <> sqlc.narg(task_version));

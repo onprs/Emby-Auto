@@ -289,7 +289,7 @@ INSERT INTO agent_resolutions (
 )
 ON CONFLICT (id) DO UPDATE
 SET id = agent_resolutions.id
-RETURNING id, operation_id, version, capability, resource_type, resource_id, resource_version, trigger, status, input_fingerprint, configuration_version, protocol, provider_origin, model, prompt_version, toolset_version, proposal, validation, error_code, error_message, input_tokens, output_tokens, tool_call_count, latency_milliseconds, created_by, reviewed_by, review_decision, created_at, started_at, completed_at, reviewed_at, applied_at, updated_at
+RETURNING (xmax = 0) AS inserted
 `
 
 type CreateAgentResolutionParams struct {
@@ -310,7 +310,7 @@ type CreateAgentResolutionParams struct {
 	CreatedBy            pgtype.UUID `db:"created_by" json:"created_by"`
 }
 
-func (q *Queries) CreateAgentResolution(ctx context.Context, arg CreateAgentResolutionParams) (AgentResolution, error) {
+func (q *Queries) CreateAgentResolution(ctx context.Context, arg CreateAgentResolutionParams) (bool, error) {
 	row := q.db.QueryRow(ctx, createAgentResolution,
 		arg.ID,
 		arg.OperationID,
@@ -328,43 +328,9 @@ func (q *Queries) CreateAgentResolution(ctx context.Context, arg CreateAgentReso
 		arg.ToolsetVersion,
 		arg.CreatedBy,
 	)
-	var i AgentResolution
-	err := row.Scan(
-		&i.ID,
-		&i.OperationID,
-		&i.Version,
-		&i.Capability,
-		&i.ResourceType,
-		&i.ResourceID,
-		&i.ResourceVersion,
-		&i.Trigger,
-		&i.Status,
-		&i.InputFingerprint,
-		&i.ConfigurationVersion,
-		&i.Protocol,
-		&i.ProviderOrigin,
-		&i.Model,
-		&i.PromptVersion,
-		&i.ToolsetVersion,
-		&i.Proposal,
-		&i.Validation,
-		&i.ErrorCode,
-		&i.ErrorMessage,
-		&i.InputTokens,
-		&i.OutputTokens,
-		&i.ToolCallCount,
-		&i.LatencyMilliseconds,
-		&i.CreatedBy,
-		&i.ReviewedBy,
-		&i.ReviewDecision,
-		&i.CreatedAt,
-		&i.StartedAt,
-		&i.CompletedAt,
-		&i.ReviewedAt,
-		&i.AppliedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
+	var inserted bool
+	err := row.Scan(&inserted)
+	return inserted, err
 }
 
 const createAgentResolutionStep = `-- name: CreateAgentResolutionStep :one
@@ -2241,6 +2207,77 @@ type RequeueAgentResolutionParams struct {
 
 func (q *Queries) RequeueAgentResolution(ctx context.Context, arg RequeueAgentResolutionParams) (AgentResolution, error) {
 	row := q.db.QueryRow(ctx, requeueAgentResolution, arg.OperationID, arg.ID, arg.ExpectedVersion)
+	var i AgentResolution
+	err := row.Scan(
+		&i.ID,
+		&i.OperationID,
+		&i.Version,
+		&i.Capability,
+		&i.ResourceType,
+		&i.ResourceID,
+		&i.ResourceVersion,
+		&i.Trigger,
+		&i.Status,
+		&i.InputFingerprint,
+		&i.ConfigurationVersion,
+		&i.Protocol,
+		&i.ProviderOrigin,
+		&i.Model,
+		&i.PromptVersion,
+		&i.ToolsetVersion,
+		&i.Proposal,
+		&i.Validation,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.ToolCallCount,
+		&i.LatencyMilliseconds,
+		&i.CreatedBy,
+		&i.ReviewedBy,
+		&i.ReviewDecision,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.ReviewedAt,
+		&i.AppliedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const requeueInactiveAgentResolution = `-- name: RequeueInactiveAgentResolution :one
+UPDATE agent_resolutions
+SET status = 'queued',
+    operation_id = $1,
+    proposal = '{}'::jsonb,
+    validation = '{}'::jsonb,
+    error_code = NULL,
+    error_message = NULL,
+    input_tokens = NULL,
+    output_tokens = NULL,
+    tool_call_count = 0,
+    latency_milliseconds = NULL,
+    reviewed_by = NULL,
+    review_decision = NULL,
+    reviewed_at = NULL,
+    completed_at = NULL,
+    started_at = NULL,
+    version = version + 1,
+    updated_at = now()
+WHERE id = $2
+  AND status IN ('cancelled', 'expired')
+  AND version < 10
+RETURNING id, operation_id, version, capability, resource_type, resource_id, resource_version, trigger, status, input_fingerprint, configuration_version, protocol, provider_origin, model, prompt_version, toolset_version, proposal, validation, error_code, error_message, input_tokens, output_tokens, tool_call_count, latency_milliseconds, created_by, reviewed_by, review_decision, created_at, started_at, completed_at, reviewed_at, applied_at, updated_at
+`
+
+type RequeueInactiveAgentResolutionParams struct {
+	OperationID pgtype.UUID `db:"operation_id" json:"operation_id"`
+	ID          pgtype.UUID `db:"id" json:"id"`
+}
+
+func (q *Queries) RequeueInactiveAgentResolution(ctx context.Context, arg RequeueInactiveAgentResolutionParams) (AgentResolution, error) {
+	row := q.db.QueryRow(ctx, requeueInactiveAgentResolution, arg.OperationID, arg.ID)
 	var i AgentResolution
 	err := row.Scan(
 		&i.ID,

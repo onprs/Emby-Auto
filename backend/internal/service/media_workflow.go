@@ -704,12 +704,23 @@ func (workflow *MediaWorkflow) CreateSubtitleVideoMatchScope(
 			ID: repository.UUIDToPG(scopeID), TaskID: repository.UUIDToPG(taskID),
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
-			// An existing scope under the same task is reused; the caller should
-			// treat this as already-scheduled rather than creating a duplicate.
+			// 已存在 pending 或 applied 的范围时复用既有调度，不创建重复范围。
 			return mediaWorkflowError("subtitle_scope_conflict", "a subtitle video match scope already exists for this task", false)
 		}
 		if err != nil {
 			return mediaWorkflowError("subtitle_scope_unavailable", "the subtitle video match scope could not be created", true)
+		}
+		// 已过期范围的候选集属于上一次失败尝试，换用当前候选集；
+		// 同时作废旧候选集上的活动决议，防止旧操作失败时回收新 generation。
+		if repository.UUIDFromPG(created.ID) != scopeID {
+			if err := scope.Queries.DeleteSubtitleVideoMatchCandidates(ctx, created.ID); err != nil {
+				return mediaWorkflowError("subtitle_scope_unavailable", "stale subtitle candidates could not be cleared", true)
+			}
+			if _, err := scope.Queries.SupersedeSubtitleVideoMatchResolutions(ctx, db.SupersedeSubtitleVideoMatchResolutionsParams{
+				ScopeID: created.ID,
+			}); err != nil {
+				return mediaWorkflowError("subtitle_scope_unavailable", "stale subtitle resolutions could not be superseded", true)
+			}
 		}
 		scopeID = repository.UUIDFromPG(created.ID)
 		for _, candidate := range candidates {
@@ -732,6 +743,74 @@ func (workflow *MediaWorkflow) CreateSubtitleVideoMatchScope(
 		return uuid.Nil, err
 	}
 	return scopeID, nil
+}
+
+// ExpireSubtitleVideoMatchScope 作废一个仍处于 pending 的字幕匹配范围。
+// 任务重试时 CreateSubtitleVideoMatchScope 会复用已过期范围并换用新候选集。
+func (workflow *MediaWorkflow) ExpireSubtitleVideoMatchScope(ctx context.Context, scopeID uuid.UUID) error {
+	if scopeID == uuid.Nil {
+		return mediaWorkflowError("subtitle_scope_invalid", "the subtitle video match scope is invalid", false)
+	}
+	_, err := workflow.queries.ExpireSubtitleVideoMatchScope(ctx, repository.UUIDToPG(scopeID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return mediaWorkflowError("subtitle_scope_unavailable", "the subtitle video match scope could not be expired", true)
+	}
+	return nil
+}
+
+// GetSubtitleVideoMatchSchedulingState 返回范围的 Agent 调度状态，用于重试
+// 时确认是否真的有活动决议承接，而不是只看 scope 是否存在。
+func (workflow *MediaWorkflow) GetSubtitleVideoMatchSchedulingState(ctx context.Context, taskID uuid.UUID) (domain.SubtitleVideoMatchSchedulingState, error) {
+	row, err := workflow.queries.GetSubtitleVideoMatchSchedulingState(ctx, repository.UUIDToPG(taskID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.SubtitleVideoMatchSchedulingState{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return domain.SubtitleVideoMatchSchedulingState{}, mediaWorkflowError("subtitle_scope_unavailable", "the subtitle video match scheduling state could not be loaded", true)
+	}
+	state := domain.SubtitleVideoMatchSchedulingState{
+		ScopeID:               repository.UUIDFromPG(row.ScopeID),
+		ScopeStatus:           row.ScopeStatus,
+		TaskVersion:           int(row.TaskVersion),
+		ResolutionStatus:      row.ResolutionStatus,
+		ResolutionErrorCode:   row.ResolutionErrorCode,
+		ResolutionVersion:     int(row.ResolutionVersion),
+		OperationStatus:       row.OperationStatus,
+		CancellationRequested: row.CancellationRequested,
+	}
+	if row.ResolutionID.Valid {
+		resolutionID := repository.UUIDFromPG(row.ResolutionID)
+		state.ResolutionID = &resolutionID
+	}
+	if row.OperationID.Valid {
+		operationID := repository.UUIDFromPG(row.OperationID)
+		state.OperationID = &operationID
+	}
+	if row.ResolutionTaskVersion != nil {
+		version := int(*row.ResolutionTaskVersion)
+		state.ResolutionTaskVersion = &version
+	}
+	return state, nil
+}
+
+// SupersedeSubtitleVideoMatchResolutions 作废指定范围内与新任务版本不符的
+// 活动决议；taskVersion 为 nil 时作废该范围内的全部活动决议。
+func (workflow *MediaWorkflow) SupersedeSubtitleVideoMatchResolutions(ctx context.Context, scopeID uuid.UUID, taskVersion *int) error {
+	if scopeID == uuid.Nil {
+		return mediaWorkflowError("subtitle_scope_invalid", "the subtitle video match scope is invalid", false)
+	}
+	params := db.SupersedeSubtitleVideoMatchResolutionsParams{ScopeID: repository.UUIDToPG(scopeID)}
+	if taskVersion != nil {
+		value := int32(*taskVersion)
+		params.TaskVersion = &value
+	}
+	if _, err := workflow.queries.SupersedeSubtitleVideoMatchResolutions(ctx, params); err != nil {
+		return mediaWorkflowError("subtitle_scope_unavailable", "stale subtitle resolutions could not be superseded", true)
+	}
+	return nil
 }
 
 // GetSubtitleVideoMatchSelection returns the Agent-selected candidate for a

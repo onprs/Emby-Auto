@@ -535,16 +535,19 @@ func (service *AgentResolutionService) catalogSearchSnapshot(resourceType string
 			var arguments struct {
 				Query string `json:"query"`
 			}
-			if err := strictJSON(raw, &arguments); err != nil || strings.TrimSpace(arguments.Query) == "" {
-				return nil, fmt.Errorf("invalid TMDb search arguments")
+			if err := strictJSON(raw, &arguments); err != nil {
+				return nil, agentapi.InvalidToolArguments(err)
+			}
+			if strings.TrimSpace(arguments.Query) == "" {
+				return nil, agentapi.InvalidToolArguments(fmt.Errorf("query must not be blank"))
 			}
 			if service.tmdbSearch == nil {
-				return nil, fmt.Errorf("TMDb search is unavailable")
+				return nil, agentapi.ToolTemporarilyUnavailable(fmt.Errorf("TMDb search is unavailable"))
 			}
 			query := strings.TrimSpace(arguments.Query)
 			results, err := service.tmdbSearch.SearchTV(callCtx, query)
 			if err != nil {
-				return nil, err
+				return nil, agentToolExecutionError(err)
 			}
 			if len(results) > 20 {
 				results = results[:20]
@@ -595,21 +598,21 @@ func (service *AgentResolutionService) previewRSSPreacquisitionMappingTool(
 				TargetEpisode int `json:"targetEpisode"`
 			}
 			if err := strictJSON(raw, &arguments); err != nil {
-				return nil, err
+				return nil, agentapi.InvalidToolArguments(err)
 			}
 			source := domain.EpisodeCoordinate{Season: arguments.SourceSeason, Episode: arguments.SourceEpisode}
 			if _, ok := sources[source]; !ok {
-				return nil, fmt.Errorf("source coordinate is outside this RSS Mapping scope")
+				return nil, agentapi.ToolScopeViolation(fmt.Errorf("source coordinate is outside this RSS Mapping scope"))
 			}
 			if service.rssMapping == nil {
-				return nil, fmt.Errorf("RSS pre-acquisition Mapping preview is unavailable")
+				return nil, agentapi.ToolTemporarilyUnavailable(fmt.Errorf("RSS pre-acquisition Mapping preview is unavailable"))
 			}
 			rows, err := service.rssMapping.PreviewRSSPreacquisitionMapping(
 				callCtx, scopeID, source,
 				domain.EpisodeCoordinate{Season: arguments.TargetSeason, Episode: arguments.TargetEpisode},
 			)
 			if err != nil {
-				return nil, err
+				return nil, agentToolExecutionError(err)
 			}
 			type previewRow struct {
 				SourceSeason  int    `json:"sourceSeason"`
@@ -661,35 +664,35 @@ func (service *AgentResolutionService) previewMappingTool(acquisitionID uuid.UUI
 				Assignments []domain.AgentEpisodeMappingDisposition `json:"assignments,omitempty"`
 			}
 			if err := strictJSON(raw, &arguments); err != nil {
-				return nil, err
+				return nil, agentapi.InvalidToolArguments(err)
 			}
 			proposal := domain.AgentEpisodeMappingProposal{
 				AcquisitionID: acquisitionID, Mode: arguments.Mode, Anchor: arguments.Anchor, Assignments: arguments.Assignments,
 			}
 			if err := validateAgentEpisodeMappingProposalShape(proposal); err != nil {
-				return nil, err
+				return nil, agentapi.InvalidToolArguments(err)
 			}
 			input := episodeMappingPlanFromAgentProposal(proposal)
 			if err := validateMappingInput(input, false); err != nil {
-				return nil, err
+				return nil, agentapi.InvalidToolArguments(err)
 			}
 			if input.Mode == domain.EpisodeMappingModeAnchor {
 				if _, ok := files[input.Anchor.SourceFileID]; !ok {
-					return nil, fmt.Errorf("source file is outside this acquisition")
+					return nil, agentapi.ToolScopeViolation(fmt.Errorf("source file is outside this acquisition"))
 				}
 			} else {
 				for _, item := range input.Assignments {
 					if _, ok := files[item.SourceFileID]; !ok {
-						return nil, fmt.Errorf("source file is outside this acquisition")
+						return nil, agentapi.ToolScopeViolation(fmt.Errorf("source file is outside this acquisition"))
 					}
 				}
 			}
 			if service.catalog == nil {
-				return nil, fmt.Errorf("mapping preview is unavailable")
+				return nil, agentapi.ToolTemporarilyUnavailable(fmt.Errorf("mapping preview is unavailable"))
 			}
 			preview, err := service.catalog.PreviewEpisodeMapping(callCtx, input)
 			if err != nil {
-				return nil, err
+				return nil, agentToolExecutionError(err)
 			}
 			type row struct {
 				SourceFileID  uuid.UUID `json:"sourceFileId"`
@@ -724,11 +727,11 @@ func rssReleaseAnalysisTool(entries map[uuid.UUID]scopedRSSReleaseEntry) agentha
 				EntryID uuid.UUID `json:"entryId"`
 			}
 			if err := strictJSON(raw, &arguments); err != nil {
-				return nil, err
+				return nil, agentapi.InvalidToolArguments(err)
 			}
 			entry, ok := entries[arguments.EntryID]
 			if !ok {
-				return nil, fmt.Errorf("RSS entry is outside this adjudication batch")
+				return nil, agentapi.ToolScopeViolation(fmt.Errorf("RSS entry is outside this adjudication batch"))
 			}
 			return json.Marshal(entry.Deterministic)
 		},
@@ -758,12 +761,16 @@ func staticAgentTool(name, description string, properties map[string]any, value 
 			return tool
 		}
 	}
+	if len(encoded) > agentapi.MaxToolResultBytes {
+		// 无法分页的对象或单元素列表按字段截断，保证工具结果始终不超单次上限。
+		encoded = clampAgentJSON(encoded, agentapi.MaxToolResultBytes)
+	}
 	return agentharness.Tool{
 		Definition: agentapi.ToolDefinition{Name: name, Description: description, Parameters: strictObject(properties)},
 		Execute: func(_ context.Context, _ string, raw json.RawMessage) (json.RawMessage, error) {
 			var arguments map[string]any
 			if err := strictJSON(raw, &arguments); err != nil || len(arguments) != 0 {
-				return nil, fmt.Errorf("tool takes no arguments")
+				return nil, agentapi.InvalidToolArguments(fmt.Errorf("tool takes no arguments"))
 			}
 			return encoded, nil
 		},
@@ -781,11 +788,11 @@ func parseFileCoordinateTool(files map[uuid.UUID]scopedFile, defaultSeason int) 
 				FileID uuid.UUID `json:"fileId"`
 			}
 			if err := strictJSON(raw, &arguments); err != nil {
-				return nil, err
+				return nil, agentapi.InvalidToolArguments(err)
 			}
 			file, ok := files[arguments.FileID]
 			if !ok {
-				return nil, fmt.Errorf("file is outside this resolution scope")
+				return nil, agentapi.ToolScopeViolation(fmt.Errorf("file is outside this resolution scope"))
 			}
 			coordinate, matched := domain.ParseSourceCoordinate(file.RelativePath, defaultSeason)
 			return json.Marshal(map[string]any{
@@ -822,6 +829,22 @@ func strictJSON(raw json.RawMessage, target any) error {
 		return fmt.Errorf("JSON contains trailing data")
 	}
 	return nil
+}
+
+// agentToolExecutionError 把内层服务错误映射为工具循环可识别的失败类别：
+// 越权/失效范围终止且不重试，可修正的锚点或计划错误交还模型修复，
+// 其余依赖故障按暂时不可用重试。
+func agentToolExecutionError(err error) error {
+	var serviceErr *Error
+	if errors.As(err, &serviceErr) {
+		switch serviceErr.Code {
+		case "agent_tool_scope_violation", "agent_resolution_not_allowed":
+			return agentapi.ToolScopeViolation(err)
+		case "mapping_anchor_invalid", "mapping_incomplete":
+			return agentapi.InvalidToolArguments(err)
+		}
+	}
+	return agentapi.ToolTemporarilyUnavailable(err)
 }
 
 func int32PointerToInt(value *int32) *int {
@@ -908,10 +931,10 @@ func (service *AgentResolutionService) inspectSubtitleCandidateTool(match *scope
 				CandidateID string `json:"candidateId"`
 			}
 			if err := strictJSON(raw, &arguments); err != nil {
-				return nil, err
+				return nil, agentapi.InvalidToolArguments(err)
 			}
 			if service.subtitleReader == nil {
-				return nil, fmt.Errorf("subtitle inspection is unavailable")
+				return nil, agentapi.ToolTemporarilyUnavailable(fmt.Errorf("subtitle inspection is unavailable"))
 			}
 			var target *scopedSubtitleCandidate
 			for index := range match.Candidates {
@@ -921,7 +944,7 @@ func (service *AgentResolutionService) inspectSubtitleCandidateTool(match *scope
 				}
 			}
 			if target == nil {
-				return nil, fmt.Errorf("candidate is outside this resolution scope")
+				return nil, agentapi.ToolScopeViolation(fmt.Errorf("candidate is outside this resolution scope"))
 			}
 			inspection, err := service.subtitleReader.InspectSubtitleText(callCtx, domain.SubtitleInspectionRequest{
 				VideoPath: match.VideoPath, CandidateID: arguments.CandidateID,
@@ -929,7 +952,7 @@ func (service *AgentResolutionService) inspectSubtitleCandidateTool(match *scope
 				Format: domain.SubtitleFormat(target.Format), Path: target.Path,
 			})
 			if err != nil {
-				return nil, err
+				return nil, agentToolExecutionError(err)
 			}
 			return json.Marshal(inspection)
 		},

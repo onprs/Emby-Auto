@@ -69,6 +69,11 @@ type subtitleStoreStub struct {
 	selErr          error
 	scopeCalls      int
 	scopeCandidates []domain.SubtitleMatchCandidate
+	expiredScopes   []uuid.UUID
+	expireErr       error
+	schedulingState domain.SubtitleVideoMatchSchedulingState
+	schedulingErr   error
+	stateCalls      int
 }
 
 func (stub *subtitleStoreStub) BeginSubtitle(context.Context, uuid.UUID) (domain.TaskMediaCommand, error) {
@@ -81,10 +86,22 @@ func (stub *subtitleStoreStub) CompleteArtifact(_ context.Context, completion do
 func (stub *subtitleStoreStub) CreateSubtitleVideoMatchScope(_ context.Context, _ uuid.UUID, candidates []domain.SubtitleMatchCandidate) (uuid.UUID, error) {
 	stub.scopeCalls++
 	stub.scopeCandidates = append([]domain.SubtitleMatchCandidate(nil), candidates...)
+	if stub.scopeCalls > 1 && stub.scopeErr != nil {
+		// 冲突只发生在首次创建；作废后的重新创建不再返回冲突。
+		return stub.scopeID, nil
+	}
 	return stub.scopeID, stub.scopeErr
 }
 func (stub *subtitleStoreStub) GetSubtitleVideoMatchSelection(context.Context, uuid.UUID) (domain.SubtitleMatchSelection, error) {
 	return stub.selection, stub.selErr
+}
+func (stub *subtitleStoreStub) ExpireSubtitleVideoMatchScope(_ context.Context, scopeID uuid.UUID) error {
+	stub.expiredScopes = append(stub.expiredScopes, scopeID)
+	return stub.expireErr
+}
+func (stub *subtitleStoreStub) GetSubtitleVideoMatchSchedulingState(context.Context, uuid.UUID) (domain.SubtitleVideoMatchSchedulingState, error) {
+	stub.stateCalls++
+	return stub.schedulingState, stub.schedulingErr
 }
 
 func TestTranscodeRunWritesValidatedAtomicOutputAndPersistsArtifact(t *testing.T) {

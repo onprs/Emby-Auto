@@ -18,6 +18,9 @@ type subtitleMatchAgentStub struct {
 	createErr     error
 	createCalls   int
 	createdScopes []uuid.UUID
+	created       service.AgentResolutionCommandResult
+	retryCalls    int
+	retryErr      error
 }
 
 func (stub *subtitleMatchAgentStub) CapabilityEnabled(context.Context, domain.AgentCapability) (bool, error) {
@@ -27,7 +30,12 @@ func (stub *subtitleMatchAgentStub) CapabilityEnabled(context.Context, domain.Ag
 func (stub *subtitleMatchAgentStub) CreateAutomatic(_ context.Context, input service.AutomaticAgentResolutionRequest) (service.AgentResolutionCommandResult, error) {
 	stub.createCalls++
 	stub.createdScopes = append(stub.createdScopes, input.ResourceID)
-	return service.AgentResolutionCommandResult{}, stub.createErr
+	return stub.created, stub.createErr
+}
+
+func (stub *subtitleMatchAgentStub) RetryAutomatic(context.Context, uuid.UUID, int) (service.AgentResolutionCommandResult, error) {
+	stub.retryCalls++
+	return service.AgentResolutionCommandResult{}, stub.retryErr
 }
 
 func TestSubtitlePrepareSchedulesAgentWhenAmbiguousAndEnabled(t *testing.T) {
@@ -99,6 +107,67 @@ func TestSubtitlePrepareKeepsSameBasenameExternalCandidatesDistinct(t *testing.T
 	if store.scopeCandidates[0].CandidateID != "external:"+firstID.String() ||
 		store.scopeCandidates[1].CandidateID != "external:"+secondID.String() {
 		t.Fatalf("candidate identities = %#v", store.scopeCandidates)
+	}
+}
+
+func ambiguousSubtitlePrepareFixture(t *testing.T, scopeID uuid.UUID) (tools *mediaToolsStub, store *subtitleStoreStub, taskID uuid.UUID, stagingRoot string) {
+	t.Helper()
+	root := t.TempDir()
+	downloadRoot := filepath.Join(root, "download")
+	stagingRoot = filepath.Join(root, "staging")
+	if err := os.MkdirAll(downloadRoot, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(downloadRoot, "episode.mkv"), []byte("video"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	taskID = uuid.New()
+	store = &subtitleStoreStub{command: domain.TaskMediaCommand{
+		TaskID: taskID, State: domain.TaskProcessing, SubtitleState: domain.SubtitleExtractingConverting,
+		SavePath: downloadRoot, SourceVideoFileID: uuid.New(), SourceVideoRelativePath: "episode.mkv",
+		Names: domain.EpisodeFileNames{BaseName: "Show - S01E01", SubtitleName: "Show - S01E01.ass"},
+	}, scopeID: scopeID}
+	tools = &mediaToolsStub{probe: func(string) (domain.MediaProbe, error) {
+		return domain.MediaProbe{Streams: []domain.MediaStreamProbe{
+			{Index: 2, Type: "subtitle", Codec: "ass", Language: "chi", Title: "简日双语"},
+			{Index: 3, Type: "subtitle", Codec: "ass", Language: "chi", Title: "繁日雙語"},
+		}}, nil
+	}}
+	return tools, store, taskID, stagingRoot
+}
+
+func TestSubtitlePrepareResumesRetryableAgentFailure(t *testing.T) {
+	scopeID := uuid.New()
+	tools, store, taskID, stagingRoot := ambiguousSubtitlePrepareFixture(t, scopeID)
+	agent := &subtitleMatchAgentStub{enabled: true, created: service.AgentResolutionCommandResult{Resolution: domain.AgentResolution{
+		Status: domain.AgentResolutionFailed, Trigger: "automatic", ErrorCode: "agent_request_timeout", Proposal: []byte(`{}`),
+	}}}
+	store.schedulingState = domain.SubtitleVideoMatchSchedulingState{ScopeID: scopeID, ScopeStatus: "pending", TaskVersion: 1}
+	store.selection = domain.SubtitleMatchSelection{}
+	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if agent.retryCalls != 1 {
+		t.Fatalf("RetryAutomatic() calls = %d, want 1", agent.retryCalls)
+	}
+}
+
+func TestSubtitlePrepareFailsTaskWhenAgentFailureIsNotRetryable(t *testing.T) {
+	scopeID := uuid.New()
+	tools, store, taskID, stagingRoot := ambiguousSubtitlePrepareFixture(t, scopeID)
+	agent := &subtitleMatchAgentStub{enabled: true, created: service.AgentResolutionCommandResult{Resolution: domain.AgentResolution{
+		Status: domain.AgentResolutionFailed, Trigger: "automatic", ErrorCode: "agent_tool_scope_violation", Proposal: []byte(`{}`),
+	}}}
+	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID})
+	var failure *Failure
+	if !errors.As(err, &failure) || failure.Code != "agent_subtitle_match_failed" || failure.Retryable {
+		t.Fatalf("Handle() error = %v, want permanent agent_subtitle_match_failed", err)
+	}
+	if len(store.expiredScopes) != 1 || store.expiredScopes[0] != scopeID {
+		t.Fatalf("expired scopes = %#v, want %s", store.expiredScopes, scopeID)
+	}
+	if agent.retryCalls != 0 {
+		t.Fatalf("RetryAutomatic() calls = %d, want 0", agent.retryCalls)
 	}
 }
 
