@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -17,7 +17,7 @@ type Manifest = {
   };
 };
 
-type Acquisition = { id: string; mediaType: 'episode' | 'movie'; downloadId?: string; tasks: Array<{ id: string }> };
+type Acquisition = { id: string; mediaType: 'episode' | 'movie'; tmdbSeriesId?: number; downloadId?: string; tasks: Array<{ id: string }> };
 type Download = { id: string; status: string; version: number; failureStage?: string; errorCode?: string };
 type Task = {
   id: string;
@@ -44,6 +44,18 @@ type RssEntryPage = { items: Array<{ acquisitionId?: string; downloadId?: string
 const manifest = JSON.parse(
   fs.readFileSync(path.resolve(process.cwd(), '../../runtime/e2e/manifest.json'), 'utf8'),
 ) as Manifest;
+
+type IsolatedSeries = { query: string; title: string; episodeTitle: string };
+
+// isolatedSeries 为每次用例运行生成独立的 TMDb 剧集查询，避免共享库、映射目标和种子哈希。
+function isolatedSeries(testInfo: TestInfo, label: string): IsolatedSeries {
+  const suffix = `${label} ${testInfo.project.name} ${testInfo.testId.slice(0, 12)}${testInfo.repeatEachIndex > 0 ? ` r${testInfo.repeatEachIndex}` : ''}`;
+  return {
+    query: `Fixture Isolated ${suffix}`,
+    title: `Fixture Show ${suffix}`,
+    episodeTitle: `Pilot ${suffix}`,
+  };
+}
 
 async function login(page: Page) {
   await page.goto('/');
@@ -124,10 +136,14 @@ async function poll<T>(read: () => Promise<T>, done: (value: T) => boolean, time
   return latest;
 }
 
-async function selectFixtureSeries(page: Page) {
-  await page.locator('#tmdb-query').fill('Fixture Show');
+async function selectFixtureSeries(page: Page, searchQuery = 'Fixture Show', resultTitle = 'Fixture Show') {
+  await page.locator('#tmdb-query').fill(searchQuery);
   await page.getByRole('button', { name: '查询', exact: true }).click();
-  await page.getByRole('button', { name: /Fixture Show/ }).click();
+  await page.getByRole('button', { name: new RegExp(escapeRegExp(resultTitle)) }).click();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function setFixtureControl(page: Page, target: string, enabled: boolean) {
@@ -136,17 +152,27 @@ async function setFixtureControl(page: Page, target: string, enabled: boolean) {
 }
 
 async function retryFailedTaskFromPage(page: Page, taskId: string) {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  const conflicts: string[] = [];
+  const attempts = 4;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     const responsePromise = page.waitForResponse((response) =>
       new URL(response.url()).pathname === `/api/v1/tasks/${taskId}/retry` && response.request().method() === 'POST');
     await page.getByRole('button', { name: '重试任务', exact: true }).click();
     const response = await responsePromise;
     if (response.ok()) return;
-    expect(response.status()).toBe(409);
+    const body = await response.text();
+    conflicts.push(`${response.status()} ${body}`);
+    expect(response.status(), body).toBe(409);
+    const failure = JSON.parse(body) as { code?: string };
+    if (failure.code === 'target_episode_processing' || failure.code === 'deletion_in_progress') {
+      throw new Error(`task retry cannot recover from ${failure.code}: ${body}`);
+    }
+    // operation_in_progress 和 state_conflict 会随排队操作完成或版本推进消失，重新读取后重试。
+    await page.waitForTimeout(300 * (attempt + 1));
     await page.reload();
     await expect(page.getByRole('button', { name: '重试任务', exact: true })).toBeVisible();
   }
-  throw new Error('task retry remained stale after reloading the latest task version');
+  throw new Error(`task retry remained stale after ${attempts} attempts: ${conflicts.join(' | ')}`);
 }
 
 async function waitForFixtureStatus(page: Page, target: string, enabled: boolean) {
@@ -174,13 +200,13 @@ async function setQBPassword(page: Page, action: 'set' | 'clear') {
   await expect(page.getByText(action === 'set' ? '密码已配置' : '密码未配置', { exact: false })).toBeVisible();
 }
 
-async function createSearchAcquisition(page: Page, query: string) {
+async function createSearchAcquisition(page: Page, query: string, series: { query: string; title: string } = { query: 'Fixture Show', title: 'Fixture Show' }) {
   await page.goto('/searches');
   await page.locator('#search-query').fill(query);
   await page.getByRole('button', { name: '搜索', exact: true }).click();
   await expect(page.getByText('[Fixture] Fixture Show - S01E01')).toBeVisible();
   await page.getByRole('button', { name: '选择' }).click();
-  await selectFixtureSeries(page);
+  await selectFixtureSeries(page, series.query, series.title);
   await page.getByRole('button', { name: '创建获取并下载' }).click();
   await expect(page).toHaveURL(/\/acquisitions\/[0-9a-f-]+(?:\?.*)?$/);
   const acquisitionId = currentResourceID(page);
@@ -244,7 +270,7 @@ async function createRSSSubscription(
   return created.id;
 }
 
-async function mapAndMaterialize(page: Page, acquisitionId: string, downloadId: string) {
+async function mapAndMaterialize(page: Page, acquisitionId: string, downloadId: string, episodeTitle = 'Pilot') {
   const mappingBoundary = await poll(
     () => json<Download>(page.request, `/api/v1/downloads/${downloadId}`),
     (download) => download.status === 'failed' || download.status === 'materialized',
@@ -254,15 +280,17 @@ async function mapAndMaterialize(page: Page, acquisitionId: string, downloadId: 
   }
   expect(mappingBoundary.failureStage).toBe('materialize');
   expect(mappingBoundary.errorCode).toBe('mapping_profile_required');
+  const acquisition = await json<Acquisition>(page.request, `/api/v1/acquisitions/${acquisitionId}`);
+  expect(acquisition.tmdbSeriesId, '获取记录缺少 TMDb 剧集 ID').toBeTruthy();
   await poll(
-    () => page.request.get('/api/v1/tmdb/series/100/catalog'),
+    () => page.request.get(`/api/v1/tmdb/series/${acquisition.tmdbSeriesId}/catalog`),
     (response) => response.ok(),
   );
 
   await page.goto(`/acquisitions/${acquisitionId}/mapping`);
   await expect(page.getByText('Season 1', { exact: false }).first()).toBeVisible();
   const mappingSaved = page.waitForResponse((response) => response.url().includes(`/api/v1/acquisitions/${acquisitionId}/episode-mapping`) && response.request().method() === 'PUT');
-  await page.getByRole('button', { name: '映射到 S01E01：Pilot' }).click();
+  await page.getByRole('button', { name: `映射到 S01E01：${episodeTitle}` }).click();
   expect((await mappingSaved).ok()).toBeTruthy();
 
   await expect(page).toHaveURL(new RegExp(`/acquisitions/${acquisitionId}(?:\\?.*)?$`));
@@ -355,7 +383,7 @@ async function assertImportedPreview(page: Page, task: Task) {
   expect(invalidRange.status()).toBe(416);
 }
 
-async function reviewImportAndScan(page: Page, acquisitionId: string) {
+async function reviewImportAndScan(page: Page, acquisitionId: string, episodeTitle = 'Pilot') {
   const { taskId } = await reviewTask(page, acquisitionId);
   const importedTask = await poll(
     () => json<Task>(page.request, `/api/v1/tasks/${taskId}`),
@@ -367,19 +395,20 @@ async function reviewImportAndScan(page: Page, acquisitionId: string) {
   await requestEmbyRefreshAndUpdateCatalog(page);
   await expect(page.getByRole('link', { name: 'Fixture Library' })).toBeVisible();
   await page.getByRole('link', { name: 'Fixture Library' }).click();
-  await expect(page.getByText('Pilot', { exact: true })).toBeVisible();
-  const pilotRow = page.getByRole('row').filter({ has: page.getByText('Pilot', { exact: true }) });
-  await expect(pilotRow.getByRole('link', { name: '查看任务' })).toBeVisible();
+  await expect(page.getByText(episodeTitle, { exact: true })).toBeVisible();
+  const episodeRow = page.getByRole('row').filter({ has: page.getByText(episodeTitle, { exact: true }) });
+  await expect(episodeRow.getByRole('link', { name: '查看任务' })).toBeVisible();
 }
 
 test('@cross-browser real search pipeline reaches reviewed import and Emby catalog', async ({ page }, testInfo) => {
   await login(page);
   await configure(page);
 
-  const { acquisitionId, downloadId } = await createSearchAcquisition(page, `Fixture Show ${testInfo.project.name}`);
-  await expect(page.getByRole('heading', { name: 'Fixture Show' })).toBeVisible();
-  await mapAndMaterialize(page, acquisitionId, downloadId);
-  await reviewImportAndScan(page, acquisitionId);
+  const series = isolatedSeries(testInfo, 'search');
+  const { acquisitionId, downloadId } = await createSearchAcquisition(page, series.query, series);
+  await expect(page.getByRole('heading', { name: series.title })).toBeVisible();
+  await mapAndMaterialize(page, acquisitionId, downloadId, series.episodeTitle);
+  await reviewImportAndScan(page, acquisitionId, series.episodeTitle);
 });
 
 test('@movie real movie pipeline reaches the movie library and Emby catalog', async ({ page }, testInfo) => {
@@ -453,7 +482,7 @@ test('@cross-browser real RSS pipeline reaches acquisition, task and Emby catalo
   );
   const entry = entries.items.find((item) => item.acquisitionId && item.downloadId)!;
   const acquisitionId = entry.acquisitionId!;
-  await mapAndMaterialize(page, acquisitionId, entry.downloadId!);
+  await mapAndMaterialize(page, acquisitionId, entry.downloadId!, rssSeries.episodeTitle);
   const { taskId, importOperationId } = await reviewTask(page, acquisitionId);
 
   const importOperation = await poll(
@@ -531,23 +560,29 @@ test('@recovery configuration connectivity is persisted and stale tabs conflict'
   expect((await restored).ok()).toBeTruthy();
 });
 
-test('@recovery download enqueue failure can retry and active download can cancel', async ({ page }) => {
+test('@recovery download enqueue failure can retry and active download can cancel', async ({ page }, testInfo) => {
   await login(page);
   await configure(page);
 
   await setQBPassword(page, 'clear');
-  const retryFlow = await createSearchAcquisition(page, 'Fixture download retry');
+  const retrySeries = isolatedSeries(testInfo, 'download-retry');
+  const retryFlow = await createSearchAcquisition(page, retrySeries.query, retrySeries);
   await poll(
     () => json<Download>(page.request, `/api/v1/downloads/${retryFlow.downloadId}`),
     (value) => value.status === 'failed' && value.failureStage === 'enqueue',
   );
   await setQBPassword(page, 'set');
   await page.goto(`/downloads/${retryFlow.downloadId}`);
+  const retryAccepted = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === `/api/v1/downloads/${retryFlow.downloadId}/retry` && response.request().method() === 'POST');
   await page.getByRole('button', { name: '重试下载', exact: true }).click();
-  await expect(page).toHaveURL(/\/operations\/[0-9a-f-]+(?:\?.*)?$/);
-  const retryOperationId = currentResourceID(page);
+  const retryResponse = await retryAccepted;
+  expect(retryResponse.ok()).toBeTruthy();
+  const retryCommand = await retryResponse.json() as CommandAccepted;
+  await expect(page).toHaveURL(new RegExp(`/downloads/${retryFlow.downloadId}(?:\\?.*)?$`));
+  await expect(page.getByRole('link', { name: '查看操作日志' })).toHaveAttribute('href', new RegExp(`/operations/${retryCommand.operationId}`));
   await poll(
-    () => json<Operation>(page.request, `/api/v1/operations/${retryOperationId}`),
+    () => json<Operation>(page.request, `/api/v1/operations/${retryCommand.operationId}`),
     (value) => value.status === 'succeeded',
   );
   const recovered = await poll(
@@ -560,7 +595,8 @@ test('@recovery download enqueue failure can retry and active download can cance
 
   await setFixtureControl(page, 'qbittorrent', true);
   try {
-    const cancelFlow = await createSearchAcquisition(page, 'Fixture download cancel');
+    const cancelSeries = isolatedSeries(testInfo, 'download-cancel');
+    const cancelFlow = await createSearchAcquisition(page, cancelSeries.query, cancelSeries);
     await page.goto(`/downloads/${cancelFlow.downloadId}`);
     await page.getByRole('button', { name: '停止下载' }).click();
     await page.getByRole('button', { name: '确认停止' }).click();
@@ -573,14 +609,15 @@ test('@recovery download enqueue failure can retry and active download can cance
   }
 });
 
-test('@recovery task media failure retries, stale review conflicts, and processing cancels', async ({ page, context }) => {
+test('@recovery task media failure retries, stale review conflicts, and processing cancels', async ({ page, context }, testInfo) => {
   test.setTimeout(180_000);
   await login(page);
   await configure(page);
   await setFixtureControl(page, 'media_invalid', true);
   try {
-    const retryFlow = await createSearchAcquisition(page, 'Fixture task retry');
-    await mapAndMaterialize(page, retryFlow.acquisitionId, retryFlow.downloadId);
+    const retrySeries = isolatedSeries(testInfo, 'task-retry');
+    const retryFlow = await createSearchAcquisition(page, retrySeries.query, retrySeries);
+    await mapAndMaterialize(page, retryFlow.acquisitionId, retryFlow.downloadId, retrySeries.episodeTitle);
     const retryAcquisition = await poll(
       () => json<Acquisition>(page.request, `/api/v1/acquisitions/${retryFlow.acquisitionId}`),
       (value) => value.tasks.length > 0,
@@ -617,8 +654,9 @@ test('@recovery task media failure retries, stale review conflicts, and processi
     await stalePage.close();
 
     await setFixtureControl(page, 'media_blocked', true);
-    const cancelFlow = await createSearchAcquisition(page, 'Fixture task cancel');
-    await mapAndMaterialize(page, cancelFlow.acquisitionId, cancelFlow.downloadId);
+    const cancelSeries = isolatedSeries(testInfo, 'task-cancel');
+    const cancelFlow = await createSearchAcquisition(page, cancelSeries.query, cancelSeries);
+    await mapAndMaterialize(page, cancelFlow.acquisitionId, cancelFlow.downloadId, cancelSeries.episodeTitle);
     const cancelAcquisition = await poll(
       () => json<Acquisition>(page.request, `/api/v1/acquisitions/${cancelFlow.acquisitionId}`),
       (value) => value.tasks.length > 0,
@@ -675,9 +713,15 @@ test('@recovery RSS upstream failure is audited and succeeds on retry', async ({
   try {
     const subscriptionId = await createRSSSubscription(page, 'Fixture RSS retry');
     await page.goto(`/rss/${subscriptionId}`);
+    const pollAccepted = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === `/api/v1/rss/subscriptions/${subscriptionId}/poll` && response.request().method() === 'POST');
     await page.getByRole('button', { name: '立即检查' }).click();
-    await expect(page).toHaveURL(/\/operations\/[0-9a-f-]+(?:\?.*)?$/);
-    const operationId = currentResourceID(page);
+    const pollResponse = await pollAccepted;
+    expect(pollResponse.ok()).toBeTruthy();
+    const pollCommand = await pollResponse.json() as CommandAccepted;
+    await expect(page).toHaveURL(new RegExp(`/rss/${subscriptionId}(?:\\?.*)?$`));
+    await expect(page.getByRole('link', { name: '查看操作日志' })).toHaveAttribute('href', new RegExp(`/operations/${pollCommand.operationId}`));
+    const operationId = pollCommand.operationId;
     const failedAttempt = await poll(
       () => json<Operation>(page.request, `/api/v1/operations/${operationId}`),
       (value) => value.attemptCount >= 1 && value.errorCode === 'rss_fetch_failed',
@@ -752,8 +796,11 @@ test('@narrow narrow viewport keeps primary navigation and URL filters usable', 
   await login(page);
   await configure(page);
   await page.goto('/downloads?phase=failed');
-  await expect(page).toHaveURL(/\/acquisitions$/);
-  await expect(page.getByRole('heading', { name: '任务' })).toBeVisible();
+  await expect(page).toHaveURL(/\/downloads\?phase=failed$/);
+  await expect(page.getByRole('heading', { name: '下载', level: 1 })).toBeVisible();
+  const failedFilter = page.getByRole('group', { name: '下载阶段筛选' }).getByRole('link', { name: '失败', exact: true });
+  await expect(failedFilter).toBeVisible();
+  await expect(failedFilter).toHaveAttribute('data-sliding-active', 'true');
   await page.getByRole('button', { name: '打开主导航' }).click();
   await expect(page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '任务', exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
