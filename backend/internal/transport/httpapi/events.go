@@ -44,27 +44,38 @@ func (server *Server) StreamEvents(
 	}
 
 	var cursor *uuid.UUID
-	if request.Params.LastEventID != nil {
+	var initial []domain.Event
+	// 没有游标时从当前最新事件开始，先发一个边界帧；客户端收到边界后全量重读，
+	// 从而既能覆盖初始化读取与订阅之间的间隙，也不会重放整个保留期历史。
+	started := request.Params.LastEventID == nil
+	if started {
+		head, err := server.events.Head(ctx)
+		if err != nil {
+			return StreamEvents503JSONResponse{ServiceUnavailableJSONResponse: serviceUnavailableError(ctx, "postgresql")}, nil
+		}
+		cursor = head
+	} else {
 		parsed := uuid.UUID(*request.Params.LastEventID)
 		cursor = &parsed
-	}
-	initial, err := server.events.List(ctx, cursor, eventBatchSize)
-	if errors.Is(err, domain.ErrNotFound) {
-		return StreamEvents409JSONResponse{ConflictJSONResponse: ConflictJSONResponse(ApiError{
-			Code:      "event_cursor_not_found",
-			Message:   "the event cursor is no longer available",
-			Details:   map[string]any{"lastEventId": cursor.String()},
-			RequestId: middleware.GetReqID(ctx),
-		})}, nil
-	}
-	if err != nil {
-		return StreamEvents503JSONResponse{ServiceUnavailableJSONResponse: serviceUnavailableError(ctx, "postgresql")}, nil
+		var err error
+		initial, err = server.events.List(ctx, cursor, eventBatchSize)
+		if errors.Is(err, domain.ErrNotFound) {
+			return StreamEvents409JSONResponse{ConflictJSONResponse: ConflictJSONResponse(ApiError{
+				Code:      "event_cursor_not_found",
+				Message:   "the event cursor is no longer available",
+				Details:   map[string]any{"lastEventId": cursor.String()},
+				RequestId: middleware.GetReqID(ctx),
+			})}, nil
+		}
+		if err != nil {
+			return StreamEvents503JSONResponse{ServiceUnavailableJSONResponse: serviceUnavailableError(ctx, "postgresql")}, nil
+		}
 	}
 
 	cacheControl := "no-cache, no-transform"
 	buffering := "no"
 	return StreamEvents200TexteventStreamResponse{
-		Body: server.eventReader(ctx, cursor, initial),
+		Body: server.eventReader(ctx, cursor, initial, started),
 		Headers: StreamEvents200ResponseHeaders{
 			CacheControl:    &cacheControl,
 			XAccelBuffering: &buffering,
@@ -76,6 +87,7 @@ func (server *Server) eventReader(
 	ctx context.Context,
 	initialCursor *uuid.UUID,
 	initial []domain.Event,
+	started bool,
 ) io.Reader {
 	reader, writer := io.Pipe()
 	go func() {
@@ -89,6 +101,9 @@ func (server *Server) eventReader(
 			return
 		}
 		cursor := cloneUUID(initialCursor)
+		if started && !writeStreamStarted(writer, cursor) {
+			return
+		}
 		if !writeEventBatch(writer, initial, &cursor) {
 			return
 		}
@@ -123,6 +138,23 @@ func (server *Server) eventReader(
 		}
 	}()
 	return reader
+}
+
+// writeStreamStarted 写入订阅边界帧。id 是当前最新事件的公开游标，
+// 客户端据此确认从哪个水位开始接收后续事件。
+func writeStreamStarted(writer io.Writer, cursor *uuid.UUID) bool {
+	payload, err := json.Marshal(struct {
+		Cursor *uuid.UUID `json:"cursor,omitempty"`
+	}{Cursor: cursor})
+	if err != nil {
+		return false
+	}
+	if cursor == nil {
+		_, err = fmt.Fprintf(writer, "event: stream.started\ndata: %s\n\n", payload)
+		return err == nil
+	}
+	_, err = fmt.Fprintf(writer, "id: %s\nevent: stream.started\ndata: %s\n\n", cursor.String(), payload)
+	return err == nil
 }
 
 func writeEventBatch(writer io.Writer, events []domain.Event, cursor **uuid.UUID) bool {

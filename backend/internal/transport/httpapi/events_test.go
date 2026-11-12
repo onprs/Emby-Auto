@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,11 +19,13 @@ import (
 type eventSourceStub struct {
 	mutex      sync.Mutex
 	events     []domain.Event
+	head       *uuid.UUID
 	stats      domain.EventStats
 	err        error
 	firstCall  chan struct{}
 	signalOnce sync.Once
 	cursors    []*uuid.UUID
+	headCalls  int
 }
 
 func (stub *eventSourceStub) List(_ context.Context, cursor *uuid.UUID, _ int32) ([]domain.Event, error) {
@@ -41,6 +44,21 @@ func (stub *eventSourceStub) List(_ context.Context, cursor *uuid.UUID, _ int32)
 		return stub.events, nil
 	}
 	return nil, nil
+}
+
+func (stub *eventSourceStub) Head(_ context.Context) (*uuid.UUID, error) {
+	stub.mutex.Lock()
+	defer stub.mutex.Unlock()
+	stub.headCalls++
+	stub.signalOnce.Do(func() {
+		if stub.firstCall != nil {
+			close(stub.firstCall)
+		}
+	})
+	if stub.err != nil {
+		return nil, stub.err
+	}
+	return cloneUUID(stub.head), nil
 }
 
 func (stub *eventSourceStub) Stats(context.Context) (domain.EventStats, error) {
@@ -122,6 +140,7 @@ func TestEventStreamWritesPublicUUIDCursorAndEnvelope(t *testing.T) {
 	handler := NewHandler(server)
 	ctx, cancel := context.WithCancel(context.Background())
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil).WithContext(ctx)
+	request.Header.Set("Last-Event-ID", eventID.String())
 	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "valid-token"})
 	response := httptest.NewRecorder()
 	done := make(chan struct{})
@@ -150,6 +169,105 @@ func TestEventStreamWritesPublicUUIDCursorAndEnvelope(t *testing.T) {
 		"data: {\"id\":\"10000000-0000-0000-0000-000000000010\",\"topic\":\"task.updated\",\"data\":{\"state\":\"processing\"},\"occurredAt\":\"2026-07-21T12:30:00Z\"}\n\n"
 	if response.Body.String() != want {
 		t.Fatalf("SSE body = %q, want %q", response.Body.String(), want)
+	}
+}
+
+func TestEventStreamWithoutCursorStartsAtHeadWithoutReplayingHistory(t *testing.T) {
+	head := uuid.MustParse("10000000-0000-0000-0000-000000000020")
+	old := uuid.MustParse("10000000-0000-0000-0000-000000000001")
+	source := &eventSourceStub{
+		firstCall: make(chan struct{}),
+		head:      &head,
+		events: []domain.Event{{
+			ID:         old,
+			Topic:      "task.updated",
+			Data:       json.RawMessage(`{}`),
+			OccurredAt: time.Date(2026, time.July, 21, 11, 0, 0, 0, time.UTC),
+		}},
+	}
+	authentication := &authenticationStub{authenticated: domain.Session{User: domain.AdminUser{ID: uuid.New(), Username: "admin"}}}
+	server := NewServer(readinessStub{}, WithAuthentication(authentication, false), WithEvents(source))
+	server.eventPollInterval = time.Hour
+	handler := NewHandler(server)
+	ctx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil).WithContext(ctx)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "valid-token"})
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(response, request)
+		close(done)
+	}()
+
+	<-source.firstCall
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("SSE handler did not stop after request cancellation")
+	}
+
+	want := ": connected\n\n" + "id: 10000000-0000-0000-0000-000000000020\n" +
+		"event: stream.started\n" +
+		"data: {\"cursor\":\"10000000-0000-0000-0000-000000000020\"}\n\n"
+	if response.Body.String() != want {
+		t.Fatalf("SSE body = %q, want %q", response.Body.String(), want)
+	}
+	if strings.Contains(response.Body.String(), old.String()) {
+		t.Fatalf("SSE body replayed retained history: %q", response.Body.String())
+	}
+	if len(source.cursors) != 0 {
+		t.Fatalf("initial stream listed events with cursors %#v, want none", source.cursors)
+	}
+	if source.headCalls != 1 {
+		t.Fatalf("head calls = %d, want 1", source.headCalls)
+	}
+}
+
+func TestEventStreamWithoutCursorSendsEmptyBoundaryWhenNoEventsExist(t *testing.T) {
+	source := &eventSourceStub{firstCall: make(chan struct{})}
+	authentication := &authenticationStub{authenticated: domain.Session{User: domain.AdminUser{ID: uuid.New(), Username: "admin"}}}
+	server := NewServer(readinessStub{}, WithAuthentication(authentication, false), WithEvents(source))
+	server.eventPollInterval = time.Hour
+	handler := NewHandler(server)
+	ctx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil).WithContext(ctx)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "valid-token"})
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(response, request)
+		close(done)
+	}()
+
+	<-source.firstCall
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("SSE handler did not stop after request cancellation")
+	}
+
+	want := ": connected\n\nevent: stream.started\ndata: {}\n\n"
+	if response.Body.String() != want {
+		t.Fatalf("SSE body = %q, want %q", response.Body.String(), want)
+	}
+}
+
+func TestEventStreamWithoutCursorReturnsServiceUnavailableWhenHeadFails(t *testing.T) {
+	source := &eventSourceStub{err: errors.New("database unavailable")}
+	authentication := &authenticationStub{authenticated: domain.Session{User: domain.AdminUser{ID: uuid.New(), Username: "admin"}}}
+	handler := NewHandler(NewServer(readinessStub{}, WithAuthentication(authentication, false), WithEvents(source)))
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "valid-token"})
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 type eventQueries interface {
 	GetEvent(context.Context, pgtype.UUID) (db.Event, error)
 	GetEventStats(context.Context) (db.GetEventStatsRow, error)
+	GetLatestEvent(context.Context) (db.Event, error)
 	ListEvents(context.Context, int32) ([]db.Event, error)
 	ListEventsAfter(context.Context, db.ListEventsAfterParams) ([]db.Event, error)
 	DeleteExpiredEvents(context.Context, db.DeleteExpiredEventsParams) (int64, error)
@@ -68,6 +69,19 @@ func (repository *Events) List(
 		})
 	}
 	return events, nil
+}
+
+// Head 返回当前最新事件的公开游标；没有事件时返回 nil。
+func (repository *Events) Head(ctx context.Context) (*uuid.UUID, error) {
+	row, err := repository.queries.GetLatestEvent(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get latest event: %w", err)
+	}
+	id := UUIDFromPG(row.ID)
+	return &id, nil
 }
 
 func (repository *Events) Stats(ctx context.Context) (domain.EventStats, error) {

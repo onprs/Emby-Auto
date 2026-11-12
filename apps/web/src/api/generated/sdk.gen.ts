@@ -982,6 +982,8 @@ export const getDashboardSystemMetrics = <ThrowOnError extends boolean = false>(
 
 /**
  * Stream domain events after an optional public event cursor
+ *
+ * Without a Last-Event-ID the stream starts at the current head instead of replaying retained history. Its first frame is a `stream.started` event whose `id` is the head cursor when events exist; clients re-read their data after receiving that boundary and then resume from the cursor. With a cursor the stream replays events after it, and a cursor removed by retention returns 409 `event_cursor_not_found`.
  */
 export const streamEvents = <ThrowOnError extends boolean = false>(options?: Options<StreamEventsData, ThrowOnError, StreamEventsResponse>): Promise<ServerSentEventsResult<StreamEventsResponses>> => (options?.client ?? client).sse.get<StreamEventsResponses, StreamEventsErrors, ThrowOnError>({
     security: [{
