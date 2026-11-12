@@ -6,6 +6,8 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/onprs/emby-auto/backend/internal/domain"
 )
 
 type executorStub struct {
@@ -49,6 +51,40 @@ func TestProbeUsesExactFFprobeContractAndMapsMetadata(t *testing.T) {
 	}
 	if !reflect.DeepEqual(probe.FormatNames, []string{"matroska", "webm"}) || len(probe.Streams) != 3 || probe.Streams[1].Language != "chi" || probe.Streams[1].Title != "简体中文" || !probe.Streams[1].Forced || probe.Streams[2].Title != "繁體中文" {
 		t.Fatalf("probe = %#v", probe)
+	}
+}
+
+func TestProbeWithPacketCountsParsesDurationFramesAndAttachedPictures(t *testing.T) {
+	executor := &executorStub{output: []byte(`{
+		"streams":[
+			{"index":0,"codec_name":"png","codec_type":"video","disposition":{"attached_pic":0},"tags":{"DURATION":"00:00:00.040000000"}},
+			{"index":1,"codec_name":"h264","codec_type":"video","duration":"4.023000","nb_frames":"100","nb_read_packets":"100","disposition":{"attached_pic":0},"tags":{}},
+			{"index":2,"codec_name":"mjpeg","codec_type":"video","nb_frames":"1","nb_read_packets":"1","disposition":{"attached_pic":1},"tags":{}}
+		],
+		"format":{"format_name":"matroska,webm","duration":"4.063000"}
+	}`)}
+	probe, err := New(executor).ProbeWithPacketCounts(context.Background(), "ffprobe-custom", "/media/source.mkv")
+	if err != nil {
+		t.Fatalf("ProbeWithPacketCounts() error = %v", err)
+	}
+	wantArgs := []string{"-v", "error", "-count_packets", "-show_streams", "-show_format", "-of", "json", "/media/source.mkv"}
+	if !reflect.DeepEqual(executor.outputArgs, wantArgs) {
+		t.Fatalf("ffprobe args = %#v, want %#v", executor.outputArgs, wantArgs)
+	}
+	if probe.DurationSeconds != 4.063 || len(probe.Streams) != 3 {
+		t.Fatalf("probe = %#v", probe)
+	}
+	cover := probe.Streams[0]
+	if cover.DurationSeconds != 0.04 || cover.PacketCount != 0 {
+		t.Fatalf("Matroska tag duration not parsed: %#v", cover)
+	}
+	main := probe.Streams[1]
+	if main.DurationSeconds != 4.023 || main.FrameCount != 100 || main.PacketCount != 100 || main.AttachedPic {
+		t.Fatalf("main stream = %#v", main)
+	}
+	stream, ok := domain.SelectMainVideoStream(probe)
+	if !ok || stream.Index != 1 {
+		t.Fatalf("SelectMainVideoStream() = %#v, %v, want index 1", stream, ok)
 	}
 }
 

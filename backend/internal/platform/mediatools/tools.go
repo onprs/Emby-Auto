@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/onprs/emby-auto/backend/internal/domain"
@@ -58,14 +59,25 @@ func New(executor Executor) *Tools {
 }
 
 func (tools *Tools) Probe(ctx context.Context, executable, inputPath string) (domain.MediaProbe, error) {
+	return tools.probe(ctx, executable, inputPath, false)
+}
+
+// ProbeWithPacketCounts 额外统计每个流的数据包数量。
+// 解复用一整趟文件而不解码，用于选择正片流并校验输出帧数。
+func (tools *Tools) ProbeWithPacketCounts(ctx context.Context, executable, inputPath string) (domain.MediaProbe, error) {
+	return tools.probe(ctx, executable, inputPath, true)
+}
+
+func (tools *Tools) probe(ctx context.Context, executable, inputPath string, countPackets bool) (domain.MediaProbe, error) {
 	if strings.TrimSpace(executable) == "" {
 		return domain.MediaProbe{}, fmt.Errorf("ffprobe executable is not configured")
 	}
-	output, err := tools.executor.Output(
-		ctx,
-		executable,
-		"-v", "error", "-show_streams", "-show_format", "-of", "json", inputPath,
-	)
+	args := []string{"-v", "error"}
+	if countPackets {
+		args = append(args, "-count_packets")
+	}
+	args = append(args, "-show_streams", "-show_format", "-of", "json", inputPath)
+	output, err := tools.executor.Output(ctx, executable, args...)
 	if err != nil {
 		return domain.MediaProbe{}, err
 	}
@@ -73,23 +85,68 @@ func (tools *Tools) Probe(ctx context.Context, executable, inputPath string) (do
 	if err := json.Unmarshal(output, &document); err != nil {
 		return domain.MediaProbe{}, fmt.Errorf("decode ffprobe output: %w", err)
 	}
-	probe := domain.MediaProbe{FormatNames: splitFormatNames(document.Format.FormatName), Streams: make([]domain.MediaStreamProbe, 0, len(document.Streams))}
+	probe := domain.MediaProbe{
+		FormatNames:     splitFormatNames(document.Format.FormatName),
+		DurationSeconds: parseProbeSeconds(document.Format.Duration),
+		Streams:         make([]domain.MediaStreamProbe, 0, len(document.Streams)),
+	}
 	for _, stream := range document.Streams {
 		title := strings.TrimSpace(stream.Tags.Title)
 		if title == "" {
 			title = strings.TrimSpace(stream.Tags.HandlerName)
 		}
+		duration := parseProbeSeconds(stream.Duration)
+		if duration <= 0 {
+			duration = parseProbeSeconds(stream.Tags.Duration)
+		}
 		probe.Streams = append(probe.Streams, domain.MediaStreamProbe{
-			Index:    stream.Index,
-			Type:     strings.ToLower(stream.CodecType),
-			Codec:    strings.ToLower(stream.CodecName),
-			Language: stream.Tags.Language,
-			Title:    title,
-			Default:  stream.Disposition.Default != 0,
-			Forced:   stream.Disposition.Forced != 0,
+			Index:           stream.Index,
+			Type:            strings.ToLower(stream.CodecType),
+			Codec:           strings.ToLower(stream.CodecName),
+			Language:        stream.Tags.Language,
+			Title:           title,
+			Default:         stream.Disposition.Default != 0,
+			Forced:          stream.Disposition.Forced != 0,
+			AttachedPic:     stream.Disposition.AttachedPic != 0,
+			DurationSeconds: duration,
+			FrameCount:      parseProbeCount(stream.FrameCount),
+			PacketCount:     parseProbeCount(stream.PacketCount),
 		})
 	}
 	return probe, nil
+}
+
+// parseProbeSeconds 接受秒数或 Matroska 标签使用的 HH:MM:SS.nnnnnnnnn 格式。
+func parseProbeSeconds(value string) float64 {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "N/A" {
+		return 0
+	}
+	if seconds, err := strconv.ParseFloat(value, 64); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		return seconds
+	}
+	parts := strings.Split(value, ":")
+	if len(parts) != 3 {
+		return 0
+	}
+	hours, hoursErr := strconv.Atoi(parts[0])
+	minutes, minutesErr := strconv.Atoi(parts[1])
+	seconds, secondsErr := strconv.ParseFloat(parts[2], 64)
+	if hoursErr != nil || minutesErr != nil || secondsErr != nil || hours < 0 || minutes < 0 || seconds < 0 {
+		return 0
+	}
+	return float64(hours*3600+minutes*60) + seconds
+}
+
+func parseProbeCount(value string) int64 {
+	parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || parsed < 0 {
+		return 0
+	}
+	return parsed
 }
 
 func (tools *Tools) RunFFmpeg(ctx context.Context, executable string, args []string) error {
@@ -112,18 +169,24 @@ type probeDocument struct {
 		Index       int    `json:"index"`
 		CodecName   string `json:"codec_name"`
 		CodecType   string `json:"codec_type"`
+		Duration    string `json:"duration"`
+		FrameCount  string `json:"nb_frames"`
+		PacketCount string `json:"nb_read_packets"`
 		Disposition struct {
-			Default int `json:"default"`
-			Forced  int `json:"forced"`
+			Default     int `json:"default"`
+			Forced      int `json:"forced"`
+			AttachedPic int `json:"attached_pic"`
 		} `json:"disposition"`
 		Tags struct {
 			Language    string `json:"language"`
 			Title       string `json:"title"`
 			HandlerName string `json:"handler_name"`
+			Duration    string `json:"duration"`
 		} `json:"tags"`
 	} `json:"streams"`
 	Format struct {
 		FormatName string `json:"format_name"`
+		Duration   string `json:"duration"`
 	} `json:"format"`
 }
 

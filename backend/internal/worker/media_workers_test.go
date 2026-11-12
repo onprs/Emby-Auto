@@ -29,6 +29,10 @@ func (stub *mediaToolsStub) Probe(_ context.Context, _ string, input string) (do
 	return stub.probe(input)
 }
 
+func (stub *mediaToolsStub) ProbeWithPacketCounts(_ context.Context, _ string, input string) (domain.MediaProbe, error) {
+	return stub.probe(input)
+}
+
 func (stub *mediaToolsStub) RunFFmpeg(_ context.Context, _ string, args []string) error {
 	stub.runArgs = append(stub.runArgs, append([]string(nil), args...))
 	output, err := stub.runOutput, stub.runErr
@@ -115,9 +119,15 @@ func TestTranscodeRunWritesValidatedAtomicOutputAndPersistsArtifact(t *testing.T
 	}}
 	tools := &mediaToolsStub{runOutput: []byte("transcoded-video"), probe: func(input string) (domain.MediaProbe, error) {
 		if input == sourcePath {
-			return domain.MediaProbe{FormatNames: []string{"matroska"}, Streams: []domain.MediaStreamProbe{{Type: "video", Codec: "hevc"}, {Type: "audio", Codec: "flac"}}}, nil
+			return domain.MediaProbe{DurationSeconds: 4, Streams: []domain.MediaStreamProbe{
+				{Index: 0, Type: "video", Codec: "hevc", DurationSeconds: 4, PacketCount: 100},
+				{Index: 1, Type: "audio", Codec: "flac"},
+			}}, nil
 		}
-		return domain.MediaProbe{FormatNames: []string{"mov", "mp4"}, Streams: []domain.MediaStreamProbe{{Type: "video", Codec: "h264"}, {Type: "audio", Codec: "aac"}}}, nil
+		return domain.MediaProbe{DurationSeconds: 4, FormatNames: []string{"mov", "mp4"}, Streams: []domain.MediaStreamProbe{
+			{Index: 0, Type: "video", Codec: "h264", DurationSeconds: 4, PacketCount: 100},
+			{Index: 1, Type: "audio", Codec: "aac"},
+		}}, nil
 	}}
 	handler := NewTranscodeRunHandler(mediaTestConfiguration(stagingRoot), tools, store)
 
@@ -128,7 +138,7 @@ func TestTranscodeRunWritesValidatedAtomicOutputAndPersistsArtifact(t *testing.T
 	if len(tools.runArgs) != 1 {
 		t.Fatalf("FFmpeg calls = %d", len(tools.runArgs))
 	}
-	wantPrefix := []string{"-y", "-i", sourcePath, "-map", "0:v:0", "-map", "0:a?", "-sn", "-c:v", "libx264", "-crf", "20", "-preset", "slow", "-pix_fmt", "yuv420p", "-threads", "2", "-c:a", "aac", "-f", "mp4"}
+	wantPrefix := []string{"-y", "-i", sourcePath, "-map", "0:0", "-map", "0:a?", "-sn", "-c:v", "libx264", "-crf", "20", "-preset", "slow", "-pix_fmt", "yuv420p", "-threads", "2", "-c:a", "aac", "-f", "mp4"}
 	if !reflect.DeepEqual(tools.runArgs[0][:len(wantPrefix)], wantPrefix) {
 		t.Fatalf("FFmpeg args = %#v", tools.runArgs[0])
 	}
@@ -164,15 +174,153 @@ func TestTranscodeRunReusesCommittedOutputAfterCrashReplay(t *testing.T) {
 	}}
 	tools := &mediaToolsStub{probe: func(input string) (domain.MediaProbe, error) {
 		if input == filepath.Join(downloadRoot, "source.mkv") {
-			return domain.MediaProbe{Streams: []domain.MediaStreamProbe{{Type: "video", Codec: "hevc"}, {Type: "audio", Codec: "flac"}}}, nil
+			return domain.MediaProbe{DurationSeconds: 4, Streams: []domain.MediaStreamProbe{
+				{Index: 0, Type: "video", Codec: "hevc", DurationSeconds: 4, PacketCount: 100},
+				{Index: 1, Type: "audio", Codec: "flac"},
+			}}, nil
 		}
-		return domain.MediaProbe{FormatNames: []string{"mov", "mp4"}, Streams: []domain.MediaStreamProbe{{Type: "video", Codec: "h264"}, {Type: "audio", Codec: "aac"}}}, nil
+		return domain.MediaProbe{DurationSeconds: 4, FormatNames: []string{"mov", "mp4"}, Streams: []domain.MediaStreamProbe{
+			{Index: 0, Type: "video", Codec: "h264", DurationSeconds: 4, PacketCount: 100},
+			{Index: 1, Type: "audio", Codec: "aac"},
+		}}, nil
 	}}
 	if err := NewTranscodeRunHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), domain.Operation{ID: operationID, ResourceType: "episode_task", ResourceID: taskID}); err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
 	if len(tools.runArgs) != 0 || store.completion.SizeBytes != int64(len("existing-output")) {
 		t.Fatalf("replay ran FFmpeg or missed completion: calls=%d completion=%#v", len(tools.runArgs), store.completion)
+	}
+}
+
+func TestTranscodeRunMapsSelectedMainVideoStream(t *testing.T) {
+	root := t.TempDir()
+	downloadRoot := filepath.Join(root, "download")
+	stagingRoot := filepath.Join(root, "staging")
+	if err := os.MkdirAll(downloadRoot, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(downloadRoot, "source.mkv")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	taskID, operationID := uuid.New(), uuid.New()
+	store := &transcodeStoreStub{command: domain.TaskMediaCommand{
+		TaskID: taskID, State: domain.TaskProcessing, VideoState: domain.VideoTranscoding,
+		SavePath: downloadRoot, SourceVideoFileID: uuid.New(), SourceVideoRelativePath: "source.mkv", TranscodeProfileID: uuid.New(),
+		TranscodeProfile: domain.TranscodeProfile{Name: "h264", VideoCodec: "h264", Encoder: "libx264", Container: "matroska", FileExtension: "mkv", QualityMode: "crf", QualityValue: 20, AudioPolicy: "transcode", AudioCodec: "aac", Preset: "ultrafast", PixelFormat: "yuv420p", MaxConcurrency: 1},
+		Names:            domain.EpisodeFileNames{BaseName: "Show - S01E01 - Cover", VideoName: "Show - S01E01 - Cover.mkv"},
+	}}
+	tools := &mediaToolsStub{runOutput: []byte("main-video"), probe: func(input string) (domain.MediaProbe, error) {
+		if input == sourcePath {
+			// 首视频流是 1 帧封面，正片在索引 1。
+			return domain.MediaProbe{DurationSeconds: 4.023, Streams: []domain.MediaStreamProbe{
+				{Index: 0, Type: "video", Codec: "png", DurationSeconds: 0.04, PacketCount: 1},
+				{Index: 1, Type: "video", Codec: "hevc", DurationSeconds: 4.023, PacketCount: 100},
+				{Index: 2, Type: "audio", Codec: "flac"},
+			}}, nil
+		}
+		return domain.MediaProbe{DurationSeconds: 4.063, FormatNames: []string{"matroska", "webm"}, Streams: []domain.MediaStreamProbe{
+			{Index: 0, Type: "video", Codec: "h264", DurationSeconds: 4.063, PacketCount: 100},
+			{Index: 1, Type: "audio", Codec: "aac"},
+		}}, nil
+	}}
+	if err := NewTranscodeRunHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), domain.Operation{ID: operationID, ResourceType: "episode_task", ResourceID: taskID}); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(tools.runArgs) != 1 {
+		t.Fatalf("FFmpeg calls = %d", len(tools.runArgs))
+	}
+	args := tools.runArgs[0]
+	mappedIndex := ""
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == "-map" && strings.HasPrefix(args[index+1], "0:") && args[index+1] != "0:a?" {
+			mappedIndex = args[index+1]
+			break
+		}
+	}
+	if mappedIndex != "0:1" {
+		t.Fatalf("video map = %q, want 0:1 (args %#v)", mappedIndex, args)
+	}
+	if store.completion.FilePath == "" || store.completion.SizeBytes != int64(len("main-video")) {
+		t.Fatalf("completion = %#v", store.completion)
+	}
+}
+
+func TestTranscodeRunRejectsOutputWithTooFewFrames(t *testing.T) {
+	root := t.TempDir()
+	downloadRoot := filepath.Join(root, "download")
+	stagingRoot := filepath.Join(root, "staging")
+	if err := os.MkdirAll(downloadRoot, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(downloadRoot, "source.mkv")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	taskID, operationID := uuid.New(), uuid.New()
+	store := &transcodeStoreStub{command: domain.TaskMediaCommand{
+		TaskID: taskID, State: domain.TaskProcessing, VideoState: domain.VideoTranscoding,
+		SavePath: downloadRoot, SourceVideoFileID: uuid.New(), SourceVideoRelativePath: "source.mkv", TranscodeProfileID: uuid.New(),
+		TranscodeProfile: domain.TranscodeProfile{Name: "h264", VideoCodec: "h264", Encoder: "libx264", Container: "matroska", FileExtension: "mkv", QualityMode: "crf", QualityValue: 20, AudioPolicy: "transcode", AudioCodec: "aac", Preset: "ultrafast", PixelFormat: "yuv420p", MaxConcurrency: 1},
+		Names:            domain.EpisodeFileNames{BaseName: "Show - S01E01 - Static", VideoName: "Show - S01E01 - Static.mkv"},
+	}}
+	tools := &mediaToolsStub{runOutput: []byte("static-video"), probe: func(input string) (domain.MediaProbe, error) {
+		if input == sourcePath {
+			return domain.MediaProbe{DurationSeconds: 4.023, Streams: []domain.MediaStreamProbe{
+				{Index: 0, Type: "video", Codec: "hevc", DurationSeconds: 4.023, PacketCount: 100},
+				{Index: 1, Type: "audio", Codec: "flac"},
+			}}, nil
+		}
+		// 容器时长看似正常，但只有 1 帧，属于封面冒充正片。
+		return domain.MediaProbe{DurationSeconds: 4.063, FormatNames: []string{"matroska", "webm"}, Streams: []domain.MediaStreamProbe{
+			{Index: 0, Type: "video", Codec: "h264", DurationSeconds: 4.063, PacketCount: 1},
+			{Index: 1, Type: "audio", Codec: "aac"},
+		}}, nil
+	}}
+	err := NewTranscodeRunHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), domain.Operation{ID: operationID, ResourceType: "episode_task", ResourceID: taskID})
+	var failure *Failure
+	if !errors.As(err, &failure) || failure.Code != "transcode_output_invalid" || failure.Retryable {
+		t.Fatalf("Handle() error = %#v, want permanent transcode_output_invalid", err)
+	}
+	if store.completion.TaskID != uuid.Nil {
+		t.Fatalf("invalid output completed artifact: %#v", store.completion)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(stagingRoot, taskID.String(), "*")); len(matches) != 0 {
+		t.Fatalf("invalid output left files: %v", matches)
+	}
+}
+
+func TestTranscodeRunRejectsSourceWithoutMainVideoStream(t *testing.T) {
+	root := t.TempDir()
+	downloadRoot := filepath.Join(root, "download")
+	stagingRoot := filepath.Join(root, "staging")
+	if err := os.MkdirAll(downloadRoot, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(downloadRoot, "source.m4a")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	taskID := uuid.New()
+	store := &transcodeStoreStub{command: domain.TaskMediaCommand{
+		TaskID: taskID, State: domain.TaskProcessing, VideoState: domain.VideoTranscoding,
+		SavePath: downloadRoot, SourceVideoFileID: uuid.New(), SourceVideoRelativePath: "source.m4a", TranscodeProfileID: uuid.New(),
+		TranscodeProfile: domain.TranscodeProfile{Name: "h264", VideoCodec: "h264", Encoder: "libx264", Container: "mp4", FileExtension: "mp4", QualityMode: "crf", QualityValue: 20, AudioPolicy: "transcode", AudioCodec: "aac", Preset: "medium", PixelFormat: "yuv420p", MaxConcurrency: 1},
+		Names:            domain.EpisodeFileNames{BaseName: "Show - S01E01 - Audio", VideoName: "Show - S01E01 - Audio.mp4"},
+	}}
+	tools := &mediaToolsStub{probe: func(string) (domain.MediaProbe, error) {
+		return domain.MediaProbe{DurationSeconds: 3, Streams: []domain.MediaStreamProbe{
+			{Index: 0, Type: "audio", Codec: "aac"},
+			{Index: 1, Type: "video", Codec: "mjpeg", AttachedPic: true, DurationSeconds: 3, FrameCount: 1},
+		}}, nil
+	}}
+	err := NewTranscodeRunHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID})
+	var failure *Failure
+	if !errors.As(err, &failure) || failure.Code != "source_video_without_main_stream" || failure.Retryable {
+		t.Fatalf("Handle() error = %#v, want permanent source_video_without_main_stream", err)
+	}
+	if len(tools.runArgs) != 0 {
+		t.Fatalf("FFmpeg ran without a main video: %#v", tools.runArgs)
 	}
 }
 
