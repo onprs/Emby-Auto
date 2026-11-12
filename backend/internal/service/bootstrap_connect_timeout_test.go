@@ -89,6 +89,54 @@ func TestBootstrapInitializeReleasesSetupLockWhenDatabaseNeverResponds(t *testin
 	}
 }
 
+// blockingMigrator 模拟已完成连接但永不返回查询响应的数据库依赖。
+type blockingMigrator struct{}
+
+func (blockingMigrator) Migrate(ctx context.Context, _ string) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestBootstrapInitializeReleasesSetupLockWhenDependencyStalls(t *testing.T) {
+	bootstrap := NewBootstrap(BootstrapOptions{
+		Store:        platformconfig.NewBootstrapStore(filepath.Join(t.TempDir(), "bootstrap.json")),
+		Migrator:     blockingMigrator{},
+		Passwords:    NewPasswordHasher(),
+		SetupTimeout: 50 * time.Millisecond,
+	})
+	input := domain.InitializeSetup{
+		Database: &domain.SetupDatabase{
+			Host: "127.0.0.1", Port: 5432, Database: "emby_auto", Username: "emby_auto",
+			Password: "fixture-password", SSLMode: "disable",
+		},
+		AdministratorUsername: "setup-admin",
+		AdministratorPassword: "fixture-password-123",
+	}
+
+	started := time.Now()
+	_, err := bootstrap.Initialize(context.Background(), input)
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("Initialize() error = nil, want setup timeout")
+	}
+	var serviceErr *Error
+	if !errors.As(err, &serviceErr) || serviceErr.Code != "service_unavailable" {
+		t.Fatalf("Initialize() error = %#v, want service_unavailable", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("Initialize() took %s, want bounded by setup timeout", elapsed)
+	}
+
+	// 超时后初始化标志必须释放，下一次请求仍会真正尝试而不是返回 setup_in_progress。
+	_, retryErr := bootstrap.Initialize(context.Background(), input)
+	if errors.As(retryErr, &serviceErr) && serviceErr.Code == "setup_in_progress" {
+		t.Fatalf("second Initialize() error = %#v, want released setup lock", retryErr)
+	}
+	if retryErr == nil {
+		t.Fatal("second Initialize() error = nil, want setup timeout")
+	}
+}
+
 func TestBootstrapDatabaseInstallationStateHonorsConnectTimeout(t *testing.T) {
 	host, port := silentPostgresListener(t)
 	const connectTimeout = 200 * time.Millisecond

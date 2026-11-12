@@ -50,6 +50,9 @@ type BootstrapOptions struct {
 	// ConnectTimeout 限制安装流程中单条 PostgreSQL 连接与探测查询的总时长，
 	// 避免未响应的目标在初始化期间长期占用初始化互斥。
 	ConnectTimeout time.Duration
+	// SetupTimeout 限制单次安装初始化（迁移、建档与运行时激活）的总时长。
+	// 零值使用默认值；超时后初始化互斥被释放，可安全重试。
+	SetupTimeout time.Duration
 }
 
 type Bootstrap struct {
@@ -62,6 +65,7 @@ type Bootstrap struct {
 	activate                  RuntimeActivator
 	random                    io.Reader
 	connectTimeout            time.Duration
+	setupTimeout              time.Duration
 
 	mu           sync.Mutex
 	initializing bool
@@ -78,7 +82,19 @@ func NewBootstrap(options BootstrapOptions) *Bootstrap {
 		activate:                  options.Activate,
 		random:                    rand.Reader,
 		connectTimeout:            options.ConnectTimeout,
+		setupTimeout:              setupTimeoutOrDefault(options.SetupTimeout),
 	}
+}
+
+// defaultSetupTimeout 是安装初始化的默认总时长上限。向导流程面向新建数据库，
+// 迁移与建档在秒级完成；该值只用于避免依赖长期阻塞占用初始化互斥。
+const defaultSetupTimeout = 10 * time.Minute
+
+func setupTimeoutOrDefault(value time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return defaultSetupTimeout
 }
 
 func (bootstrap *Bootstrap) Status(ctx context.Context) (domain.SetupStatus, error) {
@@ -151,6 +167,12 @@ func (bootstrap *Bootstrap) Initialize(
 		bootstrap.initializing = false
 		bootstrap.mu.Unlock()
 	}()
+
+	if bootstrap.setupTimeout > 0 {
+		bounded, cancel := context.WithTimeout(ctx, bootstrap.setupTimeout)
+		defer cancel()
+		ctx = bounded
+	}
 
 	data, completed, err := bootstrap.loadStored()
 	if err != nil {
