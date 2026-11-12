@@ -98,10 +98,6 @@ systemctl() {
     [[ "\${WORKER_FAIL:-0}" != 1 ]] || return 3
     [[ "\${WORKER_PAUSED:-0}" != 1 ]] || return 3
   fi
-  if [[ "$*" == "is-failed --quiet emby-auto-worker.service" ]]; then
-    [[ "\${WORKER_FAILED:-0}" == 1 ]] && return 0
-    return 1
-  fi
 }
 forbidden() { printf '%s\\n' "$*" >>"$TEST_ROOT/forbidden.log"; return 97; }
 nginx() { forbidden nginx "$@"; }
@@ -241,15 +237,6 @@ test('安装完成后暂停后台并重跑安装器保留暂停意图', (t) => {
   assert.match(result.stdout, /后台当前处于暂停状态/);
   assert.equal(readFileSync(path, 'utf8'), environment);
   assert.doesNotMatch(readFileSync(join(f.sandbox, 'service.log'), 'utf8'), /stop |start |enable/);
-});
-
-test('后台单元处于失败状态时不按暂停处理', (t) => {
-  const f = fixture(t);
-  let result = f.run();
-  assert.equal(result.status, 0, result.output);
-  result = f.run([], { WORKER_PAUSED: '1', WORKER_FAILED: '1', EMBY_AUTO_TEST_WORKER_STATUS: 'stopped' });
-  assert.notEqual(result.status, 0);
-  assert.match(result.output, /服务未通过启动检查/);
 });
 
 test('迁移完成登记要求 Worker 正在运行', (t) => {

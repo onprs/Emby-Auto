@@ -381,10 +381,9 @@ check_health() {
           fi
           ;;
         stopped)
-          # 用户主动暂停后台时 Worker 为 inactive；安装完好，保留暂停意图。
-          # 失败退出的 unit 不按暂停处理，避免把异常状态误报为健康。
-          if [[ "$requirement" == any ]] && ! systemctl is-active --quiet emby-auto-worker.service && \
-            ! systemctl is-failed --quiet emby-auto-worker.service; then
+          # 用户主动暂停后台后 Worker 为 inactive/failed；host-control 将其报告为 stopped。
+          # 安装记录未变，保留暂停意图，不自动启动 Worker。
+          if [[ "$requirement" == any ]] && ! systemctl is-active --quiet emby-auto-worker.service; then
             worker_paused=1
             return 0
           fi
