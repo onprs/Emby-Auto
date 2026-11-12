@@ -51,8 +51,8 @@ func (probe MediaProbe) SubtitleStreams() []SubtitleStream {
 }
 
 // SelectMainVideoStream 选择正片视频流。附加图片不属于正片；
-// 在候选流中优先选择数据包最多、其次时长最长、最后索引最小的视频流，
-// 避免封面、预览等短流或附加图片抢占首视频流位置。
+// 在候选流中优先选择数据包最多、其次时长最长、再次容器默认标记、
+// 最后索引最小的视频流，避免封面、预览等短流抢占正片位置。
 func SelectMainVideoStream(probe MediaProbe) (MediaStreamProbe, bool) {
 	var selected MediaStreamProbe
 	found := false
@@ -76,6 +76,10 @@ func betterMainVideoStream(candidate, current MediaStreamProbe) bool {
 	}
 	if candidate.DurationSeconds != current.DurationSeconds {
 		return candidate.DurationSeconds > current.DurationSeconds
+	}
+	// 包数与时长完全相同时尊重容器默认轨约定，再由索引兜底。
+	if candidate.Default != current.Default {
+		return candidate.Default
 	}
 	return candidate.Index < current.Index
 }

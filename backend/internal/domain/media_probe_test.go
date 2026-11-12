@@ -102,6 +102,39 @@ func TestSelectMainVideoStreamPrefersLongestNonAttachedVideo(t *testing.T) {
 			}},
 			want: 1,
 		},
+		{
+			name: "equal metrics prefer container default track",
+			probe: MediaProbe{Streams: []MediaStreamProbe{
+				{Index: 0, Type: "video", Codec: "h264", DurationSeconds: 3.023, PacketCount: 75},
+				{Index: 1, Type: "audio", Codec: "aac"},
+				{Index: 2, Type: "video", Codec: "h264", DurationSeconds: 3.023, PacketCount: 75, Default: true},
+			}},
+			want: 2,
+		},
+		{
+			name: "non-default stream with more packets wins",
+			probe: MediaProbe{Streams: []MediaStreamProbe{
+				{Index: 0, Type: "video", Codec: "h264", DurationSeconds: 3.023, PacketCount: 75},
+				{Index: 1, Type: "video", Codec: "h264", DurationSeconds: 3.023, PacketCount: 50, Default: true},
+			}},
+			want: 0,
+		},
+		{
+			name: "default attached picture is still excluded",
+			probe: MediaProbe{Streams: []MediaStreamProbe{
+				{Index: 0, Type: "video", Codec: "mjpeg", AttachedPic: true, Default: true, PacketCount: 1},
+				{Index: 1, Type: "video", Codec: "h264", DurationSeconds: 3, PacketCount: 75},
+			}},
+			want: 1,
+		},
+		{
+			name: "two default streams fall back to index",
+			probe: MediaProbe{Streams: []MediaStreamProbe{
+				{Index: 0, Type: "video", Codec: "h264", DurationSeconds: 3, PacketCount: 75, Default: true},
+				{Index: 2, Type: "video", Codec: "h264", DurationSeconds: 3, PacketCount: 75, Default: true},
+			}},
+			want: 0,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

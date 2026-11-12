@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -168,4 +169,72 @@ func containsArgumentPair(args []string, first, second string) bool {
 		}
 	}
 	return false
+}
+
+// 包数与时长相同的多视频流必须尊重容器默认轨，不能固定回退到首个流。
+func TestTranscodePrefersDefaultTrackOnEqualMetricsWithRealMediaIntegration(t *testing.T) {
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("当前维护环境未安装 FFmpeg")
+	}
+	ffprobePath, err := exec.LookPath("ffprobe")
+	if err != nil {
+		t.Skip("当前维护环境未安装 FFprobe")
+	}
+	root := t.TempDir()
+	ctx := context.Background()
+	tools := mediatools.New(mediatools.OSExecutor{})
+	run := func(args ...string) {
+		t.Helper()
+		if err := tools.RunFFmpeg(ctx, ffmpegPath, args); err != nil {
+			t.Fatalf("FFmpeg %v 失败：%v", args, err)
+		}
+	}
+	small := filepath.Join(root, "small.mkv")
+	large := filepath.Join(root, "large.mkv")
+	audio := filepath.Join(root, "audio.m4a")
+	source := filepath.Join(root, "multi-video.mkv")
+	run("-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=25:duration=3",
+		"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-threads", "1", "-f", "matroska", small)
+	run("-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=3",
+		"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-threads", "1", "-f", "matroska", large)
+	run("-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+		"-c:a", "aac", "-f", "mp4", audio)
+	run("-v", "error", "-y", "-i", small, "-i", audio, "-i", large,
+		"-map", "0:v", "-map", "1:a", "-map", "2:v", "-c", "copy",
+		"-disposition:v:0", "0", "-disposition:v:1", "default", "-f", "matroska", source)
+
+	probe, err := tools.ProbeWithPacketCounts(ctx, ffprobePath, source)
+	if err != nil {
+		t.Fatalf("探测失败：%v", err)
+	}
+	mainVideo, ok := domain.SelectMainVideoStream(probe)
+	if !ok || mainVideo.Index != 2 || !mainVideo.Default {
+		t.Fatalf("默认视频轨选择 = %#v, %v, want index 2 default", mainVideo, ok)
+	}
+	if mainVideo.PacketCount != 75 || mainVideo.PacketCount < 2 {
+		t.Fatalf("默认视频轨包数 = %d", mainVideo.PacketCount)
+	}
+	profile := domain.TranscodeProfile{
+		Name: "default-track", VideoCodec: "h264", Encoder: "libx264", Container: "matroska",
+		FileExtension: "mkv", QualityMode: "crf", QualityValue: 30, AudioPolicy: "transcode",
+		AudioCodec: "aac", Preset: "ultrafast", PixelFormat: "yuv420p", ThreadCount: 1, MaxConcurrency: 1,
+	}
+	output := filepath.Join(root, "out.mkv")
+	args, err := domain.BuildTranscodeFFmpegArgs(profile, source, output, mainVideo.Index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsArgumentPair(args, "-map", "0:2") {
+		t.Fatalf("转码参数未映射默认视频轨：%#v", args)
+	}
+	run(args...)
+	dimensions, err := exec.Command(ffprobePath, "-v", "error", "-select_streams", "v:0",
+		"-show_entries", "stream=width,height", "-of", "csv=p=0", output).Output()
+	if err != nil {
+		t.Fatalf("读取产物尺寸失败：%v", err)
+	}
+	if strings.TrimSpace(string(dimensions)) != "320,240" {
+		t.Fatalf("产物尺寸 = %q, want 320,240 (default track)", strings.TrimSpace(string(dimensions)))
+	}
 }
