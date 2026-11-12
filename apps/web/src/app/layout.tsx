@@ -11,6 +11,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 
 import { endSession } from '@/api/app-client';
 import type { Session } from '@/api/generated/types.gen';
+import { ActionFeedbackAlerts, ActionFeedbackProvider } from '@/components/action-feedback';
 import { appNavigation, moduleForPathname, routeForPathname, type AppNavigationItem } from '@/app/navigation';
 import { rememberLastValidAppLocation } from '@/app/navigation-context';
 import type { EventStream, SseStatus } from '@/app/sse';
@@ -108,14 +109,15 @@ export function AppLayout({ session, events }: { session: Session; events: Event
   };
 
   return (
-    <div className="min-h-screen bg-surface">
-      <aside
-        className={cn(
-          'fixed inset-y-0 left-0 z-40 hidden flex-col bg-zinc-950 text-zinc-100 shadow-xl transition-[width] duration-300 ease-out lg:flex',
-          sidebarCollapsed ? 'w-[72px]' : 'w-[228px]',
-        )}
-        aria-label="桌面主导航"
-      >
+    <ActionFeedbackProvider>
+      <div className="min-h-screen bg-surface">
+        <aside
+          className={cn(
+            'fixed inset-y-0 left-0 z-40 hidden flex-col bg-zinc-950 text-zinc-100 shadow-xl transition-[width] duration-300 ease-out lg:flex',
+            sidebarCollapsed ? 'w-[72px]' : 'w-[228px]',
+          )}
+          aria-label="桌面主导航"
+        >
         <div className={cn('flex h-16 shrink-0 items-center border-b border-white/10', sidebarCollapsed ? 'justify-center px-2' : 'px-5')}>
           {sidebarCollapsed ? (
             <img src="/brand/mark.svg" alt="Emby Auto" className="size-9" />
@@ -202,7 +204,9 @@ export function AppLayout({ session, events }: { session: Session; events: Event
           <Outlet />
         </main>
       </div>
+      <ActionFeedbackAlerts />
     </div>
+    </ActionFeedbackProvider>
   );
 }
 
