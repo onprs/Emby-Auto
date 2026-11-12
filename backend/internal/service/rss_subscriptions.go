@@ -719,7 +719,7 @@ func scheduleRSSSubscriptionCleanupInTx(
 	kind string,
 	command string,
 ) (domain.Operation, error) {
-	if err := requestResourceOperationCancellations(ctx, scope, "rss_subscription", subscriptionID, actorUserID); err != nil {
+	if err := requestResourceOperationCancellations(ctx, scope, operations, "rss_subscription", subscriptionID, actorUserID); err != nil {
 		return domain.Operation{}, err
 	}
 	acquisitionIDs, err := scope.Queries.ListSubscriptionDeletionAcquisitionIDs(ctx, repository.UUIDToPG(subscriptionID))

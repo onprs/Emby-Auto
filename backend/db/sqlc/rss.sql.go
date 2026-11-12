@@ -4382,6 +4382,58 @@ func (q *Queries) RestoreCompletedRSSEntry(ctx context.Context, arg RestoreCompl
 	return i, err
 }
 
+const restoreRSSSubscriptionAfterFailedDeletion = `-- name: RestoreRSSSubscriptionAfterFailedDeletion :one
+UPDATE rss_subscriptions AS subscription
+SET deleted_at = NULL,
+    version = version + 1,
+    updated_at = now()
+WHERE subscription.id = $1
+  AND subscription.deleted_at IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM operations AS operation
+      WHERE operation.kind = 'rss.subscription.delete'
+        AND operation.resource_type = 'rss_subscription'
+        AND operation.resource_id = subscription.id
+        AND operation.status IN ('queued', 'running')
+        AND operation.id <> $2
+  )
+RETURNING subscription.id, subscription.series_id, subscription.mapping_profile_id, subscription.name, subscription.feed_url, subscription.enabled, subscription.poll_interval_seconds, subscription.last_polled_at, subscription.next_poll_at, subscription.version, subscription.created_at, subscription.updated_at, subscription.source_season, subscription.deleted_at, subscription.auto_review, subscription.cleanup_source_on_completion, subscription.completed_at, subscription.include_keywords, subscription.exclude_keywords, subscription.auto_episode_mapping
+`
+
+type RestoreRSSSubscriptionAfterFailedDeletionParams struct {
+	ID          pgtype.UUID `db:"id" json:"id"`
+	OperationID pgtype.UUID `db:"operation_id" json:"operation_id"`
+}
+
+func (q *Queries) RestoreRSSSubscriptionAfterFailedDeletion(ctx context.Context, arg RestoreRSSSubscriptionAfterFailedDeletionParams) (RssSubscription, error) {
+	row := q.db.QueryRow(ctx, restoreRSSSubscriptionAfterFailedDeletion, arg.ID, arg.OperationID)
+	var i RssSubscription
+	err := row.Scan(
+		&i.ID,
+		&i.SeriesID,
+		&i.MappingProfileID,
+		&i.Name,
+		&i.FeedUrl,
+		&i.Enabled,
+		&i.PollIntervalSeconds,
+		&i.LastPolledAt,
+		&i.NextPollAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SourceSeason,
+		&i.DeletedAt,
+		&i.AutoReview,
+		&i.CleanupSourceOnCompletion,
+		&i.CompletedAt,
+		&i.IncludeKeywords,
+		&i.ExcludeKeywords,
+		&i.AutoEpisodeMapping,
+	)
+	return i, err
+}
+
 const restoreRSSSubscriptionHistory = `-- name: RestoreRSSSubscriptionHistory :one
 INSERT INTO rss_subscriptions (
     id,

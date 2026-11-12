@@ -580,6 +580,24 @@ WHERE id = sqlc.arg(id)
   AND deleted_at IS NULL
 RETURNING *;
 
+-- name: RestoreRSSSubscriptionAfterFailedDeletion :one
+UPDATE rss_subscriptions AS subscription
+SET deleted_at = NULL,
+    version = version + 1,
+    updated_at = now()
+WHERE subscription.id = sqlc.arg(id)
+  AND subscription.deleted_at IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM operations AS operation
+      WHERE operation.kind = 'rss.subscription.delete'
+        AND operation.resource_type = 'rss_subscription'
+        AND operation.resource_id = subscription.id
+        AND operation.status IN ('queued', 'running')
+        AND operation.id <> sqlc.arg(operation_id)
+  )
+RETURNING subscription.*;
+
 -- name: GetRSSPollCommand :one
 SELECT
     subscription.id,

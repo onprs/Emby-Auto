@@ -205,6 +205,14 @@ func (lifecycle *OperationLifecycle) FailAttempt(
 			if err := failEmbyScanResource(ctx, scope.Queries, locked, "failed", code, message); err != nil {
 				return err
 			}
+		case locked.Kind == "acquisition.delete" && valueOrEmpty(locked.ResourceType) == "acquisition":
+			if err := restoreAcquisitionDeletionResource(ctx, scope.Queries, locked, code); err != nil {
+				return err
+			}
+		case locked.Kind == "rss.subscription.delete" && valueOrEmpty(locked.ResourceType) == "rss_subscription":
+			if err := restoreRSSSubscriptionDeletionResource(ctx, scope.Queries, locked, code); err != nil {
+				return err
+			}
 		}
 		operation, err := scope.Queries.FailOperation(ctx, db.FailOperationParams{
 			ErrorCode:    &code,
@@ -243,6 +251,25 @@ func (lifecycle *OperationLifecycle) CancelAttempt(
 		}
 		return appendOperationEvent(ctx, scope.Queries, operation, "operation.cancelled", map[string]any{"attempt": attempt})
 	})
+}
+
+// CancelOperationBeforeAttempt 在同一事务内取消尚未开始的排队操作，并同步资源状态与事件。
+// 调用方需已锁定该操作行，避免与 StartAttempt 并发竞争。
+func CancelOperationBeforeAttempt(ctx context.Context, queries *db.Queries, operation db.Operation) (db.Operation, error) {
+	cancelled, err := queries.CancelOperation(ctx, operation.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return operation, nil
+	}
+	if err != nil {
+		return db.Operation{}, fmt.Errorf("cancel queued operation: %w", err)
+	}
+	if err := cancelOperationResource(ctx, queries, cancelled); err != nil {
+		return db.Operation{}, err
+	}
+	if err := appendOperationEvent(ctx, queries, cancelled, "operation.cancelled", map[string]any{"beforeAttempt": true}); err != nil {
+		return db.Operation{}, err
+	}
+	return cancelled, nil
 }
 
 func (lifecycle *OperationLifecycle) SnoozeAttempt(
@@ -468,7 +495,70 @@ func failTaskCleanupResource(
 	})
 }
 
+func restoreAcquisitionDeletionResource(ctx context.Context, queries *db.Queries, operation db.Operation, code string) error {
+	restored, err := queries.RestoreAcquisitionAfterFailedDeletion(ctx, db.RestoreAcquisitionAfterFailedDeletionParams{
+		ID: operation.ResourceID, OperationID: operation.ID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("restore acquisition after failed deletion: %w", err)
+	}
+	if _, err := queries.RestoreAcquisitionDeletionCancelledDownloads(ctx, operation.ResourceID); err != nil {
+		return fmt.Errorf("restore deletion-cancelled downloads: %w", err)
+	}
+	resourceType := "acquisition"
+	data, err := json.Marshal(map[string]any{"status": "deletion_failed", "errorCode": code})
+	if err != nil {
+		return fmt.Errorf("encode acquisition deletion recovery event: %w", err)
+	}
+	if _, err := queries.AppendEvent(ctx, db.AppendEventParams{
+		ID: UUIDToPG(uuid.New()), Topic: "acquisition.deletion_recovery_required",
+		ResourceType: &resourceType, ResourceID: restored.ID, OperationID: operation.ID, Data: data,
+	}); err != nil {
+		return fmt.Errorf("append acquisition deletion recovery event: %w", err)
+	}
+	return nil
+}
+
+func restoreRSSSubscriptionDeletionResource(ctx context.Context, queries *db.Queries, operation db.Operation, code string) error {
+	restored, err := queries.RestoreRSSSubscriptionAfterFailedDeletion(ctx, db.RestoreRSSSubscriptionAfterFailedDeletionParams{
+		ID: operation.ResourceID, OperationID: operation.ID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("restore RSS subscription after failed deletion: %w", err)
+	}
+	if _, err := queries.RestoreSubscriptionDeletionCancelledDownloads(ctx, operation.ResourceID); err != nil {
+		return fmt.Errorf("restore subscription deletion-cancelled downloads: %w", err)
+	}
+	if _, err := queries.ClearSubscriptionAcquisitionsDeletionRequested(ctx, operation.ResourceID); err != nil {
+		return fmt.Errorf("restore RSS acquisitions after failed deletion: %w", err)
+	}
+	resourceType := "rss_subscription"
+	data, err := json.Marshal(map[string]any{"status": "deletion_failed", "errorCode": code})
+	if err != nil {
+		return fmt.Errorf("encode RSS deletion recovery event: %w", err)
+	}
+	if _, err := queries.AppendEvent(ctx, db.AppendEventParams{
+		ID: UUIDToPG(uuid.New()), Topic: "rss.subscription.deletion_recovery_required",
+		ResourceType: &resourceType, ResourceID: restored.ID, OperationID: operation.ID, Data: data,
+	}); err != nil {
+		return fmt.Errorf("append RSS deletion recovery event: %w", err)
+	}
+	return nil
+}
+
 func cancelOperationResource(ctx context.Context, queries *db.Queries, operation db.Operation) error {
+	if operation.Kind == "acquisition.delete" && valueOrEmpty(operation.ResourceType) == "acquisition" {
+		return restoreAcquisitionDeletionResource(ctx, queries, operation, "operation_cancelled")
+	}
+	if operation.Kind == "rss.subscription.delete" && valueOrEmpty(operation.ResourceType) == "rss_subscription" {
+		return restoreRSSSubscriptionDeletionResource(ctx, queries, operation, "operation_cancelled")
+	}
 	if operation.Kind == "agent.resolve" && valueOrEmpty(operation.ResourceType) == "agent_resolution" {
 		return failAgentResolutionResource(ctx, queries, operation, "cancelled", "operation_cancelled", "the Agent resolution was cancelled")
 	}
