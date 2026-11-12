@@ -53,12 +53,47 @@ The application creates its tables in the selected database. The service account
 | --- | --- |
 | `--version vVERSION` | Install a specific Release; defaults to the latest stable Release |
 | `--user ACCOUNT` | Use an existing media owner; defaults to creating `emby-auto` |
+| `--share-group GROUP` | Existing user group shared with qBittorrent and other accounts for download directories |
 | `--port PORT` | Shared loopback web and API port; defaults to `18080` |
 | `--archive FILE`, `--checksums FILE` | Verify and use a downloaded archive and `SHA256SUMS` |
 | `--no-start` | Prepare application files and services without changing their running state |
 | `--finalize` | Verify prepared services and complete installation registration without restarting services or rewriting configuration |
 
 For a port conflict, use a free port such as `--port 19080`, and adjust the browser address and SSH tunnel accordingly. Repeating the installer preserves the installed version, setup state, and runtime configuration. Follow the upgrade procedure to change versions.
+
+### Account and directory permissions
+
+Automatic installation creates an `emby-auto` account by default; use `--user MEDIA_ACCOUNT` for an existing library. New directories use these permissions:
+
+| Directory | Permissions | Purpose and requirements |
+| --- | --- | --- |
+| `/srv/emby-auto/downloads` | `2770`, setgid; a default ACL applies with `--share-group` | qBittorrent writes; the application reads and removes cached files |
+| `/srv/emby-auto/work`, `staging` | `2770`, setgid | Application processing and import staging |
+| `/srv/emby-auto/media/{anime,movies}` | `2775` | The application writes; Emby reads and traverses as another account |
+
+qBittorrent, Emby, and the application usually run as different accounts. Prefer a shared group during installation and add the qBittorrent account to it (create the group first, for example `sudo groupadd emby-share`):
+
+```bash
+curl -fsSL https://github.com/onprs/Emby-Auto/releases/latest/download/install.sh | \
+  sudo bash -s -- --share-group emby-share
+sudo usermod -aG emby-share qbittorrent
+sudo systemctl restart qbittorrent
+```
+
+For an existing installation without a shared group, rerunning the installer with `--share-group` applies the membership and directory permissions and records them in the installer record. With `--user MEDIA_ACCOUNT --share-group GROUP`, the media account owns library files and the shared group coordinates download directories. The account UID and GID must still be nonzero.
+
+Alternatively, apply the permissions manually without rerunning the installer (the example uses the application account's primary group `emby-auto`):
+
+```bash
+sudo apt-get install -y acl
+sudo usermod -aG emby-auto qbittorrent
+sudo chgrp emby-auto /srv/emby-auto/downloads
+sudo chmod 2770 /srv/emby-auto/downloads
+sudo setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx /srv/emby-auto/downloads
+sudo systemctl restart qbittorrent
+```
+
+The default ACL keeps group write permission on subdirectories that qBittorrent creates with the common `umask 022`. A shared group alone, without a default ACL or `umask 002`, still prevents the application from removing those subdirectories. Emby only needs read and traverse access; for stricter existing libraries, grant the Emby account a read-only ACL. Do not make the whole media directory `0777`.
 
 ## Directories and services
 
@@ -111,13 +146,16 @@ The service UID must match the owner of imported media. It needs access to downl
 For a new deployment whose media directories do not exist yet, create them with the following example. Preserve permissions on existing directories.
 
 ```bash
-sudo install -d -o emby -g emby -m 0770 \
+sudo install -d -o emby -g emby -m 2770 \
   /srv/emby-auto/downloads \
   /srv/emby-auto/work \
-  /srv/emby-auto/staging \
+  /srv/emby-auto/staging
+sudo install -d -o emby -g emby -m 2775 \
   /srv/emby-auto/media/anime \
   /srv/emby-auto/media/movies
 ```
+
+If qBittorrent uses another account, configure a shared group and default ACL as described in “Account and directory permissions”. The `2775` library root lets a separate Emby account traverse and read while the application writes as the owner. Imported title subtrees are set by the application to directory mode `0755` and file mode `0644`, keeping separate Emby accounts read-only.
 
 For hardware transcoding, add the service account to the device-required `render`, `video`, or other groups, then restart services to apply group membership.
 
@@ -293,11 +331,15 @@ Review the candidates, repeat the same command with `--apply`, and check runtime
 
 ```bash
 (
-  set -e
+  set -eE
   release_path="/opt/emby-auto/releases/${new_release_id}"
   previous_release_id="$(basename "$(readlink -f /opt/emby-auto/current)")"
   [[ -d "${release_path}" ]] || { echo "release directory is missing: ${release_path}" >&2; exit 1; }
   (cd "${release_path}" && sha256sum --check --strict SHA256SUMS)
+  for service in api worker systemd-control; do
+    [[ -s "${release_path}/config/emby-auto-${service}.service" ]] \
+      || { echo "new release is missing emby-auto-${service}.service" >&2; exit 1; }
+  done
   install_units() {
     local service
     for service in api worker systemd-control; do
@@ -307,25 +349,36 @@ Review the candidates, repeat the same command with `--apply`, and check runtime
     done
     sudo systemctl daemon-reload
   }
-  sudo systemctl stop emby-auto-api.service emby-auto-systemd-control.service
-  sudo ln -sfn "releases/${new_release_id}" /opt/emby-auto/current.next
-  sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
-  install_units
-  if ! sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service || \
-    ! curl --fail http://127.0.0.1:18080/api/v1/health/ready; then
-    echo 'new release failed to start or become ready; rolling back.' >&2
+  rollback_release() {
+    echo 'switch or verification failed; rolling back to the previous release.' >&2
     sudo ln -sfn "releases/${previous_release_id}" /opt/emby-auto/current.next
     sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
     install_units
     sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service
+    if ! curl --fail --max-time 10 http://127.0.0.1:18080/api/v1/health/ready; then
+      echo 'the previous release also failed the readiness check after rollback; inspect journalctl -u emby-auto-api -u emby-auto-worker and do not rerun the switch.' >&2
+      exit 2
+    fi
     exit 1
-  fi
+  }
+  sudo systemctl stop emby-auto-api.service emby-auto-systemd-control.service
+  # After current switches, every failure inside or outside functions - unit
+  # installation, daemon-reload, start, readiness - triggers the rollback via
+  # the ERR trap (set -eE extends it into functions).
+  rollback_on_error() { rollback_release; }
+  trap rollback_on_error ERR
+  sudo ln -sfn "releases/${new_release_id}" /opt/emby-auto/current.next
+  sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
+  install_units
+  sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service
+  curl --fail --max-time 10 http://127.0.0.1:18080/api/v1/health/ready
   emby_auto_maintenance emby-auto-migration-check
   emby_auto_maintenance emby-auto-background-runtime --state running
+  trap - ERR
 )
 ```
 
-If the switch fails or the new release does not become ready, the block points `current` back to the previous release and restarts the old API while Worker stays stopped. When the new release already applied database migrations, binary rollback depends on migration compatibility; restore the pre-upgrade database backup when necessary.
+Any failure after the switch - including unit installation, daemon reload, start, or readiness - points `current` back to the previous release, reinstalls the old units, and restarts the old API; if the rollback itself is unhealthy the block reports it and exits. Worker stays stopped throughout. When the new release already applied database migrations, binary rollback depends on migration compatibility; restore the pre-upgrade database backup when necessary.
 
 After a successful upgrade, update the installer record so later installations do not treat the running release as the old version (replace `v0.2.0` with `release_tag` from step 1):
 
