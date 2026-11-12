@@ -23,7 +23,7 @@ function fixture(t) {
   const assets = join(directory, 'assets');
   const payload = join(assets, 'emby-auto-direct-amd64');
   for (const part of ['bin', 'web', 'config']) mkdirSync(join(payload, part), { recursive: true });
-  for (const binary of ['api', 'worker', 'migration-check', 'background-runtime', 'release-preflight', 'recover-stale-operations', 'migrate-runtime-addresses', 'migrate-staging-ownership']) {
+  for (const binary of ['api', 'worker', 'migration-check', 'background-runtime', 'release-preflight', 'recover-stale-operations', 'history-retention', 'migrate-runtime-addresses', 'migrate-staging-ownership']) {
     writeFileSync(join(payload, 'bin', `emby-auto-${binary}`), '#!/bin/sh\nexit 0\n');
   }
   writeFileSync(join(payload, 'bin/emby-auto-host-control'), ['#!/bin/sh', 'echo running', ''].join('\n'));
