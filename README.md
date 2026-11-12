@@ -50,6 +50,7 @@ curl -fsSL https://github.com/onprs/Emby-Auto/releases/latest/download/install.s
 
 - PostgreSQL、qBittorrent 与 Emby Server 由用户自行安装配置，需要提前准备。
 - 部署设备必须能访问下载目录和媒体库；qBittorrent 与应用使用的下载绝对路径需要一致。
+- Emby 媒体库目录需要由真实目录组成；标题目录或季目录中的符号链接不会被跟随，入库会以“媒体库目录布局不受支持”失败。
 - 应用服务账户的 UID 必须与 Emby 媒体文件所有者一致。
 - 默认通过本机或 SSH 隧道访问。通过网络对外提供服务时，需要配置 HTTPS，并启用安全会话 Cookie。
 - 定期备份数据库、安装配置和媒体目录。

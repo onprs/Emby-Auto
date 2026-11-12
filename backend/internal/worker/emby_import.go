@@ -102,6 +102,10 @@ func (handler *EmbyImportHandler) Handle(ctx context.Context, operation domain.O
 		operation.ID,
 		handler.libraryAccess,
 	); err != nil {
+		var treeErr *unsupportedLibraryTreeError
+		if errors.As(err, &treeErr) {
+			return permanentFailure("library_tree_unsupported", "the Emby library directory layout is not supported", err)
+		}
 		var conflict *destinationConflictError
 		if errors.As(err, &conflict) {
 			return permanentFailure("library_destination_conflict", "an Emby library destination contains different content", err)
@@ -141,7 +145,7 @@ func importArtifactPair(
 	libraryRoot, destinationVideo, destinationSubtitle string,
 	operationID uuid.UUID,
 	libraryAccess ImportedLibraryAccess,
-) error {
+) (importErr error) {
 	if err := context.Cause(ctx); err != nil {
 		return err
 	}
@@ -165,6 +169,11 @@ func importArtifactPair(
 	if err != nil {
 		return err
 	}
+	// 目录树的符号链接、特殊对象与权限问题必须在提交前暴露，
+	// 否则失败后已经提交的媒体文件会变成应用不追踪的孤儿文件。
+	if err := libraryAccess.ValidateTree(ctx, libraryTreeRoot); err != nil {
+		return err
+	}
 	destinations := []*importDestination{
 		{artifact: video, final: destinationVideo, temporary: importTemporaryPath(destinationVideo, operationID)},
 		{artifact: subtitle, final: destinationSubtitle, temporary: importTemporaryPath(destinationSubtitle, operationID)},
@@ -172,6 +181,13 @@ func importArtifactPair(
 	defer func() {
 		for _, destination := range destinations {
 			_ = os.Remove(destination.temporary)
+		}
+	}()
+	// created 记录本次操作确定创建的文件；后续步骤失败时只回滚这些路径。
+	created := make([]importedCommit, 0, len(destinations))
+	defer func() {
+		if importErr != nil {
+			rollbackImportedCommits(created)
 		}
 	}()
 	for _, destination := range destinations {
@@ -192,7 +208,17 @@ func importArtifactPair(
 			continue
 		}
 		if err := commitTemporaryFile(destination.temporary, destination.final); err != nil {
+			// 硬链接已建立但临时文件移除失败时，目标与临时文件指向同一 inode，
+			// 可以确认目标由本次操作创建并纳入回滚。
+			if committed, adopted := adoptCommittedTemporary(destination.temporary, destination.final); adopted {
+				created = append(created, committed)
+				if accessErr := libraryAccess.Apply(destination.final); accessErr != nil {
+					return accessErr
+				}
+				continue
+			}
 			if existingErr := verifyFileAgainstArtifact(ctx, destination.final, destination.artifact); existingErr == nil {
+				// 目标是并发写入者创建的相同内容文件，不属于本次操作，回滚时不能删除。
 				if accessErr := libraryAccess.Apply(destination.final); accessErr != nil {
 					return accessErr
 				}
@@ -206,6 +232,11 @@ func importArtifactPair(
 			}
 			return fmt.Errorf("atomically commit library file: %w", err)
 		}
+		committed, err := inspectCommittedImport(destination.final)
+		if err != nil {
+			return err
+		}
+		created = append(created, committed)
 	}
 	if err := context.Cause(ctx); err != nil {
 		return err
@@ -221,10 +252,58 @@ func importArtifactPair(
 			return err
 		}
 	}
+	// 提交后再次校验目录树，捕获本操作期间被替换为符号链接或特殊对象的目录；
+	// 失败时由上面的 defer 回滚本次创建的文件。
 	if err := libraryAccess.ApplyTree(ctx, libraryTreeRoot); err != nil {
 		return err
 	}
 	return nil
+}
+
+type importedCommit struct {
+	path string
+	info os.FileInfo
+}
+
+// inspectCommittedImport 记录本次操作提交后的文件身份，用于回滚时确认目标没有被替换。
+func inspectCommittedImport(final string) (importedCommit, error) {
+	info, err := os.Lstat(final)
+	if err != nil {
+		return importedCommit{}, fmt.Errorf("inspect committed library file: %w", err)
+	}
+	return importedCommit{path: final, info: info}, nil
+}
+
+// adoptCommittedTemporary 判断提交失败时目标是否已由本次操作建立。
+// 硬链接回退在 link 成功、临时文件移除失败时会留下同一 inode 的两个路径。
+func adoptCommittedTemporary(temporary, final string) (importedCommit, bool) {
+	temporaryInfo, temporaryErr := os.Lstat(temporary)
+	finalInfo, finalErr := os.Lstat(final)
+	if temporaryErr != nil || finalErr != nil {
+		return importedCommit{}, false
+	}
+	if temporaryInfo.Mode()&os.ModeSymlink != 0 || finalInfo.Mode()&os.ModeSymlink != 0 {
+		return importedCommit{}, false
+	}
+	if !os.SameFile(temporaryInfo, finalInfo) {
+		return importedCommit{}, false
+	}
+	return importedCommit{path: final, info: finalInfo}, true
+}
+
+// rollbackImportedCommits 只删除本次操作提交且仍指向同一文件的对象。
+func rollbackImportedCommits(commits []importedCommit) {
+	for index := len(commits) - 1; index >= 0; index-- {
+		commit := commits[index]
+		if commit.info == nil {
+			continue
+		}
+		current, err := os.Lstat(commit.path)
+		if err != nil || !os.SameFile(commit.info, current) {
+			continue
+		}
+		_ = os.Remove(commit.path)
+	}
 }
 
 func prepareImportDestination(ctx context.Context, destination importDestination, libraryAccess ImportedLibraryAccess) (bool, error) {
@@ -286,7 +365,7 @@ func prepareImportedLibraryDirectories(
 		return "", fmt.Errorf("inspect library root: %w", err)
 	}
 	if rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
-		return "", fmt.Errorf("configured library root must be a directory, not a symlink")
+		return "", unsupportedLibraryTree("configured library root must be a directory, not a symlink")
 	}
 
 	current := root
@@ -307,7 +386,7 @@ func prepareImportedLibraryDirectories(
 		} else if statErr != nil {
 			return "", fmt.Errorf("inspect imported library directory: %w", statErr)
 		} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return "", fmt.Errorf("imported library path contains a symlink or non-directory")
+			return "", unsupportedLibraryTree("library path components must be real directories")
 		}
 		if err := libraryAccess.Apply(current); err != nil {
 			return "", err

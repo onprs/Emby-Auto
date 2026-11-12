@@ -7,7 +7,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/onprs/emby-auto/backend/internal/domain"
 )
 
 type cancellingMediaReader struct {
@@ -111,5 +116,94 @@ func TestMediaCommitMovesValidatedTemporaryFile(t *testing.T) {
 	assertFileContent(t, final, []byte("已验证输出"))
 	if _, err := os.Stat(temporary); !os.IsNotExist(err) {
 		t.Fatalf("提交成功后临时文件仍存在：%v", err)
+	}
+}
+
+func TestMediaTemporaryNamesStayWithinNameMaxAfterNamingCap(t *testing.T) {
+	names, err := domain.BuildEpisodeFileNames(domain.EpisodeNamingRequest{
+		SeriesTitle: strings.Repeat("很长的剧集名称", 20), Season: 1, Episode: 1,
+		EpisodeTitle: strings.Repeat("很长的单集标题", 20), VideoExtension: "mkv",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stagingRoot := t.TempDir()
+	paths, err := buildMediaOutputPaths(stagingRoot, uuid.New(), uuid.New(), names.VideoName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.Directory, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{filepath.Base(paths.Final), filepath.Base(paths.Temporary)} {
+		if len(name) > 255 {
+			t.Fatalf("临时或正式文件名 %q = %d 字节，超过 NAME_MAX", name, len(name))
+		}
+	}
+	file, err := os.OpenFile(paths.Temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
+	if err != nil {
+		t.Fatalf("临时文件名无法落盘：%v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPrepareOutputDirectoryReclaimsOnlyStaleSameStemTemporaries(t *testing.T) {
+	stagingRoot := t.TempDir()
+	taskID, operationID := uuid.New(), uuid.New()
+	paths, err := buildMediaOutputPaths(stagingRoot, taskID, operationID, "Show - S01E01 - Panic.mkv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.Directory, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	staleSameStem := filepath.Join(paths.Directory, ".Show - S01E01 - Panic."+uuid.New().String()+".part.mkv")
+	freshSameStem := filepath.Join(paths.Directory, ".Show - S01E01 - Panic."+uuid.New().String()+".part.mkv")
+	staleOtherStem := filepath.Join(paths.Directory, ".Show - S01E02 - Panic."+uuid.New().String()+".part.mkv")
+	unrelated := filepath.Join(paths.Directory, "Show - S01E01 - Panic.nfo")
+	for path, content := range map[string]string{
+		paths.Temporary: "current", staleSameStem: "stale", freshSameStem: "fresh", staleOtherStem: "other", unrelated: "metadata",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	staleTime := time.Now().Add(-staleMediaTemporaryAge - time.Hour)
+	for _, path := range []string{staleSameStem, staleOtherStem} {
+		if err := os.Chtimes(path, staleTime, staleTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := prepareOutputDirectory(paths); err != nil {
+		t.Fatalf("prepareOutputDirectory() error = %v", err)
+	}
+	for _, removed := range []string{paths.Temporary, staleSameStem} {
+		if _, err := os.Stat(removed); !os.IsNotExist(err) {
+			t.Fatalf("预期清理的临时文件 %q 仍存在：%v", removed, err)
+		}
+	}
+	for _, kept := range []string{freshSameStem, staleOtherStem, unrelated} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Fatalf("不应清理的文件 %q 被删除：%v", kept, err)
+		}
+	}
+}
+
+func TestIsMediaTemporaryNameMatchesOnlyServiceTemporaryOutputs(t *testing.T) {
+	operationID := uuid.New().String()
+	tests := map[string]bool{
+		".Show - S01E01." + operationID + ".part.mkv":        true,
+		".Show - S01E01." + operationID + ".part":            true,
+		".Show - S01E01." + operationID + ".import.part.mkv": false,
+		".Show - S01E01.8f9b0c1d-part.part.mkv":              false,
+		"Show - S01E01.mkv":                                  false,
+		".Show - S01E01." + operationID + ".part.mkv.tmp":    false,
+	}
+	for name, want := range tests {
+		if got := isMediaTemporaryName(name); got != want {
+			t.Fatalf("isMediaTemporaryName(%q) = %v, want %v", name, got, want)
+		}
 	}
 }

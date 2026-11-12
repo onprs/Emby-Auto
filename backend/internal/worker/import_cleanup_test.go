@@ -51,6 +51,21 @@ func (access *testImportedLibraryAccess) ApplyTree(ctx context.Context, root str
 	})
 }
 
+func (access *testImportedLibraryAccess) ValidateTree(ctx context.Context, root string) error {
+	return filepath.WalkDir(root, func(_ string, entry os.DirEntry, err error) error {
+		if cause := context.Cause(ctx); cause != nil {
+			return cause
+		}
+		if err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return &unsupportedLibraryTreeError{reason: "test access rejects symlinks"}
+		}
+		return nil
+	})
+}
+
 func newTestImportedLibraryAccess() *testImportedLibraryAccess {
 	return &testImportedLibraryAccess{}
 }
@@ -437,6 +452,55 @@ func TestCleanupRemovesStagedPairButProtectsSharedDownload(t *testing.T) {
 	}
 	if !pathsAbsent(video, subtitle) {
 		t.Fatal("staged artifacts remain while cleanup waits on sibling tasks")
+	}
+}
+
+func TestCleanupReclaimsLeftoverMediaTemporariesInTaskDirectory(t *testing.T) {
+	root := t.TempDir()
+	stagingRoot := filepath.Join(root, "staging")
+	taskID := uuid.New()
+	stage := filepath.Join(stagingRoot, taskID.String())
+	if err := os.MkdirAll(stage, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(stage, "episode.mkv")
+	subtitle := filepath.Join(stage, "episode.ass")
+	if err := os.WriteFile(video, []byte("video"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subtitle, validASSFixture, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	// 崩溃残留的临时文件没有年龄限制：任务进入清理阶段时不会再有本任务的媒体操作。
+	leakedTemporary := filepath.Join(stage, ".episode."+uuid.New().String()+".part.mkv")
+	unrelated := filepath.Join(stage, "episode.nfo")
+	outsideTaskDirectory := filepath.Join(stagingRoot, ".other."+uuid.New().String()+".part.mkv")
+	for path, content := range map[string]string{leakedTemporary: "leaked", unrelated: "metadata", outsideTaskDirectory: "other task"} {
+		if err := os.WriteFile(path, []byte(content), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := &cleanupStoreStub{command: domain.CleanupCommand{
+		TaskID: taskID, CleanupID: uuid.New(), TaskState: domain.TaskImported, CleanupState: domain.CleanupQueued,
+		StagedVideoPath: video, StagedSubtitlePath: subtitle, DownloadRemovable: false,
+	}}
+	handler := NewCleanupRunHandler(
+		&downloadConfigurationStub{configuration: domain.Configuration{Settings: domain.RuntimeSettings{Paths: domain.PathSettings{StagingRoot: stagingRoot}}}},
+		store,
+		func(qbittorrent.ClientOptions) (CleanupTorrentClient, error) { return &cleanupTorrentStub{}, nil },
+	)
+	err := handler.Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID, Payload: []byte(`{"cleanupId":"` + store.command.CleanupID.String() + `"}`)})
+	var snoozeErr *river.JobSnoozeError
+	if !errors.As(err, &snoozeErr) {
+		t.Fatalf("Handle() error = %#v, want cleanup guard snooze", err)
+	}
+	if !pathsAbsent(video, subtitle, leakedTemporary) {
+		t.Fatal("staged artifacts or leaked temporary files remain after cleanup")
+	}
+	for _, kept := range []string{unrelated, outsideTaskDirectory} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Fatalf("cleanup removed unrelated file %q: %v", kept, err)
+		}
 	}
 }
 

@@ -329,6 +329,12 @@ const codeReasons: Record<string, Reason> = {
     detail: '配对的视频和字幕没有完整写入媒体库目录。',
     recommendation: '检查媒体库目录、磁盘空间和权限后重试入库。',
   },
+  library_tree_unsupported: {
+    reason: '媒体库目录布局不受支持',
+    detail: '目标目录树中存在符号链接或特殊文件，应用无法安全写入。',
+    recommendation: '将媒体库改为由真实目录组成（不使用符号链接）后重新入库。',
+    neverRetry: true,
+  },
   library_path_invalid: {
     reason: '媒体库路径不安全',
     detail: '计划写入的位置不在已配置的 Emby 媒体库目录中。',

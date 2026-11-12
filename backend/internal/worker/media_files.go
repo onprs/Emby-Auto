@@ -8,10 +8,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/onprs/emby-auto/backend/internal/domain"
 )
+
+// staleMediaTemporaryAge 是回收其它 operation 遗留临时文件的最小年龄。
+// 转码任务超时上限为 24 小时，正在写入的临时文件会持续更新修改时间，
+// 因此超过该年龄仍未更新的临时文件不可能属于存活的操作。
+const staleMediaTemporaryAge = 26 * time.Hour
 
 type MediaConfiguration interface {
 	Load(context.Context) (domain.Configuration, error)
@@ -117,7 +124,80 @@ func prepareOutputDirectory(paths mediaOutputPaths) error {
 	if err := os.Remove(paths.Temporary); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove stale temporary output: %w", err)
 	}
+	if err := removeStaleMediaTemporaries(paths); err != nil {
+		return fmt.Errorf("remove stale media temporaries: %w", err)
+	}
 	return nil
+}
+
+// removeStaleMediaTemporaries 清理同一输出名的历史临时文件。
+// 只处理本服务临时命名格式、已超过任务寿命且不属于当前操作的普通文件，
+// 避免误删并发操作的输出。
+func removeStaleMediaTemporaries(paths mediaOutputPaths) error {
+	prefix, suffix := mediaTemporaryAffixes(paths.Final)
+	entries, err := os.ReadDir(paths.Directory)
+	if err != nil {
+		return err
+	}
+	currentName := filepath.Base(paths.Temporary)
+	now := time.Now()
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == currentName || !entry.Type().IsRegular() {
+			continue
+		}
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+			continue
+		}
+		middle := strings.TrimSuffix(strings.TrimPrefix(name, prefix), suffix)
+		if _, err := uuid.Parse(middle); err != nil {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || now.Sub(info.ModTime()) < staleMediaTemporaryAge {
+			continue
+		}
+		if err := os.Remove(filepath.Join(paths.Directory, name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// mediaTemporaryAffixes 返回临时文件名中正式名部分的前缀与后缀。
+func mediaTemporaryAffixes(final string) (string, string) {
+	extension := filepath.Ext(final)
+	stem := strings.TrimSuffix(filepath.Base(final), extension)
+	return "." + stem + ".", ".part" + extension
+}
+
+// isMediaTemporaryName 判断文件名是否符合本服务生成的临时媒体文件名。
+func isMediaTemporaryName(name string) bool {
+	if !strings.HasPrefix(name, ".") {
+		return false
+	}
+	index := strings.LastIndex(name, ".part")
+	if index < 0 {
+		return false
+	}
+	remainder := name[index+len(".part"):]
+	if remainder != "" {
+		if len(remainder) < 2 || remainder[0] != '.' {
+			return false
+		}
+		for _, character := range remainder[1:] {
+			if !unicode.IsLetter(character) && !unicode.IsNumber(character) {
+				return false
+			}
+		}
+	}
+	prefix := name[:index]
+	separator := strings.LastIndex(prefix, ".")
+	if separator < 0 {
+		return false
+	}
+	_, err := uuid.Parse(prefix[separator+1:])
+	return err == nil
 }
 
 func copyFile(ctx context.Context, source, destination string) error {
