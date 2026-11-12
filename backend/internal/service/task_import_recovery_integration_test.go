@@ -50,6 +50,13 @@ func TestObserveImportRecoveryTracksImportLifecycleIntegration(t *testing.T) {
 		t.Fatalf("running state = %#v", state)
 	}
 
+	// 真实协议：CompleteImport 前先准入登记目标。
+	if _, err := workflow.PrepareImportDestination(ctx, domain.ImportCompletion{
+		TaskID: taskID, ImportID: task.Import.ID,
+		DestinationVideoPath: videoPath, DestinationSubtitlePath: subtitlePath,
+	}); err != nil {
+		t.Fatalf("PrepareImportDestination() error = %v", err)
+	}
 	if err := workflow.CompleteImport(ctx, domain.ImportCompletion{
 		TaskID: taskID, ImportID: task.Import.ID, OperationID: task.Operations[0].ID,
 		DestinationVideoPath: videoPath, DestinationSubtitlePath: subtitlePath,
@@ -60,7 +67,8 @@ func TestObserveImportRecoveryTracksImportLifecycleIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ObserveImportRecovery(succeeded) error = %v", err)
 	}
-	if !state.Succeeded || !state.DestinationClaimed || state.TaskState != domain.TaskImported || state.ImportState != "succeeded" {
+	// 自身成功引用不计入占用（观察排除自身），Succeeded 仍按任务/导入状态判定。
+	if !state.Succeeded || state.DestinationClaimed || state.TaskState != domain.TaskImported || state.ImportState != "succeeded" {
 		t.Fatalf("succeeded state = %#v", state)
 	}
 

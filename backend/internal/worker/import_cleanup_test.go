@@ -16,15 +16,18 @@ import (
 )
 
 type taskImportStoreStub struct {
-	command       domain.ImportCommand
-	beginErr      error
-	completion    domain.ImportCompletion
-	completeErr   error
-	onComplete    func()
-	recovery      domain.ImportRecoveryState
-	recoveryErr   error
-	recoveryCalls int
-	onRecovery    func(domain.ImportCompletion) error
+	command           domain.ImportCommand
+	beginErr          error
+	completion        domain.ImportCompletion
+	completeErr       error
+	onComplete        func()
+	recovery          domain.ImportRecoveryState
+	recoveryErr       error
+	recoveryCalls     int
+	onRecovery        func(domain.ImportCompletion) error
+	admissionCalls    int
+	admissionErr      error
+	admissionOccupied bool
 }
 
 type testImportedLibraryAccess struct {
@@ -101,6 +104,17 @@ func (stub *taskImportStoreStub) ObserveImportRecovery(
 		}
 	}
 	return stub.recovery, stub.recoveryErr
+}
+
+func (stub *taskImportStoreStub) PrepareImportDestination(
+	_ context.Context,
+	_ domain.ImportCompletion,
+) (bool, error) {
+	stub.admissionCalls++
+	if stub.admissionErr != nil {
+		return false, stub.admissionErr
+	}
+	return !stub.admissionOccupied, nil
 }
 
 func (stub *taskImportStoreStub) RunImportCompensation(

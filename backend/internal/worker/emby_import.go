@@ -20,6 +20,9 @@ const importRecoveryQueryTimeout = 5 * time.Second
 
 type TaskImportStore interface {
 	BeginImport(context.Context, uuid.UUID, uuid.UUID) (domain.ImportCommand, error)
+	// PrepareImportDestination 在文件系统操作前登记目标准入；返回 false
+	// 表示目标已被其它导入占用（库冲突）。
+	PrepareImportDestination(context.Context, domain.ImportCompletion) (bool, error)
 	CompleteImport(context.Context, domain.ImportCompletion) error
 	ObserveImportRecovery(context.Context, uuid.UUID, uuid.UUID, string, string) (domain.ImportRecoveryState, error)
 }
@@ -79,6 +82,8 @@ func (handler *EmbyImportHandler) Handle(ctx context.Context, operation domain.O
 	if command.TaskState == domain.TaskImported && command.ImportState == "succeeded" {
 		return nil
 	}
+	// 配置快照：事务外用原始 ctx 单次读取，保证 Handle 内的库根与
+	// 准入登记、文件操作、成功提交使用同一份路径。
 	configuration, err := handler.configuration.Load(ctx)
 	if err != nil {
 		return retryableFailure("configuration_unavailable", "runtime configuration is unavailable", err)
@@ -114,6 +119,27 @@ func (handler *EmbyImportHandler) Handle(ctx context.Context, operation domain.O
 	if err != nil {
 		return permanentFailure("library_path_invalid", "the subtitle library destination is unsafe", err)
 	}
+	completion := domain.ImportCompletion{
+		TaskID:                  command.TaskID,
+		ImportID:                command.ImportID,
+		OperationID:             operation.ID,
+		DestinationVideoPath:    destinationVideo,
+		DestinationSubtitlePath: destinationSubtitle,
+	}
+	// 目标准入：文件系统操作前在事务内登记目标路径。其它导入占用同一目标
+	// 时拒绝并按库冲突结束，绝不进入 FS 阶段。
+	if _, admissionErr := handler.store.PrepareImportDestination(ctx, completion); admissionErr != nil {
+		admissionFailure := mediaStoreFailure("import", admissionErr)
+		var classified *Failure
+		if !errors.As(admissionFailure, &classified) {
+			return admissionFailure
+		}
+		var conflict *domain.MediaWorkflowError
+		if errors.As(admissionErr, &conflict) && conflict.Code == "library_destination_conflict" {
+			return permanentFailure("library_destination_conflict", "an Emby library destination contains different content", admissionErr)
+		}
+		return admissionFailure
+	}
 	created, err := importArtifactPair(
 		ctx,
 		command.Video,
@@ -133,14 +159,14 @@ func (handler *EmbyImportHandler) Handle(ctx context.Context, operation domain.O
 		if errors.As(err, &conflict) {
 			return permanentFailure("library_destination_conflict", "an Emby library destination contains different content", err)
 		}
-		return retryableFailure("library_import_failed", "the paired media files could not be imported", err)
-	}
-	completion := domain.ImportCompletion{
-		TaskID:                  command.TaskID,
-		ImportID:                command.ImportID,
-		OperationID:             operation.ID,
-		DestinationVideoPath:    destinationVideo,
-		DestinationSubtitlePath: destinationSubtitle,
+		// pair 失败不再在函数内盲删：created 已创建文件交给安全补偿，
+		// 由持锁事务按当前数据库状态决定回滚或保留。
+		failure := retryableFailure("library_import_failed", "the paired media files could not be imported", err)
+		var classified *Failure
+		if !errors.As(failure, &classified) {
+			return failure
+		}
+		return handler.compensateFailedImport(ctx, completion, created, classified)
 	}
 	if completeErr := handler.store.CompleteImport(ctx, completion); completeErr != nil {
 		failure := mediaStoreFailure("import", completeErr)
@@ -153,12 +179,15 @@ func (handler *EmbyImportHandler) Handle(ctx context.Context, operation domain.O
 	return nil
 }
 
-// compensateFailedImport 在数据库确认失败后判断是否安全回滚。
-// 观察与删除通过 RunImportCompensation 放入与 CompleteImport/BeginImport
-// 相同的目标路径 advisory 锁域：文件复制/采用、成功引用写入与补偿的观察/
-// 删除全部串行，成功引用不可能在观察后窗口内插入。返回状态确知未成功
-// 且未被占用时，回调在锁释放前删除；已确知成功（提交实际生效）按成功返回；
-// 状态未知或不支持临界区回调的存储实现一律保留文件（不冒删除风险）。
+// compensateFailedImport 在导入失败后判断是否安全回滚。
+// 观察与删除通过 RunImportCompensation 放入与 CompleteImport、准入口
+// PrepareImportDestination 相同的目标路径 advisory 锁域：准纳入的采用、
+// 成功引用写入与补偿的观察/删除串行。持锁读取把其它导入的 running 已登记
+// 目标（准入声明）与成功引用一并视为占用：返回状态确知未成功且未被占用时，
+// 回调在锁释放前删除；已确知成功（提交实际生效）按成功返回；状态未知或
+// 不支持临界区回调的存储实现一律保留文件（不冒删除风险）。
+// Cancelled 与 Retryable+非取消语义同前（任务取消确知不会重试，可重试
+// 保留文件供下一次尝试采用）。
 func (handler *EmbyImportHandler) compensateFailedImport(
 	ctx context.Context,
 	completion domain.ImportCompletion,
@@ -261,12 +290,14 @@ func importArtifactPair(
 			_ = os.Remove(destination.temporary)
 		}
 	}()
-	// created 记录本次调用确定创建的文件；本函数内失败时回滚，
-	// 成功时返回给调用方，用于数据库确认阶段失败后的补偿判断。
+	// created 记录本次调用确定创建的文件。函数内失败时不再盲删：
+	// 文件保留并连同 created 返回给调用方，由持锁安全补偿按当前数据库
+	// 状态（其它导入占用、可重试、任务取消等）决定回滚或保留；
+	// 回滚闭包保留身份四重校验（inode/大小/mtime/SHA-256）。
 	created := make([]importedCommit, 0, len(destinations))
 	defer func() {
 		if importErr != nil {
-			rollbackImportedCommits(created)
+			handlerlessCompensation(created)
 		}
 	}()
 	for _, destination := range destinations {
@@ -374,6 +405,14 @@ func adoptCommittedTemporary(temporary, final string, artifact domain.MediaArtif
 // rollbackImportedCommits 只删除本次操作提交且身份仍一致的对象。
 // inode、大小与修改时间任一变化都说明目标已被替换或修改，保留现文件；
 // 三者均匹配时再核对内容校验和，避免文件系统重用 inode 或时间精度不足时误删。
+// handlerlessCompensation 是 importArtifactPair 内部失败时的即时回滚：
+// 此时尚未触及数据库（无成功引用、无登记），删除本次创建的文件是安全的；
+// 保留身份四重校验以防替换。若失败发生在导入提交之后，调用方不得使用
+// 本函数，应通过 compensateFailedImport 走数据库持锁补偿。
+func handlerlessCompensation(commits []importedCommit) {
+	rollbackImportedCommits(commits)
+}
+
 func rollbackImportedCommits(commits []importedCommit) {
 	for index := len(commits) - 1; index >= 0; index-- {
 		commit := commits[index]

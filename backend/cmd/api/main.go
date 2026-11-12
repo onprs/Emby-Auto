@@ -237,7 +237,7 @@ func buildRuntimeHandler(
 		return nil, nil, err
 	}
 	configuration := service.NewConfigurationService(repository.NewConfiguration(queries, transactor), secretCipher)
-	taskWorkflow := service.NewTaskWorkflowWithLibraryRoots(queries, transactor, operationScheduler, configuration)
+	taskWorkflow := service.NewTaskWorkflow(queries, transactor, operationScheduler)
 	tmdbSearcher := service.NewTMDbClientSearcher(configuration, cfg.TMDbBaseURL)
 	agentResolutions := service.NewAgentResolutionService(
 		queries, transactor, operationScheduler, configuration, catalogWorkflow, tmdbSearcher,

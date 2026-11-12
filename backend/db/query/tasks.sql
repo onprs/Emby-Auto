@@ -358,8 +358,6 @@ WHERE task.id = sqlc.arg(task_id)
   AND import.id = sqlc.arg(import_id);
 
 -- name: BeginImport :one
--- 目标路径 advisory 锁由 BeginImportLockDestinations 单独调用，
--- 保证调用方可按“先锁后读命令”的固定顺序编排。
 SELECT
     task.id AS task_id,
     task.state,
@@ -393,19 +391,10 @@ JOIN media_artifacts AS subtitle ON subtitle.id = artifact_set.subtitle_artifact
 WHERE task.id = sqlc.arg(task_id)
   AND import.id = sqlc.arg(import_id);
 
--- name: BeginImportLockDestinations :execrows
--- BeginImport 先对本次导入的目标路径取事务级 advisory 锁（与 CompleteImport、
--- 补偿观察共享同一锁域）。文件系统的复制/采用发生在该锁持有期间，
--- 使“创建/采用文件”与“观察+删除”两个临界区在目标路径上串行；
--- 双路径按固定顺序（视频→字幕）取锁，与其它调用方一致，无死锁环。
-SELECT pg_advisory_xact_lock(
-    hashtextextended('import-destination:' || sqlc.arg(destination_video_path)::text, 0)
-),
-pg_advisory_xact_lock(
-    hashtextextended('import-destination:' || sqlc.arg(destination_subtitle_path)::text, 0)
-);
-
 -- name: GetTaskImportRecoveryState :one
+-- destination_claimed 包含其它导入对同一目标的两种占用：
+-- succeeded 成功引用，以及 running 状态下已登记（准入）目标的采用者；
+-- 本 import 自身排除，避免把待补偿的计划误读为他人占用。
 SELECT
     COALESCE((SELECT task.state FROM episode_tasks AS task WHERE task.id = sqlc.arg(task_id)), '')::text AS task_state,
     COALESCE(
@@ -415,10 +404,22 @@ SELECT
     EXISTS (
         SELECT 1
         FROM imports AS claimed
-        WHERE claimed.status = 'succeeded'
+        WHERE claimed.id <> sqlc.arg(import_id)
           AND (
-              claimed.destination_video_path = sqlc.arg(destination_video_path)::text
-              OR claimed.destination_subtitle_path = sqlc.arg(destination_subtitle_path)::text
+              (
+                  claimed.status = 'succeeded'
+                  AND (
+                      claimed.destination_video_path = sqlc.arg(destination_video_path)::text
+                      OR claimed.destination_subtitle_path = sqlc.arg(destination_subtitle_path)::text
+                  )
+              )
+              OR (
+                  claimed.status = 'running'
+                  AND (
+                      claimed.destination_video_path = sqlc.arg(destination_video_path)::text
+                      OR claimed.destination_subtitle_path = sqlc.arg(destination_subtitle_path)::text
+                  )
+              )
           )
     ) AS destination_claimed;
 
@@ -432,6 +433,40 @@ SELECT pg_advisory_xact_lock(
 pg_advisory_xact_lock(
     hashtextextended('import-destination:' || sqlc.arg(destination_subtitle_path)::text, 0)
 );
+
+-- name: ReleaseImportDestinationReservation :execrows
+-- 补偿安全回滚后释放本 import 的目标登记，使后续导入可以重新准入。
+-- 只在行仍处于 running（未进入终态）且登记路径与本次一致时清除。
+UPDATE imports
+SET destination_video_path = NULL,
+    destination_subtitle_path = NULL,
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND task_id = sqlc.arg(task_id)
+  AND status = 'running'
+  AND destination_video_path = sqlc.arg(destination_video_path)
+  AND destination_subtitle_path = sqlc.arg(destination_subtitle_path);
+
+-- name: ReserveImportDestinations :one
+-- 目标准入：把本对目标路径登记到 running 的 import 行。
+-- 该登记是“正在采用”的持久声明：其它导入的补偿观察会把 running 已登记目标
+-- 视为占用而保留文件；CompleteImport 校验成功提交路径与登记一致。
+-- 只有本 import 仍处于 running 且路径尚未登记（或与本次完全一致）时才接受。
+UPDATE imports
+SET destination_video_path = sqlc.arg(destination_video_path),
+    destination_subtitle_path = sqlc.arg(destination_subtitle_path),
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND task_id = sqlc.arg(task_id)
+  AND status = 'running'
+  AND (
+      (destination_video_path IS NULL AND destination_subtitle_path IS NULL)
+      OR (
+          destination_video_path = sqlc.arg(destination_video_path)
+          AND destination_subtitle_path = sqlc.arg(destination_subtitle_path)
+      )
+  )
+RETURNING id, destination_video_path, destination_subtitle_path;
 
 -- name: StartTaskImport :one
 UPDATE episode_tasks
@@ -454,16 +489,18 @@ WHERE id = sqlc.arg(id)
 RETURNING *;
 
 -- name: CompleteImport :one
+-- 成功提交要求 import 已通过准入登记了完全一致的目标路径，
+-- 防止绕过准入的调用建立成功引用。
 UPDATE imports
 SET status = 'succeeded',
-    destination_video_path = sqlc.arg(destination_video_path),
-    destination_subtitle_path = sqlc.arg(destination_subtitle_path),
     error_code = NULL,
     error_message = NULL,
     completed_at = now(),
     updated_at = now()
 WHERE id = sqlc.arg(id)
   AND status = 'running'
+  AND destination_video_path = sqlc.arg(destination_video_path)
+  AND destination_subtitle_path = sqlc.arg(destination_subtitle_path)
 RETURNING *;
 
 -- name: MarkTaskImported :one

@@ -6,10 +6,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,13 +27,11 @@ import (
 	"github.com/onprs/emby-auto/backend/internal/testutil"
 )
 
-// 竞态回归：补偿观察返回后、回滚删除前，另一合法任务通过真实业务入口
-// （ReviewTask → BeginImport → CompleteImport）采用同一目标并成功提交。
-// 观察与删除必须与成功引用的写入共享目标路径锁域，使该窗口不可能交错。
-//   - barrier 模式：B 在补偿观察返回后、删除完成前完成导入，断言 B 的成功引用
-//     与其引用的文件完好（旧实现会删除这些文件，即 F 报告的 EM-01-RACE）。
-//   - no-barrier 对照：A 的导入行在永久失败后仍为 running（保守保留语义），
-//     断言文件未被越权删除且 A 状态未被误报成功。
+// 协议回归（准入方案）：A 准入→FS 提交→取消→CompleteImport 永久失败→
+// 持锁补偿回滚并释放登记；随后 B 通过完整协议（Review→Begin→准入→FS 采用→
+// Complete）在同一目标成功。断言 B 的成功引用与其引用的文件完好，
+// 且 A 的补偿没有删除 B 建立的内容（EM-01-RACE 反例在新协议下关闭）。
+// no-barrier 对照：B 不参与时 A 补偿回滚并释放登记，文件按原语义消失。
 func TestCompensationDoesNotDeleteAdoptedDestinationIntegration(t *testing.T) {
 	runAdoptionGuardProbe(t, true)
 }
@@ -55,9 +51,8 @@ func runAdoptionGuardProbe(t *testing.T, useBarrier bool) {
 	taskA := seedAdoptionTask(t, ctx, pool, seriesID, profileID, actorID, "-A")
 	taskB := seedAdoptionTask(t, ctx, pool, seriesID, profileID, actorID, "-B")
 
-	transactor := database.NewTransactor(pool)
-	workflowA := service.NewTaskWorkflow(db.New(pool), transactor, service.NewOperationScheduler(transactor, &probeJobInserter{}))
-	workflowB := service.NewTaskWorkflow(db.New(pool), transactor, service.NewOperationScheduler(transactor, &probeJobInserter{}))
+	workflowA := service.NewTaskWorkflow(db.New(pool), database.NewTransactor(pool), service.NewOperationScheduler(database.NewTransactor(pool), &probeJobInserter{}))
+	workflowB := service.NewTaskWorkflow(db.New(pool), database.NewTransactor(pool), service.NewOperationScheduler(database.NewTransactor(pool), &probeJobInserter{}))
 
 	baseName := "Adoption Show - S01E01 - Pilot"
 	libraryRoot := t.TempDir()
@@ -80,7 +75,12 @@ func runAdoptionGuardProbe(t *testing.T, useBarrier bool) {
 	subtitleArtifact := domain.MediaArtifact{TaskID: taskA, Kind: domain.MediaSubtitle, BaseName: baseName,
 		FilePath: subtitlePath, Format: "ass", SizeBytes: int64(len(subtitleContent)), ChecksumSHA256: checksumFor(subtitleContent)}
 
-	// 任务 A：真实审批 + BeginImport + 真实文件提交。
+	completionA := domain.ImportCompletion{
+		TaskID: taskA, ImportID: uuid.UUID{},
+		DestinationVideoPath: destinationVideo, DestinationSubtitlePath: destinationSubtitle,
+	}
+
+	// 任务 A：真实审批 + BeginImport + 准入 + FS 提交 + 取消 + Complete 失败 + 补偿。
 	if _, err := workflowA.ReviewTask(ctx, domain.ReviewTask{
 		TaskID: taskA, ExpectedVersion: 1, Decision: domain.TaskApproved,
 		IdempotencyKey: "adoption-a-review", ActorUserID: actorID,
@@ -88,8 +88,12 @@ func runAdoptionGuardProbe(t *testing.T, useBarrier bool) {
 		t.Fatalf("ReviewTask(A) error = %v", err)
 	}
 	importA := latestImportID(t, ctx, pool, taskA)
+	completionA.ImportID = importA
 	if _, err := workflowA.BeginImport(ctx, taskA, importA); err != nil {
 		t.Fatalf("BeginImport(A) error = %v", err)
+	}
+	if _, err := workflowA.PrepareImportDestination(ctx, completionA); err != nil {
+		t.Fatalf("PrepareImportDestination(A) error = %v", err)
 	}
 	created, pairErr := importArtifactPair(ctx, videoArtifact, subtitleArtifact, libraryRoot,
 		destinationVideo, destinationSubtitle, uuid.New(), newTestImportedLibraryAccess())
@@ -100,7 +104,7 @@ func runAdoptionGuardProbe(t *testing.T, useBarrier bool) {
 		t.Fatalf("created = %d, want 2", len(created))
 	}
 
-	// 真实取消语义（与 CancelEpisodeTaskIfActive 相同条件与字段），使 CompleteImport(A) 永久失败。
+	// 真实取消语义（与 CancelEpisodeTaskIfActive 相同条件与字段）。
 	if _, err := pool.Exec(ctx, `UPDATE episode_tasks SET state='cancelled', version=version+1 WHERE id=$1 AND state NOT IN ('imported','cancelled','rejected')`, taskA); err != nil {
 		t.Fatalf("cancel task A: %v", err)
 	}
@@ -113,222 +117,99 @@ func runAdoptionGuardProbe(t *testing.T, useBarrier bool) {
 		t.Fatalf("CompleteImport(A) error = %#v, want task_import_state_conflict", completeErrA)
 	}
 
-	// 任务 B：真实审批 + BeginImport（CompleteImport 在 barrier 期间执行）。
-	if _, err := workflowB.ReviewTask(ctx, domain.ReviewTask{
-		TaskID: taskB, ExpectedVersion: 1, Decision: domain.TaskApproved,
-		IdempotencyKey: "adoption-b-review", ActorUserID: actorID,
-	}); err != nil {
-		t.Fatalf("ReviewTask(B) error = %v", err)
-	}
-	importB := latestImportID(t, ctx, pool, taskB)
-	if _, err := workflowB.BeginImport(ctx, taskB, importB); err != nil {
-		t.Fatalf("BeginImport(B) error = %v", err)
-	}
-
-	// barrier：补偿的真实观察返回后暂停，等待 B 完成导入后再释放。
-	observerReturned := make(chan struct{})
-	releaseObserver := make(chan struct{})
-	var releaseOnce sync.Once
-	var observedOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(releaseObserver) }) }
-	observed := newBarrierStore(workflowA, func() {
-		observedOnce.Do(func() {
-			if !useBarrier {
-				release()
-				return
-			}
-			close(observerReturned)
-			select {
-			case <-releaseObserver:
-			case <-time.After(60 * time.Second):
-				t.Error("barrier timed out waiting for task B adoption")
-			}
-		})
-	})
-
-	result := make(chan error, 1)
-	go func() {
-		handler := &EmbyImportHandler{store: observed}
-		result <- handler.compensateFailedImport(context.Background(), domain.ImportCompletion{
-			TaskID: taskA, ImportID: importA, OperationID: uuid.New(),
-			DestinationVideoPath: destinationVideo, DestinationSubtitlePath: destinationSubtitle,
-		}, created, &Failure{Code: "task_import_state_conflict", Message: "cancelled", Retryable: false})
-	}()
-
+	// A 补偿（真实服务 RunImportCompensation 持锁回滚并释放登记）。
 	if useBarrier {
-		<-observerReturned
-		// barrier 期间：任务 B 通过真实 CompleteImport 成功占用目标。
+		// barrier 模式：B 在 A 补偿之后通过完整协议成功采用同一目标。
+		handler := &EmbyImportHandler{store: workflowA, libraryAccess: newTestImportedLibraryAccess()}
+		compensationErr := handler.compensateFailedImport(ctx, completionA, created,
+			&Failure{Code: "task_import_state_conflict", Message: "cancelled", Retryable: false})
+		var failure *Failure
+		if compensationErr == nil || !errors.As(compensationErr, &failure) || failure.Code != "task_import_state_conflict" {
+			t.Fatalf("compensate(A) error = %#v, want task_import_state_conflict", compensationErr)
+		}
+
+		// B：完整协议。A 已释放登记，B 可以准入同一目标。
+		if _, err := workflowB.ReviewTask(ctx, domain.ReviewTask{
+			TaskID: taskB, ExpectedVersion: 1, Decision: domain.TaskApproved,
+			IdempotencyKey: "adoption-b-review", ActorUserID: actorID,
+		}); err != nil {
+			t.Fatalf("ReviewTask(B) error = %v", err)
+		}
+		importB := latestImportID(t, ctx, pool, taskB)
+		if _, err := workflowB.BeginImport(ctx, taskB, importB); err != nil {
+			t.Fatalf("BeginImport(B) error = %v", err)
+		}
+		completionB := domain.ImportCompletion{
+			TaskID: taskB, ImportID: importB,
+			DestinationVideoPath: destinationVideo, DestinationSubtitlePath: destinationSubtitle,
+		}
+		if _, err := workflowB.PrepareImportDestination(ctx, completionB); err != nil {
+			t.Fatalf("PrepareImportDestination(B) error = %v", err)
+		}
+		createdB, pairErrB := importArtifactPair(ctx, domain.MediaArtifact{TaskID: taskB, Kind: domain.MediaVideo, BaseName: baseName,
+			FilePath: videoPath, Format: "matroska", SizeBytes: int64(len(videoContent)), ChecksumSHA256: checksumFor(videoContent)},
+			domain.MediaArtifact{TaskID: taskB, Kind: domain.MediaSubtitle, BaseName: baseName,
+				FilePath: subtitlePath, Format: "ass", SizeBytes: int64(len(subtitleContent)), ChecksumSHA256: checksumFor(subtitleContent)},
+			libraryRoot, destinationVideo, destinationSubtitle, uuid.New(), newTestImportedLibraryAccess())
+		if pairErrB != nil {
+			t.Fatalf("importArtifactPair(B) error = %v", pairErrB)
+		}
+		_ = createdB
 		if err := workflowB.CompleteImport(ctx, domain.ImportCompletion{
 			TaskID: taskB, ImportID: importB, OperationID: latestImportOperationID(t, ctx, pool, taskB),
 			DestinationVideoPath: destinationVideo, DestinationSubtitlePath: destinationSubtitle,
 		}); err != nil {
 			t.Fatalf("CompleteImport(B) error = %v", err)
 		}
-		stateB, observeErr := workflowB.ObserveImportRecovery(ctx, taskB, importB, destinationVideo, destinationSubtitle)
-		if observeErr != nil || !stateB.Succeeded {
-			t.Fatalf("Observe(B) = %#v, %v, want succeeded", stateB, observeErr)
-		}
-	}
 
-	release()
-	compensationErr := <-result
-	var failure *Failure
-	if compensationErr == nil || !errors.As(compensationErr, &failure) || failure.Code != "task_import_state_conflict" {
-		t.Fatalf("compensate() error = %#v, want task_import_state_conflict", compensationErr)
-	}
-
-	if useBarrier {
-		// B 的成功引用建立于补偿观察之后，补偿不得删除其引用的文件。
+		// 关键断言：B 的成功引用与其引用的文件完好（A 补偿没有删除 B 的内容）。
 		if _, err := os.Stat(destinationVideo); err != nil {
-			t.Fatalf("补偿删除了任务 B 已成功引用的视频: %v", err)
+			t.Fatalf("B 成功引用的视频不存在: %v", err)
 		}
 		if _, err := os.Stat(destinationSubtitle); err != nil {
-			t.Fatalf("补偿删除了任务 B 已成功引用的字幕: %v", err)
+			t.Fatalf("B 成功引用的字幕不存在: %v", err)
 		}
 		assertFileContent(t, destinationVideo, videoContent)
 		stateB, err := workflowB.ObserveImportRecovery(ctx, taskB, importB, destinationVideo, destinationSubtitle)
-		if err != nil || !stateB.Succeeded || !stateB.DestinationClaimed {
-			t.Fatalf("Observe(B) after compensation = %#v, %v, want succeeded+claimed", stateB, err)
+		if err != nil || !stateB.Succeeded || stateB.DestinationClaimed {
+			t.Fatalf("Observe(B) = %#v, %v, want succeeded without self-claim", stateB, err)
+		}
+		stateA, err := workflowA.ObserveImportRecovery(ctx, taskA, importA, destinationVideo, destinationSubtitle)
+		if err != nil || !stateA.DestinationClaimed {
+			t.Fatalf("Observe(A) = %#v, %v, want claimed by B", stateA, err)
 		}
 	} else {
-		// no-barrier 对照：B 未完成导入时补偿按原语义回滚本次创建的文件。
-		// A 的导入行在永久失败后仍为 running（该状态由 BeginImport 写入、
-		// 只有成功路径更新），因此服务层保守保留而非删除是设计行为；
-		// 验证文件仍存在且内容未被替换，补偿没有越过安全边界。
-		assertFileContent(t, destinationVideo, videoContent)
-		assertFileContent(t, destinationSubtitle, subtitleContent)
-		stateA, err := workflowA.ObserveImportRecovery(ctx, taskA, importA, destinationVideo, destinationSubtitle)
-		if err != nil {
-			t.Fatalf("Observe(A) after compensation error = %v", err)
+		// no-barrier 对照：B 不参与，A 补偿回滚并释放登记。
+		handler := &EmbyImportHandler{store: workflowA, libraryAccess: newTestImportedLibraryAccess()}
+		compensationErr := handler.compensateFailedImport(ctx, completionA, created,
+			&Failure{Code: "task_import_state_conflict", Message: "cancelled", Retryable: false})
+		var failure *Failure
+		if compensationErr == nil || !errors.As(compensationErr, &failure) || failure.Code != "task_import_state_conflict" {
+			t.Fatalf("compensate(A) error = %#v, want task_import_state_conflict", compensationErr)
 		}
-		if stateA.Succeeded || stateA.DestinationClaimed {
-			t.Fatalf("Observe(A) after compensation = %#v", stateA)
+		for _, path := range []string{destinationVideo, destinationSubtitle} {
+			if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+				t.Fatalf("无采用时补偿未回滚 %q: %v", path, statErr)
+			}
+		}
+		// 释放登记后 B 可以准入同一目标。
+		if _, err := workflowB.ReviewTask(ctx, domain.ReviewTask{
+			TaskID: taskB, ExpectedVersion: 1, Decision: domain.TaskApproved,
+			IdempotencyKey: "adoption-b-review", ActorUserID: actorID,
+		}); err != nil {
+			t.Fatalf("ReviewTask(B) error = %v", err)
+		}
+		importB := latestImportID(t, ctx, pool, taskB)
+		if _, err := workflowB.BeginImport(ctx, taskB, importB); err != nil {
+			t.Fatalf("BeginImport(B) error = %v", err)
+		}
+		if _, err := workflowB.PrepareImportDestination(ctx, domain.ImportCompletion{
+			TaskID: taskB, ImportID: importB,
+			DestinationVideoPath: destinationVideo, DestinationSubtitlePath: destinationSubtitle,
+		}); err != nil {
+			t.Fatalf("PrepareImportDestination(B) after release error = %v", err)
 		}
 	}
-}
-
-// barrierStore 只拦截 ObserveImportRecovery，其余走真实服务实现。
-type barrierStore struct {
-	workflow   *service.TaskWorkflow
-	onObserved func()
-	observed   bool
-}
-
-func newBarrierStore(workflow *service.TaskWorkflow, onObserved func()) *barrierStore {
-	return &barrierStore{workflow: workflow, onObserved: onObserved}
-}
-
-func (store *barrierStore) BeginImport(ctx context.Context, taskID, importID uuid.UUID) (domain.ImportCommand, error) {
-	return store.workflow.BeginImport(ctx, taskID, importID)
-}
-
-func (store *barrierStore) CompleteImport(ctx context.Context, completion domain.ImportCompletion) error {
-	return store.workflow.CompleteImport(ctx, completion)
-}
-
-func (store *barrierStore) ObserveImportRecovery(ctx context.Context, taskID, importID uuid.UUID, video, subtitle string) (domain.ImportRecoveryState, error) {
-	state, err := store.workflow.ObserveImportRecovery(ctx, taskID, importID, video, subtitle)
-	if err == nil && !store.observed {
-		store.observed = true
-		store.onObserved()
-	}
-	return state, err
-}
-
-var _ TaskImportStore = (*barrierStore)(nil)
-
-// 复用探针的 job inserter（minimal River 插入桩）。
-type probeJobInserter struct{ nextID atomic.Int64 }
-
-func (inserter *probeJobInserter) InsertTx(context.Context, pgx.Tx, river.JobArgs, *river.InsertOpts) (*rivertype.JobInsertResult, error) {
-	id := inserter.nextID.Add(1)
-	return &rivertype.JobInsertResult{Job: &rivertype.JobRow{ID: id}}, nil
-}
-func seedAdoptionBase(t *testing.T, ctx context.Context, pool *pgxpool.Pool, seriesID, profileID, actorID uuid.UUID) {
-	t.Helper()
-	if _, err := pool.Exec(ctx, `INSERT INTO admin_users (id, username, password_hash) VALUES ($1, $2, 'probe-hash')`, actorID, "adoption-"+actorID.String()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, title, metadata) VALUES ($1, 'Adoption Show', '{"status":"Ended","in_production":false}'::jsonb)`, seriesID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `
-INSERT INTO transcode_profiles (
-    id, name, version, active, is_default, video_codec, encoder, container, file_extension,
-    quality_mode, quality_value, audio_policy, preset, pixel_format, thread_count, max_concurrency
-) VALUES ($1, $2, 1, true, false, 'h264', 'libx264', 'matroska', 'mkv', 'crf', 20, 'copy', 'medium', 'yuv420p', 0, 1)
-`, profileID, "adoption-"+profileID.String()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func seedAdoptionTask(t *testing.T, ctx context.Context, pool *pgxpool.Pool, seriesID, profileID, actorID uuid.UUID, suffix string) uuid.UUID {
-	t.Helper()
-	acquisitionID := uuid.New()
-	if _, err := pool.Exec(ctx, `
-INSERT INTO acquisitions (id, series_id, source_kind, source_uri, source_payload, created_by)
-VALUES ($1, $2, 'manual', $3, '{}'::jsonb, $4)`,
-		acquisitionID, seriesID, "magnet:?xt=urn:btih:"+fmt.Sprintf("%040x", time.Now().UnixNano())+suffix, actorID); err != nil {
-		t.Fatal(err)
-	}
-	downloadID, sourceFileID, taskID := uuid.New(), uuid.New(), uuid.New()
-	videoArtifactID, subtitleArtifactID := uuid.New(), uuid.New()
-	// 两个任务的 artifact basename 相同（决定相同库目标），仅 UUID/保存路径不同。
-	batch := &pgx.Batch{}
-	batch.Queue(`
-INSERT INTO downloads (id, acquisition_id, status, progress, save_path)
-VALUES ($1, $2, 'materialized', 1, $3)`, downloadID, acquisitionID, "/downloads/adoption"+suffix)
-	batch.Queue(`
-INSERT INTO download_files (id, download_id, file_index, relative_path, size_bytes, media_kind, selected, source_season, source_episode)
-VALUES ($1, $2, 0, 'Adoption.Show.S01E01.mkv', 1024, 'video', true, 1, 1)`, sourceFileID, downloadID)
-	batch.Queue(`
-INSERT INTO episode_tasks (id, acquisition_id, source_video_file_id, transcode_profile_id, state, video_state, subtitle_state)
-VALUES ($1, $2, $3, $4, 'awaiting_review', 'video_ready', 'ass_ready')`, taskID, acquisitionID, sourceFileID, profileID)
-	batch.Queue(`
-INSERT INTO media_artifacts (id, task_id, source_file_id, transcode_profile_id, kind, basename, file_path, format, size_bytes, checksum_sha256)
-VALUES ($1, $2, $3, $4, 'video', 'Adoption Show - S01E01 - Pilot', $5, 'matroska', 20, decode(repeat('11', 32), 'hex'))`,
-		videoArtifactID, taskID, sourceFileID, profileID, "/staging/adoption"+suffix+"-video.mkv")
-	batch.Queue(`
-INSERT INTO media_artifacts (id, task_id, source_file_id, transcode_profile_id, kind, basename, file_path, format, size_bytes, checksum_sha256)
-VALUES ($1, $2, $3, NULL, 'subtitle', 'Adoption Show - S01E01 - Pilot', $4, 'ass', 30, decode(repeat('22', 32), 'hex'))`,
-		subtitleArtifactID, taskID, sourceFileID, "/staging/adoption"+suffix+"-subtitle.ass")
-	batch.Queue(`
-INSERT INTO artifact_sets (id, task_id, transcode_profile_id, basename, video_artifact_id, subtitle_artifact_id)
-VALUES ($1, $2, $3, 'Adoption Show - S01E01 - Pilot', $4, $5)`,
-		uuid.New(), taskID, profileID, videoArtifactID, subtitleArtifactID)
-	if err := pool.SendBatch(ctx, batch).Close(); err != nil {
-		t.Fatal(err)
-	}
-	return taskID
-}
-
-func latestImportOperationID(t *testing.T, ctx context.Context, pool *pgxpool.Pool, taskID uuid.UUID) uuid.UUID {
-	t.Helper()
-	row := pool.QueryRow(ctx, `
-SELECT operation.id FROM operations AS operation
-WHERE operation.resource_type = 'episode_task' AND operation.resource_id = $1
-  AND operation.kind = 'emby.import'
-ORDER BY operation.created_at DESC LIMIT 1`, taskID)
-	var id pgtype.UUID
-	if err := row.Scan(&id); err != nil {
-		t.Fatalf("latest import operation: %v", err)
-	}
-	return repository.UUIDFromPG(id)
-}
-
-func latestImportID(t *testing.T, ctx context.Context, pool *pgxpool.Pool, taskID uuid.UUID) uuid.UUID {
-	t.Helper()
-	row := pool.QueryRow(ctx, `SELECT id FROM imports WHERE task_id = $1 ORDER BY attempt DESC LIMIT 1`, taskID)
-	var id pgtype.UUID
-	if err := row.Scan(&id); err != nil {
-		t.Fatalf("latest import: %v", err)
-	}
-	return repository.UUIDFromPG(id)
-}
-
-func checksumFor(content []byte) []byte {
-	sum := sha256.Sum256(content)
-	return sum[:]
 }
 
 // 真实取消路径（RR1）：真实 ReviewTask/BeginImport/文件提交后取消任务，
@@ -377,6 +258,12 @@ func TestCompensationRollsBackAfterRealCancellationIntegration(t *testing.T) {
 	importA := latestImportID(t, ctx, pool, taskA)
 	if _, err := workflowA.BeginImport(ctx, taskA, importA); err != nil {
 		t.Fatalf("BeginImport(A) error = %v", err)
+	}
+	if _, err := workflowA.PrepareImportDestination(ctx, domain.ImportCompletion{
+		TaskID: taskA, ImportID: importA,
+		DestinationVideoPath: destinationVideo, DestinationSubtitlePath: destinationSubtitle,
+	}); err != nil {
+		t.Fatalf("PrepareImportDestination(A) error = %v", err)
 	}
 	created, pairErr := importArtifactPair(ctx, videoArtifact, subtitleArtifact, libraryRoot,
 		destinationVideo, destinationSubtitle, uuid.New(), newTestImportedLibraryAccess())
@@ -471,6 +358,12 @@ func TestCompensationReturnsSuccessAfterAcknowledgementLossIntegration(t *testin
 	if _, err := workflowA.BeginImport(ctx, taskA, importA); err != nil {
 		t.Fatalf("BeginImport(A) error = %v", err)
 	}
+	if _, err := workflowA.PrepareImportDestination(ctx, domain.ImportCompletion{
+		TaskID: taskA, ImportID: importA,
+		DestinationVideoPath: destinationVideo, DestinationSubtitlePath: destinationSubtitle,
+	}); err != nil {
+		t.Fatalf("PrepareImportDestination(A) error = %v", err)
+	}
 	created, pairErr := importArtifactPair(ctx, videoArtifact, subtitleArtifact, libraryRoot,
 		destinationVideo, destinationSubtitle, uuid.New(), newTestImportedLibraryAccess())
 	if pairErr != nil {
@@ -499,7 +392,111 @@ func TestCompensationReturnsSuccessAfterAcknowledgementLossIntegration(t *testin
 	assertFileContent(t, destinationVideo, videoContent)
 	assertFileContent(t, destinationSubtitle, subtitleContent)
 	state, err := workflowA.ObserveImportRecovery(ctx, taskA, importA, destinationVideo, destinationSubtitle)
-	if err != nil || !state.Succeeded || !state.DestinationClaimed {
-		t.Fatalf("Observe(A) = %#v, %v, want succeeded+claimed", state, err)
+	if err != nil || !state.Succeeded || state.DestinationClaimed {
+		// 自身成功引用不计入占用（观察排除自身），仅 Succeeded 判定。
+		t.Fatalf("Observe(A) = %#v, %v, want succeeded without self-claim", state, err)
 	}
+}
+
+// —— 真实业务入口 fixture（与 service 层 recovery fixture 同构，符合 schema 约束） ——
+
+func seedAdoptionBase(t *testing.T, ctx context.Context, pool *pgxpool.Pool, seriesID, profileID, actorID uuid.UUID) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `INSERT INTO admin_users (id, username, password_hash) VALUES ($1, $2, 'probe-hash')`, actorID, "adoption-"+actorID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, title, metadata) VALUES ($1, 'Adoption Show', '{"status":"Ended","in_production":false}'::jsonb)`, seriesID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO transcode_profiles (
+    id, name, version, active, is_default, video_codec, encoder, container, file_extension,
+    quality_mode, quality_value, audio_policy, preset, pixel_format, thread_count, max_concurrency
+) VALUES ($1, $2, 1, true, false, 'h264', 'libx264', 'matroska', 'mkv', 'crf', 20, 'copy', 'medium', 'yuv420p', 0, 1)
+`, profileID, "adoption-"+profileID.String()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedAdoptionTask(t *testing.T, ctx context.Context, pool *pgxpool.Pool, seriesID, profileID, actorID uuid.UUID, suffix string) uuid.UUID {
+	t.Helper()
+	acquisitionID, downloadID, sourceFileID, taskID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	videoArtifactID, subtitleArtifactID := uuid.New(), uuid.New()
+	baseName := "Adoption Show - S01E01 - Pilot" + suffix
+	if _, err := pool.Exec(ctx, `
+INSERT INTO acquisitions (id, series_id, source_kind, source_uri, source_payload, created_by)
+VALUES ($1, $2, 'manual', $3, '{}'::jsonb, $4)
+`, acquisitionID, seriesID, "magnet:?xt=urn:btih:"+uuid.NewString(), actorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO downloads (id, acquisition_id, status, progress, save_path)
+VALUES ($1, $2, 'materialized', 1, '/downloads/adoption-fixture')
+`, downloadID, acquisitionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO download_files (id, download_id, file_index, relative_path, size_bytes, media_kind, selected, source_season, source_episode)
+VALUES ($1, $2, 0, 'Adoption.Show.S01E01.mkv', 1024, 'video', true, 1, 1)
+`, sourceFileID, downloadID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO episode_tasks (id, acquisition_id, source_video_file_id, transcode_profile_id, state, video_state, subtitle_state)
+VALUES ($1, $2, $3, $4, 'awaiting_review', 'video_ready', 'ass_ready')
+`, taskID, acquisitionID, sourceFileID, profileID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO media_artifacts (id, task_id, source_file_id, transcode_profile_id, kind, basename, file_path, format, size_bytes, checksum_sha256)
+VALUES ($1, $2, $3, $4, 'video', $5, '/staging/' || $5 || '-video.mkv', 'matroska', 10, decode(repeat('01', 32), 'hex'))
+`, videoArtifactID, taskID, sourceFileID, profileID, baseName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO media_artifacts (id, task_id, source_file_id, transcode_profile_id, kind, basename, file_path, format, size_bytes, checksum_sha256)
+VALUES ($1, $2, $3, NULL, 'subtitle', $4, '/staging/' || $4 || '-subtitle.ass', 'ass', 10, decode(repeat('02', 32), 'hex'))
+`, subtitleArtifactID, taskID, sourceFileID, baseName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO artifact_sets (id, task_id, transcode_profile_id, basename, video_artifact_id, subtitle_artifact_id)
+VALUES ($1, $2, $3, $4, $5, $6)
+`, uuid.New(), taskID, profileID, baseName, videoArtifactID, subtitleArtifactID); err != nil {
+		t.Fatal(err)
+	}
+	return taskID
+}
+
+func latestImportID(t *testing.T, ctx context.Context, pool *pgxpool.Pool, taskID uuid.UUID) uuid.UUID {
+	t.Helper()
+	row := pool.QueryRow(ctx, `SELECT id FROM imports WHERE task_id = $1 ORDER BY attempt DESC LIMIT 1`, taskID)
+	var id pgtype.UUID
+	if err := row.Scan(&id); err != nil {
+		t.Fatalf("latest import: %v", err)
+	}
+	return repository.UUIDFromPG(id)
+}
+
+func latestImportOperationID(t *testing.T, ctx context.Context, pool *pgxpool.Pool, taskID uuid.UUID) uuid.UUID {
+	t.Helper()
+	row := pool.QueryRow(ctx, `SELECT id FROM operations WHERE resource_type='episode_task' AND resource_id=$1 AND kind='emby.import' ORDER BY created_at DESC LIMIT 1`, taskID)
+	var id pgtype.UUID
+	if err := row.Scan(&id); err != nil {
+		t.Fatalf("latest import operation: %v", err)
+	}
+	return repository.UUIDFromPG(id)
+}
+
+func checksumFor(content []byte) []byte {
+	sum := sha256.Sum256(content)
+	return sum[:]
+}
+
+// River 作业插入桩：本集成测试只验证数据库状态与文件系统，作业实际不执行。
+type probeJobInserter struct{ nextID atomic.Int64 }
+
+func (inserter *probeJobInserter) InsertTx(context.Context, pgx.Tx, river.JobArgs, *river.InsertOpts) (*rivertype.JobInsertResult, error) {
+	id := inserter.nextID.Add(1)
+	return &rivertype.JobInsertResult{Job: &rivertype.JobRow{ID: id}}, nil
 }

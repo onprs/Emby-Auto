@@ -790,8 +790,10 @@ SELECT
     review.decision AS review_decision,
     review.reviewed_at,
     COALESCE(latest_import.status, '')::text AS import_status,
-    latest_import.destination_video_path,
-    latest_import.destination_subtitle_path,
+    -- 计划目标（running 已登记）不进入公开视图：仅成功导入才投影路径，
+    -- 保护 acquisition 媒体项与 Emby filepath 关联的原语义。
+    CASE WHEN latest_import.status = 'succeeded' THEN latest_import.destination_video_path ELSE '' END::text AS destination_video_path,
+    CASE WHEN latest_import.status = 'succeeded' THEN latest_import.destination_subtitle_path ELSE '' END::text AS destination_subtitle_path,
     COALESCE(latest_refresh.status, '')::text AS emby_refresh_status,
     COALESCE(latest_cleanup.status, '')::text AS cleanup_status,
     task.failure_stage,
@@ -857,8 +859,8 @@ type ListAcquisitionTaskSummariesByAcquisitionIDsRow struct {
 	ReviewDecision                  *string            `db:"review_decision" json:"review_decision"`
 	ReviewedAt                      pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
 	ImportStatus                    string             `db:"import_status" json:"import_status"`
-	DestinationVideoPath            *string            `db:"destination_video_path" json:"destination_video_path"`
-	DestinationSubtitlePath         *string            `db:"destination_subtitle_path" json:"destination_subtitle_path"`
+	DestinationVideoPath            string             `db:"destination_video_path" json:"destination_video_path"`
+	DestinationSubtitlePath         string             `db:"destination_subtitle_path" json:"destination_subtitle_path"`
 	EmbyRefreshStatus               string             `db:"emby_refresh_status" json:"emby_refresh_status"`
 	CleanupStatus                   string             `db:"cleanup_status" json:"cleanup_status"`
 	FailureStage                    *string            `db:"failure_stage" json:"failure_stage"`

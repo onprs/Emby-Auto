@@ -73,8 +73,6 @@ type BeginImportRow struct {
 	SubtitleChecksumSha256 []byte      `db:"subtitle_checksum_sha256" json:"subtitle_checksum_sha256"`
 }
 
-// 目标路径 advisory 锁由 BeginImportLockDestinations 单独调用，
-// 保证调用方可按“先锁后读命令”的固定顺序编排。
 func (q *Queries) BeginImport(ctx context.Context, arg BeginImportParams) (BeginImportRow, error) {
 	row := q.db.QueryRow(ctx, beginImport, arg.TaskID, arg.ImportID)
 	var i BeginImportRow
@@ -100,32 +98,6 @@ func (q *Queries) BeginImport(ctx context.Context, arg BeginImportParams) (Begin
 		&i.SubtitleChecksumSha256,
 	)
 	return i, err
-}
-
-const beginImportLockDestinations = `-- name: BeginImportLockDestinations :execrows
-SELECT pg_advisory_xact_lock(
-    hashtextextended('import-destination:' || $1::text, 0)
-),
-pg_advisory_xact_lock(
-    hashtextextended('import-destination:' || $2::text, 0)
-)
-`
-
-type BeginImportLockDestinationsParams struct {
-	DestinationVideoPath    string `db:"destination_video_path" json:"destination_video_path"`
-	DestinationSubtitlePath string `db:"destination_subtitle_path" json:"destination_subtitle_path"`
-}
-
-// BeginImport 先对本次导入的目标路径取事务级 advisory 锁（与 CompleteImport、
-// 补偿观察共享同一锁域）。文件系统的复制/采用发生在该锁持有期间，
-// 使“创建/采用文件”与“观察+删除”两个临界区在目标路径上串行；
-// 双路径按固定顺序（视频→字幕）取锁，与其它调用方一致，无死锁环。
-func (q *Queries) BeginImportLockDestinations(ctx context.Context, arg BeginImportLockDestinationsParams) (int64, error) {
-	result, err := q.db.Exec(ctx, beginImportLockDestinations, arg.DestinationVideoPath, arg.DestinationSubtitlePath)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
 }
 
 const cancelActiveCleanup = `-- name: CancelActiveCleanup :one
@@ -282,25 +254,27 @@ func (q *Queries) CompleteCleanup(ctx context.Context, arg CompleteCleanupParams
 const completeImport = `-- name: CompleteImport :one
 UPDATE imports
 SET status = 'succeeded',
-    destination_video_path = $1,
-    destination_subtitle_path = $2,
     error_code = NULL,
     error_message = NULL,
     completed_at = now(),
     updated_at = now()
-WHERE id = $3
+WHERE id = $1
   AND status = 'running'
+  AND destination_video_path = $2
+  AND destination_subtitle_path = $3
 RETURNING id, task_id, attempt, status, destination_video_path, destination_subtitle_path, error_code, error_message, started_at, completed_at, created_at, updated_at
 `
 
 type CompleteImportParams struct {
+	ID                      pgtype.UUID `db:"id" json:"id"`
 	DestinationVideoPath    *string     `db:"destination_video_path" json:"destination_video_path"`
 	DestinationSubtitlePath *string     `db:"destination_subtitle_path" json:"destination_subtitle_path"`
-	ID                      pgtype.UUID `db:"id" json:"id"`
 }
 
+// 成功提交要求 import 已通过准入登记了完全一致的目标路径，
+// 防止绕过准入的调用建立成功引用。
 func (q *Queries) CompleteImport(ctx context.Context, arg CompleteImportParams) (Import, error) {
-	row := q.db.QueryRow(ctx, completeImport, arg.DestinationVideoPath, arg.DestinationSubtitlePath, arg.ID)
+	row := q.db.QueryRow(ctx, completeImport, arg.ID, arg.DestinationVideoPath, arg.DestinationSubtitlePath)
 	var i Import
 	err := row.Scan(
 		&i.ID,
@@ -695,10 +669,22 @@ SELECT
     EXISTS (
         SELECT 1
         FROM imports AS claimed
-        WHERE claimed.status = 'succeeded'
+        WHERE claimed.id <> $2
           AND (
-              claimed.destination_video_path = $3::text
-              OR claimed.destination_subtitle_path = $4::text
+              (
+                  claimed.status = 'succeeded'
+                  AND (
+                      claimed.destination_video_path = $3::text
+                      OR claimed.destination_subtitle_path = $4::text
+                  )
+              )
+              OR (
+                  claimed.status = 'running'
+                  AND (
+                      claimed.destination_video_path = $3::text
+                      OR claimed.destination_subtitle_path = $4::text
+                  )
+              )
           )
     ) AS destination_claimed
 `
@@ -716,6 +702,9 @@ type GetTaskImportRecoveryStateRow struct {
 	DestinationClaimed bool   `db:"destination_claimed" json:"destination_claimed"`
 }
 
+// destination_claimed 包含其它导入对同一目标的两种占用：
+// succeeded 成功引用，以及 running 状态下已登记（准入）目标的采用者；
+// 本 import 自身排除，避免把待补偿的计划误读为他人占用。
 func (q *Queries) GetTaskImportRecoveryState(ctx context.Context, arg GetTaskImportRecoveryStateParams) (GetTaskImportRecoveryStateRow, error) {
 	row := q.db.QueryRow(ctx, getTaskImportRecoveryState,
 		arg.TaskID,
@@ -1710,6 +1699,40 @@ func (q *Queries) MarkTaskReviewed(ctx context.Context, arg MarkTaskReviewedPara
 	return i, err
 }
 
+const releaseImportDestinationReservation = `-- name: ReleaseImportDestinationReservation :execrows
+UPDATE imports
+SET destination_video_path = NULL,
+    destination_subtitle_path = NULL,
+    updated_at = now()
+WHERE id = $1
+  AND task_id = $2
+  AND status = 'running'
+  AND destination_video_path = $3
+  AND destination_subtitle_path = $4
+`
+
+type ReleaseImportDestinationReservationParams struct {
+	ID                      pgtype.UUID `db:"id" json:"id"`
+	TaskID                  pgtype.UUID `db:"task_id" json:"task_id"`
+	DestinationVideoPath    *string     `db:"destination_video_path" json:"destination_video_path"`
+	DestinationSubtitlePath *string     `db:"destination_subtitle_path" json:"destination_subtitle_path"`
+}
+
+// 补偿安全回滚后释放本 import 的目标登记，使后续导入可以重新准入。
+// 只在行仍处于 running（未进入终态）且登记路径与本次一致时清除。
+func (q *Queries) ReleaseImportDestinationReservation(ctx context.Context, arg ReleaseImportDestinationReservationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseImportDestinationReservation,
+		arg.ID,
+		arg.TaskID,
+		arg.DestinationVideoPath,
+		arg.DestinationSubtitlePath,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const requeueLatestFailedTaskCleanup = `-- name: RequeueLatestFailedTaskCleanup :one
 UPDATE cleanup_runs
 SET status = 'queued',
@@ -1786,6 +1809,53 @@ func (q *Queries) RequeueLatestFailedTaskImport(ctx context.Context, taskID pgty
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
+	return i, err
+}
+
+const reserveImportDestinations = `-- name: ReserveImportDestinations :one
+UPDATE imports
+SET destination_video_path = $1,
+    destination_subtitle_path = $2,
+    updated_at = now()
+WHERE id = $3
+  AND task_id = $4
+  AND status = 'running'
+  AND (
+      (destination_video_path IS NULL AND destination_subtitle_path IS NULL)
+      OR (
+          destination_video_path = $1
+          AND destination_subtitle_path = $2
+      )
+  )
+RETURNING id, destination_video_path, destination_subtitle_path
+`
+
+type ReserveImportDestinationsParams struct {
+	DestinationVideoPath    *string     `db:"destination_video_path" json:"destination_video_path"`
+	DestinationSubtitlePath *string     `db:"destination_subtitle_path" json:"destination_subtitle_path"`
+	ID                      pgtype.UUID `db:"id" json:"id"`
+	TaskID                  pgtype.UUID `db:"task_id" json:"task_id"`
+}
+
+type ReserveImportDestinationsRow struct {
+	ID                      pgtype.UUID `db:"id" json:"id"`
+	DestinationVideoPath    *string     `db:"destination_video_path" json:"destination_video_path"`
+	DestinationSubtitlePath *string     `db:"destination_subtitle_path" json:"destination_subtitle_path"`
+}
+
+// 目标准入：把本对目标路径登记到 running 的 import 行。
+// 该登记是“正在采用”的持久声明：其它导入的补偿观察会把 running 已登记目标
+// 视为占用而保留文件；CompleteImport 校验成功提交路径与登记一致。
+// 只有本 import 仍处于 running 且路径尚未登记（或与本次完全一致）时才接受。
+func (q *Queries) ReserveImportDestinations(ctx context.Context, arg ReserveImportDestinationsParams) (ReserveImportDestinationsRow, error) {
+	row := q.db.QueryRow(ctx, reserveImportDestinations,
+		arg.DestinationVideoPath,
+		arg.DestinationSubtitlePath,
+		arg.ID,
+		arg.TaskID,
+	)
+	var i ReserveImportDestinationsRow
+	err := row.Scan(&i.ID, &i.DestinationVideoPath, &i.DestinationSubtitlePath)
 	return i, err
 }
 
