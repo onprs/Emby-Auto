@@ -237,7 +237,44 @@ Back up PostgreSQL consistently, `/etc/emby-auto`, `/var/lib/emby-auto`, and med
 
 ## Upgrades and existing deployments
 
-Back up the database and application configuration, verify the new archive, and install it in a new release directory. Pause background work with the maintenance helper above:
+Back up the database and application configuration before upgrading. The commands below use the `emby_auto_maintenance` function defined earlier; redefine it when starting a new shell.
+
+### 1. Prepare and verify the new release directory
+
+Download, verify, and place the new release without changing `current`:
+
+```bash
+release_tag="v0.2.0"
+target_arch="amd64" # use arm64 on arm64 devices
+new_release_id="${release_tag}-$(date -u +%Y%m%d%H%M%S)"
+work_dir="$(mktemp -d)"
+archive="emby-auto-direct-${target_arch}-linux-${target_arch}.tar.gz"
+curl -fL "https://github.com/onprs/Emby-Auto/releases/download/${release_tag}/${archive}" -o "${work_dir}/${archive}"
+curl -fL "https://github.com/onprs/Emby-Auto/releases/download/${release_tag}/SHA256SUMS" -o "${work_dir}/SHA256SUMS"
+(cd "${work_dir}" && awk -v name="${archive}" '$2 == name' SHA256SUMS | sha256sum --check --strict -)
+tar -xzf "${work_dir}/${archive}" -C "${work_dir}"
+(cd "${work_dir}/emby-auto-direct-${target_arch}" && sha256sum --check --strict SHA256SUMS)
+sudo install -d -o root -g root -m 0755 "/opt/emby-auto/releases/${new_release_id}"
+sudo cp -a "${work_dir}/emby-auto-direct-${target_arch}/." "/opt/emby-auto/releases/${new_release_id}/"
+sudo chown -R root:root "/opt/emby-auto/releases/${new_release_id}"
+rm -rf "${work_dir}"
+```
+
+Confirm the target directory and artifacts before switching:
+
+```bash
+release_path="/opt/emby-auto/releases/${new_release_id}"
+[[ -d "${release_path}" ]] || { echo "release directory is missing: ${release_path}" >&2; exit 1; }
+(cd "${release_path}" && sha256sum --check --strict SHA256SUMS)
+for binary in api worker migration-check host-control background-runtime release-preflight \
+  recover-stale-operations migrate-runtime-addresses migrate-staging-ownership; do
+  [[ -x "${release_path}/bin/emby-auto-${binary}" ]] || { echo "missing ${binary}" >&2; exit 1; }
+done
+```
+
+### 2. Pause background work and check the gates
+
+Pause background work with the maintenance helper:
 
 ```bash
 emby_auto_maintenance emby-auto-background-runtime --state stopped
@@ -250,29 +287,55 @@ Confirm `state=stopped`, `verified=true`, and `transfers.active=0`. Check prefli
 emby_auto_maintenance emby-auto-recover-stale-operations --worker-stopped --stale-after 5m
 ```
 
-Review the candidates, repeat the same command with `--apply`, and check runtime state again. Once the gates pass, switch releases:
+Review the candidates, repeat the same command with `--apply`, and check runtime state again.
+
+### 3. Switch, verify, and roll back
 
 ```bash
 (
   set -e
-  new_release_id="<installed-release-id>"
+  release_path="/opt/emby-auto/releases/${new_release_id}"
+  previous_release_id="$(basename "$(readlink -f /opt/emby-auto/current)")"
+  [[ -d "${release_path}" ]] || { echo "release directory is missing: ${release_path}" >&2; exit 1; }
+  (cd "${release_path}" && sha256sum --check --strict SHA256SUMS)
+  install_units() {
+    local service
+    for service in api worker systemd-control; do
+      sudo install -o root -g root -m 0644 \
+        "/opt/emby-auto/current/config/emby-auto-${service}.service" \
+        "/etc/systemd/system/emby-auto-${service}.service"
+    done
+    sudo systemctl daemon-reload
+  }
   sudo systemctl stop emby-auto-api.service emby-auto-systemd-control.service
   sudo ln -sfn "releases/${new_release_id}" /opt/emby-auto/current.next
   sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
-  for service in api worker systemd-control; do
-    sudo install -o root -g root -m 0644 \
-      "/opt/emby-auto/current/config/emby-auto-${service}.service" \
-      "/etc/systemd/system/emby-auto-${service}.service"
-  done
-  sudo systemctl daemon-reload
-  sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service
-  curl --fail http://127.0.0.1:18080/api/v1/health/ready
+  install_units
+  if ! sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service || \
+    ! curl --fail http://127.0.0.1:18080/api/v1/health/ready; then
+    echo 'new release failed to start or become ready; rolling back.' >&2
+    sudo ln -sfn "releases/${previous_release_id}" /opt/emby-auto/current.next
+    sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
+    install_units
+    sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service
+    exit 1
+  fi
   emby_auto_maintenance emby-auto-migration-check
   emby_auto_maintenance emby-auto-background-runtime --state running
 )
 ```
 
-Preserve the environment, setup files, control-service identity binding, and application account drop-ins. Adjust checks for a custom port. Confirm `verified=true` and `transfers.runtimeMarks=0` after resuming, and verify existing jobs. If recovery fails or its result is uncertain, inspect state read-only, then perform the formal `stopped` transition and verify the gates. Keep Worker stopped after a failed database migration; binary rollback depends on migration compatibility.
+If the switch fails or the new release does not become ready, the block points `current` back to the previous release and restarts the old API while Worker stays stopped. When the new release already applied database migrations, binary rollback depends on migration compatibility; restore the pre-upgrade database backup when necessary.
+
+After a successful upgrade, update the installer record so later installations do not treat the running release as the old version (replace `v0.2.0` with `release_tag` from step 1):
+
+```bash
+if [[ -f /etc/emby-auto/installer.env ]]; then
+  sudo sed -i 's/^version=.*/version=v0.2.0/' /etc/emby-auto/installer.env
+fi
+```
+
+Preserve the environment, setup files, control-service identity binding, and application account drop-ins. Adjust checks for a custom port. Confirm `verified=true` and `transfers.runtimeMarks=0` after resuming, and verify existing jobs. If recovery fails or its result is uncertain, inspect state read-only, then perform the formal `stopped` transition and verify the gates. Keep Worker stopped after a failed database migration.
 
 The installer rejects incompatible installation records. Follow manual deployment steps for older deployments, preserve the database, environment and setup files, and configure background control. PostgreSQL and Nginx created by older installers remain user managed.
 
@@ -301,3 +364,79 @@ emby_auto_maintenance emby-auto-migrate-staging-ownership --uid "$(id -u emby)" 
 ```
 
 The address tool matches `host.docker.internal` by default; use `--from-host` for other container hosts and check Agent and proxy settings separately. `--container-host-address` temporarily resolves that qBittorrent host only for the maintenance command; the database connection must already be host reachable. Supply `--backup` when applying, and constrain preview counts with `--expected-changes` or `--expected-tasks`. For rollback, preview `--restore` with the saved snapshot before adding `--apply`. Backup directories must be owned by the command user with mode `0700`; snapshots use mode `0600`. These commands require a stopped Worker, paused application torrents, and verifiable download references.
+
+## Uninstall
+
+By default, only stop and remove the application services and programs; keep the database, configuration, and media data:
+
+```bash
+sudo systemctl disable --now emby-auto-worker.service emby-auto-api.service emby-auto-systemd-control.service
+sudo rm -f /etc/systemd/system/emby-auto-api.service /etc/systemd/system/emby-auto-worker.service /etc/systemd/system/emby-auto-systemd-control.service
+sudo rm -rf /etc/systemd/system/emby-auto-api.service.d /etc/systemd/system/emby-auto-worker.service.d
+sudo systemctl daemon-reload
+sudo rm -rf /run/emby-auto-systemd
+```
+
+This keeps `/opt/emby-auto`, `/etc/emby-auto`, `/var/lib/emby-auto`, `/srv/emby-auto`, the application account, and the PostgreSQL database. To re-enable the deployment, install the same or a newer release following the manual deployment steps and keep the existing configuration and setup files.
+
+Destroy data separately only after confirming it is no longer needed (irreversible). Media directories may contain user files:
+
+```bash
+sudo rm -rf /opt/emby-auto /etc/emby-auto /var/lib/emby-auto
+# Remove only when media and download data are no longer needed
+sudo rm -rf /srv/emby-auto
+# Remove only the default installer account; never delete a media owner passed with --user
+sudo userdel emby-auto
+```
+
+Remove PostgreSQL databases and roles according to your database policy. The control service recreates its socket directory on the next start.
+
+## Restore from backup
+
+Restore in this order: database, application configuration, setup files, then services. Use the database and `bootstrap.json` from the same backup set; otherwise the encryption key and administrator record will not match.
+
+1. Stop the application services and keep Worker stopped:
+
+```bash
+sudo systemctl stop emby-auto-worker.service emby-auto-api.service
+```
+
+2. Restore PostgreSQL. This example uses a custom-format backup; use `psql -f` for plain SQL:
+
+```bash
+pg_restore --clean --if-exists --no-owner \
+  --host <database-host> --username <database-account> --dbname <database-name> \
+  /path/to/emby_auto.dump
+```
+
+3. Restore `/etc/emby-auto` and correct permissions:
+
+```bash
+sudo install -d -o root -g root -m 0755 /etc/emby-auto
+sudo cp -a /path/to/backup/etc-emby-auto/. /etc/emby-auto/
+sudo chown root:root /etc/emby-auto/installer.env /etc/emby-auto/host-control.env
+sudo chmod 0600 /etc/emby-auto/installer.env /etc/emby-auto/host-control.env
+sudo chown root:<application-group> /etc/emby-auto/runtime.env
+sudo chmod 0640 /etc/emby-auto/runtime.env
+```
+
+4. Restore both setup files as a pair. They must come from the same backup, be owned by the application account, and the `.complete` file must not be edited:
+
+```bash
+sudo install -d -o <application-account> -g <application-group> -m 0700 /var/lib/emby-auto
+sudo install -o <application-account> -g <application-group> -m 0600 \
+  /path/to/backup/bootstrap.json /var/lib/emby-auto/bootstrap.json
+sudo install -o <application-account> -g <application-group> -m 0600 \
+  /path/to/backup/bootstrap.json.complete /var/lib/emby-auto/bootstrap.json.complete
+```
+
+5. Restore the release directory and point `current` at it as described in manual deployment step 3 (skip rewriting the restored `runtime.env`), then start and verify:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now emby-auto-systemd-control.service emby-auto-api.service
+curl --fail http://127.0.0.1:18080/api/v1/setup/status
+curl --fail http://127.0.0.1:18080/api/v1/health/ready
+```
+
+`setup/status` should report `state=completed`. If it reports `unavailable`, check that `bootstrap.json` and `.complete` form a pair, their permissions, and the database connection. After confirming the administrator and external-service configuration in the UI, resume Worker through the formal background flow and verify jobs and downloads.

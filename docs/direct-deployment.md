@@ -237,7 +237,44 @@ emby_auto_maintenance emby-auto-release-preflight --require-idle
 
 ## 升级与已有部署迁移
 
-升级前备份数据库和应用配置，下载并校验新发布包，将其放入新的版本目录。使用上面的维护函数暂停后台：
+升级前备份数据库和应用配置。以下命令使用本文档前文的 `emby_auto_maintenance` 函数；在新终端执行时，先重新定义该函数。
+
+### 1. 准备并校验新版本目录
+
+下载、校验并放入新的版本目录；已有 `current` 保持不变：
+
+```bash
+release_tag="v0.2.0"
+target_arch="amd64" # arm64 设备改为 arm64
+new_release_id="${release_tag}-$(date -u +%Y%m%d%H%M%S)"
+work_dir="$(mktemp -d)"
+archive="emby-auto-direct-${target_arch}-linux-${target_arch}.tar.gz"
+curl -fL "https://github.com/onprs/Emby-Auto/releases/download/${release_tag}/${archive}" -o "${work_dir}/${archive}"
+curl -fL "https://github.com/onprs/Emby-Auto/releases/download/${release_tag}/SHA256SUMS" -o "${work_dir}/SHA256SUMS"
+(cd "${work_dir}" && awk -v name="${archive}" '$2 == name' SHA256SUMS | sha256sum --check --strict -)
+tar -xzf "${work_dir}/${archive}" -C "${work_dir}"
+(cd "${work_dir}/emby-auto-direct-${target_arch}" && sha256sum --check --strict SHA256SUMS)
+sudo install -d -o root -g root -m 0755 "/opt/emby-auto/releases/${new_release_id}"
+sudo cp -a "${work_dir}/emby-auto-direct-${target_arch}/." "/opt/emby-auto/releases/${new_release_id}/"
+sudo chown -R root:root "/opt/emby-auto/releases/${new_release_id}"
+rm -rf "${work_dir}"
+```
+
+切换前确认目标目录与制品完整：
+
+```bash
+release_path="/opt/emby-auto/releases/${new_release_id}"
+[[ -d "${release_path}" ]] || { echo "版本目录不存在：${release_path}" >&2; exit 1; }
+(cd "${release_path}" && sha256sum --check --strict SHA256SUMS)
+for binary in api worker migration-check host-control background-runtime release-preflight \
+  recover-stale-operations migrate-runtime-addresses migrate-staging-ownership; do
+  [[ -x "${release_path}/bin/emby-auto-${binary}" ]] || { echo "缺少 ${binary}" >&2; exit 1; }
+done
+```
+
+### 2. 暂停后台并核对
+
+使用维护函数暂停后台：
 
 ```bash
 emby_auto_maintenance emby-auto-background-runtime --state stopped
@@ -250,29 +287,55 @@ emby_auto_maintenance emby-auto-release-preflight --require-idle
 emby_auto_maintenance emby-auto-recover-stale-operations --worker-stopped --stale-after 5m
 ```
 
-核对候选范围后使用相同命令增加 `--apply`，重新检查运行态。满足门禁后替换应用：
+核对候选范围后使用相同命令增加 `--apply`，重新检查运行态。
+
+### 3. 切换、验证与回滚
 
 ```bash
 (
   set -e
-  new_release_id="<installed-release-id>"
+  release_path="/opt/emby-auto/releases/${new_release_id}"
+  previous_release_id="$(basename "$(readlink -f /opt/emby-auto/current)")"
+  [[ -d "${release_path}" ]] || { echo "版本目录不存在：${release_path}" >&2; exit 1; }
+  (cd "${release_path}" && sha256sum --check --strict SHA256SUMS)
+  install_units() {
+    local service
+    for service in api worker systemd-control; do
+      sudo install -o root -g root -m 0644 \
+        "/opt/emby-auto/current/config/emby-auto-${service}.service" \
+        "/etc/systemd/system/emby-auto-${service}.service"
+    done
+    sudo systemctl daemon-reload
+  }
   sudo systemctl stop emby-auto-api.service emby-auto-systemd-control.service
   sudo ln -sfn "releases/${new_release_id}" /opt/emby-auto/current.next
   sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
-  for service in api worker systemd-control; do
-    sudo install -o root -g root -m 0644 \
-      "/opt/emby-auto/current/config/emby-auto-${service}.service" \
-      "/etc/systemd/system/emby-auto-${service}.service"
-  done
-  sudo systemctl daemon-reload
-  sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service
-  curl --fail http://127.0.0.1:18080/api/v1/health/ready
+  install_units
+  if ! sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service || \
+    ! curl --fail http://127.0.0.1:18080/api/v1/health/ready; then
+    echo '新版本未通过启动或就绪检查，回滚到上一版本。' >&2
+    sudo ln -sfn "releases/${previous_release_id}" /opt/emby-auto/current.next
+    sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
+    install_units
+    sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service
+    exit 1
+  fi
   emby_auto_maintenance emby-auto-migration-check
   emby_auto_maintenance emby-auto-background-runtime --state running
 )
 ```
 
-保留运行环境、初始化文件、控制服务的账户绑定和应用账户 drop-in；自定义端口时调整检查命令。恢复后台后确认 `verified=true`、`transfers.runtimeMarks=0`，并核验原有任务。恢复失败或结果不明时，先只读查询状态，再执行正式 `stopped` 转换并核对门禁。数据库迁移失败时保持 Worker 停止；是否能够切回旧版本取决于数据库迁移兼容性。
+切换失败或新版本未通过就绪检查时，命令会自动把 `current` 指回上一版本并重启旧 API，Worker 保持停止。已经执行新版本数据库迁移时，旧版本是否可运行取决于迁移兼容性；必要时恢复升级前的数据库备份。
+
+升级成功后同步安装记录中的版本，避免后续安装器把实际运行的版本当成旧记录（将 `v0.2.0` 换成步骤 1 的 `release_tag`）：
+
+```bash
+if [[ -f /etc/emby-auto/installer.env ]]; then
+  sudo sed -i 's/^version=.*/version=v0.2.0/' /etc/emby-auto/installer.env
+fi
+```
+
+保留运行环境、初始化文件、控制服务的账户绑定和应用账户 drop-in；自定义端口时调整检查命令。恢复后台后确认 `verified=true`、`transfers.runtimeMarks=0`，并核验原有任务。恢复失败或结果不明时，先只读查询状态，再执行正式 `stopped` 转换并核对门禁。数据库迁移失败时保持 Worker 停止。
 
 安装器会拒绝版本不兼容的安装记录。旧部署按手动部署步骤准备新版本，保留原有数据库、运行配置和初始化文件，并配置后台控制服务。旧安装器创建的 PostgreSQL 和 Nginx 继续由用户管理。
 
@@ -301,3 +364,79 @@ emby_auto_maintenance emby-auto-migrate-staging-ownership --uid "$(id -u emby)" 
 ```
 
 地址工具默认匹配 `host.docker.internal`，其它容器主机名使用 `--from-host` 指定，并单独核对 Agent、代理等配置。`--container-host-address` 仅为迁移命令临时解析该 qBittorrent 地址；数据库连接须已配置为宿主可访问地址。应用变更时使用 `--backup` 保存恢复点，可用 `--expected-changes` 或 `--expected-tasks` 约束预览数量；回滚使用 `--restore` 指定快照并先预览，再加 `--apply`。快照目录须由执行账户所有、权限 `0700`，快照文件权限为 `0600`。这些命令要求 Worker 已停止、应用 torrent 已暂停且下载引用可核实。
+
+## 卸载
+
+默认只停用并移除应用服务与程序，保留数据库、配置和媒体数据：
+
+```bash
+sudo systemctl disable --now emby-auto-worker.service emby-auto-api.service emby-auto-systemd-control.service
+sudo rm -f /etc/systemd/system/emby-auto-api.service /etc/systemd/system/emby-auto-worker.service /etc/systemd/system/emby-auto-systemd-control.service
+sudo rm -rf /etc/systemd/system/emby-auto-api.service.d /etc/systemd/system/emby-auto-worker.service.d
+sudo systemctl daemon-reload
+sudo rm -rf /run/emby-auto-systemd
+```
+
+保留范围包括 `/opt/emby-auto`、`/etc/emby-auto`、`/var/lib/emby-auto`、`/srv/emby-auto`、应用账户和 PostgreSQL 数据库。需要重新启用时，按手动部署步骤安装相同或更新版本，保留原配置与初始化文件。
+
+确认不再需要数据后，再单独执行销毁操作（不可恢复）。媒体目录可能包含用户文件，删除前自行确认：
+
+```bash
+sudo rm -rf /opt/emby-auto /etc/emby-auto /var/lib/emby-auto
+# 仅在确认媒体与下载数据不再需要时执行
+sudo rm -rf /srv/emby-auto
+# 仅删除安装器默认创建的账户；--user 指定的媒体所有者不要删除
+sudo userdel emby-auto
+```
+
+PostgreSQL 数据库与角色由部署者按数据库策略删除。`/run/emby-auto-systemd` 中的 socket 会在控制服务下次启动时重建。
+
+## 从备份恢复
+
+恢复顺序固定为数据库、应用配置、初始化文件、服务。只使用同一套备份中的数据库与 `bootstrap.json`，否则加密密钥和管理员记录会不一致。
+
+1. 停止应用服务，保持 Worker 停止：
+
+```bash
+sudo systemctl stop emby-auto-worker.service emby-auto-api.service
+```
+
+2. 恢复 PostgreSQL。示例使用自定义格式备份；明文 SQL 备份改用 `psql -f`：
+
+```bash
+pg_restore --clean --if-exists --no-owner \
+  --host <数据库主机> --username <数据库账户> --dbname <数据库名> \
+  /path/to/emby_auto.dump
+```
+
+3. 恢复 `/etc/emby-auto` 并修正权限：
+
+```bash
+sudo install -d -o root -g root -m 0755 /etc/emby-auto
+sudo cp -a /path/to/backup/etc-emby-auto/. /etc/emby-auto/
+sudo chown root:root /etc/emby-auto/installer.env /etc/emby-auto/host-control.env
+sudo chmod 0600 /etc/emby-auto/installer.env /etc/emby-auto/host-control.env
+sudo chown root:<应用组> /etc/emby-auto/runtime.env
+sudo chmod 0640 /etc/emby-auto/runtime.env
+```
+
+4. 成对恢复初始化文件。两个文件必须来自同一备份，由应用账户所有，不要手工编辑 `.complete`：
+
+```bash
+sudo install -d -o <应用账户> -g <应用组> -m 0700 /var/lib/emby-auto
+sudo install -o <应用账户> -g <应用组> -m 0600 \
+  /path/to/backup/bootstrap.json /var/lib/emby-auto/bootstrap.json
+sudo install -o <应用账户> -g <应用组> -m 0600 \
+  /path/to/backup/bootstrap.json.complete /var/lib/emby-auto/bootstrap.json.complete
+```
+
+5. 按手动部署步骤 3 安装版本目录并把 `current` 指向它（跳过重写已恢复的 `runtime.env`），再启动服务并核对：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now emby-auto-systemd-control.service emby-auto-api.service
+curl --fail http://127.0.0.1:18080/api/v1/setup/status
+curl --fail http://127.0.0.1:18080/api/v1/health/ready
+```
+
+`setup/status` 应为 `state=completed`；若为 `unavailable`，检查 `bootstrap.json` 与 `.complete` 是否成对、文件权限和数据库连接。登录确认管理员与外部服务配置可用后，再按正式后台流程恢复 Worker，并核对任务与下载状态。
