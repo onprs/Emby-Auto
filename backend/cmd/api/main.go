@@ -307,7 +307,7 @@ func buildRuntimeHandler(
 		httpapi.WithDownloadCommands(downloadCommands),
 		httpapi.WithTaskCommands(taskCommands),
 	)
-	return httpapi.NewHandler(server, httpapi.WithHandlerLogger(logger)), &runtimeResources{pool: pool, cancel: cancelMetrics}, nil
+	return httpapi.NewHandler(server, httpapi.WithHandlerLogger(logger), httpapi.WithTrustedProxies(cfg.TrustedProxyCIDRs)), &runtimeResources{pool: pool, cancel: cancelMetrics}, nil
 }
 
 func systemMetricPaths(paths domain.PathSettings) []string {

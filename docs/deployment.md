@@ -46,6 +46,7 @@ chmod 600 deploy/.env
 | `MOVIE_LIBRARY_ROOT` | Emby 电影媒体库目录 |
 | `APP_BIND_ADDRESS` / `APP_PORT` | Web 在宿主机上的监听地址与端口 |
 | `SESSION_COOKIE_SECURE` | HTTPS 启用后设置为 `true` |
+| `TRUSTED_PROXY_CIDRS` | 可选的反向代理网段（逗号分隔 CIDR）；只有来自这些网段的请求才采信 `X-Forwarded-For`。默认仅包含回环网段 |
 
 可使用以下命令查询 Emby 服务账户：
 
@@ -118,7 +119,10 @@ Emby URL         http://host.docker.internal:<emby-port>/emby
 - `/api/v1/events` 使用长连接 SSE，并禁用响应缓冲。
 - `/api/v1/tasks/{taskId}/artifacts/{video|subtitle}` 透传 `Range` 与 `If-Range`。
 - `/api/` 请求体限制为 1 MiB（`client_max_body_size 1m;`），与应用内上限一致。
+- `/api/v1/auth/login` 按来源限速（例如 `limit_req_zone $binary_remote_addr zone=emby_auto_login:10m rate=10r/m;` 与 `limit_req zone=emby_auto_login burst=5 nodelay;`），并传递 `X-Forwarded-For`。
 - 其它 `/api/` 请求与 Web 路由均转发到 Web 服务。
+
+应用自身对登录失败按来源退避，并限制 argon2 校验并发；配置 `TRUSTED_PROXY_CIDRS` 后，应用从受信代理的 `X-Forwarded-For` 右侧取真实客户端地址。默认只信任回环网段；Compose 默认值额外包含 Docker 默认地址池 `172.16.0.0/12`。使用自定义 Docker 地址池或其它代理部署方式时，将其改为实际代理网段。
 
 TLS 验证完成后，在 `deploy/.env` 中设置：
 

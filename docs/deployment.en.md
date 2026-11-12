@@ -46,6 +46,7 @@ Review at least the following settings:
 | `MOVIE_LIBRARY_ROOT` | Emby movie library directory |
 | `APP_BIND_ADDRESS` / `APP_PORT` | Host address and port for the Web service |
 | `SESSION_COOKIE_SECURE` | Set to `true` after HTTPS is enabled |
+| `TRUSTED_PROXY_CIDRS` | Optional comma-separated CIDRs of reverse proxies; `X-Forwarded-For` is trusted only from these networks. Defaults to loopback |
 
 A common way to inspect the Emby service account is:
 
@@ -118,7 +119,10 @@ The reverse proxy must preserve the following behavior:
 - Long-lived, unbuffered SSE connections at `/api/v1/events`.
 - `Range` and `If-Range` headers for `/api/v1/tasks/{taskId}/artifacts/{video|subtitle}`.
 - A 1 MiB request body limit for `/api/` (`client_max_body_size 1m;`), matching the application limit.
+- Per-source rate limiting for `/api/v1/auth/login` (for example `limit_req_zone $binary_remote_addr zone=emby_auto_login:10m rate=10r/m;` with `limit_req zone=emby_auto_login burst=5 nodelay;`), plus `X-Forwarded-For` forwarding.
 - All other `/api/` requests and Web routes forwarded to the Web service.
+
+The application also backs off login failures per source and bounds concurrent argon2 verification. With `TRUSTED_PROXY_CIDRS` set, it takes the client address from the right side of the trusted proxy's `X-Forwarded-For`. The default trusts loopback only; the Compose default additionally covers the Docker default address pool `172.16.0.0/12`. Adjust it when Docker uses a custom pool or another proxy layout.
 
 After validating TLS, set the following value in `deploy/.env`:
 

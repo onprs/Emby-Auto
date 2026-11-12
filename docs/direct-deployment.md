@@ -146,9 +146,10 @@ API_ADDRESS=127.0.0.1:18080
 WEB_ROOT=/opt/emby-auto/current/web
 BOOTSTRAP_CONFIG_PATH=/var/lib/emby-auto/bootstrap.json
 SESSION_COOKIE_SECURE=false
+TRUSTED_PROXY_CIDRS=127.0.0.0/8,::1/128
 ```
 
-保留数据库连接和加密密钥为空，首次打开页面时由初始化向导设置。`WEB_ROOT` 指定应用提供的网页目录；独立托管网页时可留空，并自行将 `/api/` 转发到应用。
+保留数据库连接和加密密钥为空，首次打开页面时由初始化向导设置。`WEB_ROOT` 指定应用提供的网页目录；独立托管网页时可留空，并自行将 `/api/` 转发到应用。`TRUSTED_PROXY_CIDRS` 声明本机反向代理网段；只有来自这些网段的请求才采信 `X-Forwarded-For`，登录限流据此按真实客户端地址计数。
 
 ### 4. 配置应用服务
 
@@ -201,8 +202,9 @@ sudo systemctl enable --now emby-auto-systemd-control.service emby-auto-api.serv
 - 将网页和 `/api/` 请求转发到同一应用入口，并传递原始 Host 和协议。
 - `/api/v1/events` 使用长连接 SSE，并关闭响应缓冲。
 - 媒体预览请求透传 `Range` 和 `If-Range`，支持流式响应。
+- `/api/v1/auth/login` 按来源限速，并按 `TRUSTED_PROXY_CIDRS` 声明的代理网段传递 `X-Forwarded-For`。
 
-发布包中的 `config/nginx.conf` 是可选回环代理示例，监听 `127.0.0.1:18079`。使用 Nginx 时可按自己的站点和证书配置调整；使用其它代理时按对应产品配置。
+发布包中的 `config/nginx.conf` 是可选回环代理示例，监听 `127.0.0.1:18079`，并为 `/api/v1/auth/login` 配置了 `limit_req`。使用 Nginx 时可按自己的站点和证书配置调整；使用其它代理时按对应产品配置对应的限速与转发头。
 
 HTTPS 可用后，将 `/etc/emby-auto/runtime.env` 的 `SESSION_COOKIE_SECURE` 设为 `true`，并重启 API：
 
