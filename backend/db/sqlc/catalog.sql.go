@@ -718,12 +718,7 @@ SELECT
          AND (
              (
                  target.tmdb_episode_id IS NOT NULL
-                 AND EXISTS (
-                     SELECT 1
-                     FROM jsonb_each_text(item.provider_ids) AS provider
-                     WHERE lower(provider.key) IN ('tmdb', 'themoviedb')
-                       AND provider.value = target.tmdb_episode_id::text
-                 )
+                 AND item.tmdb_provider_id = target.tmdb_episode_id::text
              )
              OR (
                  item.season_number = target.target_season
@@ -733,12 +728,7 @@ SELECT
                      FROM emby_library_items AS series_item
                      WHERE series_item.present
                        AND series_item.item_type = 'Series'
-                       AND EXISTS (
-                           SELECT 1
-                           FROM jsonb_each_text(series_item.provider_ids) AS provider
-                           WHERE lower(provider.key) IN ('tmdb', 'themoviedb')
-                             AND provider.value = target.tmdb_series_id::text
-                       )
+                       AND series_item.tmdb_provider_id = target.tmdb_series_id::text
                        AND (
                            item.parent_emby_id = series_item.emby_id
                            OR EXISTS (
@@ -1259,7 +1249,7 @@ func (q *Queries) ListEmbyLibraries(ctx context.Context) ([]EmbyLibrary, error) 
 
 const listEmbyLibraryItems = `-- name: ListEmbyLibraryItems :many
 SELECT
-    item.id, item.emby_id, item.library_id, item.parent_emby_id, item.item_type, item.name, item.file_path, item.provider_ids, item.season_number, item.episode_number, item.present, item.last_scan_run_id, item.last_seen_at, item.upstream_payload, item.created_at, item.updated_at,
+    item.id, item.emby_id, item.library_id, item.parent_emby_id, item.item_type, item.name, item.file_path, item.provider_ids, item.season_number, item.episode_number, item.present, item.last_scan_run_id, item.last_seen_at, item.upstream_payload, item.created_at, item.updated_at, item.tmdb_provider_id,
     related_task.id AS imported_task_id
 FROM emby_library_items AS item
 LEFT JOIN LATERAL (
@@ -1278,12 +1268,7 @@ LEFT JOIN LATERAL (
     WHERE latest_import.destination_video_path = item.file_path
        OR (
            episode.tmdb_episode_id IS NOT NULL
-           AND EXISTS (
-               SELECT 1
-               FROM jsonb_each_text(item.provider_ids) AS provider
-               WHERE lower(provider.key) IN ('tmdb', 'themoviedb')
-                 AND provider.value = episode.tmdb_episode_id::text
-           )
+           AND item.tmdb_provider_id = episode.tmdb_episode_id::text
        )
     ORDER BY (latest_import.destination_video_path = item.file_path) DESC, task.updated_at DESC, task.id
     LIMIT 1
@@ -1332,6 +1317,7 @@ type ListEmbyLibraryItemsRow struct {
 	UpstreamPayload []byte             `db:"upstream_payload" json:"upstream_payload"`
 	CreatedAt       pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	TmdbProviderID  *string            `db:"tmdb_provider_id" json:"tmdb_provider_id"`
 	ImportedTaskID  pgtype.UUID        `db:"imported_task_id" json:"imported_task_id"`
 }
 
@@ -1369,6 +1355,7 @@ func (q *Queries) ListEmbyLibraryItems(ctx context.Context, arg ListEmbyLibraryI
 			&i.UpstreamPayload,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TmdbProviderID,
 			&i.ImportedTaskID,
 		); err != nil {
 			return nil, err
@@ -2493,7 +2480,7 @@ SET library_id = EXCLUDED.library_id,
     last_seen_at = EXCLUDED.last_seen_at,
     upstream_payload = EXCLUDED.upstream_payload,
     updated_at = now()
-RETURNING id, emby_id, library_id, parent_emby_id, item_type, name, file_path, provider_ids, season_number, episode_number, present, last_scan_run_id, last_seen_at, upstream_payload, created_at, updated_at
+RETURNING id, emby_id, library_id, parent_emby_id, item_type, name, file_path, provider_ids, season_number, episode_number, present, last_scan_run_id, last_seen_at, upstream_payload, created_at, updated_at, tmdb_provider_id
 `
 
 type UpsertEmbyLibraryItemParams struct {
@@ -2546,6 +2533,7 @@ func (q *Queries) UpsertEmbyLibraryItem(ctx context.Context, arg UpsertEmbyLibra
 		&i.UpstreamPayload,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TmdbProviderID,
 	)
 	return i, err
 }

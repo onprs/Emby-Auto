@@ -528,12 +528,7 @@ SELECT
          AND (
              (
                  target.tmdb_episode_id IS NOT NULL
-                 AND EXISTS (
-                     SELECT 1
-                     FROM jsonb_each_text(item.provider_ids) AS provider
-                     WHERE lower(provider.key) IN ('tmdb', 'themoviedb')
-                       AND provider.value = target.tmdb_episode_id::text
-                 )
+                 AND item.tmdb_provider_id = target.tmdb_episode_id::text
              )
              OR (
                  item.season_number = target.target_season
@@ -543,12 +538,7 @@ SELECT
                      FROM emby_library_items AS series_item
                      WHERE series_item.present
                        AND series_item.item_type = 'Series'
-                       AND EXISTS (
-                           SELECT 1
-                           FROM jsonb_each_text(series_item.provider_ids) AS provider
-                           WHERE lower(provider.key) IN ('tmdb', 'themoviedb')
-                             AND provider.value = target.tmdb_series_id::text
-                       )
+                       AND series_item.tmdb_provider_id = target.tmdb_series_id::text
                        AND (
                            item.parent_emby_id = series_item.emby_id
                            OR EXISTS (
@@ -1154,12 +1144,7 @@ LEFT JOIN LATERAL (
     WHERE latest_import.destination_video_path = item.file_path
        OR (
            episode.tmdb_episode_id IS NOT NULL
-           AND EXISTS (
-               SELECT 1
-               FROM jsonb_each_text(item.provider_ids) AS provider
-               WHERE lower(provider.key) IN ('tmdb', 'themoviedb')
-                 AND provider.value = episode.tmdb_episode_id::text
-           )
+           AND item.tmdb_provider_id = episode.tmdb_episode_id::text
        )
     ORDER BY (latest_import.destination_video_path = item.file_path) DESC, task.updated_at DESC, task.id
     LIMIT 1
