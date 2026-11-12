@@ -13,6 +13,7 @@ func TestLoadUsesEnvironmentAndDefaults(t *testing.T) {
 	t.Setenv("WEB_ROOT", webRoot)
 	t.Setenv("DATABASE_URL", "postgres://local/test")
 	t.Setenv("DATABASE_CONNECT_TIMEOUT", "3s")
+	t.Setenv("SETUP_INITIALIZE_TIMEOUT", "90s")
 	t.Setenv("SHUTDOWN_TIMEOUT", "7s")
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("SESSION_TTL", "24h")
@@ -50,6 +51,9 @@ func TestLoadUsesEnvironmentAndDefaults(t *testing.T) {
 	}
 	if got.DatabaseConnectTimeout != 3*time.Second {
 		t.Fatalf("DatabaseConnectTimeout = %v, want 3s", got.DatabaseConnectTimeout)
+	}
+	if got.SetupInitializeTimeout != 90*time.Second {
+		t.Fatalf("SetupInitializeTimeout = %v, want 90s", got.SetupInitializeTimeout)
 	}
 	if got.ShutdownTimeout != 7*time.Second {
 		t.Fatalf("ShutdownTimeout = %v, want 7s", got.ShutdownTimeout)
@@ -120,6 +124,7 @@ func TestLoadRejectsInvalidSecurityAndWorkerConfiguration(t *testing.T) {
 		{name: "relative host control executor", env: "EMBY_AUTO_HOST_CONTROL_EXECUTABLE", value: "scripts/host-control"},
 		{name: "relative web root", env: "WEB_ROOT", value: "web"},
 		{name: "invalid trusted proxy cidr", env: "TRUSTED_PROXY_CIDRS", value: "127.0.0.0/8,not-a-cidr"},
+		{name: "zero setup initialize timeout", env: "SETUP_INITIALIZE_TIMEOUT", value: "0s"},
 	}
 
 	for _, test := range tests {

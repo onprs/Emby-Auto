@@ -127,6 +127,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		Migrator:                  database.NewMigratorWithConnectTimeout(cfg.DatabaseConnectTimeout),
 		Passwords:                 service.NewPasswordHasher(),
 		ConnectTimeout:            cfg.DatabaseConnectTimeout,
+		OperationTimeout:          cfg.SetupInitializeTimeout,
 		Activate: func(activationCtx context.Context, settings domain.RuntimeBootstrap) error {
 			return runtime.Activate(activationCtx, cfg, bootstrap, switcher, settings)
 		},

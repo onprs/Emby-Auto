@@ -207,6 +207,68 @@ func TestBootstrapInitializeRollsBackAdministratorAndConfigurationTogetherIntegr
 	}
 }
 
+func TestBootstrapActivateExistingMigratesAndActivatesWithinBudgetIntegration(t *testing.T) {
+	databaseURL, pool := testutil.NewMigratedPostgres(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	passwords := NewPasswordHasher()
+	passwordHash, err := passwords.Hash("fixture-password-123")
+	if err != nil {
+		t.Fatalf("hash fixture password: %v", err)
+	}
+	adminID := uuid.New()
+	if _, err := db.New(pool).CreateAdminUser(ctx, db.CreateAdminUserParams{
+		ID:           repository.UUIDToPG(adminID),
+		Username:     "setup-admin",
+		PasswordHash: passwordHash,
+	}); err != nil {
+		t.Fatalf("create fixture administrator: %v", err)
+	}
+
+	store := platformconfig.NewBootstrapStore(filepath.Join(t.TempDir(), "bootstrap.json"))
+	if err := store.WriteConfigured(platformconfig.BootstrapData{
+		DatabaseURL:       databaseURL,
+		AdminID:           adminID,
+		AdminUsername:     "setup-admin",
+		AdminPasswordHash: passwordHash,
+	}); err != nil {
+		t.Fatalf("write bootstrap fixture: %v", err)
+	}
+
+	var activation domain.RuntimeBootstrap
+	bootstrap := NewBootstrap(BootstrapOptions{
+		Store:            store,
+		Migrator:         database.NewMigrator(),
+		Passwords:        passwords,
+		ConnectTimeout:   5 * time.Second,
+		OperationTimeout: 30 * time.Second,
+		Activate: func(_ context.Context, runtime domain.RuntimeBootstrap) error {
+			activation = runtime
+			return nil
+		},
+	})
+
+	started := time.Now()
+	activated, err := bootstrap.ActivateExisting(ctx)
+	if err != nil || !activated {
+		t.Fatalf("ActivateExisting() = %t, %v; want activated", activated, err)
+	}
+	if elapsed := time.Since(started); elapsed > 25*time.Second {
+		t.Fatalf("ActivateExisting() took %s, want within the operation budget", elapsed)
+	}
+	if activation.DatabaseURL != databaseURL || activation.AdminID != adminID || len(activation.ConfigEncryptionKey) != 32 {
+		t.Fatalf("activation = %#v, want migrated database and administrator", activation)
+	}
+	stored, _, err := store.Load()
+	if err != nil {
+		t.Fatalf("load bootstrap store: %v", err)
+	}
+	if stored.AdminID != adminID {
+		t.Fatalf("bootstrap administrator = %s, want %s", stored.AdminID, adminID)
+	}
+}
+
 func validSetupRuntimeSettings(t *testing.T) domain.RuntimeSettings {
 	t.Helper()
 	root := t.TempDir()

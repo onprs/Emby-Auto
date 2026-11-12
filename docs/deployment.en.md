@@ -46,6 +46,7 @@ Review at least the following settings:
 | `MOVIE_LIBRARY_ROOT` | Emby movie library directory |
 | `APP_BIND_ADDRESS` / `APP_PORT` | Host address and port for the Web service |
 | `SESSION_COOKIE_SECURE` | Set to `true` after HTTPS is enabled |
+| `SETUP_INITIALIZE_TIMEOUT` | Overall limit for one setup initialization, default `10m`; a tight budget truncates slow migrations, which can be retried |
 | `TRUSTED_PROXY_CIDRS` | Optional comma-separated CIDRs of reverse proxies; `X-Forwarded-For` is trusted only from these networks. Defaults to loopback |
 
 A common way to inspect the Emby service account is:
@@ -108,7 +109,7 @@ Emby URL         http://host.docker.internal:<emby-port>/emby
 
 Use the actual ports and Emby base path configured by those services.
 
-The wizard stores the database connection and generated configuration-encryption key in `bootstrap.json` on the `app-data` volume. The Worker waits for setup to complete before claiming background jobs.
+The wizard stores the database connection and generated configuration-encryption key in `bootstrap.json` on the `app-data` volume. The Worker waits for setup to complete before claiming background jobs. Setup initialization has an overall time limit (`SETUP_INITIALIZE_TIMEOUT`, default `10m`); migrations are applied one transaction at a time, so retrying after a timeout continues safely.
 
 ## 3. Configure HTTPS
 

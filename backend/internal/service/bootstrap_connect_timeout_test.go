@@ -99,10 +99,10 @@ func (blockingMigrator) Migrate(ctx context.Context, _ string) error {
 
 func TestBootstrapInitializeReleasesSetupLockWhenDependencyStalls(t *testing.T) {
 	bootstrap := NewBootstrap(BootstrapOptions{
-		Store:        platformconfig.NewBootstrapStore(filepath.Join(t.TempDir(), "bootstrap.json")),
-		Migrator:     blockingMigrator{},
-		Passwords:    NewPasswordHasher(),
-		SetupTimeout: 50 * time.Millisecond,
+		Store:            platformconfig.NewBootstrapStore(filepath.Join(t.TempDir(), "bootstrap.json")),
+		Migrator:         blockingMigrator{},
+		Passwords:        NewPasswordHasher(),
+		OperationTimeout: 50 * time.Millisecond,
 	})
 	input := domain.InitializeSetup{
 		Database: &domain.SetupDatabase{

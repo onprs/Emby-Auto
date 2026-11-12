@@ -46,6 +46,7 @@ chmod 600 deploy/.env
 | `MOVIE_LIBRARY_ROOT` | Emby 电影媒体库目录 |
 | `APP_BIND_ADDRESS` / `APP_PORT` | Web 在宿主机上的监听地址与端口 |
 | `SESSION_COOKIE_SECURE` | HTTPS 启用后设置为 `true` |
+| `SETUP_INITIALIZE_TIMEOUT` | 单次安装初始化的总时长上限，默认 `10m`；预算过小会截断慢迁移，可重试 |
 | `TRUSTED_PROXY_CIDRS` | 可选的反向代理网段（逗号分隔 CIDR）；只有来自这些网段的请求才采信 `X-Forwarded-For`。默认仅包含回环网段 |
 
 可使用以下命令查询 Emby 服务账户：
@@ -108,7 +109,7 @@ Emby URL         http://host.docker.internal:<emby-port>/emby
 
 端口和 Emby 基础路径应以实际服务配置为准。
 
-安装向导会把数据库连接和生成的配置加密密钥写入 `app-data` 卷中的 `bootstrap.json`。Worker 会在安装完成前等待，不会领取后台任务。
+安装向导会把数据库连接和生成的配置加密密钥写入 `app-data` 卷中的 `bootstrap.json`。Worker 会在安装完成前等待，不会领取后台任务。安装初始化有总时长上限（`SETUP_INITIALIZE_TIMEOUT`，默认 `10m`）；迁移逐条事务，超时后直接重试即可继续。
 
 ## 3. 配置 HTTPS
 
