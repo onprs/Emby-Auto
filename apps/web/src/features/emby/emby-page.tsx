@@ -200,9 +200,12 @@ export function EmbyPage() {
                 </ul>
                 <PaginationControls
                   canGoBack={scansPagination.canGoBack}
+                  canGoFirst={scansPagination.canGoFirst}
+                  historyTruncated={scansPagination.historyTruncated}
                   hasNext={Boolean(scans.data.nextCursor)}
                   onPrevious={scansPagination.goPrevious}
                   onNext={() => scansPagination.goNext(scans.data.nextCursor)}
+                  onFirst={scansPagination.reset}
                   isFetching={scans.isFetching}
                 />
               </>

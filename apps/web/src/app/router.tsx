@@ -137,7 +137,7 @@ function enumSearch<const T extends readonly string[]>(value: unknown, allowed: 
   return typeof value === 'string' && allowed.includes(value as T[number]) ? (value as T[number]) : undefined;
 }
 
-type CursorRouteSearch = { cursor?: string; cursorStack?: string };
+type CursorRouteSearch = { cursor?: string; cursorStack?: string; cursorTruncated?: 'truncated' };
 type SearchListSearch = CursorRouteSearch & { status?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'; query?: string };
 type AcquisitionListSearch = CursorRouteSearch & {
   sourceKind?: 'search' | 'rss' | 'manual';
@@ -177,7 +177,8 @@ function cursorSearch(search: Record<string, unknown>): CursorRouteSearch {
     search.cursorStack.split(',').every((value) => value === '_' || uuidPattern.test(value))
     ? search.cursorStack
     : undefined;
-  return { cursor, cursorStack };
+  const cursorTruncated = search.cursorTruncated === 'truncated' ? 'truncated' : undefined;
+  return { cursor, cursorStack, cursorTruncated };
 }
 
 const rootRoute = createRootRoute({ component: ApplicationGate });
@@ -250,7 +251,7 @@ const downloadsRoute = createRoute({
     ...cursorSearch(search),
     status: enumSearch(search.status, ['enqueue_pending', 'file_resolution_pending', 'downloading', 'completed', 'selecting_files', 'materialized', 'failed', 'cancelled'] as const),
     phase: enumSearch(search.phase, ['active', 'waiting', 'downloading', 'paused', 'completed', 'failed'] as const),
-    query: stringSearch(search.query, 256),
+    query: stringSearch(search.query, 512),
     sortBy: enumSearch(search.sortBy, ['attempt', 'status', 'client_state', 'progress', 'updated_at'] as const),
     sortOrder: enumSearch(search.sortOrder, ['asc', 'desc'] as const),
   }),

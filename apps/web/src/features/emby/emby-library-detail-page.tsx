@@ -136,9 +136,12 @@ export function EmbyLibraryDetailPage({ libraryId }: { libraryId: string }) {
           </DataTable>
           <PaginationControls
             canGoBack={pagination.canGoBack}
+            canGoFirst={pagination.canGoFirst}
+            historyTruncated={pagination.historyTruncated}
             hasNext={Boolean(items.data.nextCursor)}
             onPrevious={pagination.goPrevious}
             onNext={() => pagination.goNext(items.data.nextCursor)}
+            onFirst={pagination.reset}
             isFetching={items.isFetching}
           />
         </>

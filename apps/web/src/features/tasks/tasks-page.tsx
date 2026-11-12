@@ -319,9 +319,12 @@ export function TasksPage() {
           </div>
           <PaginationControls
             canGoBack={pagination.canGoBack}
+            canGoFirst={pagination.canGoFirst}
+            historyTruncated={pagination.historyTruncated}
             hasNext={Boolean(tasks.data?.nextCursor)}
             onPrevious={pagination.goPrevious}
             onNext={() => pagination.goNext(tasks.data?.nextCursor)}
+            onFirst={pagination.reset}
             isFetching={tasks.isFetching}
           />
         </>

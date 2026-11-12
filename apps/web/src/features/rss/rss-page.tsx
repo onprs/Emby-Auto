@@ -418,9 +418,12 @@ export function RssPage() {
           </div>
           <PaginationControls
             canGoBack={pagination.canGoBack}
+            canGoFirst={pagination.canGoFirst}
+            historyTruncated={pagination.historyTruncated}
             hasNext={Boolean(subscriptions.data.nextCursor)}
             onPrevious={pagination.goPrevious}
             onNext={() => pagination.goNext(subscriptions.data.nextCursor)}
+            onFirst={pagination.reset}
             isFetching={subscriptions.isFetching}
           />
         </>

@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, Outlet, RouterProvider } from '@tanstack/react-router';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -196,6 +196,69 @@ describe('application router lazy boundaries', () => {
     expect(screen.getByRole('button', { name: '重试' })).toBeVisible();
     expect(consoleError).toHaveBeenCalled();
     consoleError.mockRestore();
+  });
+
+  it('preserves a 512-character download search keyword from the URL', async () => {
+    useSetupResponse();
+    useSessionResponse(true);
+    const longQuery = '下载'.repeat(150);
+    let requested: string | null = null;
+    server.use(
+      http.get('*/api/v1/downloads', ({ request }) => {
+        requested = new URL(request.url).searchParams.get('query');
+        return HttpResponse.json({ items: [] });
+      }),
+    );
+
+    renderApp(`/downloads?query=${encodeURIComponent(longQuery)}`);
+
+    // 输入框与契约都允许 512 字符；路由不能把 256 字以上的关键词静默丢弃。
+    expect(await screen.findByLabelText('搜索下载')).toHaveValue(longQuery);
+    await waitFor(() => expect(requested).toBe(longQuery));
+  });
+
+  it('marks truncated cursor history and offers an explicit first-page action instead of a silent jump', async () => {
+    useSetupResponse();
+    useSessionResponse(true);
+    const now = '2026-11-12T10:00:00Z';
+    const download = {
+      id: '31000000-0000-4000-8000-000000000001',
+      acquisitionId: '31000000-0000-4000-8000-000000000002',
+      attempt: 1,
+      clientName: 'qBittorrent',
+      clientState: 'downloading',
+      status: 'downloading',
+      progress: 0.42,
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+      files: [],
+      actions: {
+        canRetry: false,
+        canCancel: false,
+        canDelete: false,
+        canEditFileSelection: false,
+        canResolveFiles: false,
+        canRequestAgent: false,
+      },
+    };
+    server.use(http.get('*/api/v1/downloads', () => HttpResponse.json({ items: [download] })));
+    const appRouter = renderApp('/downloads?cursor=00000000-0000-4000-8000-000000000061&cursorStack=_&cursorTruncated=truncated');
+
+    // 路由必须保留截断标记；最老保留游标处禁用上一页，并给出独立的第一页入口。
+    expect(await screen.findByText('更早的分页记录已省略')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '上一页' })).toBeDisabled();
+    const firstPage = screen.getByRole('button', { name: '回到第一页' });
+    expect(firstPage).toBeEnabled();
+
+    fireEvent.click(firstPage);
+    await waitFor(() => {
+      const search = new URL(appRouter.state.location.href, 'http://localhost').searchParams;
+      expect(search.has('cursor')).toBe(false);
+      expect(search.has('cursorStack')).toBe(false);
+      expect(search.has('cursorTruncated')).toBe(false);
+    });
+    expect(screen.queryByText('更早的分页记录已省略')).not.toBeInTheDocument();
   });
 
   it('stops the shared event stream and returns to login after session loss', async () => {

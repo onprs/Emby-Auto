@@ -2162,6 +2162,15 @@ paths:
     get:
       operationId: streamEvents
       summary: Stream domain events after an optional public event cursor
+      description: >-
+        Without a Last-Event-ID the stream starts at the currently visible head instead of
+        replaying retained history. Its first frame is a `stream.started` event whose `id` is
+        that head cursor when events exist; clients re-read their data after receiving the
+        boundary and then resume from the cursor. The head is a read watermark, not a
+        transaction-settled watermark: an event whose sequence was allocated before the head but
+        committed after the boundary is not replayed from that cursor. With a cursor the stream
+        replays events after it, and a cursor removed by retention returns 409
+        `event_cursor_not_found`.
       tags: [Events]
       parameters:
         - name: Last-Event-ID
@@ -2172,7 +2181,9 @@ paths:
             format: uuid
       responses:
         "200":
-          description: A server-sent event stream. Event IDs are public event UUIDs.
+          description: >-
+            A server-sent event stream. Event IDs are public event UUIDs. A request without a
+            cursor first receives the `stream.started` boundary event.
           headers:
             Cache-Control:
               schema:
