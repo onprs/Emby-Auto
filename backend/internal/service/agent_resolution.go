@@ -468,6 +468,12 @@ func (service *AgentResolutionService) CreateAutomatic(ctx context.Context, inpu
 				OperationID: repository.UUIDToPG(requeue.Operation.ID), ID: repository.UUIDToPG(resolutionID),
 			})
 			if errors.Is(updateErr, pgx.ErrNoRows) {
+				if row.Version >= 10 {
+					// 恢复上限已用尽：明确终止而不是让调用方把 state_conflict 当作良性并发。
+					return NewError("agent_resolution_requeue_exhausted", "the Agent resolution reached its automatic recovery limit", ErrStateConflict, map[string]any{
+						"resolutionId": resolutionID, "version": int(row.Version),
+					})
+				}
 				return NewError("state_conflict", "the Agent resolution changed before it was requeued", ErrStateConflict, nil)
 			}
 			if updateErr != nil {
@@ -834,7 +840,7 @@ func (service *AgentResolutionService) failAutomaticProposal(
 		if err != nil {
 			return err
 		}
-		return reconcileSubtitleVideoMatchInScope(ctx, scope.Queries, resolution.Capability, resolution.ResourceID, updated.Status, code, message)
+		return reconcileSubtitleVideoMatchInScope(ctx, scope.Queries, resolution, updated.Status, code, message)
 	})
 	return err
 }
@@ -1865,7 +1871,7 @@ func (service *AgentResolutionService) finishInactive(ctx context.Context, resol
 		if err != nil {
 			return err
 		}
-		return reconcileSubtitleVideoMatchInScope(ctx, scope.Queries, resolution.Capability, resolution.ResourceID, failed.Status, code, message)
+		return reconcileSubtitleVideoMatchInScope(ctx, scope.Queries, resolution, failed.Status, code, message)
 	})
 }
 
@@ -1874,16 +1880,20 @@ func (service *AgentResolutionService) finishInactive(ctx context.Context, resol
 func reconcileSubtitleVideoMatchInScope(
 	ctx context.Context,
 	queries *db.Queries,
-	capability domain.AgentCapability,
-	resourceID uuid.UUID,
+	resolution domain.AgentResolution,
 	status string,
 	code string,
 	message string,
 ) error {
-	if capability != domain.AgentCapabilitySubtitleVideoMatch {
+	if resolution.Capability != domain.AgentCapabilitySubtitleVideoMatch {
 		return nil
 	}
-	return repository.ReconcileSubtitleVideoMatchTask(ctx, queries, repository.UUIDToPG(resourceID), status, code, message, pgtype.UUID{})
+	var expectedTaskVersion *int32
+	if resolution.ResourceVersion != nil {
+		value := int32(*resolution.ResourceVersion)
+		expectedTaskVersion = &value
+	}
+	return repository.ReconcileSubtitleVideoMatchTask(ctx, queries, repository.UUIDToPG(resolution.ResourceID), status, code, message, expectedTaskVersion, pgtype.UUID{})
 }
 
 func agentCapabilityAutomatic(settings domain.AgentSettings, capability domain.AgentCapability) bool {

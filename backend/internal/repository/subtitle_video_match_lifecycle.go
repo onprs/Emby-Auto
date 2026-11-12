@@ -17,7 +17,8 @@ import (
 // 任务会永久停留在 processing。这里过期仍处于 pending 的匹配范围，并把
 // 任务字幕分支标记为失败或取消。任务重试时
 // MediaWorkflow.CreateSubtitleVideoMatchScope 会复用已过期范围并换用新的候选集，
-// 因此不会重新命中同一个等待中的范围。
+// 因此不会重新命中同一个等待中的范围。expectedTaskVersion 非空时，只有任务
+// 版本仍与失败决议一致才收敛；旧 generation 的失败不得回收新范围或新任务。
 func ReconcileSubtitleVideoMatchTask(
 	ctx context.Context,
 	queries *db.Queries,
@@ -25,10 +26,24 @@ func ReconcileSubtitleVideoMatchTask(
 	status string,
 	code string,
 	message string,
+	expectedTaskVersion *int32,
 	operationID pgtype.UUID,
 ) error {
 	if !scopeID.Valid {
 		return nil
+	}
+	if expectedTaskVersion != nil {
+		currentVersion, err := queries.GetSubtitleVideoMatchTaskVersion(ctx, scopeID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("load subtitle video match task version: %w", err)
+		}
+		if currentVersion != *expectedTaskVersion {
+			// 任务版本已经推进，失败的是旧 generation；不能回收新范围或失败新任务。
+			return nil
+		}
 	}
 	taskID, err := queries.ExpireSubtitleVideoMatchScope(ctx, scopeID)
 	if errors.Is(err, pgx.ErrNoRows) {

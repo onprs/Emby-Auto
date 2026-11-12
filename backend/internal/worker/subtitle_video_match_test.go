@@ -142,6 +142,8 @@ func TestSubtitlePrepareResumesRetryableAgentFailure(t *testing.T) {
 	agent := &subtitleMatchAgentStub{enabled: true, created: service.AgentResolutionCommandResult{Resolution: domain.AgentResolution{
 		Status: domain.AgentResolutionFailed, Trigger: "automatic", ErrorCode: "agent_request_timeout", Proposal: []byte(`{}`),
 	}}}
+	store.schedulingState = domain.SubtitleVideoMatchSchedulingState{ScopeID: scopeID, ScopeStatus: "pending", TaskVersion: 1}
+	store.selection = domain.SubtitleMatchSelection{}
 	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}); err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}

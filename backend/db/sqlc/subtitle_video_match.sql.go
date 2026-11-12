@@ -169,6 +169,67 @@ func (q *Queries) GetSubtitleVideoMatchContext(ctx context.Context, scopeID pgty
 	return i, err
 }
 
+const getSubtitleVideoMatchSchedulingState = `-- name: GetSubtitleVideoMatchSchedulingState :one
+SELECT
+    scope.id AS scope_id,
+    scope.status AS scope_status,
+    task.version AS task_version,
+    resolution.id AS resolution_id,
+    COALESCE(resolution.status, '')::text AS resolution_status,
+    COALESCE(resolution.error_code, '')::text AS resolution_error_code,
+    COALESCE(resolution.version, 0)::integer AS resolution_version,
+    resolution.resource_version AS resolution_task_version,
+    operation.id AS operation_id,
+    COALESCE(operation.status, '')::text AS operation_status,
+    COALESCE(operation.cancel_requested_at IS NOT NULL, false)::boolean AS cancellation_requested
+FROM subtitle_video_match_scopes AS scope
+JOIN episode_tasks AS task ON task.id = scope.task_id
+LEFT JOIN LATERAL (
+    SELECT candidate.id, candidate.operation_id, candidate.version, candidate.capability, candidate.resource_type, candidate.resource_id, candidate.resource_version, candidate.trigger, candidate.status, candidate.input_fingerprint, candidate.configuration_version, candidate.protocol, candidate.provider_origin, candidate.model, candidate.prompt_version, candidate.toolset_version, candidate.proposal, candidate.validation, candidate.error_code, candidate.error_message, candidate.input_tokens, candidate.output_tokens, candidate.tool_call_count, candidate.latency_milliseconds, candidate.created_by, candidate.reviewed_by, candidate.review_decision, candidate.created_at, candidate.started_at, candidate.completed_at, candidate.reviewed_at, candidate.applied_at, candidate.updated_at
+    FROM agent_resolutions AS candidate
+    WHERE candidate.resource_type = 'episode_task'
+      AND candidate.resource_id = scope.id
+      AND candidate.capability = 'subtitle_video_match'
+    ORDER BY candidate.created_at DESC, candidate.id DESC
+    LIMIT 1
+) AS resolution ON true
+LEFT JOIN operations AS operation ON operation.id = resolution.operation_id
+WHERE scope.task_id = $1
+`
+
+type GetSubtitleVideoMatchSchedulingStateRow struct {
+	ScopeID               pgtype.UUID `db:"scope_id" json:"scope_id"`
+	ScopeStatus           string      `db:"scope_status" json:"scope_status"`
+	TaskVersion           int32       `db:"task_version" json:"task_version"`
+	ResolutionID          pgtype.UUID `db:"resolution_id" json:"resolution_id"`
+	ResolutionStatus      string      `db:"resolution_status" json:"resolution_status"`
+	ResolutionErrorCode   string      `db:"resolution_error_code" json:"resolution_error_code"`
+	ResolutionVersion     int32       `db:"resolution_version" json:"resolution_version"`
+	ResolutionTaskVersion *int32      `db:"resolution_task_version" json:"resolution_task_version"`
+	OperationID           pgtype.UUID `db:"operation_id" json:"operation_id"`
+	OperationStatus       string      `db:"operation_status" json:"operation_status"`
+	CancellationRequested bool        `db:"cancellation_requested" json:"cancellation_requested"`
+}
+
+func (q *Queries) GetSubtitleVideoMatchSchedulingState(ctx context.Context, taskID pgtype.UUID) (GetSubtitleVideoMatchSchedulingStateRow, error) {
+	row := q.db.QueryRow(ctx, getSubtitleVideoMatchSchedulingState, taskID)
+	var i GetSubtitleVideoMatchSchedulingStateRow
+	err := row.Scan(
+		&i.ScopeID,
+		&i.ScopeStatus,
+		&i.TaskVersion,
+		&i.ResolutionID,
+		&i.ResolutionStatus,
+		&i.ResolutionErrorCode,
+		&i.ResolutionVersion,
+		&i.ResolutionTaskVersion,
+		&i.OperationID,
+		&i.OperationStatus,
+		&i.CancellationRequested,
+	)
+	return i, err
+}
+
 const getSubtitleVideoMatchSelection = `-- name: GetSubtitleVideoMatchSelection :one
 SELECT
     scope.task_id,
@@ -200,6 +261,20 @@ func (q *Queries) GetSubtitleVideoMatchSelection(ctx context.Context, taskID pgt
 		&i.SelectedCandidatePath,
 	)
 	return i, err
+}
+
+const getSubtitleVideoMatchTaskVersion = `-- name: GetSubtitleVideoMatchTaskVersion :one
+SELECT task.version
+FROM subtitle_video_match_scopes AS scope
+JOIN episode_tasks AS task ON task.id = scope.task_id
+WHERE scope.id = $1
+`
+
+func (q *Queries) GetSubtitleVideoMatchTaskVersion(ctx context.Context, scopeID pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, getSubtitleVideoMatchTaskVersion, scopeID)
+	var version int32
+	err := row.Scan(&version)
+	return version, err
 }
 
 const insertSubtitleVideoMatchCandidate = `-- name: InsertSubtitleVideoMatchCandidate :exec
@@ -286,4 +361,34 @@ func (q *Queries) ListSubtitleVideoMatchCandidates(ctx context.Context, scopeID 
 		return nil, err
 	}
 	return items, nil
+}
+
+const supersedeSubtitleVideoMatchResolutions = `-- name: SupersedeSubtitleVideoMatchResolutions :execrows
+UPDATE agent_resolutions
+SET status = 'cancelled',
+    error_code = 'agent_resolution_superseded',
+    error_message = 'a newer subtitle video match scope generation replaced this resolution',
+    completed_at = now(),
+    version = version + 1,
+    updated_at = now()
+WHERE resource_type = 'episode_task'
+  AND resource_id = $1
+  AND capability = 'subtitle_video_match'
+  AND status IN ('queued', 'running', 'proposed', 'review_required')
+  AND ($2::integer IS NULL OR resource_version IS NULL OR resource_version <> $2)
+`
+
+type SupersedeSubtitleVideoMatchResolutionsParams struct {
+	ScopeID     pgtype.UUID `db:"scope_id" json:"scope_id"`
+	TaskVersion *int32      `db:"task_version" json:"task_version"`
+}
+
+// 作废已被新候选集或新任务版本取代的活动决议，避免旧操作在后续失败时
+// 回收新 generation 的范围与任务。
+func (q *Queries) SupersedeSubtitleVideoMatchResolutions(ctx context.Context, arg SupersedeSubtitleVideoMatchResolutionsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, supersedeSubtitleVideoMatchResolutions, arg.ScopeID, arg.TaskVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

@@ -25,6 +25,7 @@ type SubtitleStore interface {
 	CreateSubtitleVideoMatchScope(context.Context, uuid.UUID, []domain.SubtitleMatchCandidate) (uuid.UUID, error)
 	GetSubtitleVideoMatchSelection(context.Context, uuid.UUID) (domain.SubtitleMatchSelection, error)
 	ExpireSubtitleVideoMatchScope(context.Context, uuid.UUID) error
+	GetSubtitleVideoMatchSchedulingState(context.Context, uuid.UUID) (domain.SubtitleVideoMatchSchedulingState, error)
 }
 
 type SubtitleMatchAgentResolutionCreator interface {
@@ -46,6 +47,136 @@ func NewSubtitlePrepareHandler(configuration MediaConfiguration, tools MediaTool
 		handler.agentResolutions = agentResolutions[0]
 	}
 	return handler
+}
+
+func (handler *SubtitlePrepareHandler) scheduleSubtitleAgentMatch(
+	ctx context.Context,
+	command domain.TaskMediaCommand,
+	plans []domain.SubtitlePlan,
+	probe domain.MediaProbe,
+	external []domain.SubtitleCandidate,
+) error {
+	applied, selectionErr := handler.store.GetSubtitleVideoMatchSelection(ctx, command.TaskID)
+	if selectionErr != nil {
+		return mediaStoreFailure("subtitle", selectionErr)
+	}
+	if applied.CandidateID != "" {
+		return nil
+	}
+	scopeID, scopeErr := handler.store.CreateSubtitleVideoMatchScope(ctx, command.TaskID, subtitleMatchCandidates(plans, probe.SubtitleStreams(), external))
+	if scopeErr != nil {
+		var mediaErr *domain.MediaWorkflowError
+		if !errors.As(scopeErr, &mediaErr) || mediaErr.Code != "subtitle_scope_conflict" {
+			return mediaStoreFailure("subtitle", scopeErr)
+		}
+		// scope 冲突只说明范围已存在；必须确认确实有活动决议承接，否则是
+		// 之前调度失败留下的孤儿范围，需要作废后重试。
+		state, stateErr := handler.store.GetSubtitleVideoMatchSchedulingState(ctx, command.TaskID)
+		if stateErr != nil {
+			return mediaStoreFailure("subtitle", stateErr)
+		}
+		if state.ActiveResolution() && state.CoversTaskVersion() && !state.CancellationRequested {
+			return nil
+		}
+		if state.CancellationRequested && state.ActiveResolution() && state.CoversTaskVersion() {
+			// 取消已请求但尚未收敛：等待取消路径回写任务终态，不重复调度。
+			return nil
+		}
+		if state.ScopeStatus == "applied" {
+			// 已应用的范围等待 apply 路径处理，不能作废。
+			return nil
+		}
+		if expireErr := handler.store.ExpireSubtitleVideoMatchScope(ctx, state.ScopeID); expireErr != nil {
+			return mediaStoreFailure("subtitle", expireErr)
+		}
+		// 范围已作废：本轮先用当前候选集重新创建并调度，避免只返回可重试失败
+		// 而让任务再等一轮 River 重试才能推进。
+		scopeID, scopeErr = handler.store.CreateSubtitleVideoMatchScope(ctx, command.TaskID, subtitleMatchCandidates(plans, probe.SubtitleStreams(), external))
+		if scopeErr != nil {
+			var retryMediaErr *domain.MediaWorkflowError
+			if errors.As(scopeErr, &retryMediaErr) && retryMediaErr.Code == "subtitle_scope_conflict" {
+				// 另一个 worker 同时复活了范围：交给它的调度结果，本轮先退出。
+				return retryableFailure("agent_resolution_schedule_conflict", "the Agent subtitle matching scope is being scheduled by another worker", scopeErr)
+			}
+			return mediaStoreFailure("subtitle", scopeErr)
+		}
+	}
+	if scopeID == uuid.Nil {
+		return permanentFailure("subtitle_scope_invalid", "the subtitle video match scope could not be created", nil)
+	}
+	result, agentErr := handler.agentResolutions.CreateAutomatic(ctx, service.AutomaticAgentResolutionRequest{
+		Capability: domain.AgentCapabilitySubtitleVideoMatch, ResourceID: scopeID,
+	})
+	if agentErr != nil {
+		var serviceErr *service.Error
+		if errors.As(agentErr, &serviceErr) {
+			switch serviceErr.Code {
+			case "agent_disabled", "agent_capability_disabled", "agent_not_configured":
+				// Agent 能力在调度时被关闭或未完成配置：作废范围并把任务字幕分支
+				// 明确终止，避免等待一个永远不会被调度的决议。
+				if expireErr := handler.store.ExpireSubtitleVideoMatchScope(ctx, scopeID); expireErr != nil {
+					return mediaStoreFailure("subtitle", expireErr)
+				}
+				return permanentFailure(serviceErr.Code, serviceErr.Message, agentErr)
+			case "agent_resolution_requeue_exhausted":
+				// 自动恢复上限已用尽：任务必须明确失败，用户重试会换新候选集重新开始。
+				if expireErr := handler.store.ExpireSubtitleVideoMatchScope(ctx, scopeID); expireErr != nil {
+					return mediaStoreFailure("subtitle", expireErr)
+				}
+				return permanentFailure("agent_subtitle_match_exhausted", "the Agent subtitle matching resolution reached its automatic recovery limit", agentErr)
+			case "agent_resolution_not_required":
+				// 确定性规则已解决该任务，不需要 Agent；范围不再需要等待。
+				if expireErr := handler.store.ExpireSubtitleVideoMatchScope(ctx, scopeID); expireErr != nil {
+					return mediaStoreFailure("subtitle", expireErr)
+				}
+				return nil
+			}
+		}
+		if !errors.Is(agentErr, service.ErrStateConflict) {
+			// 范围已提交但调度失败：立即作废范围，重试可换新候选集重新调度，
+			// 不留下无人接管的 pending scope。
+			if expireErr := handler.store.ExpireSubtitleVideoMatchScope(ctx, scopeID); expireErr != nil {
+				return mediaStoreFailure("subtitle", expireErr)
+			}
+			return retryableFailure("agent_resolution_schedule_failed", "the Agent subtitle matching resolution could not be scheduled", agentErr)
+		}
+		// 其余 state conflict（并发修改/已被取代）：范围可能已被其它路径承接或
+		// 失效，重新查询调度状态确认。
+		state, stateErr := handler.store.GetSubtitleVideoMatchSchedulingState(ctx, command.TaskID)
+		if stateErr != nil {
+			return mediaStoreFailure("subtitle", stateErr)
+		}
+		if state.ActiveResolution() && state.CoversTaskVersion() && !state.CancellationRequested {
+			return nil
+		}
+		if expireErr := handler.store.ExpireSubtitleVideoMatchScope(ctx, scopeID); expireErr != nil {
+			return mediaStoreFailure("subtitle", expireErr)
+		}
+		return retryableFailure("agent_resolution_schedule_conflict", "the Agent subtitle matching resolution changed before it was scheduled", agentErr)
+	}
+	if service.AutomaticAgentResolutionRetryable(result.Resolution) {
+		if _, retryErr := handler.agentResolutions.RetryAutomatic(ctx, result.Resolution.ID, result.Resolution.Version); retryErr != nil {
+			var serviceErr *service.Error
+			if errors.As(retryErr, &serviceErr) && serviceErr.Code == "agent_resolution_requeue_exhausted" {
+				if expireErr := handler.store.ExpireSubtitleVideoMatchScope(ctx, scopeID); expireErr != nil {
+					return mediaStoreFailure("subtitle", expireErr)
+				}
+				return permanentFailure("agent_subtitle_match_exhausted", "the Agent subtitle matching resolution reached its automatic recovery limit", retryErr)
+			}
+			if !errors.Is(retryErr, service.ErrStateConflict) {
+				return retryableFailure("agent_resolution_schedule_failed", "the Agent subtitle matching resolution could not be resumed", retryErr)
+			}
+		}
+	} else if result.Resolution.Status == domain.AgentResolutionFailed {
+		// 不可自动重试的失败会终止任务字幕分支，避免任务回到 processing 后再次静默等待。
+		if expireErr := handler.store.ExpireSubtitleVideoMatchScope(ctx, scopeID); expireErr != nil {
+			return mediaStoreFailure("subtitle", expireErr)
+		}
+		return permanentFailure("agent_subtitle_match_failed", "the Agent subtitle matching resolution failed", nil)
+	}
+	// Wait for the Agent to select a candidate; the apply step schedules a
+	// fresh subtitle.prepare that carries the applied selection.
+	return nil
 }
 
 func (handler *SubtitlePrepareHandler) Handle(ctx context.Context, operation domain.Operation) error {
@@ -136,41 +267,8 @@ func (handler *SubtitlePrepareHandler) Handle(ctx context.Context, operation dom
 						return permanentFailure("subtitle_agent_selection_invalid", "the Agent-selected subtitle candidate is no longer available", nil)
 					}
 				} else {
-					// No selection yet: persist scope + candidates and ask the Agent.
-					scopeID, scopeErr := handler.store.CreateSubtitleVideoMatchScope(ctx, command.TaskID, subtitleMatchCandidates(plans, probe.SubtitleStreams(), external))
-					if scopeErr != nil {
-						var mediaErr *domain.MediaWorkflowError
-						if errors.As(scopeErr, &mediaErr) && mediaErr.Code == "subtitle_scope_conflict" {
-							// Scope already exists; the Agent resolution is already scheduled.
-							return nil
-						}
-						return mediaStoreFailure("subtitle", scopeErr)
-					}
-					if scopeID == uuid.Nil {
-						return permanentFailure("subtitle_scope_invalid", "the subtitle video match scope could not be created", nil)
-					}
-					result, agentErr := handler.agentResolutions.CreateAutomatic(ctx, service.AutomaticAgentResolutionRequest{
-						Capability: domain.AgentCapabilitySubtitleVideoMatch, ResourceID: scopeID,
-					})
-					if agentErr != nil && !errors.Is(agentErr, service.ErrStateConflict) {
-						return retryableFailure("agent_resolution_schedule_failed", "the Agent subtitle matching resolution could not be scheduled", agentErr)
-					}
-					if agentErr == nil {
-						if service.AutomaticAgentResolutionRetryable(result.Resolution) {
-							if _, retryErr := handler.agentResolutions.RetryAutomatic(ctx, result.Resolution.ID, result.Resolution.Version); retryErr != nil && !errors.Is(retryErr, service.ErrStateConflict) {
-								return retryableFailure("agent_resolution_schedule_failed", "the Agent subtitle matching resolution could not be resumed", retryErr)
-							}
-						} else if result.Resolution.Status == domain.AgentResolutionFailed {
-							// 不可自动重试的失败会终止任务字幕分支，避免任务回到 processing 后再次静默等待。
-							if expireErr := handler.store.ExpireSubtitleVideoMatchScope(ctx, scopeID); expireErr != nil {
-								return mediaStoreFailure("subtitle", expireErr)
-							}
-							return permanentFailure("agent_subtitle_match_failed", "the Agent subtitle matching resolution failed", nil)
-						}
-					}
-					// Wait for the Agent to select a candidate; the apply step schedules a
-					// fresh subtitle.prepare that carries the applied selection.
-					return nil
+					// 等待 Agent 选择候选；由本函数决定成功/失败，不再落入确定性转换。
+					return handler.scheduleSubtitleAgentMatch(ctx, command, plans, probe, external)
 				}
 			}
 		}
