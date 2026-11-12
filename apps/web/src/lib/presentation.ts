@@ -60,6 +60,7 @@ const errorMessages: Record<string, string> = {
   simplified_chinese_subtitle_not_found: '没有找到可尝试的中文文本字幕。',
   subtitle_candidates_exhausted: '已尝试所有可用字幕，但都无法生成有效的简体 ASS 字幕。',
   ffmpeg_subtitle_candidates_failed: '字幕转换暂时失败，系统会自动重试其他候选。',
+  subtitle_charset_unsupported: '外挂字幕编码无法识别，请转换为 UTF-8 后重试。',
   subtitle_output_invalid: '字幕转换结果校验失败，请检查字幕来源后重试。',
   subtitle_content_inspection_failed: '暂时无法检查内封字幕内容，系统会自动重试。',
   subtitle_content_inspection_limit: '内封字幕轨过多，无法安全判断简体字幕。',

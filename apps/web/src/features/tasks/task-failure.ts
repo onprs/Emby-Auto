@@ -254,6 +254,12 @@ const codeReasons: Record<string, Reason> = {
     recommendation: '更换 SRT、ASS 等受支持的文本字幕。',
     neverRetry: true,
   },
+  subtitle_charset_unsupported: {
+    reason: '字幕文件编码无法识别',
+    detail: '外挂字幕不是 UTF-8、GB18030 或 BIG5，无法安全转换为简体 ASS。',
+    recommendation: '将字幕转换为 UTF-8 后重新处理，或更换字幕来源。',
+    neverRetry: true,
+  },
   ffmpeg_subtitle_failed: {
     reason: 'FFmpeg 未能准备字幕',
     detail: '内置字幕提取或外置字幕转换没有成功。',

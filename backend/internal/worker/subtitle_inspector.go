@@ -32,23 +32,41 @@ func (inspector *SubtitleTextInspector) InspectSubtitleText(
 	if err != nil {
 		return domain.SubtitleInspection{}, err
 	}
+	dir, err := os.MkdirTemp("", "subtitle-inspect-*")
+	if err != nil {
+		return domain.SubtitleInspection{}, fmt.Errorf("create subtitle inspection directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
 	plan := domain.SubtitlePlan{
 		Source: request.Source, StreamIndex: request.StreamIndex,
 		InputFormat: request.Format, InputPath: request.Path,
 	}
 	if plan.Source == domain.SubtitleSourceEmbedded {
 		plan.Action = domain.SubtitleActionExtract
+		plan.InputPath = request.VideoPath
 	} else {
 		plan.Action = domain.SubtitleActionConvert
+		if plan.InputPath == "" {
+			return domain.SubtitleInspection{}, fmt.Errorf("external subtitle path is required")
+		}
+		// 新记录只保存相对下载目录的路径；历史绝对路径仅在后端内部使用。
+		if !filepath.IsAbs(plan.InputPath) {
+			if request.BasePath == "" {
+				return domain.SubtitleInspection{}, fmt.Errorf("external subtitle base path is required")
+			}
+			resolved, resolveErr := secureJoin(request.BasePath, plan.InputPath)
+			if resolveErr != nil {
+				return domain.SubtitleInspection{}, resolveErr
+			}
+			plan.InputPath = resolved
+		}
+		converted, cleanup, convertErr := prepareSubtitleSource(plan.InputPath, dir)
+		if convertErr != nil {
+			return domain.SubtitleInspection{}, convertErr
+		}
+		defer cleanup()
+		plan.InputPath = converted
 	}
-	if plan.InputPath == "" {
-		plan.InputPath = request.VideoPath
-	}
-	dir, err := os.MkdirTemp("", "subtitle-inspect-*")
-	if err != nil {
-		return domain.SubtitleInspection{}, fmt.Errorf("create subtitle inspection directory: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(dir) }()
 	output := filepath.Join(dir, "sample.ass")
 	args, err := domain.BuildSubtitleFFmpegArgs(plan, request.VideoPath, output)
 	if err != nil {

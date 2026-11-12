@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -84,7 +85,8 @@ func (handler *SubtitlePrepareHandler) Handle(ctx context.Context, operation dom
 		}
 		external = append(external, domain.SubtitleCandidate{
 			SourceFileID: subtitle.SourceFileID,
-			Path:         filePath, Format: subtitle.Format, Language: subtitle.Language,
+			Path:         filePath, RelativePath: subtitle.RelativePath,
+			Format: subtitle.Format, Language: subtitle.Language,
 		})
 	}
 	paths, err := buildMediaOutputPaths(settings.Paths.StagingRoot, command.TaskID, operation.ID, taskMediaOutputPath(command, command.Names.SubtitleName))
@@ -233,58 +235,101 @@ func (handler *SubtitlePrepareHandler) prepareFirstUsableSubtitle(
 	}
 	failures := make([]error, 0, len(plans))
 	ffmpegFailures := 0
+	otherFailures := false
+	var charsetFailure *domain.SubtitleError
 	for index, plan := range plans {
 		attempt := index + 1
-		if err := os.Remove(temporaryPath); err != nil && !os.IsNotExist(err) {
-			return domain.SubtitlePlan{}, domain.ChineseScriptAnalysis{}, attempt, true, fmt.Errorf("remove stale subtitle candidate output: %w", err)
+		result := handler.attemptSubtitleCandidate(ctx, ffmpegPath, videoPath, temporaryPath, plan)
+		if result.err == nil {
+			return plan, result.analysis, attempt, false, nil
 		}
-		args, err := domain.BuildSubtitleFFmpegArgs(plan, videoPath, temporaryPath)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("candidate %d plan: %w", attempt, err))
-			continue
+		if result.retryable {
+			return domain.SubtitlePlan{}, domain.ChineseScriptAnalysis{}, attempt, true, result.err
 		}
-		if err := handler.tools.RunFFmpeg(ctx, ffmpegPath, args); err != nil {
+		if result.ffmpegFailed {
 			ffmpegFailures++
-			failures = append(failures, fmt.Errorf("candidate %d FFmpeg: %w", attempt, err))
-			continue
 		}
-		content, err := readSubtitleCandidateFile(temporaryPath)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("candidate %d output: %w", attempt, err))
-			continue
+		var subtitleErr *domain.SubtitleError
+		if errors.As(result.err, &subtitleErr) && subtitleErr.Code == "subtitle_charset_unsupported" {
+			charsetFailure = subtitleErr
+		} else {
+			otherFailures = true
 		}
-		analysis, err := domain.AnalyzeASSChineseScript(content)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("candidate %d analysis: %w", attempt, err))
-			continue
-		}
-		if !domain.SubtitleContentIsLikelyChinese(analysis, plan.Evidence) {
-			failures = append(failures, fmt.Errorf("candidate %d content is not confidently Chinese", attempt))
-			continue
-		}
-		normalized, err := domain.NormalizeASSToSimplified(content)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("candidate %d normalization: %w", attempt, err))
-			continue
-		}
-		if err := os.WriteFile(temporaryPath, normalized, 0o640); err != nil {
-			return domain.SubtitlePlan{}, domain.ChineseScriptAnalysis{}, attempt, true, fmt.Errorf("write normalized subtitle candidate: %w", err)
-		}
-		if err := validateASSFile(temporaryPath); err != nil {
-			failures = append(failures, fmt.Errorf("candidate %d normalized output: %w", attempt, err))
-			continue
-		}
-		return plan, analysis, attempt, false, nil
+		failures = append(failures, fmt.Errorf("candidate %d: %w", attempt, result.err))
 	}
 
 	joined := errors.Join(failures...)
 	if ffmpegFailures > 0 {
 		return domain.SubtitlePlan{}, domain.ChineseScriptAnalysis{}, len(plans), true, joined
 	}
+	if charsetFailure != nil && !otherFailures {
+		return domain.SubtitlePlan{}, domain.ChineseScriptAnalysis{}, len(plans), false, charsetFailure
+	}
 	return domain.SubtitlePlan{}, domain.ChineseScriptAnalysis{}, len(plans), false, errors.Join(
 		&domain.SubtitleError{Code: "subtitle_candidates_exhausted", Message: "no subtitle candidate produced a usable simplified ASS"},
 		joined,
 	)
+}
+
+type subtitleCandidateAttempt struct {
+	analysis     domain.ChineseScriptAnalysis
+	ffmpegFailed bool
+	retryable    bool
+	err          error
+}
+
+// attemptSubtitleCandidate 尝试单个候选。外挂文本字幕先转换为 UTF-8，
+// 再交给 FFmpeg 生成 ASS，转换用的临时文件在本次尝试结束后清理。
+func (handler *SubtitlePrepareHandler) attemptSubtitleCandidate(
+	ctx context.Context,
+	ffmpegPath string,
+	videoPath string,
+	temporaryPath string,
+	plan domain.SubtitlePlan,
+) subtitleCandidateAttempt {
+	if err := os.Remove(temporaryPath); err != nil && !os.IsNotExist(err) {
+		return subtitleCandidateAttempt{retryable: true, err: fmt.Errorf("remove stale subtitle candidate output: %w", err)}
+	}
+	attemptPlan := plan
+	release := func() {}
+	defer func() { release() }()
+	if plan.Source == domain.SubtitleSourceExternal {
+		converted, cleanup, err := prepareSubtitleSource(plan.InputPath, filepath.Dir(temporaryPath))
+		if err != nil {
+			return subtitleCandidateAttempt{err: fmt.Errorf("subtitle source: %w", err)}
+		}
+		attemptPlan.InputPath = converted
+		release = cleanup
+	}
+	args, err := domain.BuildSubtitleFFmpegArgs(attemptPlan, videoPath, temporaryPath)
+	if err != nil {
+		return subtitleCandidateAttempt{err: fmt.Errorf("plan: %w", err)}
+	}
+	if err := handler.tools.RunFFmpeg(ctx, ffmpegPath, args); err != nil {
+		return subtitleCandidateAttempt{ffmpegFailed: true, err: fmt.Errorf("FFmpeg: %w", err)}
+	}
+	content, err := readSubtitleCandidateFile(temporaryPath)
+	if err != nil {
+		return subtitleCandidateAttempt{err: fmt.Errorf("output: %w", err)}
+	}
+	analysis, err := domain.AnalyzeASSChineseScript(content)
+	if err != nil {
+		return subtitleCandidateAttempt{err: fmt.Errorf("analysis: %w", err)}
+	}
+	if !domain.SubtitleContentIsLikelyChinese(analysis, plan.Evidence) {
+		return subtitleCandidateAttempt{err: fmt.Errorf("content is not confidently Chinese")}
+	}
+	normalized, err := domain.NormalizeASSToSimplified(content)
+	if err != nil {
+		return subtitleCandidateAttempt{err: fmt.Errorf("normalization: %w", err)}
+	}
+	if err := os.WriteFile(temporaryPath, normalized, 0o640); err != nil {
+		return subtitleCandidateAttempt{retryable: true, err: fmt.Errorf("write normalized subtitle candidate: %w", err)}
+	}
+	if err := validateASSFile(temporaryPath); err != nil {
+		return subtitleCandidateAttempt{err: fmt.Errorf("normalized output: %w", err)}
+	}
+	return subtitleCandidateAttempt{analysis: analysis}
 }
 
 func readSubtitleCandidateFile(filePath string) ([]byte, error) {
@@ -334,6 +379,10 @@ func subtitleMatchCandidates(plans []domain.SubtitlePlan, embedded []domain.Subt
 	for _, stream := range embedded {
 		streamByIndex[stream.Index] = stream
 	}
+	externalByID := make(map[uuid.UUID]domain.SubtitleCandidate, len(external))
+	for _, candidate := range external {
+		externalByID[candidate.SourceFileID] = candidate
+	}
 	candidates := make([]domain.SubtitleMatchCandidate, 0, len(plans))
 	for _, plan := range plans {
 		candidate := domain.SubtitleMatchCandidate{
@@ -341,14 +390,19 @@ func subtitleMatchCandidates(plans []domain.SubtitlePlan, embedded []domain.Subt
 			Format: plan.InputFormat, Language: plan.Language,
 		}
 		if plan.Source == domain.SubtitleSourceExternal {
-			candidate.Title = plan.InputPath
-			candidate.Path = plan.InputPath
-			for _, externalCandidate := range external {
-				if externalCandidate.Path == plan.InputPath {
-					candidate.Language = externalCandidate.Language
-					break
+			externalCandidate, ok := externalByID[plan.SourceFileID]
+			if !ok {
+				for _, known := range external {
+					if known.Path == plan.InputPath {
+						externalCandidate = known
+						break
+					}
 				}
 			}
+			// 候选只携带相对下载目录的标识，模型与工具结果不需要宿主绝对路径。
+			candidate.Path = subtitleCandidateDisplayPath(externalCandidate.RelativePath, plan.InputPath)
+			candidate.Title = path.Base(candidate.Path)
+			candidate.Language = externalCandidate.Language
 		} else if stream, ok := streamByIndex[plan.StreamIndex]; ok {
 			candidate.Title = stream.Title
 			candidate.Language = stream.Language
@@ -356,6 +410,21 @@ func subtitleMatchCandidates(plans []domain.SubtitlePlan, embedded []domain.Subt
 		candidates = append(candidates, candidate)
 	}
 	return candidates
+}
+
+// subtitleCandidateDisplayPath 返回可安全发送给外部 Provider 的相对路径。
+// 历史数据或缺少相对路径时只回退到文件名，不暴露宿主目录。
+func subtitleCandidateDisplayPath(relativePath, inputPath string) string {
+	display := strings.TrimSpace(relativePath)
+	if display == "" {
+		display = inputPath
+	}
+	display = strings.ReplaceAll(display, `\`, "/")
+	display = path.Clean(display)
+	if path.IsAbs(display) || display == ".." || strings.HasPrefix(display, "../") {
+		return path.Base(display)
+	}
+	return display
 }
 
 func filterPlansBySelection(plans []domain.SubtitlePlan, selection domain.SubtitleMatchSelection) []domain.SubtitlePlan {
