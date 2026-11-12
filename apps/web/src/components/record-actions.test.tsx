@@ -77,8 +77,23 @@ describe('RecordActions menu', () => {
     await userEvent.click(await screen.findByRole('menuitem', { name: '删除订阅' }));
     await userEvent.click(screen.getByRole('button', { name: '确认删除' }));
 
+    // 失败后关闭确认框，提示不再被遮罩压住；再次执行必须重新确认。
     expect(await screen.findByRole('alert')).toHaveTextContent('后端返回的具体失败原因');
+    expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the confirmation when the action throws', async () => {
+    const run = vi.fn(async () => {
+      throw new Error('网络中断，请稍后重试');
+    });
+    render(<RecordActions actions={baseActions({ run })} />);
+    await userEvent.click(screen.getByRole('button', { name: '更多操作' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: '删除订阅' }));
+    await userEvent.click(screen.getByRole('button', { name: '确认删除' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('网络中断，请稍后重试');
+    expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 
   it('does not trigger row click when toggling the menu', async () => {

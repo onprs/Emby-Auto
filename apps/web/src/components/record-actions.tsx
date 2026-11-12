@@ -41,11 +41,15 @@ export function RecordActions({ actions, onChanged }: { actions: RecordAction[];
     try {
       const failure = await action.run();
       if (failure) {
+        // 失败时关闭确认框，并用固定定位的提示避开表格滚动容器与遮罩的裁剪；
+        // 再次执行必须重新确认。
+        setPending(null);
         setError(failure);
         return;
       }
       setPending(null);
     } catch (cause) {
+      setPending(null);
       setError(cause instanceof Error ? cause.message : '操作失败');
     } finally {
       executing.current = false;
@@ -72,7 +76,7 @@ export function RecordActions({ actions, onChanged }: { actions: RecordAction[];
       <ActionMenu items={menuItems} />
 
       {error ? (
-        <div className="absolute right-0 top-full z-40 mt-1.5 w-72 rounded-lg border border-red-200 bg-white px-3.5 py-2.5 shadow-xl ring-1 ring-zinc-950/5" role="alert">
+        <div className="fixed bottom-4 right-4 z-50 w-[min(20rem,calc(100vw-2rem))] rounded-lg border border-red-200 bg-white px-3.5 py-2.5 shadow-xl ring-1 ring-zinc-950/5" role="alert">
           <div className="flex items-start gap-2.5">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-red-500" aria-hidden="true" />
             <p className="min-w-0 flex-1 break-words text-xs leading-relaxed text-red-800">{error}</p>
