@@ -374,6 +374,17 @@ SELECT
           )
     ) AS destination_claimed;
 
+-- name: LockImportRecoveryDestinations :execrows
+-- 对补偿涉及的两个目标路径取事务级 advisory 锁。导入提交（CompleteImport）
+-- 在同一键上先取锁后再写入 succeeded 引用，因此观察与删除之间的窗口
+-- 内建立的任何新成功引用都会阻塞补偿或被补偿感知，双方不能交叉。
+SELECT pg_advisory_xact_lock(
+    hashtextextended('import-destination:' || sqlc.arg(destination_video_path)::text, 0)
+),
+pg_advisory_xact_lock(
+    hashtextextended('import-destination:' || sqlc.arg(destination_subtitle_path)::text, 0)
+);
+
 -- name: StartTaskImport :one
 UPDATE episode_tasks
 SET state = 'importing',

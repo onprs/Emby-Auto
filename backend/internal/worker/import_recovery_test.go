@@ -97,7 +97,7 @@ func TestEmbyImportCompensatesAfterPermanentStoreFailure(t *testing.T) {
 		completeErr: &domain.MediaWorkflowError{
 			Code: "task_import_state_conflict", Message: "the task import is not running", Retryable: false,
 		},
-		recovery: domain.ImportRecoveryState{TaskState: domain.TaskImporting, ImportState: "running"},
+		recovery: domain.ImportRecoveryState{TaskState: domain.TaskImporting, ImportState: "failed"},
 	}
 	err := fixture.handler(store).Handle(context.Background(), fixture.operation())
 	var failure *Failure
@@ -120,7 +120,7 @@ func TestEmbyImportCompensatesAfterCancellation(t *testing.T) {
 		command:     fixture.command,
 		completeErr: context.Canceled,
 		onComplete:  func() { cancel(errors.New("user cancelled the task")) },
-		recovery:    domain.ImportRecoveryState{TaskState: domain.TaskCancelled, ImportState: "running"},
+		recovery:    domain.ImportRecoveryState{TaskState: domain.TaskCancelled, ImportState: "failed"},
 	}
 	err := fixture.handler(store).Handle(ctx, fixture.operation())
 	var failure *Failure
@@ -213,7 +213,7 @@ func TestEmbyImportCompensationPreservesRewrittenDestination(t *testing.T) {
 		completeErr: &domain.MediaWorkflowError{
 			Code: "task_import_state_conflict", Message: "the task import is not running", Retryable: false,
 		},
-		recovery: domain.ImportRecoveryState{TaskState: domain.TaskImporting, ImportState: "running"},
+		recovery: domain.ImportRecoveryState{TaskState: domain.TaskImporting, ImportState: "failed"},
 		onRecovery: func(domain.ImportCompletion) error {
 			// 原地改写目标并恢复原修改时间：inode、大小与 mtime 都相同，
 			// 使补偿必须依赖内容校验和才能避免误删替换内容。
@@ -243,7 +243,7 @@ func TestEmbyImportCompensationPreservesReplacedDestination(t *testing.T) {
 		completeErr: &domain.MediaWorkflowError{
 			Code: "task_import_state_conflict", Message: "the task import is not running", Retryable: false,
 		},
-		recovery: domain.ImportRecoveryState{TaskState: domain.TaskImporting, ImportState: "running"},
+		recovery: domain.ImportRecoveryState{TaskState: domain.TaskImporting, ImportState: "failed"},
 		onRecovery: func(domain.ImportCompletion) error {
 			// 提交后目标被另一个写入者替换为新 inode，补偿不得删除替换后的文件。
 			if err := os.Remove(fixture.destinationVideo); err != nil {
@@ -274,7 +274,7 @@ func TestEmbyImportCompensationPreservesPreExistingDestination(t *testing.T) {
 		completeErr: &domain.MediaWorkflowError{
 			Code: "task_import_state_conflict", Message: "the task import is not running", Retryable: false,
 		},
-		recovery: domain.ImportRecoveryState{TaskState: domain.TaskImporting, ImportState: "running"},
+		recovery: domain.ImportRecoveryState{TaskState: domain.TaskImporting, ImportState: "failed"},
 	}
 	if err := fixture.handler(store).Handle(context.Background(), fixture.operation()); err == nil {
 		t.Fatal("Handle() error = nil, want permanent store failure")

@@ -1260,6 +1260,31 @@ func (q *Queries) ListTaskViews(ctx context.Context, arg ListTaskViewsParams) ([
 	return items, nil
 }
 
+const lockImportRecoveryDestinations = `-- name: LockImportRecoveryDestinations :execrows
+SELECT pg_advisory_xact_lock(
+    hashtextextended('import-destination:' || $1::text, 0)
+),
+pg_advisory_xact_lock(
+    hashtextextended('import-destination:' || $2::text, 0)
+)
+`
+
+type LockImportRecoveryDestinationsParams struct {
+	DestinationVideoPath    string `db:"destination_video_path" json:"destination_video_path"`
+	DestinationSubtitlePath string `db:"destination_subtitle_path" json:"destination_subtitle_path"`
+}
+
+// 对补偿涉及的两个目标路径取事务级 advisory 锁。导入提交（CompleteImport）
+// 在同一键上先取锁后再写入 succeeded 引用，因此观察与删除之间的窗口
+// 内建立的任何新成功引用都会阻塞补偿或被补偿感知，双方不能交叉。
+func (q *Queries) LockImportRecoveryDestinations(ctx context.Context, arg LockImportRecoveryDestinationsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, lockImportRecoveryDestinations, arg.DestinationVideoPath, arg.DestinationSubtitlePath)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markActiveCleanupTerminalFailure = `-- name: MarkActiveCleanupTerminalFailure :one
 UPDATE cleanup_runs
 SET status = 'failed',

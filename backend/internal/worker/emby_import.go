@@ -24,6 +24,20 @@ type TaskImportStore interface {
 	ObserveImportRecovery(context.Context, uuid.UUID, uuid.UUID, string, string) (domain.ImportRecoveryState, error)
 }
 
+// importCompensationStore 扩展观察接口：允许实现以回调执行“持锁删除”。
+// 观察事务在释放目标路径锁之前调用回滚闭包，使补偿删除与成功引用写入
+// 在同一临界区内串行，观察后窗口内的采用无法与删除交错。
+type importCompensationStore interface {
+	TaskImportStore
+	// RunImportCompensation 在单个持锁事务内执行观察与回滚决策：
+	// rollback 返回 true 表示确认未成功且未被占用，闭包内完成文件删除。
+	RunImportCompensation(
+		ctx context.Context,
+		completion domain.ImportCompletion,
+		rollback func() bool,
+	) (domain.ImportRecoveryState, error)
+}
+
 type EmbyImportHandler struct {
 	configuration MediaConfiguration
 	store         TaskImportStore
@@ -138,18 +152,33 @@ func (handler *EmbyImportHandler) Handle(ctx context.Context, operation domain.O
 }
 
 // compensateFailedImport 在数据库确认失败后判断是否安全回滚。
-// 只有导入记录确知未成功、目标路径未被任何成功导入占用、且本次失败不会重试时，
-// 才回滚本次调用创建且仍指向原 inode 的文件；状态未知时保留文件供重试采用或人工恢复。
+// 观察与删除通过 RunImportCompensation 放入与 CompleteImport 相同的目标路径
+// advisory 锁域：成功引用的写入与补偿的观察/删除串行，观察后窗口内的采用
+// 要么被阻塞到删除完成（新引用随后按文件不存在重新创建），要么已经提交
+// 成功引用并使观察读到 DestinationClaimed。只有导入确知未成功、目标未被
+// 占用且本次失败不会重试时才回滚；不支持临界区回调的存储实现退回
+// ObserveImportRecovery 快照判定并保留文件（不冒删除风险）。
 func (handler *EmbyImportHandler) compensateFailedImport(
 	ctx context.Context,
 	completion domain.ImportCompletion,
 	created []importedCommit,
 	failure *Failure,
 ) error {
-	observeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), importRecoveryQueryTimeout)
+	compensateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), importRecoveryQueryTimeout)
 	defer cancel()
+	if compensationStore, ok := handler.store.(importCompensationStore); ok && len(created) > 0 {
+		_, err := compensationStore.RunImportCompensation(compensateCtx, completion, func() bool {
+			rollbackImportedCommits(created)
+			return true
+		})
+		if err != nil {
+			// 数据库状态未知：保留已提交文件，避免因取消或连接中断盲删。
+			return failure
+		}
+		return failure
+	}
 	state, err := handler.store.ObserveImportRecovery(
-		observeCtx,
+		compensateCtx,
 		completion.TaskID,
 		completion.ImportID,
 		completion.DestinationVideoPath,
@@ -163,7 +192,8 @@ func (handler *EmbyImportHandler) compensateFailedImport(
 		// 提交实际已生效（例如提交后连接中断），按成功处理。
 		return nil
 	}
-	if len(created) == 0 || state.DestinationClaimed {
+	if len(created) == 0 || state.DestinationClaimed || state.ImportState == "running" {
+		// 导入行仍在运行说明重试可能采用同一内容，保留文件。
 		return failure
 	}
 	if failure.Retryable && state.TaskState != domain.TaskCancelled {
