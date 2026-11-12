@@ -82,11 +82,11 @@ LEFT JOIN LATERAL (
     SELECT item.id, item.library_id
     FROM emby_library_items AS item
     WHERE item.present
-      AND item.item_type = 'Episode'
       AND (
           item.file_path = latest_import.destination_video_path
           OR (
-              episode.tmdb_episode_id IS NOT NULL
+              item.item_type = 'Episode'
+              AND episode.tmdb_episode_id IS NOT NULL
               AND item.tmdb_provider_id = episode.tmdb_episode_id::text
           )
       )
@@ -184,11 +184,11 @@ LEFT JOIN LATERAL (
     SELECT item.id, item.library_id
     FROM emby_library_items AS item
     WHERE item.present
-      AND item.item_type = 'Episode'
       AND (
           item.file_path = latest_import.destination_video_path
           OR (
-              episode.tmdb_episode_id IS NOT NULL
+              item.item_type = 'Episode'
+              AND episode.tmdb_episode_id IS NOT NULL
               AND item.tmdb_provider_id = episode.tmdb_episode_id::text
           )
       )
