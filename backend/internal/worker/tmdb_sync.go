@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/onprs/emby-auto/backend/internal/domain"
 	"github.com/onprs/emby-auto/backend/internal/platform/proxyhttp"
 	"github.com/onprs/emby-auto/backend/internal/platform/tmdb"
@@ -113,6 +114,16 @@ func (handler *TMDbSyncHandler) Handle(ctx context.Context, operation domain.Ope
 	if err := handler.store.SaveTMDbCatalog(ctx, operation, catalog); err != nil {
 		if errors.Is(err, domain.ErrNotFound) || strings.Contains(err.Error(), "does not match") {
 			return permanentFailure("tmdb_sync_conflict", "the TMDb catalog does not match the scheduled series", err)
+		}
+		// 外键/唯一键冲突属于数据依赖冲突，重试相同目录不会自愈。
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			switch pgErr.Code {
+			case "23503":
+				return permanentFailure("tmdb_catalog_reference_conflict", "the TMDb catalog change conflicts with existing episode mappings; review the series mappings and retry", err)
+			case "23505":
+				return permanentFailure("tmdb_catalog_identity_conflict", "the TMDb catalog contains conflicting episode identities; retry after the upstream catalog stabilizes", err)
+			}
 		}
 		return retryableFailure("tmdb_catalog_persist_failed", "the TMDb catalog could not be persisted", err)
 	}

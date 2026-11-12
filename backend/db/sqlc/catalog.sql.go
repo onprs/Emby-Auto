@@ -51,6 +51,42 @@ func (q *Queries) ApplyMappingProfileToRSSSubscription(ctx context.Context, arg 
 	return id, err
 }
 
+const clearTMDbEpisodeIDsForSeries = `-- name: ClearTMDbEpisodeIDsForSeries :execrows
+UPDATE media_episodes AS episode
+SET tmdb_episode_id = NULL,
+    updated_at = now()
+FROM tmdb_seasons AS season
+WHERE episode.season_id = season.id
+  AND season.series_id = $1
+  AND episode.tmdb_episode_id IS NOT NULL
+`
+
+func (q *Queries) ClearTMDbEpisodeIDsForSeries(ctx context.Context, seriesID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, clearTMDbEpisodeIDsForSeries, seriesID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const clearTMDbSeasonIDsForSeries = `-- name: ClearTMDbSeasonIDsForSeries :execrows
+UPDATE tmdb_seasons
+SET tmdb_season_id = NULL,
+    updated_at = now()
+WHERE series_id = $1
+  AND tmdb_season_id IS NOT NULL
+`
+
+// 同步事务先释放本系列的 TMDb 标识，再按季集坐标 upsert。这样上游重新
+// 编号时不会在交换 tmdb_episode_id/tmdb_season_id 的过程中撞唯一索引。
+func (q *Queries) ClearTMDbSeasonIDsForSeries(ctx context.Context, seriesID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, clearTMDbSeasonIDsForSeries, seriesID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const completeEmbyScanRun = `-- name: CompleteEmbyScanRun :one
 UPDATE emby_scan_runs
 SET status = 'succeeded',
@@ -377,44 +413,6 @@ type DeactivateMappingProfilesParams struct {
 
 func (q *Queries) DeactivateMappingProfiles(ctx context.Context, arg DeactivateMappingProfilesParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deactivateMappingProfiles, arg.SeriesID, arg.Name)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const deleteStaleTMDbEpisodes = `-- name: DeleteStaleTMDbEpisodes :execrows
-DELETE FROM media_episodes
-WHERE season_id = $1
-  AND episode_number <> ALL($2::integer[])
-`
-
-type DeleteStaleTMDbEpisodesParams struct {
-	SeasonID       pgtype.UUID `db:"season_id" json:"season_id"`
-	EpisodeNumbers []int32     `db:"episode_numbers" json:"episode_numbers"`
-}
-
-func (q *Queries) DeleteStaleTMDbEpisodes(ctx context.Context, arg DeleteStaleTMDbEpisodesParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteStaleTMDbEpisodes, arg.SeasonID, arg.EpisodeNumbers)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const deleteStaleTMDbSeasons = `-- name: DeleteStaleTMDbSeasons :execrows
-DELETE FROM tmdb_seasons
-WHERE series_id = $1
-  AND season_number <> ALL($2::integer[])
-`
-
-type DeleteStaleTMDbSeasonsParams struct {
-	SeriesID      pgtype.UUID `db:"series_id" json:"series_id"`
-	SeasonNumbers []int32     `db:"season_numbers" json:"season_numbers"`
-}
-
-func (q *Queries) DeleteStaleTMDbSeasons(ctx context.Context, arg DeleteStaleTMDbSeasonsParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteStaleTMDbSeasons, arg.SeriesID, arg.SeasonNumbers)
 	if err != nil {
 		return 0, err
 	}
@@ -1716,9 +1714,10 @@ func (q *Queries) ListMediaSeriesByIDs(ctx context.Context, ids []pgtype.UUID) (
 }
 
 const listSeasonEpisodes = `-- name: ListSeasonEpisodes :many
-SELECT id, season_id, tmdb_episode_id, episode_number, title, air_date, upstream_payload, created_at, updated_at
+SELECT id, season_id, tmdb_episode_id, episode_number, title, air_date, upstream_payload, created_at, updated_at, present
 FROM media_episodes
 WHERE season_id = $1
+  AND present
 ORDER BY episode_number
 `
 
@@ -1741,6 +1740,7 @@ func (q *Queries) ListSeasonEpisodes(ctx context.Context, seasonID pgtype.UUID) 
 			&i.UpstreamPayload,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Present,
 		); err != nil {
 			return nil, err
 		}
@@ -1760,8 +1760,9 @@ SELECT
     episode.episode_number,
     episode.title
 FROM tmdb_seasons AS season
-LEFT JOIN media_episodes AS episode ON episode.season_id = season.id
+LEFT JOIN media_episodes AS episode ON episode.season_id = season.id AND episode.present
 WHERE season.series_id = $1
+  AND season.present
 ORDER BY season.season_number, episode.episode_number
 `
 
@@ -1800,9 +1801,10 @@ func (q *Queries) ListSeriesMappingCatalog(ctx context.Context, seriesID pgtype.
 }
 
 const listSeriesSeasons = `-- name: ListSeriesSeasons :many
-SELECT id, series_id, tmdb_season_id, season_number, name, episode_count, fetched_at, upstream_payload, created_at, updated_at
+SELECT id, series_id, tmdb_season_id, season_number, name, episode_count, fetched_at, upstream_payload, created_at, updated_at, present
 FROM tmdb_seasons
 WHERE series_id = $1
+  AND present
 ORDER BY season_number
 `
 
@@ -1826,6 +1828,7 @@ func (q *Queries) ListSeriesSeasons(ctx context.Context, seriesID pgtype.UUID) (
 			&i.UpstreamPayload,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Present,
 		); err != nil {
 			return nil, err
 		}
@@ -1995,6 +1998,63 @@ WHERE last_scan_run_id <> $1
 
 func (q *Queries) MarkEmbyLibraryItemsAbsent(ctx context.Context, scanRunID pgtype.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, markEmbyLibraryItemsAbsent, scanRunID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markStaleTMDbEpisodes = `-- name: MarkStaleTMDbEpisodes :execrows
+UPDATE media_episodes
+SET present = false,
+    tmdb_episode_id = NULL,
+    updated_at = now()
+WHERE season_id = $1
+  AND episode_number <> ALL($2::integer[])
+  AND present
+`
+
+type MarkStaleTMDbEpisodesParams struct {
+	SeasonID       pgtype.UUID `db:"season_id" json:"season_id"`
+	EpisodeNumbers []int32     `db:"episode_numbers" json:"episode_numbers"`
+}
+
+// 上游不再返回的集保留行与映射引用，只退出可映射目录。
+func (q *Queries) MarkStaleTMDbEpisodes(ctx context.Context, arg MarkStaleTMDbEpisodesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markStaleTMDbEpisodes, arg.SeasonID, arg.EpisodeNumbers)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markStaleTMDbSeasons = `-- name: MarkStaleTMDbSeasons :execrows
+WITH stale AS (
+    UPDATE tmdb_seasons
+    SET present = false,
+        tmdb_season_id = NULL,
+        updated_at = now()
+    WHERE series_id = $1
+      AND season_number <> ALL($2::integer[])
+      AND present
+    RETURNING id
+)
+UPDATE media_episodes
+SET present = false,
+    tmdb_episode_id = NULL,
+    updated_at = now()
+WHERE season_id IN (SELECT id FROM stale)
+  AND present
+`
+
+type MarkStaleTMDbSeasonsParams struct {
+	SeriesID      pgtype.UUID `db:"series_id" json:"series_id"`
+	SeasonNumbers []int32     `db:"season_numbers" json:"season_numbers"`
+}
+
+// 整季消失时季与其集一起退出目录；引用行仍保留。
+func (q *Queries) MarkStaleTMDbSeasons(ctx context.Context, arg MarkStaleTMDbSeasonsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markStaleTMDbSeasons, arg.SeriesID, arg.SeasonNumbers)
 	if err != nil {
 		return 0, err
 	}
@@ -2513,8 +2573,9 @@ SET tmdb_episode_id = EXCLUDED.tmdb_episode_id,
     title = EXCLUDED.title,
     air_date = EXCLUDED.air_date,
     upstream_payload = EXCLUDED.upstream_payload,
+    present = true,
     updated_at = now()
-RETURNING id, season_id, tmdb_episode_id, episode_number, title, air_date, upstream_payload, created_at, updated_at
+RETURNING id, season_id, tmdb_episode_id, episode_number, title, air_date, upstream_payload, created_at, updated_at, present
 `
 
 type UpsertTMDbEpisodeParams struct {
@@ -2548,6 +2609,7 @@ func (q *Queries) UpsertTMDbEpisode(ctx context.Context, arg UpsertTMDbEpisodePa
 		&i.UpstreamPayload,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Present,
 	)
 	return i, err
 }
@@ -2578,8 +2640,9 @@ SET tmdb_season_id = EXCLUDED.tmdb_season_id,
     episode_count = EXCLUDED.episode_count,
     fetched_at = EXCLUDED.fetched_at,
     upstream_payload = EXCLUDED.upstream_payload,
+    present = true,
     updated_at = now()
-RETURNING id, series_id, tmdb_season_id, season_number, name, episode_count, fetched_at, upstream_payload, created_at, updated_at
+RETURNING id, series_id, tmdb_season_id, season_number, name, episode_count, fetched_at, upstream_payload, created_at, updated_at, present
 `
 
 type UpsertTMDbSeasonParams struct {
@@ -2616,6 +2679,7 @@ func (q *Queries) UpsertTMDbSeason(ctx context.Context, arg UpsertTMDbSeasonPara
 		&i.UpstreamPayload,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Present,
 	)
 	return i, err
 }

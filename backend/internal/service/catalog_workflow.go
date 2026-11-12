@@ -212,6 +212,14 @@ func (workflow *CatalogWorkflow) SaveTMDbCatalog(
 		if existing.TmdbSeriesID == nil || *existing.TmdbSeriesID != catalog.TMDbSeriesID {
 			return fmt.Errorf("TMDb series operation does not match catalog ID")
 		}
+		// 上游重新编号时先在事务内释放本系列的 TMDb 标识，再按季集坐标 upsert，
+		// 避免交换标识时撞唯一索引；已引用但上游移除的行由后续标记保留。
+		if _, err := scope.Queries.ClearTMDbSeasonIDsForSeries(ctx, repository.UUIDToPG(operation.ResourceID)); err != nil {
+			return fmt.Errorf("release TMDb season identities: %w", err)
+		}
+		if _, err := scope.Queries.ClearTMDbEpisodeIDsForSeries(ctx, repository.UUIDToPG(operation.ResourceID)); err != nil {
+			return fmt.Errorf("release TMDb episode identities: %w", err)
+		}
 		tmdbID := catalog.TMDbSeriesID
 		series, err := scope.Queries.UpsertTMDbSeries(ctx, db.UpsertTMDbSeriesParams{
 			ID:            existing.ID,
@@ -233,7 +241,7 @@ func (workflow *CatalogWorkflow) SaveTMDbCatalog(
 			seasonNumbers = append(seasonNumbers, seasonNumber)
 			seasonTMDbID := seasonCatalog.TMDbSeasonID
 			season, err := scope.Queries.UpsertTMDbSeason(ctx, db.UpsertTMDbSeasonParams{
-				ID:              repository.UUIDToPG(deterministicResourceID(fmt.Sprintf("tmdb.season:%d", seasonTMDbID))),
+				ID:              repository.UUIDToPG(uuid.New()),
 				SeriesID:        series.ID,
 				TmdbSeasonID:    &seasonTMDbID,
 				SeasonNumber:    seasonNumber,
@@ -258,7 +266,7 @@ func (workflow *CatalogWorkflow) SaveTMDbCatalog(
 					airDate = pgtype.Date{Time: *episodeCatalog.AirDate, Valid: true}
 				}
 				if _, err := scope.Queries.UpsertTMDbEpisode(ctx, db.UpsertTMDbEpisodeParams{
-					ID:              repository.UUIDToPG(deterministicResourceID(fmt.Sprintf("tmdb.episode:%d", episodeTMDbID))),
+					ID:              repository.UUIDToPG(uuid.New()),
 					SeasonID:        season.ID,
 					TmdbEpisodeID:   &episodeTMDbID,
 					EpisodeNumber:   episodeNumber,
@@ -270,18 +278,18 @@ func (workflow *CatalogWorkflow) SaveTMDbCatalog(
 				}
 			}
 			episodeCount += len(episodeNumbers)
-			if _, err := scope.Queries.DeleteStaleTMDbEpisodes(ctx, db.DeleteStaleTMDbEpisodesParams{
+			if _, err := scope.Queries.MarkStaleTMDbEpisodes(ctx, db.MarkStaleTMDbEpisodesParams{
 				SeasonID:       season.ID,
 				EpisodeNumbers: episodeNumbers,
 			}); err != nil {
-				return fmt.Errorf("delete stale TMDb episodes: %w", err)
+				return fmt.Errorf("mark stale TMDb episodes: %w", err)
 			}
 		}
-		if _, err := scope.Queries.DeleteStaleTMDbSeasons(ctx, db.DeleteStaleTMDbSeasonsParams{
+		if _, err := scope.Queries.MarkStaleTMDbSeasons(ctx, db.MarkStaleTMDbSeasonsParams{
 			SeriesID:      series.ID,
 			SeasonNumbers: seasonNumbers,
 		}); err != nil {
-			return fmt.Errorf("delete stale TMDb seasons: %w", err)
+			return fmt.Errorf("mark stale TMDb seasons: %w", err)
 		}
 		return appendCatalogEvent(ctx, scope.Queries, "tmdb.series_synchronized", "media_series", series.ID, repository.UUIDToPG(operation.ID), uuid.Nil, map[string]any{
 			"tmdbSeriesId": catalog.TMDbSeriesID,
