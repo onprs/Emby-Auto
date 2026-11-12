@@ -63,6 +63,9 @@ jobs:
       - name: Validate public Compose configuration
         run: npm run deploy:check
 
+      - name: Validate Compose release bundle
+        run: npm run deploy:bundle:check
+
       - name: Validate direct Linux deployment templates
         run: npm run deploy:direct:check
 

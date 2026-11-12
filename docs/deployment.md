@@ -4,6 +4,11 @@
 
 本文档说明如何使用项目提供的 Docker Compose 配置部署 Emby Auto。Compose 管理 PostgreSQL、API、Worker 和 Web；qBittorrent 与 Emby Server 作为外部服务接入。
 
+Compose 部署有两种获取方式，本文命令在两种目录中通用：
+
+- 克隆仓库：在仓库根目录执行，配置文件位于 `deploy/`。
+- Release 发布包：下载 `emby-auto-compose-<版本>.tar.gz`，解压后进入包根目录执行。包内已包含构建所需源码与 `deploy/` 目录，无需克隆仓库。
+
 ## 部署拓扑
 
 | 服务 | 网络入口 | 持久化内容 |
@@ -23,6 +28,7 @@ API 与 Worker 是独立进程，共用 PostgreSQL、安装配置和媒体目录
 - 可访问的 qBittorrent Web API 与 Emby Server。
 - TMDb API Read Access Token。
 - 五个可由应用读写的绝对目录。
+- 首次构建需要访问 Docker Hub 及 npm、Go 模块来源。
 
 ## 1. 配置环境
 
@@ -157,10 +163,17 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml start worker
 
 ### 升级
 
-在应用处于空闲状态且备份完成后执行：
+在应用处于空闲状态且备份完成后执行。先获取新版本文件，再重新构建并启动：
 
 ```bash
+# 源码仓库
 git pull --ff-only
+
+# 发布包：在包根目录解压新版本，保留已有的 deploy/.env
+tar -xzf emby-auto-compose-v新版本.tar.gz -C .
+```
+
+```bash
 docker compose --env-file deploy/.env -f deploy/compose.yaml build
 docker compose --env-file deploy/.env -f deploy/compose.yaml stop worker
 docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --wait postgres api web
@@ -169,6 +182,8 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml exec -T api \
 docker compose --env-file deploy/.env -f deploy/compose.yaml up -d worker
 docker compose --env-file deploy/.env -f deploy/compose.yaml ps
 ```
+
+发布包在原目录解压。Compose 文件固定项目名为 `emby-auto`，卷名为 `emby-auto_postgres-data`、`emby-auto_app-data`；项目名与所在目录无关，从其它目录启动同一 Compose 文件仍会复用同一组命名卷，不会创建新卷或隔离数据。升级时应保留原目录与 `deploy/.env`，不要把两个部署指向同一组卷。
 
 API 启动时会依次执行应用迁移与 River 迁移。就绪检查失败时，应保持 Worker 停止并检查 API 日志；不得让旧 Worker 连接迁移失败或不兼容的数据库。
 
