@@ -79,6 +79,7 @@ SET tmdb_season_id = EXCLUDED.tmdb_season_id,
     episode_count = EXCLUDED.episode_count,
     fetched_at = EXCLUDED.fetched_at,
     upstream_payload = EXCLUDED.upstream_payload,
+    present = true,
     updated_at = now()
 RETURNING *;
 
@@ -105,18 +106,56 @@ SET tmdb_episode_id = EXCLUDED.tmdb_episode_id,
     title = EXCLUDED.title,
     air_date = EXCLUDED.air_date,
     upstream_payload = EXCLUDED.upstream_payload,
+    present = true,
     updated_at = now()
 RETURNING *;
 
--- name: DeleteStaleTMDbEpisodes :execrows
-DELETE FROM media_episodes
-WHERE season_id = sqlc.arg(season_id)
-  AND episode_number <> ALL(sqlc.arg(episode_numbers)::integer[]);
-
--- name: DeleteStaleTMDbSeasons :execrows
-DELETE FROM tmdb_seasons
+-- 同步事务先释放本系列的 TMDb 标识，再按季集坐标 upsert。这样上游重新
+-- 编号时不会在交换 tmdb_episode_id/tmdb_season_id 的过程中撞唯一索引。
+-- name: ClearTMDbSeasonIDsForSeries :execrows
+UPDATE tmdb_seasons
+SET tmdb_season_id = NULL,
+    updated_at = now()
 WHERE series_id = sqlc.arg(series_id)
-  AND season_number <> ALL(sqlc.arg(season_numbers)::integer[]);
+  AND tmdb_season_id IS NOT NULL;
+
+-- name: ClearTMDbEpisodeIDsForSeries :execrows
+UPDATE media_episodes AS episode
+SET tmdb_episode_id = NULL,
+    updated_at = now()
+FROM tmdb_seasons AS season
+WHERE episode.season_id = season.id
+  AND season.series_id = sqlc.arg(series_id)
+  AND episode.tmdb_episode_id IS NOT NULL;
+
+-- 上游不再返回的集保留行与映射引用，只退出可映射目录。
+-- name: MarkStaleTMDbEpisodes :execrows
+UPDATE media_episodes
+SET present = false,
+    tmdb_episode_id = NULL,
+    updated_at = now()
+WHERE season_id = sqlc.arg(season_id)
+  AND episode_number <> ALL(sqlc.arg(episode_numbers)::integer[])
+  AND present;
+
+-- 整季消失时季与其集一起退出目录；引用行仍保留。
+-- name: MarkStaleTMDbSeasons :execrows
+WITH stale AS (
+    UPDATE tmdb_seasons
+    SET present = false,
+        tmdb_season_id = NULL,
+        updated_at = now()
+    WHERE series_id = sqlc.arg(series_id)
+      AND season_number <> ALL(sqlc.arg(season_numbers)::integer[])
+      AND present
+    RETURNING id
+)
+UPDATE media_episodes
+SET present = false,
+    tmdb_episode_id = NULL,
+    updated_at = now()
+WHERE season_id IN (SELECT id FROM stale)
+  AND present;
 
 -- name: GetAcquisitionMappingContext :one
 SELECT acquisition.*, series.tmdb_series_id, entry.subscription_id AS rss_subscription_id
@@ -194,8 +233,9 @@ SELECT
     episode.episode_number,
     episode.title
 FROM tmdb_seasons AS season
-LEFT JOIN media_episodes AS episode ON episode.season_id = season.id
+LEFT JOIN media_episodes AS episode ON episode.season_id = season.id AND episode.present
 WHERE season.series_id = sqlc.arg(series_id)
+  AND season.present
 ORDER BY season.season_number, episode.episode_number;
 
 -- name: GetCompatibleActiveMappingProfile :one
@@ -1144,12 +1184,14 @@ LIMIT sqlc.arg(page_size);
 SELECT *
 FROM tmdb_seasons
 WHERE series_id = sqlc.arg(series_id)
+  AND present
 ORDER BY season_number;
 
 -- name: ListSeasonEpisodes :many
 SELECT *
 FROM media_episodes
 WHERE season_id = sqlc.arg(season_id)
+  AND present
 ORDER BY episode_number;
 
 -- name: GetSeriesLastSync :one

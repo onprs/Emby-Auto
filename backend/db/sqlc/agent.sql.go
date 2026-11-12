@@ -1537,6 +1537,8 @@ JOIN media_episodes AS episode ON episode.season_id = season.id
 WHERE scope.id = $1
   AND season.season_number > 0
   AND episode.episode_number > 0
+  AND season.present
+  AND episode.present
 ORDER BY season.season_number, episode.episode_number
 `
 
@@ -1712,6 +1714,8 @@ FROM acquisitions AS acquisition
 JOIN tmdb_seasons AS season ON season.series_id = acquisition.series_id
 JOIN media_episodes AS episode ON episode.season_id = season.id
 WHERE acquisition.id = $1
+  AND season.present
+  AND episode.present
 ORDER BY season.season_number, episode.episode_number
 `
 
