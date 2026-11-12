@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/onprs/emby-auto/backend/internal/domain"
+	"github.com/onprs/emby-auto/backend/internal/platform/pinneddial"
 	"github.com/onprs/emby-auto/backend/internal/platform/proxyhttp"
 )
 
@@ -45,6 +46,7 @@ type torrentSourceOptions struct {
 	// 测试可注入静态解析器避免依赖运行环境 DNS。
 	resolver     torrentSourceResolver
 	proxyEnabled bool
+	pins         *pinneddial.Pins
 }
 
 // torrentSourceFetcher 获取 HTTP(S) 种子文件，需经过应用代理且不泄露敏感信息。
@@ -57,9 +59,11 @@ func defaultTorrentSourceFetcher(ctx context.Context, rawURL string, proxySettin
 func fetchTorrentSource(ctx context.Context, rawURL string, proxySettings domain.NetworkProxySettings, opts torrentSourceOptions) ([]byte, error) {
 	// 代理启用时由代理解析目标域名，本地解析失败不构成永久无效。
 	opts.proxyEnabled = proxySettings.Enabled
+	opts.pins = pinneddial.New()
 	if err := validateTorrentSourceURL(ctx, rawURL, opts); err != nil {
 		return nil, err
 	}
+	ctx = pinneddial.WithContext(ctx, opts.pins)
 	newClient := proxyhttp.NewClient
 	if opts.newClient != nil {
 		newClient = opts.newClient
@@ -68,6 +72,7 @@ func fetchTorrentSource(ctx context.Context, rawURL string, proxySettings domain
 	if err != nil {
 		return nil, permanentFailure("torrent_source_invalid", "网络代理配置无效", err)
 	}
+	httpClient.Transport = pinneddial.WrapTransport(httpClient.Transport)
 	httpClient.Timeout = torrentSourceRequestTimeout
 	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= torrentSourceMaxRedirects {
@@ -177,6 +182,10 @@ func validateTorrentSourceURL(ctx context.Context, rawURL string, opts torrentSo
 		if isBlockedNetipAddr(address) {
 			return permanentFailure("torrent_source_invalid", "下载链接无效", nil)
 		}
+	}
+	// 直连时把已校验地址固定到拨号阶段；代理模式下目标由代理解析，地址固定不适用。
+	if !opts.proxyEnabled {
+		opts.pins.Add(host, addresses)
 	}
 	return nil
 }

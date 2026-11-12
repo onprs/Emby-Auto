@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -204,5 +205,68 @@ func TestClientHonorsContextCancellation(t *testing.T) {
 	var apiErr *Error
 	if !errors.As(err, &apiErr) || apiErr.Code != "agent_request_cancelled" || apiErr.Retryable || !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %#v, want non-retryable cancelled request classification", err)
+	}
+}
+
+func TestClientProxyResolvedEndpointSkipsOnlyLocalDNSFailure(t *testing.T) {
+	resolver := &net.Resolver{PreferGo: true, Dial: func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("dns unavailable")
+	}}
+	var requests atomic.Int32
+	transport := agentRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return agentResponse(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`), nil
+	})
+	base := ClientOptions{
+		BaseURL: "http://provider.invalid/v1", APIKey: "test-key", Model: "test-model",
+		HTTPClient: &http.Client{Transport: transport}, Resolver: resolver,
+	}
+
+	directClient, err := NewClient(base)
+	if err != nil {
+		t.Fatalf("NewClient(direct) error = %v", err)
+	}
+	_, err = directClient.complete(context.Background(), chatRequest{Model: "test-model"})
+	var apiErr *Error
+	if !errors.As(err, &apiErr) || apiErr.Code != "agent_request_failed" || !apiErr.Retryable {
+		t.Fatalf("direct complete() error = %#v, want retryable agent_request_failed", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("direct requests = %d, want 0", requests.Load())
+	}
+
+	base.ProxyEnabled = true
+	proxiedClient, err := NewClient(base)
+	if err != nil {
+		t.Fatalf("NewClient(proxy) error = %v", err)
+	}
+	if _, err := proxiedClient.complete(context.Background(), chatRequest{Model: "test-model"}); err != nil {
+		t.Fatalf("proxied complete() error = %v", err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("proxied requests = %d, want 1", requests.Load())
+	}
+}
+
+func TestClientRejectsLinkLocalEndpointEvenWithProxy(t *testing.T) {
+	var requests atomic.Int32
+	transport := agentRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return agentResponse(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`), nil
+	})
+	client, err := NewClient(ClientOptions{
+		BaseURL: "http://169.254.169.254/v1", APIKey: "test-key", Model: "test-model",
+		HTTPClient: &http.Client{Transport: transport}, ProxyEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	_, err = client.complete(context.Background(), chatRequest{Model: "test-model"})
+	var apiErr *Error
+	if !errors.As(err, &apiErr) || apiErr.Code != "agent_endpoint_forbidden" {
+		t.Fatalf("complete() error = %#v, want agent_endpoint_forbidden", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("requests = %d, want 0", requests.Load())
 	}
 }

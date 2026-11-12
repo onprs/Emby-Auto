@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/onprs/emby-auto/backend/internal/domain"
+	"github.com/onprs/emby-auto/backend/internal/platform/pinneddial"
 	"golang.org/x/net/html"
 )
 
@@ -117,7 +118,7 @@ func NewClient(options ClientOptions) (*Client, error) {
 			return errSearchRedirectLimit
 		}
 		if trusted := trustedOrigin(request.Context()); trusted != nil {
-			if err := validateSearchTarget(request.Context(), resolver, trusted, request.URL, options.ProxyEnabled); err != nil {
+			if err := validateSearchTarget(request.Context(), resolver, trusted, request.URL, options.ProxyEnabled, pinneddial.FromContext(request.Context())); err != nil {
 				return err
 			}
 		}
@@ -126,6 +127,7 @@ func NewClient(options ClientOptions) (*Client, error) {
 		}
 		return nil
 	}
+	httpClient.Transport = pinneddial.WrapTransport(httpClient.Transport)
 	return &Client{
 		httpClient:     httpClient,
 		providers:      providers,
@@ -273,9 +275,11 @@ func (client *Client) fetchHTML(ctx context.Context, rawURL string, trusted *url
 	if err != nil {
 		return nil, &searchFetchFailure{category: "fetch page: invalid target", cause: err}
 	}
-	if err := validateSearchTarget(ctx, client.resolver, trusted, target, client.proxyEnabled); err != nil {
+	pins := pinneddial.New()
+	if err := validateSearchTarget(ctx, client.resolver, trusted, target, client.proxyEnabled, pins); err != nil {
 		return nil, err
 	}
+	ctx = pinneddial.WithContext(ctx, pins)
 	ctx = context.WithValue(ctx, trustedOriginKey{}, trusted)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
@@ -322,7 +326,7 @@ func trustedOrigin(ctx context.Context) *url.URL {
 // 与管理员配置的搜索源同主机时保持信任，便于内部搜索源使用不同端口或 scheme；
 // 跳转到其他主机时要求解析到可确认的公开地址，避免第三方页面把 Worker 指向内网。
 // 启用网络代理时 DNS 由代理解析，本地解析失败交由代理判定；本地解析成功仍拒绝内网地址。
-func validateSearchTarget(ctx context.Context, resolver Resolver, trusted, target *url.URL, proxyEnabled bool) error {
+func validateSearchTarget(ctx context.Context, resolver Resolver, trusted, target *url.URL, proxyEnabled bool, pins *pinneddial.Pins) error {
 	if target == nil || target.User != nil || target.Host == "" {
 		return errSearchTargetInvalid
 	}
@@ -351,6 +355,11 @@ func validateSearchTarget(ctx context.Context, resolver Resolver, trusted, targe
 		if blockedSearchAddress(address) {
 			return errSearchTargetForbidden
 		}
+	}
+	// 直连时把已校验地址固定到拨号阶段，避免校验与连接之间再次解析到内网。
+	// 代理模式下目标地址由代理解析，地址固定不适用。
+	if !proxyEnabled {
+		pins.Add(host, addresses)
 	}
 	return nil
 }

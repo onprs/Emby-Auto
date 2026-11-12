@@ -537,6 +537,7 @@ func (service *AgentResolutionService) Run(ctx context.Context, operation domain
 		client, err := agentapi.NewClient(agentapi.ClientOptions{
 			BaseURL: settings.BaseURL, APIKey: apiKey, Model: settings.Model,
 			RequestTimeout: time.Duration(settings.RequestTimeoutSeconds) * time.Second, HTTPClient: httpClient,
+			ProxyEnabled: settings.UseNetworkProxy,
 		})
 		if err != nil {
 			return agentRunError(err)
