@@ -8,14 +8,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/onprs/emby-auto/backend/internal/domain"
 )
 
+// importRecoveryQueryTimeout 限制导入提交失败后的状态确认时间。
+// 使用与任务上下文解绑的短超时，避免取消后无法判断导入记录是否已提交。
+const importRecoveryQueryTimeout = 5 * time.Second
+
 type TaskImportStore interface {
 	BeginImport(context.Context, uuid.UUID, uuid.UUID) (domain.ImportCommand, error)
 	CompleteImport(context.Context, domain.ImportCompletion) error
+	ObserveImportRecovery(context.Context, uuid.UUID, uuid.UUID, string, string) (domain.ImportRecoveryState, error)
 }
 
 type EmbyImportHandler struct {
@@ -92,7 +98,7 @@ func (handler *EmbyImportHandler) Handle(ctx context.Context, operation domain.O
 	if err != nil {
 		return permanentFailure("library_path_invalid", "the subtitle library destination is unsafe", err)
 	}
-	if err := importArtifactPair(
+	created, err := importArtifactPair(
 		ctx,
 		command.Video,
 		command.Subtitle,
@@ -101,7 +107,8 @@ func (handler *EmbyImportHandler) Handle(ctx context.Context, operation domain.O
 		destinationSubtitle,
 		operation.ID,
 		handler.libraryAccess,
-	); err != nil {
+	)
+	if err != nil {
 		var treeErr *unsupportedLibraryTreeError
 		if errors.As(err, &treeErr) {
 			return permanentFailure("library_tree_unsupported", "the Emby library directory layout is not supported", err)
@@ -112,16 +119,59 @@ func (handler *EmbyImportHandler) Handle(ctx context.Context, operation domain.O
 		}
 		return retryableFailure("library_import_failed", "the paired media files could not be imported", err)
 	}
-	if err := handler.store.CompleteImport(ctx, domain.ImportCompletion{
+	completion := domain.ImportCompletion{
 		TaskID:                  command.TaskID,
 		ImportID:                command.ImportID,
 		OperationID:             operation.ID,
 		DestinationVideoPath:    destinationVideo,
 		DestinationSubtitlePath: destinationSubtitle,
-	}); err != nil {
-		return mediaStoreFailure("import", err)
+	}
+	if completeErr := handler.store.CompleteImport(ctx, completion); completeErr != nil {
+		failure := mediaStoreFailure("import", completeErr)
+		var classified *Failure
+		if !errors.As(failure, &classified) {
+			return failure
+		}
+		return handler.compensateFailedImport(ctx, completion, created, classified)
 	}
 	return nil
+}
+
+// compensateFailedImport 在数据库确认失败后判断是否安全回滚。
+// 只有导入记录确知未成功、目标路径未被任何成功导入占用、且本次失败不会重试时，
+// 才回滚本次调用创建且仍指向原 inode 的文件；状态未知时保留文件供重试采用或人工恢复。
+func (handler *EmbyImportHandler) compensateFailedImport(
+	ctx context.Context,
+	completion domain.ImportCompletion,
+	created []importedCommit,
+	failure *Failure,
+) error {
+	observeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), importRecoveryQueryTimeout)
+	defer cancel()
+	state, err := handler.store.ObserveImportRecovery(
+		observeCtx,
+		completion.TaskID,
+		completion.ImportID,
+		completion.DestinationVideoPath,
+		completion.DestinationSubtitlePath,
+	)
+	if err != nil {
+		// 数据库状态未知：保留已提交文件，避免因取消或连接中断盲删。
+		return failure
+	}
+	if state.Succeeded {
+		// 提交实际已生效（例如提交后连接中断），按成功处理。
+		return nil
+	}
+	if len(created) == 0 || state.DestinationClaimed {
+		return failure
+	}
+	if failure.Retryable && state.TaskState != domain.TaskCancelled {
+		// 可重试失败保留文件，下一次尝试会验证并采用同一内容。
+		return failure
+	}
+	rollbackImportedCommits(created)
+	return failure
 }
 
 type destinationConflictError struct {
@@ -145,21 +195,21 @@ func importArtifactPair(
 	libraryRoot, destinationVideo, destinationSubtitle string,
 	operationID uuid.UUID,
 	libraryAccess ImportedLibraryAccess,
-) (importErr error) {
+) (committed []importedCommit, importErr error) {
 	if err := context.Cause(ctx); err != nil {
-		return err
+		return nil, err
 	}
 	if operationID == uuid.Nil {
-		return fmt.Errorf("import operation ID is required")
+		return nil, fmt.Errorf("import operation ID is required")
 	}
 	if libraryAccess == nil {
-		return fmt.Errorf("imported library access is required")
+		return nil, fmt.Errorf("imported library access is required")
 	}
 	if video.BaseName == "" || video.BaseName != subtitle.BaseName {
-		return fmt.Errorf("paired import artifacts must share a basename")
+		return nil, fmt.Errorf("paired import artifacts must share a basename")
 	}
 	if filepath.Dir(destinationVideo) != filepath.Dir(destinationSubtitle) {
-		return fmt.Errorf("paired import destinations must share a directory")
+		return nil, fmt.Errorf("paired import destinations must share a directory")
 	}
 	libraryTreeRoot, err := prepareImportedLibraryDirectories(
 		libraryRoot,
@@ -167,12 +217,12 @@ func importArtifactPair(
 		libraryAccess,
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// 目录树的符号链接、特殊对象与权限问题必须在提交前暴露，
 	// 否则失败后已经提交的媒体文件会变成应用不追踪的孤儿文件。
 	if err := libraryAccess.ValidateTree(ctx, libraryTreeRoot); err != nil {
-		return err
+		return nil, err
 	}
 	destinations := []*importDestination{
 		{artifact: video, final: destinationVideo, temporary: importTemporaryPath(destinationVideo, operationID)},
@@ -183,7 +233,8 @@ func importArtifactPair(
 			_ = os.Remove(destination.temporary)
 		}
 	}()
-	// created 记录本次操作确定创建的文件；后续步骤失败时只回滚这些路径。
+	// created 记录本次调用确定创建的文件；本函数内失败时回滚，
+	// 成功时返回给调用方，用于数据库确认阶段失败后的补偿判断。
 	created := make([]importedCommit, 0, len(destinations))
 	defer func() {
 		if importErr != nil {
@@ -192,17 +243,17 @@ func importArtifactPair(
 	}()
 	for _, destination := range destinations {
 		if err := context.Cause(ctx); err != nil {
-			return err
+			return nil, err
 		}
 		prepared, err := prepareImportDestination(ctx, *destination, libraryAccess)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		destination.prepared = prepared
 	}
 	for _, destination := range destinations {
 		if err := context.Cause(ctx); err != nil {
-			return err
+			return nil, err
 		}
 		if !destination.prepared {
 			continue
@@ -210,73 +261,74 @@ func importArtifactPair(
 		if err := commitTemporaryFile(destination.temporary, destination.final); err != nil {
 			// 硬链接已建立但临时文件移除失败时，目标与临时文件指向同一 inode，
 			// 可以确认目标由本次操作创建并纳入回滚。
-			if committed, adopted := adoptCommittedTemporary(destination.temporary, destination.final); adopted {
+			if committed, adopted := adoptCommittedTemporary(destination.temporary, destination.final, destination.artifact); adopted {
 				created = append(created, committed)
 				if accessErr := libraryAccess.Apply(destination.final); accessErr != nil {
-					return accessErr
+					return nil, accessErr
 				}
 				continue
 			}
 			if existingErr := verifyFileAgainstArtifact(ctx, destination.final, destination.artifact); existingErr == nil {
 				// 目标是并发写入者创建的相同内容文件，不属于本次操作，回滚时不能删除。
 				if accessErr := libraryAccess.Apply(destination.final); accessErr != nil {
-					return accessErr
+					return nil, accessErr
 				}
 				continue
 			}
 			if cause := context.Cause(ctx); cause != nil {
-				return cause
+				return nil, cause
 			}
 			if errors.Is(err, os.ErrExist) {
-				return &destinationConflictError{path: destination.final}
+				return nil, &destinationConflictError{path: destination.final}
 			}
-			return fmt.Errorf("atomically commit library file: %w", err)
+			return nil, fmt.Errorf("atomically commit library file: %w", err)
 		}
-		committed, err := inspectCommittedImport(destination.final)
+		committed, err := inspectCommittedImport(destination.final, destination.artifact)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		created = append(created, committed)
 	}
 	if err := context.Cause(ctx); err != nil {
-		return err
+		return nil, err
 	}
 	for _, destination := range destinations {
 		if err := verifyFileAgainstArtifact(ctx, destination.final, destination.artifact); err != nil {
 			if cause := context.Cause(ctx); cause != nil {
-				return cause
+				return nil, cause
 			}
-			return &destinationConflictError{path: destination.final}
+			return nil, &destinationConflictError{path: destination.final}
 		}
 		if err := libraryAccess.Apply(destination.final); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	// 提交后再次校验目录树，捕获本操作期间被替换为符号链接或特殊对象的目录；
 	// 失败时由上面的 defer 回滚本次创建的文件。
 	if err := libraryAccess.ApplyTree(ctx, libraryTreeRoot); err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+	return created, nil
 }
 
 type importedCommit struct {
-	path string
-	info os.FileInfo
+	path     string
+	info     os.FileInfo
+	checksum []byte
 }
 
 // inspectCommittedImport 记录本次操作提交后的文件身份，用于回滚时确认目标没有被替换。
-func inspectCommittedImport(final string) (importedCommit, error) {
+func inspectCommittedImport(final string, artifact domain.MediaArtifact) (importedCommit, error) {
 	info, err := os.Lstat(final)
 	if err != nil {
 		return importedCommit{}, fmt.Errorf("inspect committed library file: %w", err)
 	}
-	return importedCommit{path: final, info: info}, nil
+	return importedCommit{path: final, info: info, checksum: artifact.ChecksumSHA256}, nil
 }
 
 // adoptCommittedTemporary 判断提交失败时目标是否已由本次操作建立。
 // 硬链接回退在 link 成功、临时文件移除失败时会留下同一 inode 的两个路径。
-func adoptCommittedTemporary(temporary, final string) (importedCommit, bool) {
+func adoptCommittedTemporary(temporary, final string, artifact domain.MediaArtifact) (importedCommit, bool) {
 	temporaryInfo, temporaryErr := os.Lstat(temporary)
 	finalInfo, finalErr := os.Lstat(final)
 	if temporaryErr != nil || finalErr != nil {
@@ -288,10 +340,12 @@ func adoptCommittedTemporary(temporary, final string) (importedCommit, bool) {
 	if !os.SameFile(temporaryInfo, finalInfo) {
 		return importedCommit{}, false
 	}
-	return importedCommit{path: final, info: finalInfo}, true
+	return importedCommit{path: final, info: finalInfo, checksum: artifact.ChecksumSHA256}, true
 }
 
-// rollbackImportedCommits 只删除本次操作提交且仍指向同一文件的对象。
+// rollbackImportedCommits 只删除本次操作提交且身份仍一致的对象。
+// inode、大小与修改时间任一变化都说明目标已被替换或修改，保留现文件；
+// 三者均匹配时再核对内容校验和，避免文件系统重用 inode 或时间精度不足时误删。
 func rollbackImportedCommits(commits []importedCommit) {
 	for index := len(commits) - 1; index >= 0; index-- {
 		commit := commits[index]
@@ -299,7 +353,15 @@ func rollbackImportedCommits(commits []importedCommit) {
 			continue
 		}
 		current, err := os.Lstat(commit.path)
-		if err != nil || !os.SameFile(commit.info, current) {
+		if err != nil || !current.Mode().IsRegular() || !os.SameFile(commit.info, current) {
+			continue
+		}
+		if current.Size() != commit.info.Size() || !current.ModTime().Equal(commit.info.ModTime()) {
+			continue
+		}
+		if err := verifyFileAgainstArtifact(context.Background(), commit.path, domain.MediaArtifact{
+			FilePath: commit.path, SizeBytes: current.Size(), ChecksumSHA256: commit.checksum,
+		}); err != nil {
 			continue
 		}
 		_ = os.Remove(commit.path)

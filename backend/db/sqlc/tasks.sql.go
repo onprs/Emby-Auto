@@ -568,6 +568,49 @@ func (q *Queries) GetTaskImportCommand(ctx context.Context, arg GetTaskImportCom
 	return i, err
 }
 
+const getTaskImportRecoveryState = `-- name: GetTaskImportRecoveryState :one
+SELECT
+    COALESCE((SELECT task.state FROM episode_tasks AS task WHERE task.id = $1), '')::text AS task_state,
+    COALESCE(
+        (SELECT import.status FROM imports AS import WHERE import.id = $2 AND import.task_id = $1),
+        ''
+    )::text AS import_state,
+    EXISTS (
+        SELECT 1
+        FROM imports AS claimed
+        WHERE claimed.status = 'succeeded'
+          AND (
+              claimed.destination_video_path = $3::text
+              OR claimed.destination_subtitle_path = $4::text
+          )
+    ) AS destination_claimed
+`
+
+type GetTaskImportRecoveryStateParams struct {
+	TaskID                  pgtype.UUID `db:"task_id" json:"task_id"`
+	ImportID                pgtype.UUID `db:"import_id" json:"import_id"`
+	DestinationVideoPath    string      `db:"destination_video_path" json:"destination_video_path"`
+	DestinationSubtitlePath string      `db:"destination_subtitle_path" json:"destination_subtitle_path"`
+}
+
+type GetTaskImportRecoveryStateRow struct {
+	TaskState          string `db:"task_state" json:"task_state"`
+	ImportState        string `db:"import_state" json:"import_state"`
+	DestinationClaimed bool   `db:"destination_claimed" json:"destination_claimed"`
+}
+
+func (q *Queries) GetTaskImportRecoveryState(ctx context.Context, arg GetTaskImportRecoveryStateParams) (GetTaskImportRecoveryStateRow, error) {
+	row := q.db.QueryRow(ctx, getTaskImportRecoveryState,
+		arg.TaskID,
+		arg.ImportID,
+		arg.DestinationVideoPath,
+		arg.DestinationSubtitlePath,
+	)
+	var i GetTaskImportRecoveryStateRow
+	err := row.Scan(&i.TaskState, &i.ImportState, &i.DestinationClaimed)
+	return i, err
+}
+
 const getTaskReviewByTask = `-- name: GetTaskReviewByTask :one
 SELECT id, task_id, decision, notes, reviewed_by, reviewed_at, idempotency_key, expected_task_version
 FROM reviews

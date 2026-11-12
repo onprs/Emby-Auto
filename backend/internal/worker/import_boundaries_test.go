@@ -58,7 +58,7 @@ func TestImportPreservesDestinationCreatedWhilePreparingPair(t *testing.T) {
 				}
 				return nil
 			}
-			err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, operationID, access)
+			_, err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, operationID, access)
 			var conflict *destinationConflictError
 			if !errors.As(err, &conflict) {
 				t.Fatalf("并发目标冲突应返回冲突错误，实际为 %v", err)
@@ -92,7 +92,7 @@ func TestImportRejectsCorruptedStagedContentBeforeCommit(t *testing.T) {
 	destinationVideo := filepath.Join(libraryRoot, "完整性检查", "Season1", baseName+".mkv")
 	destinationSubtitle := filepath.Join(libraryRoot, "完整性检查", "Season1", baseName+".ass")
 	operationID := uuid.New()
-	if err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, operationID, newTestImportedLibraryAccess()); err == nil {
+	if _, err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, operationID, newTestImportedLibraryAccess()); err == nil {
 		t.Fatal("损坏的暂存文件被成功入库")
 	}
 	for _, final := range []string{destinationVideo, destinationSubtitle} {
@@ -133,7 +133,7 @@ func TestImportRejectsUnsupportedLibraryTreeBeforeCommit(t *testing.T) {
 	destinationVideo := filepath.Join(destination, baseName+".mkv")
 	destinationSubtitle := filepath.Join(destination, baseName+".ass")
 	operationID := uuid.New()
-	err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, operationID, newTestImportedLibraryAccess())
+	_, err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, operationID, newTestImportedLibraryAccess())
 	var treeErr *unsupportedLibraryTreeError
 	if !errors.As(err, &treeErr) {
 		t.Fatalf("importArtifactPair() error = %v, want unsupported library tree", err)
@@ -221,7 +221,7 @@ func TestImportRollsBackCreatedFilesWhenPostCommitAccessFails(t *testing.T) {
 		}
 		return nil
 	}
-	err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, operationID, access)
+	_, err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, operationID, access)
 	if err == nil {
 		t.Fatal("importArtifactPair() error = nil, want post-commit failure")
 	}
@@ -234,7 +234,7 @@ func TestImportRollsBackCreatedFilesWhenPostCommitAccessFails(t *testing.T) {
 	assertFileContent(t, subtitlePath, validASSFixture)
 
 	// 回滚后同一对文件应可以重新入库。
-	if err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, uuid.New(), newTestImportedLibraryAccess()); err != nil {
+	if _, err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, uuid.New(), newTestImportedLibraryAccess()); err != nil {
 		t.Fatalf("retry after rollback error = %v", err)
 	}
 	assertFileContent(t, destinationVideo, videoContent)
@@ -271,7 +271,7 @@ func TestImportRollsBackOnlyFilesCreatedByThisOperation(t *testing.T) {
 		}
 		return nil
 	}
-	if err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, uuid.New(), access); err == nil {
+	if _, err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, uuid.New(), access); err == nil {
 		t.Fatal("importArtifactPair() error = nil, want failure")
 	}
 	assertFileContent(t, destinationVideo, videoContent)
@@ -312,7 +312,7 @@ func TestImportCancellationAfterCommitRollsBackCreatedFiles(t *testing.T) {
 		}
 		return nil
 	}
-	err := importArtifactPair(ctx, command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, operationID, access)
+	_, err := importArtifactPair(ctx, command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, operationID, access)
 	if !errors.Is(err, cancellation) {
 		t.Fatalf("importArtifactPair() error = %v, want cancellation", err)
 	}
@@ -358,7 +358,7 @@ func benchmarkImportArtifactPair(b *testing.B, videoSize int) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		if err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, uuid.New(), newTestImportedLibraryAccess()); err != nil {
+		if _, err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, uuid.New(), newTestImportedLibraryAccess()); err != nil {
 			b.Fatal(err)
 		}
 		b.StopTimer()

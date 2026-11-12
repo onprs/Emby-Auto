@@ -474,6 +474,34 @@ func (workflow *TaskWorkflow) CompleteImport(ctx context.Context, completion dom
 	})
 }
 
+// ObserveImportRecovery 读取导入记录状态，供 CompleteImport 失败后的安全补偿判断。
+// 任务或导入记录不存在时返回空状态；数据库错误由调用方保留已提交文件等待恢复。
+func (workflow *TaskWorkflow) ObserveImportRecovery(
+	ctx context.Context,
+	taskID, importID uuid.UUID,
+	destinationVideoPath, destinationSubtitlePath string,
+) (domain.ImportRecoveryState, error) {
+	if taskID == uuid.Nil || importID == uuid.Nil {
+		return domain.ImportRecoveryState{}, fmt.Errorf("import recovery observation requires task and import IDs")
+	}
+	row, err := workflow.queries.GetTaskImportRecoveryState(ctx, db.GetTaskImportRecoveryStateParams{
+		TaskID:                  repository.UUIDToPG(taskID),
+		ImportID:                repository.UUIDToPG(importID),
+		DestinationVideoPath:    destinationVideoPath,
+		DestinationSubtitlePath: destinationSubtitlePath,
+	})
+	if err != nil {
+		return domain.ImportRecoveryState{}, fmt.Errorf("observe import recovery state: %w", err)
+	}
+	state := domain.ImportRecoveryState{
+		TaskState:          domain.TaskState(row.TaskState),
+		ImportState:        row.ImportState,
+		DestinationClaimed: row.DestinationClaimed,
+	}
+	state.Succeeded = state.TaskState == domain.TaskImported && state.ImportState == "succeeded"
+	return state, nil
+}
+
 func (workflow *TaskWorkflow) scheduleTaskCleanupInTx(
 	ctx context.Context,
 	scope database.TxScope,

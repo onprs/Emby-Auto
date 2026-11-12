@@ -357,6 +357,23 @@ JOIN media_artifacts AS subtitle ON subtitle.id = artifact_set.subtitle_artifact
 WHERE task.id = sqlc.arg(task_id)
   AND import.id = sqlc.arg(import_id);
 
+-- name: GetTaskImportRecoveryState :one
+SELECT
+    COALESCE((SELECT task.state FROM episode_tasks AS task WHERE task.id = sqlc.arg(task_id)), '')::text AS task_state,
+    COALESCE(
+        (SELECT import.status FROM imports AS import WHERE import.id = sqlc.arg(import_id) AND import.task_id = sqlc.arg(task_id)),
+        ''
+    )::text AS import_state,
+    EXISTS (
+        SELECT 1
+        FROM imports AS claimed
+        WHERE claimed.status = 'succeeded'
+          AND (
+              claimed.destination_video_path = sqlc.arg(destination_video_path)::text
+              OR claimed.destination_subtitle_path = sqlc.arg(destination_subtitle_path)::text
+          )
+    ) AS destination_claimed;
+
 -- name: StartTaskImport :one
 UPDATE episode_tasks
 SET state = 'importing',
