@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/onprs/emby-auto/backend/internal/platform/config"
 	appqueue "github.com/onprs/emby-auto/backend/internal/platform/riverqueue"
 )
 
@@ -68,5 +73,22 @@ func TestEventsRetentionCleanupScheduleAndUniquenessAreHourly(t *testing.T) {
 
 	if newEventsRetentionPeriodicJob() == nil {
 		t.Fatal("newEventsRetentionPeriodicJob() = nil")
+	}
+}
+
+// 停止信号属于正常停机：waitForInstalledRuntime 返回的 context 取消错误
+// 必须与 API 的停止路径一致，让 Worker 干净退出而不是以失败退出码结束。
+func TestWorkerStopSignalExitsCleanly(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := waitForInstalledRuntime(parent, config.Config{}, slog.New(slog.NewJSONHandler(io.Discard, nil)), false)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitForInstalledRuntime() error = %v, want context.Canceled", err)
+	}
+	if workerStopExitCode(err) != 0 {
+		t.Fatalf("workerStopExitCode(context.Canceled) = %d, want 0", workerStopExitCode(err))
+	}
+	if workerStopExitCode(errors.New("transcode failed")) != 1 {
+		t.Fatalf("workerStopExitCode(ordinary error) != 1")
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -120,10 +121,21 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, cfg, logger, *checkOnly); err != nil {
+	// SIGTERM/SIGINT 来自宿主控制器或系统停机，属于正常停止：与 API 一致地干净退出，
+	// 让 systemd 单元变为 inactive 而非 failed，暂停后台后重复安装器也能区分暂停与崩溃。
+	if err := run(ctx, cfg, logger, *checkOnly); err != nil && workerStopExitCode(err) == 1 {
 		logger.Error("worker stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+// workerStopExitCode 决定 Worker 的退出码：停止信号导致的取消按正常停机处理（0），
+// 其余错误以失败退出（1）。install.sh 与 host-control 依赖该区分判定暂停意图。
+func workerStopExitCode(err error) int {
+	if errors.Is(err, context.Canceled) {
+		return 0
+	}
+	return 1
 }
 
 func run(ctx context.Context, cfg config.Config, logger *slog.Logger, checkOnly bool) error {

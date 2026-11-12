@@ -155,7 +155,7 @@ sudo install -d -o emby -g emby -m 2775 \
   /srv/emby-auto/media/movies
 ```
 
-If qBittorrent uses another account, configure a shared group and default ACL as described in “Account and directory permissions”. The `2775` library root lets a separate Emby account traverse and read while the application writes as the owner.
+If qBittorrent uses another account, configure a shared group and default ACL as described in “Account and directory permissions”. The `2775` library root lets a separate Emby account traverse and read while the application writes as the owner. Imported title subtrees are set by the application to directory mode `0755` and file mode `0644`, keeping separate Emby accounts read-only.
 
 For hardware transcoding, add the service account to the device-required `render`, `video`, or other groups, then restart services to apply group membership.
 

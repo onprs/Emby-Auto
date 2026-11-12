@@ -176,13 +176,43 @@ resolve_share_group() {
   [[ "$share_gid" =~ ^[0-9]+$ ]] && (( share_gid > 0 )) || fail "共享组 $share_group 的 GID 无效。"
 }
 
+apply_share_group_access() {
+  command -v setfacl >/dev/null 2>&1 || fail '缺少 setfacl，无法配置共享组目录权限；请先安装 acl 软件包。'
+  local directory
+  for directory in "$storage_dir/downloads" "$storage_dir/work" "$storage_dir/staging"; do
+    apply_share_group_directory "$directory"
+  done
+  if [[ "$(read_setting share_group)" != "$share_group" ]]; then
+    (umask 077; sed "s/^share_group=.*/share_group=$share_group/" "$config_dir/installer.env" >"$config_dir/installer.env.next")
+    mv -f "$config_dir/installer.env.next" "$config_dir/installer.env"
+  fi
+}
+
+apply_share_group_directory() {
+  local directory="${1:?用法: apply_share_group_directory <目录>}"
+  [[ -d "$directory" ]] || fail "目录 $directory 不存在，无法应用共享组。"
+  runuser -u "$service_user" -- test -w "$directory" || fail "账户 $service_user 无法写入 $directory。"
+  chgrp "$share_group" "$directory"
+  chmod 2770 "$directory"
+  setfacl -m "g:${share_group}:rwx" -m "m::rwx" "$directory"
+  setfacl -d -m "g:${share_group}:rwx" -m "m::rwx" "$directory"
+}
+
+share_group_primary_group() {
+  [[ "$(id -gn "$service_user" 2>/dev/null)" == "$share_group" ]]
+}
+
+share_group_member() {
+  share_group_primary_group || id -nG "$service_user" 2>/dev/null | tr ' ' '\n' | grep -qxF "$share_group"
+}
+
 ensure_share_group_membership() {
   [[ -n "$share_group" ]] || return 0
-  if [[ "$(id -gn "$service_user")" == "$share_group" ]] || id -nG "$service_user" | tr ' ' '\n' | grep -qxF "$share_group"; then
-    return 0
-  fi
+  share_group_member && return 0
   command -v usermod >/dev/null 2>&1 || fail '缺少 usermod，无法将服务账户加入共享组。'
   usermod -aG "$share_group" "$service_user" || fail "无法将账户 $service_user 加入共享组 $share_group。"
+  # 组成员关系对新进程生效后才能写入共享组目录；未生效说明需要重启相关服务。
+  share_group_member || fail "账户 $service_user 加入共享组 $share_group 后未生效，请检查账户后重试。"
 }
 
 fetch() {
@@ -292,6 +322,11 @@ prepare_account_and_storage() {
   group_id="${share_gid:-$service_gid}"
   for directory in "$storage_dir/downloads" "$storage_dir/work" "$storage_dir/staging"; do
     if [[ -e "$directory" || -L "$directory" ]]; then
+      if [[ -n "$share_group" ]]; then
+        # 已有目录补充共享组与 setgid，仅修改目录本身，不动递归内容；
+        # 缺省 ACL 让 qBittorrent 的 umask 不影响新建子目录的组写权限。
+        apply_share_group_directory "$directory"
+      fi
       continue
     fi
     # setgid 让后续子目录继承共享组；默认 ACL 让 qBittorrent 的 umask 不影响组写权限。
@@ -313,6 +348,9 @@ prepare_account_and_storage() {
   if [[ ! -f "$config_dir/installer.env" ]]; then
     (umask 077; printf 'installer_format=%s\nservice_user=%s\nshare_group=%s\nweb_port=%s\nversion=%s\n' \
       "$installer_format" "$service_user" "$share_group" "$web_port" "$version" >"$config_dir/installer.env.next")
+    mv -f "$config_dir/installer.env.next" "$config_dir/installer.env"
+  elif [[ -n "$share_group" && "$(read_setting share_group)" != "$share_group" ]]; then
+    (umask 077; sed "s/^share_group=.*/share_group=$share_group/" "$config_dir/installer.env" >"$config_dir/installer.env.next")
     mv -f "$config_dir/installer.env.next" "$config_dir/installer.env"
   fi
 }
@@ -381,9 +419,10 @@ check_health() {
           fi
           ;;
         stopped)
-          # 用户主动暂停后台后 Worker 为 inactive/failed；host-control 将其报告为 stopped。
-          # 安装记录未变，保留暂停意图，不自动启动 Worker。
-          if [[ "$requirement" == any ]] && ! systemctl is-active --quiet emby-auto-worker.service; then
+          # Worker 正常停止后单元为 inactive；崩溃后为 failed。只有 inactive 才视为
+          # 用户主动暂停：保留暂停意图，不自动启动 Worker，也不掩盖真实故障。
+          if [[ "$requirement" == any ]] && ! systemctl is-active --quiet emby-auto-worker.service && \
+            [[ "$(systemctl show emby-auto-worker.service --property=ActiveState --value)" == inactive ]]; then
             worker_paused=1
             return 0
           fi
@@ -450,6 +489,12 @@ main() {
   trap 'exit 143' TERM
   if [[ -f "$config_dir/installed" ]]; then
     if (( prepare_only == 0 )); then
+      # 已有安装请求共享组时实际应用成员与目录 ACL，并持久化到安装记录；
+      # 失败即整体失败，不能只输出文案假装已生效。
+      if [[ -n "$share_group" ]]; then
+        ensure_share_group_membership
+        apply_share_group_access
+      fi
       check_health any
       show_access
     else
