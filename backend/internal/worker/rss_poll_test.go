@@ -3,12 +3,15 @@ package worker
 import (
 	"context"
 	"errors"
+	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/onprs/emby-auto/backend/internal/domain"
+	"github.com/onprs/emby-auto/backend/internal/platform/rssfeed"
 	"github.com/onprs/emby-auto/backend/internal/service"
 	"github.com/riverqueue/river"
 )
@@ -40,6 +43,7 @@ type rssPollStoreStub struct {
 	callSequence        []string
 	failureCalls        int
 	failureCode         string
+	failureMessage      string
 	summary             domain.RSSPollBatchSummary
 	summaryCalls        int
 	scheduleErrors      map[uuid.UUID]error
@@ -74,9 +78,10 @@ func (stub *rssPollStoreStub) PersistPoll(_ context.Context, _ uuid.UUID, _ uuid
 	return stub.persistResult, stub.persistErr
 }
 
-func (stub *rssPollStoreStub) RecordPollFailure(_ context.Context, _ uuid.UUID, _ uuid.UUID, code, _ string) error {
+func (stub *rssPollStoreStub) RecordPollFailure(_ context.Context, _ uuid.UUID, _ uuid.UUID, code, message string) error {
 	stub.failureCalls++
 	stub.failureCode = code
+	stub.failureMessage = message
 	return nil
 }
 
@@ -658,6 +663,46 @@ func TestRSSPollHandlerManualFailureUsesOperationRetry(t *testing.T) {
 	}
 	if store.failureCalls != 1 {
 		t.Fatalf("failure audit calls = %d, want 1", store.failureCalls)
+	}
+}
+
+// 轮询失败会写入 rss.poll_failed 事件并经 API/SSE 返回，
+// 事件文本不能包含 feed 地址或 query 中的私有源凭据。
+func TestRSSPollHandlerRedactsFeedCredentialsFromRecordedFailure(t *testing.T) {
+	const secret = "AUDIT-SECRET-TOKEN-13"
+	subscriptionID := uuid.New()
+	store := &rssPollStoreStub{command: domain.RSSPollCommand{
+		SubscriptionID: subscriptionID,
+		FeedURL:        "http://127.0.0.1:1/private/feed.xml?passkey=" + secret,
+		Enabled:        true,
+		SourceSeason:   1,
+		PollInterval:   time.Hour,
+	}}
+	client, err := rssfeed.NewClient(rssfeed.ClientOptions{HTTPClient: &http.Client{Transport: &http.Transport{}}})
+	if err != nil {
+		t.Fatalf("rssfeed.NewClient() error = %v", err)
+	}
+	handler := NewRSSPollHandler(client, store, 1)
+
+	err = handler.Handle(context.Background(), domain.Operation{
+		ResourceType: "rss_subscription",
+		ResourceID:   subscriptionID,
+		Payload:      []byte(`{"continuous":true}`),
+	})
+	var snoozeErr *river.JobSnoozeError
+	if !errors.As(err, &snoozeErr) {
+		t.Fatalf("Handle() error = %v, want snooze", err)
+	}
+	if store.failureCalls != 1 || store.failureCode != "rss_fetch_failed" {
+		t.Fatalf("failure audit = calls %d code %q", store.failureCalls, store.failureCode)
+	}
+	for _, forbidden := range []string{secret, "passkey", "/private/feed.xml", "127.0.0.1"} {
+		if strings.Contains(store.failureMessage, forbidden) {
+			t.Fatalf("recorded failure message = %q, must not contain %q", store.failureMessage, forbidden)
+		}
+	}
+	if !strings.Contains(store.failureMessage, "fetch RSS feed") {
+		t.Fatalf("recorded failure message = %q, want stable diagnostic", store.failureMessage)
 	}
 }
 
