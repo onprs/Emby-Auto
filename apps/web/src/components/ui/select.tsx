@@ -2,6 +2,7 @@ import { Check, ChevronDown } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
+import { useFieldHintId } from '@/components/ui/field-hint';
 import { cn } from '@/lib/utils';
 
 export interface SelectOption {
@@ -31,6 +32,7 @@ export function Select({
   disabled,
   className,
   ariaLabel,
+  describedBy,
   placeholder,
 }: {
   id?: string;
@@ -40,8 +42,12 @@ export function Select({
   disabled?: boolean;
   className?: string;
   ariaLabel?: string;
+  /** 说明文本的 id；未传入时使用所在字段统一提供的说明。 */
+  describedBy?: string;
   placeholder?: string;
 }) {
+  const fieldHintId = useFieldHintId();
+  const descriptionId = describedBy ?? fieldHintId;
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [position, setPosition] = useState<Position | null>(null);
@@ -204,6 +210,7 @@ export function Select({
         type="button"
         disabled={disabled}
         aria-label={ariaLabel}
+        aria-describedby={descriptionId}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}

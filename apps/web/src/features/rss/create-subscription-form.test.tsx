@@ -153,6 +153,39 @@ describe('CreateSubscriptionForm', () => {
     expect(screen.getByRole('button', { name: '创建订阅' })).toBeEnabled();
   });
 
+  it('retries the same manual keyword after a TMDb failure', async () => {
+    mockLookup(() => HttpResponse.json({ code: 'rss_fetch_failed', message: 'fetch failed', details: {}, requestId: 'r1' }, { status: 503 }));
+    const searchCalls: string[] = [];
+    let attempts = 0;
+    server.use(
+      http.get('*/api/v1/tmdb/series/search', ({ request }) => {
+        searchCalls.push(new URL(request.url).searchParams.get('query') ?? '');
+        attempts += 1;
+        if (attempts === 1) {
+          return HttpResponse.json(
+            { code: 'tmdb_unavailable', message: 'TMDb 暂时不可用', details: {}, requestId: 'tmdb-retry' },
+            { status: 503 },
+          );
+        }
+        return HttpResponse.json({ items: [{ tmdbSeriesId: 600, name: '重试后命中的作品' }] });
+      }),
+    );
+    renderWithProviders(<CreateSubscriptionForm onDone={() => {}} />);
+
+    await userEvent.type(await screen.findByLabelText('RSS 地址'), feedUrl);
+    await userEvent.click(screen.getByRole('button', { name: /识别作品/ }));
+    expect(await screen.findByText('无法自动识别 RSS 内容，请手动搜索作品。')).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText('作品搜索关键词'), '重试后命中的作品');
+    await userEvent.click(screen.getByRole('button', { name: '查询' }));
+    expect(await screen.findByText('TMDb 暂时不可用')).toBeInTheDocument();
+
+    // 关键词不变时再次查询也必须重新请求 TMDb，而不是卡在错误状态。
+    await userEvent.click(screen.getByRole('button', { name: '查询' }));
+    expect(await screen.findByRole('button', { name: /重试后命中的作品/ })).toBeInTheDocument();
+    expect(searchCalls).toEqual(['重试后命中的作品', '重试后命中的作品']);
+  });
+
   it('loads only the scoped TMDb candidates proposed by Agent fallback', async () => {
     const resolutionId = '10000000-0000-0000-0000-000000000001';
     mockLookup(() => HttpResponse.json({

@@ -721,6 +721,16 @@ describe("SettingsTranscodePage", () => {
     expect(within(fields).getByLabelText("线程数")).toHaveRole("combobox");
     expect(within(fields).getByLabelText("转码并发数")).toHaveRole("combobox");
 
+    // 说明文本必须关联到真正可聚焦的控件，读屏在控件获得焦点时才会朗读。
+    const qualityField = within(fields).getByLabelText("质量值").closest("div.space-y-2");
+    expect(qualityField).not.toBeNull();
+    expect(within(qualityField as HTMLElement).getByRole("button")).toHaveAccessibleDescription(
+      "数值越低，画质和文件体积越大。",
+    );
+    expect(within(fields).getByLabelText("文件扩展名")).toHaveAccessibleDescription(
+      "由封装格式自动确定。",
+    );
+
     await userEvent.selectOptions(
       within(fields).getByLabelText("推荐方案"),
       "nvidia-hevc",

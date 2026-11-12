@@ -198,6 +198,25 @@ describe('application router lazy boundaries', () => {
     consoleError.mockRestore();
   });
 
+  it('preserves a 512-character download search keyword from the URL', async () => {
+    useSetupResponse();
+    useSessionResponse(true);
+    const longQuery = '下载'.repeat(150);
+    let requested: string | null = null;
+    server.use(
+      http.get('*/api/v1/downloads', ({ request }) => {
+        requested = new URL(request.url).searchParams.get('query');
+        return HttpResponse.json({ items: [] });
+      }),
+    );
+
+    renderApp(`/downloads?query=${encodeURIComponent(longQuery)}`);
+
+    // 输入框与契约都允许 512 字符；路由不能把 256 字以上的关键词静默丢弃。
+    expect(await screen.findByLabelText('搜索下载')).toHaveValue(longQuery);
+    await waitFor(() => expect(requested).toBe(longQuery));
+  });
+
   it('stops the shared event stream and returns to login after session loss', async () => {
     useSetupResponse();
     useSessionResponse(true);

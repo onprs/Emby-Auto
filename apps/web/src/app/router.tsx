@@ -250,7 +250,7 @@ const downloadsRoute = createRoute({
     ...cursorSearch(search),
     status: enumSearch(search.status, ['enqueue_pending', 'file_resolution_pending', 'downloading', 'completed', 'selecting_files', 'materialized', 'failed', 'cancelled'] as const),
     phase: enumSearch(search.phase, ['active', 'waiting', 'downloading', 'paused', 'completed', 'failed'] as const),
-    query: stringSearch(search.query, 256),
+    query: stringSearch(search.query, 512),
     sortBy: enumSearch(search.sortBy, ['attempt', 'status', 'client_state', 'progress', 'updated_at'] as const),
     sortOrder: enumSearch(search.sortOrder, ['asc', 'desc'] as const),
   }),

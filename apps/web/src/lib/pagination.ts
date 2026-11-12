@@ -6,6 +6,11 @@ type CursorSearch = {
 };
 
 const rootCursor = '_';
+/**
+ * URL 只保留最近若干页的游标：既能保证“上一页”始终可用，
+ * 也不会让 cursorStack 超过路由校验的 4096 字符上限。
+ */
+const maxCursorStackDepth = 50;
 
 /** Cursor pagination persisted in URL search so refresh and history restore it. */
 export function useCursorPagination() {
@@ -25,9 +30,14 @@ export function useCursorPagination() {
     if (!nextCursor) {
       return;
     }
+    const nextStack = [...stack, cursor ?? rootCursor];
+    // 超限时保留根游标和最近的记录，深页可以逐页退回第一页，而不是整段栈被丢弃。
+    const cursorStack = nextStack.length > maxCursorStackDepth
+      ? [rootCursor, ...nextStack.slice(-(maxCursorStackDepth - 1))]
+      : nextStack;
     update({
       cursor: nextCursor,
-      cursorStack: [...stack, cursor ?? rootCursor].join(','),
+      cursorStack: cursorStack.join(','),
     });
   };
 
