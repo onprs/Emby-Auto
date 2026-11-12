@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,34 +11,108 @@ import (
 	"github.com/onprs/emby-auto/backend/internal/service"
 )
 
+// configurationUpdateRequiredSections 与 contracts/openapi.yaml 中 UpdateConfigurationRequest
+// 及其子对象的 required 声明一致，只表达“字段必须出现”，空值语义仍由服务层校验。
+var configurationUpdateRequiredSections = map[string][]string{
+	"qBittorrent":  {"url", "username", "password", "downloadRateLimitKibPerSecond", "uploadRateLimitKibPerSecond"},
+	"emby":         {"url", "apiKey"},
+	"tmdb":         {"apiToken"},
+	"networkProxy": {"enabled", "url"},
+	"agent": {
+		"enabled", "protocol", "baseUrl", "model", "apiKey", "useNetworkProxy", "requestTimeoutSeconds",
+		"rssCoordinateMode", "downloadFileSelectionMode", "catalogMatchEnabled", "episodeMappingEnabled",
+		"allowAutomaticEpisodeMapping", "subtitleVideoMatchMode",
+	},
+	"paths": {
+		"downloadRoot", "workRoot", "stagingRoot", "animeLibraryRoot", "movieLibraryRoot", "ffmpegPath", "ffprobePath",
+	},
+	"transcode": {
+		"name", "videoCodec", "encoder", "container", "fileExtension", "qualityMode", "qualityValue",
+		"audioPolicy", "preset", "pixelFormat", "threadCount", "maxConcurrency",
+	},
+}
+
+// configurationUpdateRequiredRootFields 是契约声明为 required 的顶层字段。
+var configurationUpdateRequiredRootFields = []string{
+	"expectedVersion", "qBittorrent", "emby", "tmdb", "networkProxy", "agent", "paths", "transcode",
+}
+
+// configurationUpdateSecretFields 的 action 由 SecretUpdate 契约为 required。
+var configurationUpdateSecretFields = map[string]string{
+	"qBittorrent": "password",
+	"emby":        "apiKey",
+	"tmdb":        "apiToken",
+	"agent":       "apiKey",
+}
+
 func (request *UpdateConfigurationRequest) UnmarshalJSON(data []byte) error {
 	type generatedRequest UpdateConfigurationRequest
 	var decoded generatedRequest
+
+	// oapi-codegen 将 required 字段生成为值类型，缺失与显式空值无法区分，
+	// 因此在解码前按契约逐个校验 required 字段是否出现。
+	if err := validateUpdateConfigurationPresence(data); err != nil {
+		return err
+	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
 
-	// oapi-codegen 将 required 数值字段生成为值类型，需要单独保留缺失与显式 0 的区别。
-	var presence struct {
-		Events json.RawMessage `json:"events"`
-	}
-	if err := json.Unmarshal(data, &presence); err != nil {
+	*request = UpdateConfigurationRequest(decoded)
+	return nil
+}
+
+func validateUpdateConfigurationPresence(data []byte) error {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
 		return err
 	}
-	if presence.Events != nil {
-		var events struct {
-			RetentionDays *int32 `json:"retentionDays"`
-		}
-		if err := json.Unmarshal(presence.Events, &events); err != nil {
-			return err
-		}
-		if events.RetentionDays == nil {
-			return errors.New("events.retentionDays is required")
+	for _, field := range configurationUpdateRequiredRootFields {
+		if missingJSONField(root[field]) {
+			return &requestFieldError{field: field}
 		}
 	}
 
-	*request = UpdateConfigurationRequest(decoded)
+	sections := make(map[string]map[string]json.RawMessage, len(configurationUpdateRequiredSections))
+	for section, fields := range configurationUpdateRequiredSections {
+		var values map[string]json.RawMessage
+		if err := json.Unmarshal(root[section], &values); err != nil {
+			return &requestFieldError{field: section}
+		}
+		for _, field := range fields {
+			if missingJSONField(values[field]) {
+				return &requestFieldError{field: section + "." + field}
+			}
+		}
+		sections[section] = values
+	}
+
+	for section, field := range configurationUpdateSecretFields {
+		var secret map[string]json.RawMessage
+		if err := json.Unmarshal(sections[section][field], &secret); err != nil {
+			return &requestFieldError{field: section + "." + field + ".action"}
+		}
+		if missingJSONField(secret["action"]) {
+			return &requestFieldError{field: section + "." + field + ".action"}
+		}
+	}
+
+	// events 是可选对象；出现时 retentionDays 必须是非 null 值，显式 null 也视为缺失。
+	if rawEvents, ok := root["events"]; ok {
+		var events map[string]json.RawMessage
+		if err := json.Unmarshal(rawEvents, &events); err != nil {
+			return &requestFieldError{field: "events.retentionDays"}
+		}
+		if missingJSONField(events["retentionDays"]) {
+			return &requestFieldError{field: "events.retentionDays"}
+		}
+	}
 	return nil
+}
+
+// missingJSONField 把缺失与显式 null 同样视为未提供；契约中 required 字段不可为 null。
+func missingJSONField(raw json.RawMessage) bool {
+	return len(raw) == 0 || string(bytes.TrimSpace(raw)) == "null"
 }
 
 func (server *Server) GetConfiguration(

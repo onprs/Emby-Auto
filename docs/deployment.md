@@ -46,6 +46,7 @@ chmod 600 deploy/.env
 | `MOVIE_LIBRARY_ROOT` | Emby 电影媒体库目录 |
 | `APP_BIND_ADDRESS` / `APP_PORT` | Web 在宿主机上的监听地址与端口 |
 | `SESSION_COOKIE_SECURE` | HTTPS 启用后设置为 `true` |
+| `SETUP_INITIALIZE_TIMEOUT` | 单次安装初始化的总时长上限，默认 `10m`；预算过小会截断慢迁移，可重试 |
 
 可使用以下命令查询 Emby 服务账户：
 
@@ -107,7 +108,7 @@ Emby URL         http://host.docker.internal:<emby-port>/emby
 
 端口和 Emby 基础路径应以实际服务配置为准。
 
-安装向导会把数据库连接和生成的配置加密密钥写入 `app-data` 卷中的 `bootstrap.json`。Worker 会在安装完成前等待，不会领取后台任务。
+安装向导会把数据库连接和生成的配置加密密钥写入 `app-data` 卷中的 `bootstrap.json`。Worker 会在安装完成前等待，不会领取后台任务。安装初始化有总时长上限（`SETUP_INITIALIZE_TIMEOUT`，默认 `10m`）；迁移逐条事务，超时后直接重试即可继续。
 
 ## 3. 配置 HTTPS
 
@@ -117,6 +118,7 @@ Emby URL         http://host.docker.internal:<emby-port>/emby
 
 - `/api/v1/events` 使用长连接 SSE，并禁用响应缓冲。
 - `/api/v1/tasks/{taskId}/artifacts/{video|subtitle}` 透传 `Range` 与 `If-Range`。
+- `/api/` 请求体限制为 1 MiB（`client_max_body_size 1m;`），与应用内上限一致。
 - 其它 `/api/` 请求与 Web 路由均转发到 Web 服务。
 
 TLS 验证完成后，在 `deploy/.env` 中设置：

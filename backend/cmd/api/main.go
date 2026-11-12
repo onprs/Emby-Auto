@@ -52,8 +52,9 @@ func main() {
 }
 
 type activeRuntime struct {
-	mu   sync.Mutex
-	pool interface{ Close() }
+	mu     sync.Mutex
+	logger *slog.Logger
+	pool   interface{ Close() }
 }
 
 type runtimeResources struct {
@@ -78,7 +79,7 @@ func (runtime *activeRuntime) Activate(
 	if runtime.pool != nil {
 		return nil
 	}
-	handler, pool, err := buildRuntimeHandler(ctx, cfg, bootstrap, settings)
+	handler, pool, err := buildRuntimeHandler(ctx, cfg, bootstrap, settings, runtime.logger)
 	if err != nil {
 		return err
 	}
@@ -113,7 +114,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		defer func() { _ = webHandler.Close() }()
 		handler = webHandler
 	}
-	runtime := &activeRuntime{}
+	runtime := &activeRuntime{logger: logger}
 	defer runtime.Close()
 
 	store := config.NewBootstrapStore(cfg.BootstrapConfigPath)
@@ -123,14 +124,16 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		ConfigEncryptionKey:       cfg.ConfigEncryptionKey,
 		DatabaseManagedExternally: cfg.DatabaseManagedExternally,
 		Store:                     store,
-		Migrator:                  database.NewMigrator(),
+		Migrator:                  database.NewMigratorWithConnectTimeout(cfg.DatabaseConnectTimeout),
 		Passwords:                 service.NewPasswordHasher(),
+		ConnectTimeout:            cfg.DatabaseConnectTimeout,
+		OperationTimeout:          cfg.SetupInitializeTimeout,
 		Activate: func(activationCtx context.Context, settings domain.RuntimeBootstrap) error {
 			return runtime.Activate(activationCtx, cfg, bootstrap, switcher, settings)
 		},
 	})
 	setupServer := httpapi.NewServer(nil, httpapi.WithSetup(bootstrap))
-	switcher.Swap(httpapi.SetupOnly(httpapi.NewHandler(setupServer)))
+	switcher.Swap(httpapi.SetupOnly(httpapi.NewHandler(setupServer, httpapi.WithHandlerLogger(logger))))
 
 	_, activationErr := bootstrap.ActivateExisting(ctx)
 	if activationErr != nil {
@@ -141,7 +144,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		Addr:              cfg.APIAddress,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		// 限制慢速请求体占用连接；不设置 WriteTimeout，SSE 与 artifact 流式响应需要长写。
+		ReadTimeout: 30 * time.Second,
+		IdleTimeout: 60 * time.Second,
+		ErrorLog:    slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
 
 	serverErrors := make(chan error, 1)
@@ -200,6 +206,7 @@ func buildRuntimeHandler(
 	cfg config.Config,
 	bootstrap *service.Bootstrap,
 	settings domain.RuntimeBootstrap,
+	logger *slog.Logger,
 ) (http.Handler, interface{ Close() }, error) {
 	pool, err := database.Open(ctx, settings.DatabaseURL)
 	if err != nil {
@@ -301,7 +308,7 @@ func buildRuntimeHandler(
 		httpapi.WithDownloadCommands(downloadCommands),
 		httpapi.WithTaskCommands(taskCommands),
 	)
-	return httpapi.NewHandler(server), &runtimeResources{pool: pool, cancel: cancelMetrics}, nil
+	return httpapi.NewHandler(server, httpapi.WithHandlerLogger(logger)), &runtimeResources{pool: pool, cancel: cancelMetrics}, nil
 }
 
 func systemMetricPaths(paths domain.PathSettings) []string {

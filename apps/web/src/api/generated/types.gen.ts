@@ -1628,6 +1628,10 @@ export type InitializeSetupErrors = {
      */
     409: ApiError;
     /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
+    /**
      * A required dependency is unavailable.
      */
     503: ApiError;
@@ -1660,6 +1664,10 @@ export type LoginErrors = {
      * Authentication is required or failed.
      */
     401: ApiError;
+    /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
     /**
      * A required dependency is unavailable.
      */
@@ -1784,6 +1792,10 @@ export type UpdateConfigurationErrors = {
      * The command conflicts with current resource state.
      */
     409: ApiError;
+    /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
     /**
      * A required dependency is unavailable.
      */
@@ -1933,6 +1945,10 @@ export type CreateSearchErrors = {
      * The command conflicts with current resource state.
      */
     409: ApiError;
+    /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
     /**
      * A required dependency is unavailable.
      */
@@ -2089,6 +2105,10 @@ export type CreateAcquisitionErrors = {
      */
     409: ApiError;
     /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
+    /**
      * A required dependency is unavailable.
      */
     503: ApiError;
@@ -2130,6 +2150,10 @@ export type SyncTmDbSeriesErrors = {
      * The command conflicts with current resource state.
      */
     409: ApiError;
+    /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
     /**
      * A required dependency is unavailable.
      */
@@ -2173,6 +2197,10 @@ export type PreviewAcquisitionEpisodeMappingErrors = {
      * The command conflicts with current resource state.
      */
     409: ApiError;
+    /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
     /**
      * A required dependency is unavailable.
      */
@@ -2219,6 +2247,10 @@ export type SaveAcquisitionEpisodeMappingErrors = {
      * The command conflicts with current resource state.
      */
     409: ApiError;
+    /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
     /**
      * A required dependency is unavailable.
      */
@@ -2479,6 +2511,10 @@ export type LookupRssFeedErrors = {
      */
     401: ApiError;
     /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
+    /**
      * A required dependency is unavailable.
      */
     503: ApiError;
@@ -2544,6 +2580,10 @@ export type CreateRssSubtitleGroupErrors = {
      * The command conflicts with current resource state.
      */
     409: ApiError;
+    /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
     /**
      * A required dependency is unavailable.
      */
@@ -2623,6 +2663,10 @@ export type UpdateRssSubtitleGroupErrors = {
      */
     409: ApiError;
     /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
+    /**
      * A required dependency is unavailable.
      */
     503: ApiError;
@@ -2701,6 +2745,10 @@ export type CreateRssSubscriptionErrors = {
      * The command conflicts with current resource state.
      */
     409: ApiError;
+    /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
     /**
      * A required dependency is unavailable.
      */
@@ -2828,6 +2876,10 @@ export type UpdateRssSubscriptionErrors = {
      * The command conflicts with current resource state.
      */
     409: ApiError;
+    /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
     /**
      * A required dependency is unavailable.
      */
@@ -2994,6 +3046,10 @@ export type ReviewTaskErrors = {
      */
     409: ApiError;
     /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
+    /**
      * A required dependency is unavailable.
      */
     503: ApiError;
@@ -3039,6 +3095,10 @@ export type ImportTaskErrors = {
      * The command conflicts with current resource state.
      */
     409: ApiError;
+    /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
     /**
      * A required dependency is unavailable.
      */
@@ -3291,6 +3351,10 @@ export type RetryDownloadErrors = {
      */
     409: ApiError;
     /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
+    /**
      * A required dependency is unavailable.
      */
     503: ApiError;
@@ -3336,6 +3400,10 @@ export type CancelDownloadErrors = {
      * The command conflicts with current resource state.
      */
     409: ApiError;
+    /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
     /**
      * A required dependency is unavailable.
      */
@@ -3383,6 +3451,10 @@ export type SaveDownloadFileResolutionErrors = {
      */
     409: ApiError;
     /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
+    /**
      * A required dependency is unavailable.
      */
     503: ApiError;
@@ -3428,6 +3500,10 @@ export type SaveDownloadFileSelectionErrors = {
      * The command conflicts with current resource state.
      */
     409: ApiError;
+    /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
     /**
      * A required dependency is unavailable.
      */
@@ -3475,6 +3551,10 @@ export type RetryTaskErrors = {
      */
     409: ApiError;
     /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
+    /**
      * A required dependency is unavailable.
      */
     503: ApiError;
@@ -3520,6 +3600,10 @@ export type CancelTaskErrors = {
      * The command conflicts with current resource state.
      */
     409: ApiError;
+    /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
     /**
      * A required dependency is unavailable.
      */
@@ -3668,6 +3752,10 @@ export type RetryRssEntryErrors = {
      * The command conflicts with current resource state.
      */
     409: ApiError;
+    /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
     /**
      * A required dependency is unavailable.
      */
@@ -3977,6 +4065,10 @@ export type TestConnectivityErrors = {
      */
     401: ApiError;
     /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
+    /**
      * A required dependency is unavailable.
      */
     503: ApiError;
@@ -4067,6 +4159,10 @@ export type UpdateBackgroundRuntimeErrors = {
      * Authentication is required or failed.
      */
     401: ApiError;
+    /**
+     * The JSON request body exceeds the 1 MiB API limit.
+     */
+    413: ApiError;
     /**
      * A required dependency is unavailable.
      */
