@@ -351,7 +351,9 @@ func (bootstrap *Bootstrap) ActivateExisting(ctx context.Context) (bool, error) 
 		adminID = data.AdminID
 	}
 	if _, err := queries.GetInstallationState(ctx); errors.Is(err, pgx.ErrNoRows) {
-		if _, completeErr := queries.CompleteInstallation(ctx, repository.UUIDToPG(adminID)); completeErr != nil {
+		// ON CONFLICT DO NOTHING RETURNING * 在并发方已写入时返回 0 行；
+		// 视为对方完成了同一条安装记录，继续标记完成与激活。
+		if _, completeErr := queries.CompleteInstallation(ctx, repository.UUIDToPG(adminID)); completeErr != nil && !errors.Is(completeErr, pgx.ErrNoRows) {
 			return false, fmt.Errorf("record existing installation: %w", completeErr)
 		}
 	} else if err != nil {
