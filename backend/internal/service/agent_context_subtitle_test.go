@@ -1,6 +1,11 @@
 package service
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/google/uuid"
+)
 
 func TestSanitizeSubtitleCandidatePathHidesHostDirectories(t *testing.T) {
 	tests := map[string]string{
@@ -29,5 +34,28 @@ func TestSanitizeSubtitleCandidateTitleUsesFileNameForHostPaths(t *testing.T) {
 	}
 	if got := sanitizeSubtitleCandidateTitle("", "Show/episode.zh-Hans.ass"); got != "episode.zh-Hans.ass" {
 		t.Fatalf("empty title = %q", got)
+	}
+}
+
+func TestSubtitleVideoMatchResourceJSONOmitsHostPaths(t *testing.T) {
+	match := &scopedSubtitleVideoMatch{
+		TaskID: uuid.New(), SeriesTitle: "Show", TargetSeason: 1, TargetEpisode: 2, TargetTitle: "Episode",
+		VideoPath: "/data/downloads/show/episode.mkv", SavePath: "/data/downloads",
+		inspectionPaths: map[string]string{"external:1": "/data/downloads/show/episode.zh-Hans.ass"},
+		Candidates: []scopedSubtitleCandidate{
+			{ID: "external:1", Source: "external", Title: "episode.zh-Hans.ass", Path: "show/episode.zh-Hans.ass"},
+			{ID: "stream:2", Source: "embedded", StreamIndex: 2, Title: "简体中文"},
+		},
+	}
+	raw := string(subtitleVideoMatchResourceJSON(match))
+	for _, forbidden := range []string{"videoPath", "savePath", "inspectionPaths", "/data", "episode.mkv"} {
+		if strings.Contains(raw, forbidden) {
+			t.Fatalf("resource JSON contains %q: %s", forbidden, raw)
+		}
+	}
+	for _, required := range []string{"show/episode.zh-Hans.ass", "episode.zh-Hans.ass", "简体中文"} {
+		if !strings.Contains(raw, required) {
+			t.Fatalf("resource JSON lost candidate data %q: %s", required, raw)
+		}
 	}
 }

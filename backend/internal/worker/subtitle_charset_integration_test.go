@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/encoding/traditionalchinese"
+	"golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/transform"
 
 	"github.com/onprs/emby-auto/backend/internal/domain"
@@ -60,6 +61,16 @@ func TestSubtitlePrepareConvertsLegacyChineseEncodingsWithRealFFmpegIntegration(
 			name: "big5", subtitleName: "episode.繁體.BIG5.srt",
 			content:        encode(big5Text, traditionalchinese.Big5.NewEncoder()),
 			wantSimplified: "这是繁体中文字幕测试", wantTraditional: "這是繁體中文字幕測試",
+		},
+		{
+			name: "utf16le-bomless", subtitleName: "episode.简体.UTF16LE.srt",
+			content:        encode(gbkText, unicode.UTF16(unicode.LittleEndian, unicode.IgnoreBOM).NewEncoder()),
+			wantSimplified: "这是简体中文字幕测试", wantTraditional: "這是繁體中文字幕測試",
+		},
+		{
+			name: "utf16be-bomless", subtitleName: "episode.简体.UTF16BE.srt",
+			content:        encode(gbkText, unicode.UTF16(unicode.BigEndian, unicode.IgnoreBOM).NewEncoder()),
+			wantSimplified: "这是简体中文字幕测试", wantTraditional: "這是繁體中文字幕測試",
 		},
 	}
 	for _, test := range tests {

@@ -3,11 +3,13 @@ package domain
 import (
 	"bytes"
 	"fmt"
+	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/encoding/traditionalchinese"
-	"golang.org/x/text/encoding/unicode"
+	xunicode "golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/transform"
 )
 
@@ -30,6 +32,11 @@ const (
 	subtitleCharsetDecisiveRatio  = 2
 )
 
+// subtitleUTF16Markers 用于确认无 BOM UTF-16 样本解码后确实是字幕文本。
+var subtitleUTF16Markers = []string{
+	"-->", "[Script Info]", "[V4+ Styles]", "[V4 Styles]", "[Events]", "Dialogue:", "WEBVTT",
+}
+
 // DetectSubtitleCharset 判断外挂文本字幕的编码。
 // label 用于在两个候选都合理时按“简体/繁体/BIG5/GBK”等标记取舍；无法可靠区分时返回
 // subtitle_charset_unsupported，避免把乱码字幕当成可用候选。
@@ -38,6 +45,10 @@ func DetectSubtitleCharset(sample []byte, label string) (SubtitleCharset, error)
 		return "", subtitleCharsetError("the subtitle file is empty")
 	}
 	if bytes.HasPrefix(sample, []byte{0xEF, 0xBB, 0xBF}) {
+		// UTF-8 BOM 之后仍出现 NUL 时按已损坏文本处理，不能当作正常 UTF-8。
+		if bytes.IndexByte(sample, 0) >= 0 {
+			return "", subtitleCharsetError("the subtitle contains null bytes; save it as UTF-8 without null bytes")
+		}
 		return SubtitleCharsetUTF8, nil
 	}
 	if bytes.HasPrefix(sample, []byte{0xFF, 0xFE}) {
@@ -45,6 +56,11 @@ func DetectSubtitleCharset(sample []byte, label string) (SubtitleCharset, error)
 	}
 	if bytes.HasPrefix(sample, []byte{0xFE, 0xFF}) {
 		return SubtitleCharsetUTF16BE, nil
+	}
+	// 含 NUL 的字节不是正常 UTF-8 文本；按无 BOM UTF-16 尝试，
+	// 不能在 NUL 存在时回退到 GB18030/BIG5 评分或其他猜测。
+	if bytes.IndexByte(sample, 0) >= 0 {
+		return detectBOMLessUTF16(sample)
 	}
 	if utf8.Valid(sample) {
 		return SubtitleCharsetUTF8, nil
@@ -77,6 +93,53 @@ func DetectSubtitleCharset(sample []byte, label string) (SubtitleCharset, error)
 	return "", subtitleCharsetError("the subtitle text encoding is ambiguous")
 }
 
+// detectBOMLessUTF16 只能根据 NUL 字节、两种字节序解码后的可打印比例与
+// 字幕结构标记做保守判断：两种字节序都合理时返回不可重试错误，而不是猜测。
+func detectBOMLessUTF16(sample []byte) (SubtitleCharset, error) {
+	if len(sample)%2 != 0 {
+		return "", subtitleCharsetError("the subtitle contains null bytes but is not valid UTF-16; save it as UTF-8")
+	}
+	little := plausibleSubtitleUTF16(sample, xunicode.LittleEndian)
+	big := plausibleSubtitleUTF16(sample, xunicode.BigEndian)
+	if little && big {
+		return "", subtitleCharsetError("the subtitle contains null bytes and its UTF-16 byte order is ambiguous")
+	}
+	if little {
+		return SubtitleCharsetUTF16LE, nil
+	}
+	if big {
+		return SubtitleCharsetUTF16BE, nil
+	}
+	return "", subtitleCharsetError("the subtitle contains null bytes but is not valid UTF-16; save it as UTF-8")
+}
+
+func plausibleSubtitleUTF16(sample []byte, endianness xunicode.Endianness) bool {
+	decoded, _, err := transform.Bytes(xunicode.UTF16(endianness, xunicode.IgnoreBOM).NewDecoder(), sample)
+	if err != nil || len(decoded) == 0 || !utf8.Valid(decoded) {
+		return false
+	}
+	text := string(decoded)
+	if strings.ContainsRune(text, utf8.RuneError) || strings.ContainsRune(text, 0) {
+		return false
+	}
+	printable, total := 0, 0
+	for _, character := range text {
+		total++
+		if character == '\n' || character == '\r' || character == '\t' || unicode.IsPrint(character) {
+			printable++
+		}
+	}
+	if total == 0 || printable*100 < total*98 {
+		return false
+	}
+	for _, marker := range subtitleUTF16Markers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // DecodeSubtitleText 把检测出的编码转换为 UTF-8。
 func DecodeSubtitleText(content []byte, charset SubtitleCharset) ([]byte, error) {
 	var decoded []byte
@@ -85,8 +148,12 @@ func DecodeSubtitleText(content []byte, charset SubtitleCharset) ([]byte, error)
 	case SubtitleCharsetUTF8:
 		decoded = bytes.TrimPrefix(content, []byte{0xEF, 0xBB, 0xBF})
 	case SubtitleCharsetUTF16LE, SubtitleCharsetUTF16BE:
-		// UseBOM 同时处理 BOM 标记的实际字节序。
-		decoded, _, err = transform.Bytes(unicode.UTF16(unicode.LittleEndian, unicode.UseBOM).NewDecoder(), content)
+		// UseBOM 处理带 BOM 的实际字节序；无 BOM 时按检测出的字节序解码。
+		endianness := xunicode.LittleEndian
+		if charset == SubtitleCharsetUTF16BE {
+			endianness = xunicode.BigEndian
+		}
+		decoded, _, err = transform.Bytes(xunicode.UTF16(endianness, xunicode.UseBOM).NewDecoder(), content)
 	case SubtitleCharsetGB18030:
 		decoded, _, err = transform.Bytes(simplifiedchinese.GB18030.NewDecoder(), content)
 	case SubtitleCharsetBig5:

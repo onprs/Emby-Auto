@@ -883,14 +883,7 @@ func (service *AgentResolutionService) buildSubtitleVideoMatchAgentContext(ctx c
 		TargetTitle:   stringValue(row.TargetEpisodeTitle), VideoPath: videoPath,
 		SavePath: stringValue(row.SavePath), inspectionPaths: inspectionPaths, Candidates: candidates,
 	}
-	resourceJSON, _ := json.Marshal(struct {
-		TaskID        uuid.UUID                 `json:"taskId"`
-		SeriesTitle   string                    `json:"seriesTitle"`
-		TargetSeason  int                       `json:"targetSeason"`
-		TargetEpisode int                       `json:"targetEpisode"`
-		TargetTitle   string                    `json:"targetTitle"`
-		Candidates    []scopedSubtitleCandidate `json:"candidates"`
-	}{match.TaskID, match.SeriesTitle, match.TargetSeason, match.TargetEpisode, match.TargetTitle, candidates})
+	resourceJSON := subtitleVideoMatchResourceJSON(match)
 	fingerprintInput, _ := json.Marshal(struct {
 		Resource any `json:"resource"`
 		Updated  any `json:"updatedAt"`
@@ -953,6 +946,20 @@ func intFromInt32(value *int32) int {
 func int32Pointer(value int32) *int {
 	converted := int(value)
 	return &converted
+}
+
+// subtitleVideoMatchResourceJSON 构造发送给外部 Provider 的字幕匹配资源。
+// 只包含候选的展示信息，不包含 videoPath、savePath、inspectionPaths 等宿主路径。
+func subtitleVideoMatchResourceJSON(match *scopedSubtitleVideoMatch) json.RawMessage {
+	resourceJSON, _ := json.Marshal(struct {
+		TaskID        uuid.UUID                 `json:"taskId"`
+		SeriesTitle   string                    `json:"seriesTitle"`
+		TargetSeason  int                       `json:"targetSeason"`
+		TargetEpisode int                       `json:"targetEpisode"`
+		TargetTitle   string                    `json:"targetTitle"`
+		Candidates    []scopedSubtitleCandidate `json:"candidates"`
+	}{match.TaskID, match.SeriesTitle, match.TargetSeason, match.TargetEpisode, match.TargetTitle, match.Candidates})
+	return resourceJSON
 }
 
 // sanitizeSubtitleCandidatePath 限制发给外部 Provider 的候选路径。

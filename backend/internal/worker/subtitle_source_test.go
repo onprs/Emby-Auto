@@ -256,3 +256,27 @@ func TestSubtitleInspectorResolvesRelativeCandidateAndConvertsEncoding(t *testin
 		t.Fatalf("inspector wrote converted input next to the source: %q", inputPath)
 	}
 }
+
+func TestSubtitleInspectorRejectsRelativePathOutsideDownloadRoot(t *testing.T) {
+	root := t.TempDir()
+	downloadRoot := filepath.Join(root, "download")
+	if err := os.MkdirAll(downloadRoot, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	tools := &mediaToolsStub{run: func([]string) ([]byte, error) {
+		t.Fatal("FFmpeg must not run for an unsafe candidate path")
+		return nil, nil
+	}}
+	inspector := NewSubtitleTextInspector(mediaTestConfiguration(filepath.Join(root, "staging")), tools)
+	_, err := inspector.InspectSubtitleText(context.Background(), domain.SubtitleInspectionRequest{
+		VideoPath: filepath.Join(downloadRoot, "episode.mkv"), BasePath: downloadRoot,
+		CandidateID: "external:" + uuid.NewString(), Source: domain.SubtitleSourceExternal,
+		Format: domain.SubtitleSRT, Path: "../outside.srt",
+	})
+	if err == nil {
+		t.Fatal("InspectSubtitleText() accepted a path outside the download root")
+	}
+	if len(tools.runArgs) != 0 {
+		t.Fatalf("FFmpeg ran for an unsafe path: %#v", tools.runArgs)
+	}
+}

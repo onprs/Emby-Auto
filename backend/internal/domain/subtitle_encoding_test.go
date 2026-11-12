@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 	"testing"
@@ -21,6 +22,70 @@ func encodeSubtitle(t *testing.T, content string, transformer transform.Transfor
 		t.Fatalf("encode subtitle: %v", err)
 	}
 	return encoded
+}
+
+func encodeBOMLessUTF16(t *testing.T, content string, endianness unicode.Endianness) []byte {
+	t.Helper()
+	return encodeSubtitle(t, content, unicode.UTF16(endianness, unicode.IgnoreBOM).NewEncoder())
+}
+
+func TestDetectSubtitleCharsetRecognizesBOMLessUTF16(t *testing.T) {
+	shortChinese := "1\n00:00:01,000 --> 00:00:03,000\n这是简体中文字幕测试\n"
+	ascii := "1\n00:00:01,000 --> 00:00:03,000\nHello subtitle\n"
+	tests := []struct {
+		name    string
+		content string
+		charset SubtitleCharset
+	}{
+		{name: "short chinese le", content: shortChinese, charset: SubtitleCharsetUTF16LE},
+		{name: "short chinese be", content: shortChinese, charset: SubtitleCharsetUTF16BE},
+		{name: "long chinese le", content: charsetSampleSimplified, charset: SubtitleCharsetUTF16LE},
+		{name: "long chinese be", content: charsetSampleSimplified, charset: SubtitleCharsetUTF16BE},
+		{name: "ascii le", content: ascii, charset: SubtitleCharsetUTF16LE},
+		{name: "ascii be", content: ascii, charset: SubtitleCharsetUTF16BE},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			endianness := unicode.LittleEndian
+			if test.charset == SubtitleCharsetUTF16BE {
+				endianness = unicode.BigEndian
+			}
+			sample := encodeBOMLessUTF16(t, test.content, endianness)
+			charset, err := DetectSubtitleCharset(sample, "episode.简体.srt")
+			if err != nil {
+				t.Fatalf("DetectSubtitleCharset() error = %v", err)
+			}
+			if charset != test.charset {
+				t.Fatalf("DetectSubtitleCharset() = %q, want %q", charset, test.charset)
+			}
+			decoded, err := DecodeSubtitleText(sample, charset)
+			if err != nil {
+				t.Fatalf("DecodeSubtitleText() error = %v", err)
+			}
+			if !strings.Contains(string(decoded), strings.SplitN(test.content, "\n", 3)[2]) {
+				t.Fatalf("decoded text = %q, want %q", string(decoded), test.content)
+			}
+		})
+	}
+}
+
+func TestDetectSubtitleCharsetRejectsNullBytesOutsideUTF16(t *testing.T) {
+	truncated := encodeBOMLessUTF16(t, "1\n00:00:01,000 --> 00:00:03,000\n测试\n", unicode.LittleEndian)
+	tests := map[string][]byte{
+		"utf-8 with null":     append([]byte("valid utf-8 text\n"), 0x00),
+		"utf-8 bom with null": append(append([]byte{0xEF, 0xBB, 0xBF}, []byte("valid utf-8 text\n")...), 0x00),
+		"odd utf-16":          append(truncated, 0x41),
+		"binary nul runs":     bytes.Repeat([]byte{0x00, 0x01}, 64),
+	}
+	for name, sample := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := DetectSubtitleCharset(sample, "")
+			var subtitleErr *SubtitleError
+			if !errors.As(err, &subtitleErr) || subtitleErr.Code != "subtitle_charset_unsupported" {
+				t.Fatalf("DetectSubtitleCharset() error = %v, want subtitle_charset_unsupported", err)
+			}
+		})
+	}
 }
 
 func TestDetectSubtitleCharsetRecognizesSupportedEncodings(t *testing.T) {
