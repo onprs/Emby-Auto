@@ -50,9 +50,9 @@ type BootstrapOptions struct {
 	// ConnectTimeout 限制安装流程中单条 PostgreSQL 连接与探测查询的总时长，
 	// 避免未响应的目标在初始化期间长期占用初始化互斥。
 	ConnectTimeout time.Duration
-	// SetupTimeout 限制单次安装初始化（迁移、建档与运行时激活）的总时长。
+	// OperationTimeout 限制单次安装初始化（迁移、建档与运行时激活）的总时长。
 	// 零值使用默认值；超时后初始化互斥被释放，可安全重试。
-	SetupTimeout time.Duration
+	OperationTimeout time.Duration
 }
 
 type Bootstrap struct {
@@ -65,7 +65,7 @@ type Bootstrap struct {
 	activate                  RuntimeActivator
 	random                    io.Reader
 	connectTimeout            time.Duration
-	setupTimeout              time.Duration
+	operationTimeout          time.Duration
 
 	mu           sync.Mutex
 	initializing bool
@@ -82,19 +82,28 @@ func NewBootstrap(options BootstrapOptions) *Bootstrap {
 		activate:                  options.Activate,
 		random:                    rand.Reader,
 		connectTimeout:            options.ConnectTimeout,
-		setupTimeout:              setupTimeoutOrDefault(options.SetupTimeout),
+		operationTimeout:          operationTimeoutOrDefault(options.OperationTimeout),
 	}
 }
 
-// defaultSetupTimeout 是安装初始化的默认总时长上限。向导流程面向新建数据库，
+// defaultSetupOperationTimeout 是安装初始化的默认总时长上限。向导流程面向新建数据库，
 // 迁移与建档在秒级完成；该值只用于避免依赖长期阻塞占用初始化互斥。
-const defaultSetupTimeout = 10 * time.Minute
+const defaultSetupOperationTimeout = 10 * time.Minute
 
-func setupTimeoutOrDefault(value time.Duration) time.Duration {
+func operationTimeoutOrDefault(value time.Duration) time.Duration {
 	if value > 0 {
 		return value
 	}
-	return defaultSetupTimeout
+	return defaultSetupOperationTimeout
+}
+
+// operationContext 为单次安装操作套上总体时间预算，覆盖迁移、安装写入与运行时激活；
+// 依赖在握手后不再响应时，调用会在预算内返回错误而不是无期限占用初始化互斥。
+func (bootstrap *Bootstrap) operationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if bootstrap.operationTimeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, bootstrap.operationTimeout)
 }
 
 func (bootstrap *Bootstrap) Status(ctx context.Context) (domain.SetupStatus, error) {
@@ -168,12 +177,9 @@ func (bootstrap *Bootstrap) Initialize(
 		bootstrap.mu.Unlock()
 	}()
 
-	if bootstrap.setupTimeout > 0 {
-		bounded, cancel := context.WithTimeout(ctx, bootstrap.setupTimeout)
-		defer cancel()
-		ctx = bounded
-	}
-
+	bounded, cancel := bootstrap.operationContext(ctx)
+	defer cancel()
+	ctx = bounded
 	data, completed, err := bootstrap.loadStored()
 	if err != nil {
 		return domain.SetupStatus{}, setupUnavailable("bootstrap_file", err)
@@ -287,6 +293,11 @@ func (bootstrap *Bootstrap) ActivateExisting(ctx context.Context) (bool, error) 
 	if bootstrap.initializing {
 		return false, nil
 	}
+	// 启动阶段同样使用初始化总预算：数据库在握手后不响应时，API 以未就绪状态
+	// 继续启动，而不是在开始监听前无限期阻塞。
+	bounded, cancel := bootstrap.operationContext(ctx)
+	defer cancel()
+	ctx = bounded
 	data, completed, err := bootstrap.loadStored()
 	if err != nil {
 		return false, err

@@ -148,7 +148,7 @@ BOOTSTRAP_CONFIG_PATH=/var/lib/emby-auto/bootstrap.json
 SESSION_COOKIE_SECURE=false
 ```
 
-保留数据库连接和加密密钥为空，首次打开页面时由初始化向导设置。`WEB_ROOT` 指定应用提供的网页目录；独立托管网页时可留空，并自行将 `/api/` 转发到应用。
+保留数据库连接和加密密钥为空，首次打开页面时由初始化向导设置。`WEB_ROOT` 指定应用提供的网页目录；独立托管网页时可留空，并自行将 `/api/` 转发到应用。安装初始化总时长上限由 `SETUP_INITIALIZE_TIMEOUT`（默认 `10m`）控制；迁移逐条事务，超时后直接重试即可继续。
 
 ### 4. 配置应用服务
 

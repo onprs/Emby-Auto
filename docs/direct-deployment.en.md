@@ -148,7 +148,7 @@ BOOTSTRAP_CONFIG_PATH=/var/lib/emby-auto/bootstrap.json
 SESSION_COOKIE_SECURE=false
 ```
 
-Leave the database connection and encryption key unset so the setup wizard can configure them. `WEB_ROOT` selects the directory served by the application. If you host the web files separately, leave it unset and forward `/api/` to the application yourself.
+Leave the database connection and encryption key unset so the setup wizard can configure them. `WEB_ROOT` selects the directory served by the application. If you host the web files separately, leave it unset and forward `/api/` to the application yourself. `SETUP_INITIALIZE_TIMEOUT` (default `10m`) bounds one setup initialization; migrations are applied one transaction at a time, so a retry after a timeout continues safely.
 
 ### 4. Configure application services
 
