@@ -17,6 +17,11 @@ type RSSFeedClient interface {
 	Fetch(context.Context, string) (domain.RSSFeed, error)
 }
 
+// maxRSSPollEntries 限制单次轮询进入映射与持久化事务的条目数。
+// 响应字节上限不能约束极小条目的数量；超过上限的订阅会记录稳定失败，
+// 避免单个源在长事务中放大写入量与投影刷新量。
+const maxRSSPollEntries = 2000
+
 type RSSFeedClientFactory func(context.Context) (RSSFeedClient, error)
 
 type RSSPollStore interface {
@@ -126,6 +131,16 @@ func (handler *RSSPollHandler) Handle(ctx context.Context, operation domain.Oper
 			return river.JobSnooze(command.PollInterval)
 		}
 		return retryableFailure("rss_fetch_failed", "the RSS feed could not be fetched", err)
+	}
+	if len(feed.Entries) > maxRSSPollEntries {
+		message := fmt.Sprintf("RSS feed exceeds %d entries", maxRSSPollEntries)
+		if auditErr := handler.store.RecordPollFailure(ctx, operation.ID, command.SubscriptionID, "rss_feed_too_many_entries", message); auditErr != nil {
+			return retryableFailure("rss_storage_unavailable", "RSS poll failure could not be recorded", auditErr)
+		}
+		if payload.Continuous {
+			return river.JobSnooze(command.PollInterval)
+		}
+		return permanentFailure("rss_feed_too_many_entries", "the RSS feed has too many entries", nil)
 	}
 	preparation, err := handler.store.PreparePollMapping(ctx, operation.ID, command.SubscriptionID, feed, command.Version)
 	if errors.Is(err, domain.ErrVersionConflict) {

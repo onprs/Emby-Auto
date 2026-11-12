@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -19,6 +20,16 @@ import (
 var testTorrentPayload = []byte("d8:announce35:http://tracker.example.test:8080/announce4:infod6:lengthi123e4:name8:test.mkveee")
 
 const sensitiveTorrentQueryFixture = "s3cr3t-t0k3n-xyz"
+
+type staticTorrentResolver map[string][]netip.Addr
+
+func (resolver staticTorrentResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
+	addresses, ok := resolver[host]
+	if !ok {
+		return nil, fmt.Errorf("no such host")
+	}
+	return addresses, nil
+}
 
 // 辅助：创建带局部 allowPrivate 的 fetcher，不修改全局状态。
 func fetcherWithAllowPrivate(allowPrivate bool) torrentSourceFetcher {
@@ -114,7 +125,7 @@ func TestValidateTorrentSourceURLRejectsPrivateAndMalformed(t *testing.T) {
 	}
 	for _, raw := range invalid {
 		t.Run(raw, func(t *testing.T) {
-			err := validateTorrentSourceURL(raw, torrentSourceOptions{allowPrivate: false})
+			err := validateTorrentSourceURL(context.Background(), raw, torrentSourceOptions{allowPrivate: false})
 			var failure *Failure
 			if err == nil {
 				t.Fatalf("validateTorrentSourceURL(%q) = nil, want error", raw)
@@ -134,7 +145,7 @@ func TestValidateTorrentSourceURLRejectsPrivateAndMalformed(t *testing.T) {
 	}
 	for _, raw := range valid {
 		t.Run("valid:"+raw, func(t *testing.T) {
-			if err := validateTorrentSourceURL(raw, torrentSourceOptions{allowPrivate: false}); err != nil {
+			if err := validateTorrentSourceURL(context.Background(), raw, torrentSourceOptions{allowPrivate: false}); err != nil {
 				t.Fatalf("validateTorrentSourceURL(%q) error = %v, want nil", raw, err)
 			}
 		})
@@ -155,7 +166,7 @@ func TestValidateTorrentSourceURLRejectsLocalhostVariants(t *testing.T) {
 	}
 	for _, raw := range invalid {
 		t.Run(raw, func(t *testing.T) {
-			err := validateTorrentSourceURL(raw, torrentSourceOptions{allowPrivate: false})
+			err := validateTorrentSourceURL(context.Background(), raw, torrentSourceOptions{allowPrivate: false})
 			var failure *Failure
 			if err == nil {
 				t.Fatalf("validateTorrentSourceURL(%q) = nil, want error", raw)
@@ -171,7 +182,7 @@ func TestValidateTorrentSourceURLRejectsLocalhostVariants(t *testing.T) {
 	}
 	for _, raw := range valid {
 		t.Run("valid:"+raw, func(t *testing.T) {
-			if err := validateTorrentSourceURL(raw, torrentSourceOptions{allowPrivate: false}); err != nil {
+			if err := validateTorrentSourceURL(context.Background(), raw, torrentSourceOptions{allowPrivate: false}); err != nil {
 				t.Fatalf("validateTorrentSourceURL(%q) unexpected error %v", raw, err)
 			}
 		})
@@ -186,7 +197,7 @@ func TestValidateTorrentSourceURLRejectsPrivateIPWithTrailingDot(t *testing.T) {
 	}
 	for _, raw := range invalid {
 		t.Run(raw, func(t *testing.T) {
-			err := validateTorrentSourceURL(raw, torrentSourceOptions{allowPrivate: false})
+			err := validateTorrentSourceURL(context.Background(), raw, torrentSourceOptions{allowPrivate: false})
 			var failure *Failure
 			if err == nil || !errorIsFailure(err, &failure) || failure.Code != "torrent_source_invalid" {
 				t.Fatalf("validateTorrentSourceURL(%q) = %#v, want blocked", raw, err)
@@ -207,7 +218,7 @@ func TestValidateTorrentSourceURLRejectsZoneScopedIPv6(t *testing.T) {
 	}
 	for _, raw := range invalid {
 		t.Run(raw, func(t *testing.T) {
-			err := validateTorrentSourceURL(raw, torrentSourceOptions{allowPrivate: false})
+			err := validateTorrentSourceURL(context.Background(), raw, torrentSourceOptions{allowPrivate: false})
 			var failure *Failure
 			if err == nil || !errorIsFailure(err, &failure) || failure.Code != "torrent_source_invalid" || failure.Retryable {
 				t.Fatalf("validateTorrentSourceURL(%q) = %#v, want permanent torrent_source_invalid", raw, err)
@@ -236,7 +247,7 @@ func TestValidateTorrentSourceURLRejectsIPv4MappedIPv6(t *testing.T) {
 	}
 	for _, raw := range invalid {
 		t.Run(raw, func(t *testing.T) {
-			err := validateTorrentSourceURL(raw, torrentSourceOptions{allowPrivate: false})
+			err := validateTorrentSourceURL(context.Background(), raw, torrentSourceOptions{allowPrivate: false})
 			var failure *Failure
 			if err == nil || !errorIsFailure(err, &failure) || failure.Code != "torrent_source_invalid" || failure.Retryable {
 				t.Fatalf("validateTorrentSourceURL(%q) = %#v, want permanent torrent_source_invalid", raw, err)
@@ -262,13 +273,13 @@ func TestValidateTorrentSourceURLAllowsPublicIPv4MappedIPv6(t *testing.T) {
 	}
 	for _, raw := range valid {
 		t.Run(raw, func(t *testing.T) {
-			if err := validateTorrentSourceURL(raw, torrentSourceOptions{allowPrivate: false}); err != nil {
+			if err := validateTorrentSourceURL(context.Background(), raw, torrentSourceOptions{allowPrivate: false}); err != nil {
 				t.Fatalf("validateTorrentSourceURL(%q) unexpected error %v, want nil", raw, err)
 			}
 		})
 	}
 	// 普通公共 IPv6 仍放行，保持原有行为不变
-	if err := validateTorrentSourceURL("http://[2001:4860:4860::8888]/file.torrent", torrentSourceOptions{allowPrivate: false}); err != nil {
+	if err := validateTorrentSourceURL(context.Background(), "http://[2001:4860:4860::8888]/file.torrent", torrentSourceOptions{allowPrivate: false}); err != nil {
 		t.Fatalf("公共 IPv6 不应被拒绝, got %v", err)
 	}
 }
@@ -326,8 +337,7 @@ func TestDefaultTorrentSourceFetcherRejectsMappedPrivateRedirect(t *testing.T) {
 	}
 }
 
-func TestDefaultTorrentSourceFetcherRejectsMappedInitial(t *testing.T) {
-	// 初始 URL 为 IPv4-mapped 私网/回环，应在请求发出前永久拒绝且不泄露敏感信息
+func TestDefaultTorrentSourceFetcherRejectsMappedInitial(t *testing.T) { // 初始 URL 为 IPv4-mapped 私网/回环，应在请求发出前永久拒绝且不泄露敏感信息
 	invalid := "http://[::ffff:10.0.0.1]/file.torrent?token=" + sensitiveTorrentQueryFixture
 	_, err := fetchTorrentSource(context.Background(), invalid, domain.NetworkProxySettings{}, torrentSourceOptions{allowPrivate: false})
 	var failure *Failure
@@ -336,6 +346,93 @@ func TestDefaultTorrentSourceFetcherRejectsMappedInitial(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), sensitiveTorrentQueryFixture) || (failure.Cause != nil && strings.Contains(failure.Cause.Error(), sensitiveTorrentQueryFixture)) {
 		t.Fatalf("初始错误泄露敏感信息: %v", err)
+	}
+}
+
+func TestValidateTorrentSourceURLRejectsHostResolvingToNonPublicAddress(t *testing.T) {
+	tests := []struct {
+		name       string
+		host       string
+		addresses  []netip.Addr
+		wantPublic bool
+	}{
+		{name: "private IPv4", host: "internal.example.test", addresses: []netip.Addr{netip.MustParseAddr("10.1.2.3")}},
+		{name: "loopback IPv6", host: "loopback.example.test", addresses: []netip.Addr{netip.MustParseAddr("::1")}},
+		{name: "link-local", host: "linklocal.example.test", addresses: []netip.Addr{netip.MustParseAddr("169.254.10.20")}},
+		{name: "mixed public and private", host: "mixed.example.test", addresses: []netip.Addr{netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("192.168.1.5")}},
+		{name: "public only", host: "cdn.example.test", addresses: []netip.Addr{netip.MustParseAddr("203.0.113.8")}, wantPublic: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			opts := torrentSourceOptions{resolver: staticTorrentResolver{test.host: test.addresses}}
+			err := validateTorrentSourceURL(context.Background(), "http://"+test.host+"/file.torrent?token="+sensitiveTorrentQueryFixture, opts)
+			if test.wantPublic {
+				if err != nil {
+					t.Fatalf("validateTorrentSourceURL() error = %v, want nil", err)
+				}
+				return
+			}
+			var failure *Failure
+			if !errorIsFailure(err, &failure) || failure.Code != "torrent_source_invalid" || failure.Retryable {
+				t.Fatalf("error = %#v, want permanent torrent_source_invalid", err)
+			}
+			if strings.Contains(err.Error(), test.host) || strings.Contains(err.Error(), sensitiveTorrentQueryFixture) {
+				t.Fatalf("error leaks host or token: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateTorrentSourceURLAllowsUnresolvableHostOnlyWhenProxyResolves(t *testing.T) {
+	const rawURL = "http://unresolvable.example.test/file.torrent"
+	if err := validateTorrentSourceURL(context.Background(), rawURL, torrentSourceOptions{resolver: staticTorrentResolver{}, proxyEnabled: true}); err != nil {
+		t.Fatalf("validateTorrentSourceURL(proxy) error = %v, want nil", err)
+	}
+	err := validateTorrentSourceURL(context.Background(), rawURL, torrentSourceOptions{resolver: staticTorrentResolver{}})
+	var failure *Failure
+	if !errorIsFailure(err, &failure) || failure.Code != "torrent_source_unavailable" || !failure.Retryable {
+		t.Fatalf("validateTorrentSourceURL(direct) error = %#v, want retryable torrent_source_unavailable", err)
+	}
+	if strings.Contains(err.Error(), "unresolvable.example.test") {
+		t.Fatalf("error leaks host: %v", err)
+	}
+}
+
+func TestFetchTorrentSourceDoesNotCreateClientWhenDirectResolutionFails(t *testing.T) {
+	clientCreated := 0
+	opts := torrentSourceOptions{
+		resolver: staticTorrentResolver{},
+		newClient: func(domain.NetworkProxySettings) (*http.Client, error) {
+			clientCreated++
+			return nil, fmt.Errorf("client must not be created")
+		},
+	}
+	_, err := fetchTorrentSource(context.Background(), "http://unresolvable.example.test/file.torrent", domain.NetworkProxySettings{}, opts)
+	var failure *Failure
+	if !errorIsFailure(err, &failure) || failure.Code != "torrent_source_unavailable" || !failure.Retryable {
+		t.Fatalf("fetchTorrentSource() error = %#v, want retryable torrent_source_unavailable", err)
+	}
+	if clientCreated != 0 {
+		t.Fatalf("HTTP client creations = %d, want 0", clientCreated)
+	}
+}
+
+func TestFetchTorrentSourceBlocksResolvedPrivateHostBeforeClientCreation(t *testing.T) {
+	clientCreated := 0
+	opts := torrentSourceOptions{
+		resolver: staticTorrentResolver{"internal.example.test": {netip.MustParseAddr("10.1.2.3")}},
+		newClient: func(domain.NetworkProxySettings) (*http.Client, error) {
+			clientCreated++
+			return nil, fmt.Errorf("client must not be created")
+		},
+	}
+	_, err := fetchTorrentSource(context.Background(), "http://internal.example.test/file.torrent", domain.NetworkProxySettings{}, opts)
+	var failure *Failure
+	if !errorIsFailure(err, &failure) || failure.Code != "torrent_source_invalid" || failure.Retryable {
+		t.Fatalf("fetchTorrentSource() error = %#v, want permanent torrent_source_invalid", err)
+	}
+	if clientCreated != 0 {
+		t.Fatalf("HTTP client creations = %d, want 0", clientCreated)
 	}
 }
 

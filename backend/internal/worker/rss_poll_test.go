@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -658,6 +659,59 @@ func TestRSSPollHandlerManualFailureUsesOperationRetry(t *testing.T) {
 	}
 	if store.failureCalls != 1 {
 		t.Fatalf("failure audit calls = %d, want 1", store.failureCalls)
+	}
+}
+
+func TestRSSPollHandlerRejectsEntryCountAboveLimitBeforePersistence(t *testing.T) {
+	entries := make([]domain.RSSFeedEntry, maxRSSPollEntries+1)
+	for index := range entries {
+		entries[index] = domain.RSSFeedEntry{GUID: fmt.Sprintf("entry-%d", index), Title: fmt.Sprintf("Show %d", index)}
+	}
+	tests := []struct {
+		name       string
+		continuous bool
+	}{
+		{name: "manual", continuous: false},
+		{name: "continuous", continuous: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			subscriptionID := uuid.New()
+			store := &rssPollStoreStub{command: domain.RSSPollCommand{
+				SubscriptionID: subscriptionID,
+				FeedURL:        "https://example.test/feed.xml",
+				Enabled:        true,
+				SourceSeason:   1,
+				PollInterval:   10 * time.Minute,
+			}}
+			handler := NewRSSPollHandler(&rssFeedClientStub{feed: domain.RSSFeed{Title: "oversized", Entries: entries}}, store, 1)
+			payload := []byte(`{"continuous":false}`)
+			if test.continuous {
+				payload = []byte(`{"continuous":true}`)
+			}
+			err := handler.Handle(context.Background(), domain.Operation{
+				ResourceType: "rss_subscription",
+				ResourceID:   subscriptionID,
+				Payload:      payload,
+			})
+			if test.continuous {
+				var snoozeErr *river.JobSnoozeError
+				if !errors.As(err, &snoozeErr) || snoozeErr.Duration != 10*time.Minute {
+					t.Fatalf("Handle() error = %v, want 10m snooze", err)
+				}
+			} else {
+				var failure *Failure
+				if !errors.As(err, &failure) || failure.Code != "rss_feed_too_many_entries" || failure.Retryable {
+					t.Fatalf("Handle() error = %#v, want permanent rss_feed_too_many_entries", err)
+				}
+			}
+			if store.failureCalls != 1 || store.failureCode != "rss_feed_too_many_entries" {
+				t.Fatalf("failure audit = calls %d code %q", store.failureCalls, store.failureCode)
+			}
+			if store.ensureMappingCalls != 0 || len(store.callSequence) != 0 {
+				t.Fatalf("mapping/persist calls = %d/%v, want none", store.ensureMappingCalls, store.callSequence)
+			}
+		})
 	}
 }
 

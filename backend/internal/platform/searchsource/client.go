@@ -2,10 +2,13 @@ package searchsource
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"path"
 	"slices"
@@ -18,9 +21,11 @@ import (
 )
 
 const (
-	defaultMaxBytes       = 4 << 20
-	defaultTimeout        = 30 * time.Second
-	defaultMaxDetailPages = 20
+	defaultMaxBytes                 = 4 << 20
+	defaultTimeout                  = 30 * time.Second
+	defaultMaxDetailPages           = 20
+	defaultMaxCandidatesPerProvider = 500
+	maxSearchRedirects              = 5
 )
 
 type Provider struct {
@@ -33,6 +38,18 @@ type ClientOptions struct {
 	Providers      []Provider
 	MaxBytes       int64
 	MaxDetailPages int
+	// MaxCandidatesPerProvider 限制单次搜索写入的候选数量；零值使用默认上限。
+	MaxCandidatesPerProvider int
+	// ProxyEnabled 表示已配置网络代理。此时跨主机目标的 DNS 由代理解析，
+	// 本地解析失败不视为不可验证；解析成功时仍拒绝内网地址。
+	ProxyEnabled bool
+	// Resolver 仅用于测试注入，零值使用系统解析器。
+	Resolver Resolver
+}
+
+// Resolver 抽象 DNS 解析，用于在建立连接前判定非受信目标是否指向内网。
+type Resolver interface {
+	LookupNetIP(context.Context, string, string) ([]netip.Addr, error)
 }
 
 type Client struct {
@@ -40,6 +57,9 @@ type Client struct {
 	providers      []Provider
 	maxBytes       int64
 	maxDetailPages int
+	maxCandidates  int
+	resolver       Resolver
+	proxyEnabled   bool
 }
 
 func DefaultProviders() []Provider {
@@ -73,6 +93,14 @@ func NewClient(options ClientOptions) (*Client, error) {
 	if maxDetailPages <= 0 {
 		maxDetailPages = defaultMaxDetailPages
 	}
+	maxCandidates := options.MaxCandidatesPerProvider
+	if maxCandidates <= 0 {
+		maxCandidates = defaultMaxCandidatesPerProvider
+	}
+	resolver := options.Resolver
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
 	var httpClient *http.Client
 	if options.HTTPClient == nil {
 		httpClient = &http.Client{Timeout: defaultTimeout}
@@ -83,11 +111,29 @@ func NewClient(options ClientOptions) (*Client, error) {
 		}
 		httpClient = &clone
 	}
+	previousRedirect := httpClient.CheckRedirect
+	httpClient.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if len(via) >= maxSearchRedirects {
+			return errSearchRedirectLimit
+		}
+		if trusted := trustedOrigin(request.Context()); trusted != nil {
+			if err := validateSearchTarget(request.Context(), resolver, trusted, request.URL, options.ProxyEnabled); err != nil {
+				return err
+			}
+		}
+		if previousRedirect != nil {
+			return previousRedirect(request, via)
+		}
+		return nil
+	}
 	return &Client{
 		httpClient:     httpClient,
 		providers:      providers,
 		maxBytes:       maxBytes,
 		maxDetailPages: maxDetailPages,
+		maxCandidates:  maxCandidates,
+		resolver:       resolver,
+		proxyEnabled:   options.ProxyEnabled,
 	}, nil
 }
 
@@ -155,7 +201,11 @@ func (client *Client) Search(ctx context.Context, query string) (domain.SearchPr
 
 func (client *Client) searchProvider(ctx context.Context, provider Provider, query string) ([]domain.ReleaseCandidate, error) {
 	searchURL := strings.ReplaceAll(provider.SearchURLTemplate, "{query}", url.QueryEscape(query))
-	body, err := client.fetchHTML(ctx, searchURL)
+	trusted, err := url.Parse(searchURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s search url: invalid url", provider.Name)
+	}
+	body, err := client.fetchHTML(ctx, searchURL, trusted)
 	if err != nil {
 		return nil, fmt.Errorf("search %s: %w", provider.Name, err)
 	}
@@ -164,9 +214,12 @@ func (client *Client) searchProvider(ctx context.Context, provider Provider, que
 		return nil, fmt.Errorf("parse %s search results: %w", provider.Name, err)
 	}
 
-	candidates := make([]domain.ReleaseCandidate, 0, len(anchors))
+	candidates := make([]domain.ReleaseCandidate, 0, min(len(anchors), client.maxCandidates))
 	detailCount := 0
 	for _, anchor := range anchors {
+		if len(candidates) >= client.maxCandidates {
+			break
+		}
 		downloadURI := ""
 		detailURL := ""
 		if isDirectDownload(anchor.URL) {
@@ -177,7 +230,7 @@ func (client *Client) searchProvider(ctx context.Context, provider Provider, que
 			}
 			detailCount++
 			detailURL = anchor.URL
-			detailBody, fetchErr := client.fetchHTML(ctx, detailURL)
+			detailBody, fetchErr := client.fetchHTML(ctx, detailURL, trusted)
 			if fetchErr == nil {
 				detailAnchors, parseErr := parseAnchors(detailURL, detailBody)
 				if parseErr == nil {
@@ -215,16 +268,24 @@ func (client *Client) searchProvider(ctx context.Context, provider Provider, que
 	return candidates, nil
 }
 
-func (client *Client) fetchHTML(ctx context.Context, rawURL string) ([]byte, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+func (client *Client) fetchHTML(ctx context.Context, rawURL string, trusted *url.URL) ([]byte, error) {
+	target, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return nil, &searchFetchFailure{category: "fetch page: invalid target", cause: err}
+	}
+	if err := validateSearchTarget(ctx, client.resolver, trusted, target, client.proxyEnabled); err != nil {
+		return nil, err
+	}
+	ctx = context.WithValue(ctx, trustedOriginKey{}, trusted)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return nil, describeSearchFetchFailure("create request", err)
 	}
 	request.Header.Set("Accept", "text/html,application/xhtml+xml;q=0.9")
 	request.Header.Set("User-Agent", "Emby-Auto/0.1")
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("fetch page: %w", err)
+		return nil, describeSearchFetchFailure("fetch page", err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
@@ -235,12 +296,109 @@ func (client *Client) fetchHTML(ctx context.Context, rawURL string) ([]byte, err
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, client.maxBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("read page: %w", err)
+		return nil, describeSearchFetchFailure("read page", err)
 	}
 	if int64(len(body)) > client.maxBytes {
 		return nil, fmt.Errorf("page exceeds %d bytes", client.maxBytes)
 	}
 	return body, nil
+}
+
+var (
+	errSearchTargetInvalid    = errors.New("search target url is invalid")
+	errSearchTargetForbidden  = errors.New("search target address is not allowed")
+	errSearchTargetUnresolved = errors.New("search target address cannot be verified")
+	errSearchRedirectLimit    = errors.New("search redirect limit exceeded")
+)
+
+type trustedOriginKey struct{}
+
+func trustedOrigin(ctx context.Context) *url.URL {
+	origin, _ := ctx.Value(trustedOriginKey{}).(*url.URL)
+	return origin
+}
+
+// validateSearchTarget 约束由搜索页面驱动抓取的非受信目标。
+// 与管理员配置的搜索源同主机时保持信任，便于内部搜索源使用不同端口或 scheme；
+// 跳转到其他主机时要求解析到可确认的公开地址，避免第三方页面把 Worker 指向内网。
+// 启用网络代理时 DNS 由代理解析，本地解析失败交由代理判定；本地解析成功仍拒绝内网地址。
+func validateSearchTarget(ctx context.Context, resolver Resolver, trusted, target *url.URL, proxyEnabled bool) error {
+	if target == nil || target.User != nil || target.Host == "" {
+		return errSearchTargetInvalid
+	}
+	scheme := strings.ToLower(target.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return errSearchTargetInvalid
+	}
+	if trusted != nil && sameTargetHost(trusted, target) {
+		return nil
+	}
+	host := target.Hostname()
+	if address, err := netip.ParseAddr(host); err == nil {
+		if blockedSearchAddress(address) {
+			return errSearchTargetForbidden
+		}
+		return nil
+	}
+	addresses, err := resolver.LookupNetIP(ctx, "ip", host)
+	if err != nil || len(addresses) == 0 {
+		if proxyEnabled {
+			return nil
+		}
+		return errSearchTargetUnresolved
+	}
+	for _, address := range addresses {
+		if blockedSearchAddress(address) {
+			return errSearchTargetForbidden
+		}
+	}
+	return nil
+}
+
+func sameTargetHost(left, right *url.URL) bool {
+	return strings.EqualFold(strings.TrimSuffix(left.Hostname(), "."), strings.TrimSuffix(right.Hostname(), "."))
+}
+
+func blockedSearchAddress(address netip.Addr) bool {
+	address = address.Unmap()
+	return !address.IsValid() || address.IsLoopback() || address.IsPrivate() || address.IsUnspecified() ||
+		address.IsMulticast() || address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast()
+}
+
+// searchFetchFailure 保留稳定类别与原因链，避免 *url.Error 文本把搜索地址写入持久化的 Provider 失败消息。
+type searchFetchFailure struct {
+	category string
+	cause    error
+}
+
+func (failure *searchFetchFailure) Error() string { return failure.category }
+
+func (failure *searchFetchFailure) Unwrap() error { return failure.cause }
+
+func describeSearchFetchFailure(action string, err error) error {
+	category := action + ": request failed"
+	switch {
+	case errors.Is(err, context.Canceled):
+		category = action + ": request cancelled"
+	case errors.Is(err, context.DeadlineExceeded):
+		category = action + ": request timed out"
+	default:
+		var dnsError *net.DNSError
+		var verificationError *tls.CertificateVerificationError
+		var recordError tls.RecordHeaderError
+		var networkError net.Error
+		switch {
+		case errors.As(err, &dnsError):
+			category = action + ": DNS lookup failed"
+		case errors.As(err, &verificationError):
+			category = action + ": TLS certificate verification failed"
+		case errors.As(err, &recordError):
+			category = action + ": TLS handshake failed"
+		case errors.As(err, &networkError) && networkError.Timeout():
+			category = action + ": request timed out"
+		}
+	}
+	return &searchFetchFailure{category: category, cause: err}
 }
 
 type anchor struct {
