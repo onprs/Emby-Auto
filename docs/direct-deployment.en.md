@@ -149,7 +149,7 @@ SESSION_COOKIE_SECURE=false
 TRUSTED_PROXY_CIDRS=127.0.0.0/8,::1/128
 ```
 
-Leave the database connection and encryption key unset so the setup wizard can configure them. `WEB_ROOT` selects the directory served by the application. If you host the web files separately, leave it unset and forward `/api/` to the application yourself. `TRUSTED_PROXY_CIDRS` declares the loopback reverse proxy networks; `X-Forwarded-For` is trusted only from these networks, and login throttling keys on the real client address. `SETUP_INITIALIZE_TIMEOUT` (default `10m`) bounds one setup initialization; migrations are applied one transaction at a time, so a retry after a timeout continues safely.
+Leave the database connection and encryption key unset so the setup wizard can configure them. `WEB_ROOT` selects the directory served by the application. If you host the web files separately, leave it unset and forward `/api/` to the application yourself. `TRUSTED_PROXY_CIDRS` declares the loopback reverse proxy networks; `X-Forwarded-For` is trusted only from these networks, and login throttling keys on the real client address. `SETUP_INITIALIZE_TIMEOUT` (default `10m`) bounds one setup initialization; migrations are applied one transaction at a time, so a retry after a timeout continues safely. Once the global login failure budget is exhausted, even a correct password is briefly rejected with `429` and `Retry-After`; retry after the indicated delay.
 
 ### 4. Configure application services
 

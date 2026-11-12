@@ -1669,6 +1669,10 @@ export type LoginErrors = {
      */
     413: ApiError;
     /**
+     * Login attempts exceeded the per-source or global failure budget.
+     */
+    429: ApiError;
+    /**
      * A required dependency is unavailable.
      */
     503: ApiError;

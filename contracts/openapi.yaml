@@ -141,6 +141,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
   /api/v1/auth/logout:
@@ -2262,6 +2264,13 @@ components:
       schema:
         type: string
         enum: ["no-store, max-age=0"]
+    RetryAfter:
+      description: Seconds the client should wait before retrying. Set by the application login throttle; a reverse-proxy rejection may omit it.
+      required: false
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
   responses:
     BadRequest:
       description: The request is invalid.
@@ -2295,6 +2304,15 @@ components:
             $ref: "#/components/schemas/ApiError"
     RequestBodyTooLarge:
       description: The JSON request body exceeds the 1 MiB API limit.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    RateLimited:
+      description: Login attempts exceeded the per-source or global failure budget.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
       content:
         application/json:
           schema:

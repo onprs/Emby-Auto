@@ -123,7 +123,7 @@ Emby URL         http://host.docker.internal:<emby-port>/emby
 - `/api/v1/auth/login` 按来源限速（例如 `limit_req_zone $binary_remote_addr zone=emby_auto_login:10m rate=10r/m;` 与 `limit_req zone=emby_auto_login burst=5 nodelay;`），并传递 `X-Forwarded-For`。
 - 其它 `/api/` 请求与 Web 路由均转发到 Web 服务。
 
-应用自身对登录失败按来源退避，并限制 argon2 校验并发；配置 `TRUSTED_PROXY_CIDRS` 后，应用从受信代理的 `X-Forwarded-For` 右侧取真实客户端地址。默认只信任回环网段；Compose 默认值额外包含 Docker 默认地址池 `172.16.0.0/12`。使用自定义 Docker 地址池或其它代理部署方式时，将其改为实际代理网段。
+应用自身对登录失败按来源退避，并限制 argon2 校验并发；配置 `TRUSTED_PROXY_CIDRS` 后，应用从受信代理的 `X-Forwarded-For` 右侧取真实客户端地址。默认只信任回环网段；Compose 默认值额外包含 Docker 默认地址池 `172.16.0.0/12`。使用自定义 Docker 地址池或其它代理部署方式时，将其改为实际代理网段。连续失败也会计入全局失败预算：预算耗尽后，短时间内即使口令正确也会返回 `429` 与 `Retry-After`，等待提示的秒数后重试即可，无需重启服务。
 
 TLS 验证完成后，在 `deploy/.env` 中设置：
 

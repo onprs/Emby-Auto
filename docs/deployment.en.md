@@ -123,7 +123,7 @@ The reverse proxy must preserve the following behavior:
 - Per-source rate limiting for `/api/v1/auth/login` (for example `limit_req_zone $binary_remote_addr zone=emby_auto_login:10m rate=10r/m;` with `limit_req zone=emby_auto_login burst=5 nodelay;`), plus `X-Forwarded-For` forwarding.
 - All other `/api/` requests and Web routes forwarded to the Web service.
 
-The application also backs off login failures per source and bounds concurrent argon2 verification. With `TRUSTED_PROXY_CIDRS` set, it takes the client address from the right side of the trusted proxy's `X-Forwarded-For`. The default trusts loopback only; the Compose default additionally covers the Docker default address pool `172.16.0.0/12`. Adjust it when Docker uses a custom pool or another proxy layout.
+The application also backs off login failures per source and bounds concurrent argon2 verification. With `TRUSTED_PROXY_CIDRS` set, it takes the client address from the right side of the trusted proxy's `X-Forwarded-For`. The default trusts loopback only; the Compose default additionally covers the Docker default address pool `172.16.0.0/12`. Adjust it when Docker uses a custom pool or another proxy layout. Repeated failures also count against a global failure budget: once it is exhausted, even a correct password is rejected with `429` and `Retry-After` for a short window; retry after the indicated delay without restarting services.
 
 After validating TLS, set the following value in `deploy/.env`:
 
