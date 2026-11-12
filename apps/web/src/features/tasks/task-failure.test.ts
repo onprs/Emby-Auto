@@ -175,6 +175,14 @@ describe('taskFailureInfo', () => {
     expect(info?.summary).not.toContain('process_error');
     expect(info?.summary).not.toContain('panic');
   });
+
+  it('explains an undecodable external subtitle without offering a pointless retry', () => {
+    const info = taskFailureInfo(task({ errorCode: 'subtitle_charset_unsupported', errorMessage: undefined, failureStage: 'subtitle' }));
+
+    expect(info?.summary).toBe('字幕处理失败：字幕文件编码无法识别');
+    expect(info?.canRetry).toBe(false);
+    expect(info?.recommendation).toContain('UTF-8');
+  });
 });
 
 describe('acquisitionFailureInfo', () => {

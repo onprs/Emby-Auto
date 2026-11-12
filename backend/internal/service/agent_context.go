@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -46,8 +47,11 @@ type scopedSubtitleVideoMatch struct {
 	TargetSeason  int                       `json:"targetSeason"`
 	TargetEpisode int                       `json:"targetEpisode"`
 	TargetTitle   string                    `json:"targetTitle"`
-	VideoPath     string                    `json:"videoPath"`
 	Candidates    []scopedSubtitleCandidate `json:"candidates"`
+	// VideoPath、SavePath 与 inspectionPaths 只用于后端检查字幕，不发送给外部 Provider。
+	VideoPath       string            `json:"-"`
+	SavePath        string            `json:"-"`
+	inspectionPaths map[string]string `json:"-"`
 }
 
 type scopedSubtitleCandidate struct {
@@ -862,18 +866,22 @@ func (service *AgentResolutionService) buildSubtitleVideoMatchAgentContext(ctx c
 		return agentContextSnapshot{}, NewError("subtitle_video_path_invalid", "the source video path is unsafe", ErrStateConflict, nil)
 	}
 	candidates := make([]scopedSubtitleCandidate, 0, len(candidateRows))
+	inspectionPaths := make(map[string]string, len(candidateRows))
 	for _, candidate := range candidateRows {
+		path := sanitizeSubtitleCandidatePath(stringValue(candidate.Path))
+		inspectionPaths[candidate.CandidateID] = stringValue(candidate.Path)
 		candidates = append(candidates, scopedSubtitleCandidate{
 			ID: candidate.CandidateID, Source: candidate.Source, StreamIndex: intFromInt32(candidate.StreamIndex),
 			Format: stringValue(candidate.Format), Language: stringValue(candidate.Language),
-			Title: stringValue(candidate.Title), Path: stringValue(candidate.Path),
+			Title: sanitizeSubtitleCandidateTitle(stringValue(candidate.Title), path), Path: path,
 		})
 	}
 	match := &scopedSubtitleVideoMatch{
 		TaskID: repository.UUIDFromPG(row.TaskID), SeriesTitle: row.SeriesTitle,
 		TargetSeason:  intFromInt32(row.TargetSeasonNumber),
 		TargetEpisode: intFromInt32(row.TargetEpisodeNumber),
-		TargetTitle:   stringValue(row.TargetEpisodeTitle), VideoPath: videoPath, Candidates: candidates,
+		TargetTitle:   stringValue(row.TargetEpisodeTitle), VideoPath: videoPath,
+		SavePath: stringValue(row.SavePath), inspectionPaths: inspectionPaths, Candidates: candidates,
 	}
 	resourceJSON, _ := json.Marshal(struct {
 		TaskID        uuid.UUID                 `json:"taskId"`
@@ -881,9 +889,8 @@ func (service *AgentResolutionService) buildSubtitleVideoMatchAgentContext(ctx c
 		TargetSeason  int                       `json:"targetSeason"`
 		TargetEpisode int                       `json:"targetEpisode"`
 		TargetTitle   string                    `json:"targetTitle"`
-		VideoPath     string                    `json:"videoPath"`
 		Candidates    []scopedSubtitleCandidate `json:"candidates"`
-	}{match.TaskID, match.SeriesTitle, match.TargetSeason, match.TargetEpisode, match.TargetTitle, match.VideoPath, candidates})
+	}{match.TaskID, match.SeriesTitle, match.TargetSeason, match.TargetEpisode, match.TargetTitle, candidates})
 	fingerprintInput, _ := json.Marshal(struct {
 		Resource any `json:"resource"`
 		Updated  any `json:"updatedAt"`
@@ -924,9 +931,9 @@ func (service *AgentResolutionService) inspectSubtitleCandidateTool(match *scope
 				return nil, fmt.Errorf("candidate is outside this resolution scope")
 			}
 			inspection, err := service.subtitleReader.InspectSubtitleText(callCtx, domain.SubtitleInspectionRequest{
-				VideoPath: match.VideoPath, CandidateID: arguments.CandidateID,
+				VideoPath: match.VideoPath, BasePath: match.SavePath, CandidateID: arguments.CandidateID,
 				Source: domain.SubtitleSource(target.Source), StreamIndex: target.StreamIndex,
-				Format: domain.SubtitleFormat(target.Format), Path: target.Path,
+				Format: domain.SubtitleFormat(target.Format), Path: match.inspectionPaths[arguments.CandidateID],
 			})
 			if err != nil {
 				return nil, err
@@ -946,6 +953,42 @@ func intFromInt32(value *int32) int {
 func int32Pointer(value int32) *int {
 	converted := int(value)
 	return &converted
+}
+
+// sanitizeSubtitleCandidatePath 限制发给外部 Provider 的候选路径。
+// 新记录本身就是相对路径；历史记录或异常数据只暴露文件名。
+func sanitizeSubtitleCandidatePath(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	normalized := strings.ReplaceAll(trimmed, `\`, "/")
+	if isAbsoluteDisplayPath(trimmed, normalized) {
+		return path.Base(normalized)
+	}
+	return path.Clean(normalized)
+}
+
+// sanitizeSubtitleCandidateTitle 只保留不含宿主目录的展示标题。
+func sanitizeSubtitleCandidateTitle(title, sanitizedPath string) string {
+	normalized := strings.ReplaceAll(strings.TrimSpace(title), `\`, "/")
+	if normalized == "" || isAbsoluteDisplayPath(title, normalized) {
+		if sanitizedPath != "" {
+			return path.Base(sanitizedPath)
+		}
+		return path.Base(normalized)
+	}
+	return normalized
+}
+
+func isAbsoluteDisplayPath(original, normalized string) bool {
+	if filepath.IsAbs(original) || path.IsAbs(normalized) {
+		return true
+	}
+	if strings.HasPrefix(normalized, "//") || normalized == ".." || strings.HasPrefix(normalized, "../") {
+		return true
+	}
+	return len(normalized) >= 2 && normalized[1] == ':'
 }
 
 func securePreviewPath(base *string, relative string) (string, error) {
