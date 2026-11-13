@@ -1326,6 +1326,24 @@ func (q *Queries) GetRSSSubscription(ctx context.Context, id pgtype.UUID) (GetRS
 	return i, err
 }
 
+const hasActiveRSSPollOperation = `-- name: HasActiveRSSPollOperation :one
+SELECT EXISTS (
+    SELECT 1
+    FROM operations AS active_poll
+    WHERE active_poll.kind = 'rss.poll'
+      AND active_poll.resource_type = 'rss_subscription'
+      AND active_poll.resource_id = $1
+      AND active_poll.status IN ('queued', 'running')
+)
+`
+
+func (q *Queries) HasActiveRSSPollOperation(ctx context.Context, resourceID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, hasActiveRSSPollOperation, resourceID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const insertRSSEntry = `-- name: InsertRSSEntry :one
 INSERT INTO rss_entries (
     id,
@@ -1631,16 +1649,7 @@ func (q *Queries) ListAutomaticRSSPreacquisitionMappingScopesBySeries(ctx contex
 }
 
 const listDueRSSPollRecoveryCandidates = `-- name: ListDueRSSPollRecoveryCandidates :many
-SELECT
-    subscription.id,
-    subscription.version,
-    (
-        SELECT count(*)
-        FROM operations AS poll
-        WHERE poll.kind = 'rss.poll'
-          AND poll.resource_type = 'rss_subscription'
-          AND poll.resource_id = subscription.id
-    )::bigint AS poll_generation
+SELECT subscription.id
 FROM rss_subscriptions AS subscription
 WHERE subscription.enabled
   AND subscription.deleted_at IS NULL
@@ -1659,25 +1668,21 @@ ORDER BY subscription.next_poll_at, subscription.id
 LIMIT $1
 `
 
-type ListDueRSSPollRecoveryCandidatesRow struct {
-	ID             pgtype.UUID `db:"id" json:"id"`
-	Version        int32       `db:"version" json:"version"`
-	PollGeneration int64       `db:"poll_generation" json:"poll_generation"`
-}
-
-func (q *Queries) ListDueRSSPollRecoveryCandidates(ctx context.Context, pageSize int32) ([]ListDueRSSPollRecoveryCandidatesRow, error) {
+// 到期条件只做候选预筛；真正的判定在订阅行锁内重新读取 next_poll_at 与 version，
+// 避免并发巡检或订阅变更后用旧值生成幂等键。
+func (q *Queries) ListDueRSSPollRecoveryCandidates(ctx context.Context, pageSize int32) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listDueRSSPollRecoveryCandidates, pageSize)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListDueRSSPollRecoveryCandidatesRow{}
+	items := []pgtype.UUID{}
 	for rows.Next() {
-		var i ListDueRSSPollRecoveryCandidatesRow
-		if err := rows.Scan(&i.ID, &i.Version, &i.PollGeneration); err != nil {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		items = append(items, i)
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -3453,6 +3458,45 @@ func (q *Queries) LockRSSSubscriptionForEntryReservation(ctx context.Context, id
 		&i.IncludeKeywords,
 		&i.ExcludeKeywords,
 		&i.AutoEpisodeMapping,
+	)
+	return i, err
+}
+
+const lockRSSSubscriptionForPollRecovery = `-- name: LockRSSSubscriptionForPollRecovery :one
+SELECT
+    subscription.id,
+    subscription.version,
+    subscription.next_poll_at,
+    COALESCE(
+        subscription.enabled
+        AND subscription.deleted_at IS NULL
+        AND subscription.completed_at IS NULL
+        AND subscription.next_poll_at IS NOT NULL
+        AND subscription.next_poll_at <= now(),
+        false
+    )::boolean AS due
+FROM rss_subscriptions AS subscription
+WHERE subscription.id = $1
+FOR UPDATE
+`
+
+type LockRSSSubscriptionForPollRecoveryRow struct {
+	ID         pgtype.UUID        `db:"id" json:"id"`
+	Version    int32              `db:"version" json:"version"`
+	NextPollAt pgtype.Timestamptz `db:"next_poll_at" json:"next_poll_at"`
+	Due        bool               `db:"due" json:"due"`
+}
+
+// 轮询恢复的判定与代际输入：锁住订阅行后重新读取 version 与持久化的到期时刻，
+// due 由数据库时钟计算，避免本机时间或旧候选值参与幂等键。
+func (q *Queries) LockRSSSubscriptionForPollRecovery(ctx context.Context, id pgtype.UUID) (LockRSSSubscriptionForPollRecoveryRow, error) {
+	row := q.db.QueryRow(ctx, lockRSSSubscriptionForPollRecovery, id)
+	var i LockRSSSubscriptionForPollRecoveryRow
+	err := row.Scan(
+		&i.ID,
+		&i.Version,
+		&i.NextPollAt,
+		&i.Due,
 	)
 	return i, err
 }

@@ -475,12 +475,15 @@ func deterministicRSSPollMappingAnchor(
 	return anchor, anchor, true
 }
 
-const rssDuePollRecoveryVersion = "v1"
+const rssDuePollRecoveryVersion = "v2"
 
 // ReconcileDuePolls 恢复已到期但没有活动 River poll 的启用订阅。
-// poll_generation 让每次终态失败产生新的幂等代数，并发巡检仍会收敛到同一任务。
+// 幂等代数是订阅行的 next_poll_at（本轮到期时刻），而不是 rss.poll 历史行数：
+// 到期时刻随调度单调前进并持久化在订阅行上，历史保留清理终态轮询记录后仍然唯一。
+// 候选查询只做预筛；每个候选在订阅行锁内重新读取 version 与到期时刻，并在同一
+// 事务里插入 operation/River 任务与推进 next_poll_at，并发或重复巡检只落一次。
 func (workflow *RSSWorkflow) ReconcileDuePolls(ctx context.Context) (int, error) {
-	if workflow == nil || workflow.queries == nil || workflow.operations == nil {
+	if workflow == nil || workflow.queries == nil || workflow.transactor == nil || workflow.operations == nil {
 		return 0, fmt.Errorf("RSS due poll recovery is unavailable")
 	}
 	rows, err := workflow.queries.ListDueRSSPollRecoveryCandidates(ctx, 100)
@@ -489,32 +492,57 @@ func (workflow *RSSWorkflow) ReconcileDuePolls(ctx context.Context) (int, error)
 	}
 	reconciled := 0
 	for _, row := range rows {
-		subscriptionID := repository.UUIDFromPG(row.ID)
-		result, err := workflow.operations.Schedule(ctx, ScheduleOperationRequest{
-			Kind:         appqueue.KindRSSPoll,
-			ResourceType: "rss_subscription",
-			ResourceID:   subscriptionID,
-			IdempotencyKey: fmt.Sprintf(
-				"rss.poll:recovery:due-%s:%s:v%d:g%d",
-				rssDuePollRecoveryVersion,
-				subscriptionID,
-				row.Version,
-				row.PollGeneration,
-			),
-			MaxAttempts: 5,
-			Timeout:     30 * time.Second,
-			Payload: map[string]any{
-				"continuous":          true,
-				"subscriptionVersion": row.Version,
-			},
+		created := false
+		err := workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+			subscription, err := scope.Queries.LockRSSSubscriptionForPollRecovery(ctx, row)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("lock RSS subscription for due poll recovery: %w", err)
+			}
+			if !subscription.Due || !subscription.NextPollAt.Valid {
+				return nil
+			}
+			active, err := scope.Queries.HasActiveRSSPollOperation(ctx, subscription.ID)
+			if err != nil {
+				return fmt.Errorf("check active RSS poll operation: %w", err)
+			}
+			if active {
+				return nil
+			}
+			subscriptionID := repository.UUIDFromPG(subscription.ID)
+			result, err := workflow.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
+				Kind:         appqueue.KindRSSPoll,
+				ResourceType: "rss_subscription",
+				ResourceID:   subscriptionID,
+				IdempotencyKey: fmt.Sprintf(
+					"rss.poll:recovery:due-%s:%s:v%d:t%d",
+					rssDuePollRecoveryVersion,
+					subscriptionID,
+					subscription.Version,
+					subscription.NextPollAt.Time.UnixMicro(),
+				),
+				MaxAttempts: 5,
+				Timeout:     30 * time.Second,
+				Payload: map[string]any{
+					"continuous":          true,
+					"subscriptionVersion": subscription.Version,
+				},
+			})
+			if err != nil {
+				return fmt.Errorf("schedule due RSS poll recovery: %w", err)
+			}
+			if _, err := scope.Queries.AdvanceDueRSSPollRecovery(ctx, subscription.ID); err != nil {
+				return fmt.Errorf("advance due RSS poll recovery: %w", err)
+			}
+			created = result.Created
+			return nil
 		})
 		if err != nil {
-			return reconciled, fmt.Errorf("schedule due RSS poll recovery: %w", err)
+			return reconciled, err
 		}
-		if _, err := workflow.queries.AdvanceDueRSSPollRecovery(ctx, row.ID); err != nil {
-			return reconciled, fmt.Errorf("advance due RSS poll recovery: %w", err)
-		}
-		if result.Created {
+		if created {
 			reconciled++
 		}
 	}
