@@ -132,6 +132,8 @@ func TestEpisodeTaskStillMatchesTMDbProviderIDIntegration(t *testing.T) {
 	seasonID, episodeID, mappingID := uuid.New(), uuid.New(), uuid.New()
 	itemID := uuid.New()
 	destination := "/library/Shows/Show - S01E01.mkv"
+	// 条目路径与导入目标刻意不同，确保关联只能由 TMDb 分支命中。
+	libraryPath := "/library/Shows/Show/Season 1/Show - S01E01.mkv"
 	tmdbEpisodeID := time.Now().UnixNano()%900000 + 100000
 	if _, err := pool.Exec(ctx, `INSERT INTO admin_users (id, username, password_hash) VALUES ($1, $2, 'fixture-hash')`, actorID, "tmdb-link-"+actorID.String()); err != nil {
 		t.Fatal(err)
@@ -211,7 +213,7 @@ VALUES ($1, $2, 'Shows', $3, now())
 	if _, err := pool.Exec(ctx, `
 INSERT INTO emby_library_items (id, emby_id, library_id, item_type, name, file_path, provider_ids, last_scan_run_id, last_seen_at)
 VALUES ($1, $2, $3, 'Episode', 'Episode 1', $4, jsonb_build_object('Tmdb', $5::text), $6, now())
-`, itemID, "tmdb-item-"+itemID.String(), libraryID, destination, strconv.FormatInt(tmdbEpisodeID, 10), scanID); err != nil {
+`, itemID, "tmdb-item-"+itemID.String(), libraryID, libraryPath, strconv.FormatInt(tmdbEpisodeID, 10), scanID); err != nil {
 		t.Fatal(err)
 	}
 
