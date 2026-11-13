@@ -900,33 +900,36 @@ SELECT
         WHERE item.present
           AND item.item_type = 'Episode'
           AND item.file_path IS NOT NULL
-          AND (
-              (
-                  target.tmdb_episode_id IS NOT NULL
-                  AND item.tmdb_provider_id = target.tmdb_episode_id::text
-              )
-              OR (
-                  item.season_number = target.target_season
-                  AND item.episode_number = target.target_episode
-                  AND EXISTS (
-                      SELECT 1
-                      FROM emby_library_items AS series_item
-                      WHERE series_item.present
-                        AND series_item.item_type = 'Series'
-                        AND series_item.tmdb_provider_id = target.tmdb_series_id::text
-                        AND (
-                            item.parent_emby_id = series_item.emby_id
-                            OR EXISTS (
-                                SELECT 1
-                                FROM emby_library_items AS season_item
-                                WHERE season_item.present
-                                  AND season_item.item_type = 'Season'
-                                  AND season_item.emby_id = item.parent_emby_id
-                                  AND season_item.parent_emby_id = series_item.emby_id
-                            )
-                        )
-                  )
-              )
+          AND target.tmdb_episode_id IS NOT NULL
+          AND item.tmdb_provider_id <> ''
+          AND item.tmdb_provider_id = target.tmdb_episode_id::text
+        UNION ALL
+        SELECT 1
+        FROM emby_library_items AS item
+        WHERE item.present
+          AND item.item_type = 'Episode'
+          AND item.file_path IS NOT NULL
+          AND item.season_number = target.target_season
+          AND item.episode_number = target.target_episode
+          AND target.tmdb_series_id IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM emby_library_items AS series_item
+              WHERE series_item.present
+                AND series_item.item_type = 'Series'
+                AND series_item.tmdb_provider_id <> ''
+                AND series_item.tmdb_provider_id = target.tmdb_series_id::text
+                AND (
+                    item.parent_emby_id = series_item.emby_id
+                    OR EXISTS (
+                        SELECT 1
+                        FROM emby_library_items AS season_item
+                        WHERE season_item.present
+                          AND season_item.item_type = 'Season'
+                          AND season_item.emby_id = item.parent_emby_id
+                          AND season_item.parent_emby_id = series_item.emby_id
+                    )
+                )
           )
     ) AS catalog_present,
     EXISTS (
