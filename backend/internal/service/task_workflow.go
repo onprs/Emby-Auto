@@ -393,12 +393,83 @@ func (workflow *TaskWorkflow) BeginImport(ctx context.Context, taskID, importID 
 	return command, nil
 }
 
+// PrepareImportDestination 是文件系统操作前的目标准入口：在单一事务内
+// 取目标路径 advisory 锁，确认本 import 仍可执行，并把目标路径登记到
+// running 的 import 行。登记是“正在采用”的持久声明：其它导入的补偿观察
+// 会把 running 已登记目标视为占用而保留文件；CompleteImport 校验成功
+// 提交路径与登记一致。返回是否成功登记（已登记为相同目标时幂等）。
+func (workflow *TaskWorkflow) PrepareImportDestination(
+	ctx context.Context,
+	completion domain.ImportCompletion,
+) (bool, error) {
+	if completion.TaskID == uuid.Nil || completion.ImportID == uuid.Nil ||
+		strings.TrimSpace(completion.DestinationVideoPath) == "" || strings.TrimSpace(completion.DestinationSubtitlePath) == "" {
+		return false, fmt.Errorf("import destination admission requires task, import, and destination paths")
+	}
+	reserved := false
+	err := workflow.transactor.WithinTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(scope database.TxScope) error {
+		// 与 CompleteImport、补偿观察共享同一目标路径锁域：登记与成功引用
+		// 写入、观察/删除互斥；双路径固定顺序取锁（视频→字幕）无死锁环。
+		if _, err := scope.Queries.LockImportRecoveryDestinations(ctx, db.LockImportRecoveryDestinationsParams{
+			DestinationVideoPath:    completion.DestinationVideoPath,
+			DestinationSubtitlePath: completion.DestinationSubtitlePath,
+		}); err != nil {
+			return fmt.Errorf("lock import destination paths: %w", err)
+		}
+		if _, err := scope.Queries.LockEpisodeTask(ctx, repository.UUIDToPG(completion.TaskID)); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrNotFound
+			}
+			return fmt.Errorf("lock task import admission: %w", err)
+		}
+		row, err := scope.Queries.GetTaskImportRecoveryState(ctx, db.GetTaskImportRecoveryStateParams{
+			TaskID:                  repository.UUIDToPG(completion.TaskID),
+			ImportID:                repository.UUIDToPG(completion.ImportID),
+			DestinationVideoPath:    completion.DestinationVideoPath,
+			DestinationSubtitlePath: completion.DestinationSubtitlePath,
+		})
+		if err != nil {
+			return fmt.Errorf("observe import admission state: %w", err)
+		}
+		// 多个导入可以声明采用同一目标；文件内容由导入校验，声明用于阻止补偿误删。
+		// 已有引用或其它采用意图本身不表示内容冲突。
+		// 任务仍可导入、本 import 处于 running：登记目标。
+		if domain.TaskState(row.TaskState) != domain.TaskImporting || row.ImportState != "running" {
+			return mediaWorkflowError("task_import_state_conflict", "the task import is not running", false)
+		}
+		if _, err := scope.Queries.ReserveImportDestinations(ctx, db.ReserveImportDestinationsParams{
+			ID:                      repository.UUIDToPG(completion.ImportID),
+			TaskID:                  repository.UUIDToPG(completion.TaskID),
+			DestinationVideoPath:    &completion.DestinationVideoPath,
+			DestinationSubtitlePath: &completion.DestinationSubtitlePath,
+		}); err != nil {
+			return fmt.Errorf("reserve import destinations: %w", err)
+		}
+		reserved = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return reserved, nil
+}
+
 func (workflow *TaskWorkflow) CompleteImport(ctx context.Context, completion domain.ImportCompletion) error {
 	if completion.TaskID == uuid.Nil || completion.ImportID == uuid.Nil || completion.OperationID == uuid.Nil ||
 		strings.TrimSpace(completion.DestinationVideoPath) == "" || strings.TrimSpace(completion.DestinationSubtitlePath) == "" {
 		return fmt.Errorf("import completion requires task, import, operation, and destination paths")
 	}
-	return workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+	videoPath := completion.DestinationVideoPath
+	subtitlePath := completion.DestinationSubtitlePath
+	return workflow.transactor.WithinTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(scope database.TxScope) error {
+		// 与导入补偿（ObserveImportRecovery）共享同一目标路径 advisory 锁域：
+		// 成功引用的写入与补偿的观察/删除互斥，同一目标的两个导入不会交叉。
+		if _, err := scope.Queries.LockImportRecoveryDestinations(ctx, db.LockImportRecoveryDestinationsParams{
+			DestinationVideoPath:    videoPath,
+			DestinationSubtitlePath: subtitlePath,
+		}); err != nil {
+			return fmt.Errorf("lock import destination paths: %w", err)
+		}
 		locked, err := scope.Queries.LockEpisodeTask(ctx, repository.UUIDToPG(completion.TaskID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrNotFound
@@ -419,8 +490,6 @@ func (workflow *TaskWorkflow) CompleteImport(ctx context.Context, completion dom
 		if locked.State != string(domain.TaskImporting) || command.ImportStatus != "running" {
 			return mediaWorkflowError("task_import_state_conflict", "the task import is not running", false)
 		}
-		videoPath := completion.DestinationVideoPath
-		subtitlePath := completion.DestinationSubtitlePath
 		if _, err := scope.Queries.CompleteImport(ctx, db.CompleteImportParams{
 			DestinationVideoPath:    &videoPath,
 			DestinationSubtitlePath: &subtitlePath,
@@ -472,6 +541,114 @@ func (workflow *TaskWorkflow) CompleteImport(ctx context.Context, completion dom
 		}
 		return workflow.scheduleRSSCompletionInTx(ctx, scope, completion)
 	})
+}
+
+func (workflow *TaskWorkflow) ObserveImportRecovery(
+	ctx context.Context,
+	taskID, importID uuid.UUID,
+	destinationVideoPath, destinationSubtitlePath string,
+) (domain.ImportRecoveryState, error) {
+	state, _, err := workflow.observeImportRecoveryLocked(ctx, taskID, importID, destinationVideoPath, destinationSubtitlePath, nil, false)
+	return state, err
+}
+
+// RunImportCompensation 在持有目标路径 advisory 锁的单一事务内完成补偿决策。
+// preserveForRetry 保留可供重试采用的完整文件对；rollback 仅在回执路径全部
+// 已不存在时返回 true。无法删除或身份变化时返回 false，并保留恢复登记。
+func (workflow *TaskWorkflow) RunImportCompensation(
+	ctx context.Context,
+	completion domain.ImportCompletion,
+	preserveForRetry bool,
+	rollback func() bool,
+) (domain.ImportRecoveryState, error) {
+	state, _, err := workflow.observeImportRecoveryLocked(
+		ctx, completion.TaskID, completion.ImportID,
+		completion.DestinationVideoPath, completion.DestinationSubtitlePath, rollback, preserveForRetry,
+	)
+	return state, err
+}
+
+// observeImportRecoveryLocked 在同一事务中持有双路径锁、观察状态并安全回滚。
+// 显式使用 READ COMMITTED，在取得锁后的独立语句中读取最新的目标登记和引用。
+// 自身已成功、其它 running 登记或成功引用、未知状态均保留文件；完整文件对的
+// 可重试失败也保留供重试采用。取消或部分提交失败可回滚本次创建且身份未变的
+// 文件，回执未全部清理时保留目标登记。事务结束后自动释放路径锁。
+func (workflow *TaskWorkflow) observeImportRecoveryLocked(
+	ctx context.Context,
+	taskID, importID uuid.UUID,
+	destinationVideoPath, destinationSubtitlePath string,
+	rollback func() bool,
+	preserveForRetry bool,
+) (domain.ImportRecoveryState, bool, error) {
+	if taskID == uuid.Nil || importID == uuid.Nil {
+		return domain.ImportRecoveryState{}, false, fmt.Errorf("import recovery observation requires task and import IDs")
+	}
+	state := domain.ImportRecoveryState{}
+	rolledBack := false
+	err := workflow.transactor.WithinTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(scope database.TxScope) error {
+		// 双路径按稳定顺序取锁（与 CompleteImport/PrepareImportDestination 一致），
+		// 避免不同调用方以相反顺序取锁造成死锁。
+		if _, err := scope.Queries.LockImportRecoveryDestinations(ctx, db.LockImportRecoveryDestinationsParams{
+			DestinationVideoPath:    destinationVideoPath,
+			DestinationSubtitlePath: destinationSubtitlePath,
+		}); err != nil {
+			return fmt.Errorf("lock import destination paths: %w", err)
+		}
+		row, err := scope.Queries.GetTaskImportRecoveryState(ctx, db.GetTaskImportRecoveryStateParams{
+			TaskID:                  repository.UUIDToPG(taskID),
+			ImportID:                repository.UUIDToPG(importID),
+			DestinationVideoPath:    destinationVideoPath,
+			DestinationSubtitlePath: destinationSubtitlePath,
+		})
+		if err != nil {
+			return fmt.Errorf("observe import recovery state: %w", err)
+		}
+		state = domain.ImportRecoveryState{
+			TaskState:          domain.TaskState(row.TaskState),
+			ImportState:        row.ImportState,
+			DestinationClaimed: row.DestinationClaimed,
+		}
+		state.Succeeded = state.TaskState == domain.TaskImported && state.ImportState == "succeeded"
+		// fail-closed 保护（保留原自身 succeeded 保护语义）：导入行已成功
+		// 但任务状态不一致、或状态未知/缺失时，一律保守保留，不删除。
+		if state.ImportState == "succeeded" || state.TaskState == "" || state.ImportState == "" {
+			return nil
+		}
+		if rollback == nil {
+			return nil
+		}
+		if state.Succeeded || state.DestinationClaimed {
+			// 已成功或被占用：文件当前被有效引用，不删除。
+			return nil
+		}
+		// 真实取消会先写 task.state='cancelled'，River 终态可能尚未写入导入行。
+		// 此时即使错误分类可重试，也需要按取消语义清理。其它完整文件对的
+		// 可重试失败保留；部分提交失败由调用方传入 preserveForRetry=false。
+		if preserveForRetry && state.TaskState != domain.TaskCancelled {
+			return nil
+		}
+		// 其它导入的准入先提交持久登记；取锁后的新语句已检查这些登记。
+		// 删除期间新的准入被同一路径锁阻塞，当前回执可按身份校验回滚。
+		if !rollback() {
+			// 文件仍存在或身份未知：保留原登记，留下可追踪的恢复目标。
+			return nil
+		}
+		rolledBack = true
+		// 只有回执对应文件均已不存在，才释放当前目标登记。
+		if _, err := scope.Queries.ReleaseImportDestinationReservation(ctx, db.ReleaseImportDestinationReservationParams{
+			ID:                      repository.UUIDToPG(importID),
+			TaskID:                  repository.UUIDToPG(taskID),
+			DestinationVideoPath:    &destinationVideoPath,
+			DestinationSubtitlePath: &destinationSubtitlePath,
+		}); err != nil {
+			return fmt.Errorf("release import destination reservation: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return domain.ImportRecoveryState{}, false, err
+	}
+	return state, rolledBack, nil
 }
 
 func (workflow *TaskWorkflow) scheduleTaskCleanupInTx(

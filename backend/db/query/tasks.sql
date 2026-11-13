@@ -32,8 +32,8 @@ SELECT
     latest_import.id AS import_id,
     COALESCE(latest_import.attempt, 0)::integer AS import_attempt,
     COALESCE(latest_import.status, '')::text AS import_status,
-    latest_import.destination_video_path,
-    latest_import.destination_subtitle_path,
+    completed_import.destination_video_path,
+    completed_import.destination_subtitle_path,
     latest_import.error_code AS import_error_code,
     latest_import.error_message AS import_error_message,
     latest_import.started_at AS import_started_at,
@@ -71,6 +71,9 @@ LEFT JOIN LATERAL (
     ORDER BY import.attempt DESC
     LIMIT 1
 ) AS latest_import ON true
+LEFT JOIN imports AS completed_import
+    ON completed_import.id = latest_import.id
+   AND completed_import.status = 'succeeded'
 LEFT JOIN LATERAL (
     SELECT cleanup.*
     FROM cleanup_runs AS cleanup
@@ -83,7 +86,7 @@ LEFT JOIN LATERAL (
     FROM emby_library_items AS item
     WHERE item.present
       AND (
-          item.file_path = latest_import.destination_video_path
+          (latest_import.status = 'succeeded' AND item.file_path = latest_import.destination_video_path)
           OR (
               episode.tmdb_episode_id IS NOT NULL
               AND EXISTS (
@@ -94,7 +97,7 @@ LEFT JOIN LATERAL (
               )
           )
       )
-    ORDER BY (item.file_path = latest_import.destination_video_path) DESC, item.id
+    ORDER BY ((latest_import.status = 'succeeded' AND item.file_path = latest_import.destination_video_path)) DESC, item.id
     LIMIT 1
 ) AS related_emby_item ON true
 WHERE task.id = sqlc.arg(id)
@@ -138,8 +141,8 @@ SELECT
     latest_import.id AS import_id,
     COALESCE(latest_import.attempt, 0)::integer AS import_attempt,
     COALESCE(latest_import.status, '')::text AS import_status,
-    latest_import.destination_video_path,
-    latest_import.destination_subtitle_path,
+    completed_import.destination_video_path,
+    completed_import.destination_subtitle_path,
     latest_import.error_code AS import_error_code,
     latest_import.error_message AS import_error_message,
     latest_import.started_at AS import_started_at,
@@ -177,6 +180,9 @@ LEFT JOIN LATERAL (
     ORDER BY import.attempt DESC
     LIMIT 1
 ) AS latest_import ON true
+LEFT JOIN imports AS completed_import
+    ON completed_import.id = latest_import.id
+   AND completed_import.status = 'succeeded'
 LEFT JOIN LATERAL (
     SELECT cleanup.*
     FROM cleanup_runs AS cleanup
@@ -189,7 +195,7 @@ LEFT JOIN LATERAL (
     FROM emby_library_items AS item
     WHERE item.present
       AND (
-          item.file_path = latest_import.destination_video_path
+          (latest_import.status = 'succeeded' AND item.file_path = latest_import.destination_video_path)
           OR (
               episode.tmdb_episode_id IS NOT NULL
               AND EXISTS (
@@ -200,7 +206,7 @@ LEFT JOIN LATERAL (
               )
           )
       )
-    ORDER BY (item.file_path = latest_import.destination_video_path) DESC, item.id
+    ORDER BY ((latest_import.status = 'succeeded' AND item.file_path = latest_import.destination_video_path)) DESC, item.id
     LIMIT 1
 ) AS related_emby_item ON true
 WHERE EXISTS (
@@ -357,6 +363,117 @@ JOIN media_artifacts AS subtitle ON subtitle.id = artifact_set.subtitle_artifact
 WHERE task.id = sqlc.arg(task_id)
   AND import.id = sqlc.arg(import_id);
 
+-- name: BeginImport :one
+SELECT
+    task.id AS task_id,
+    task.state,
+    import.id AS import_id,
+    import.status AS import_status,
+    task.media_type,
+    series.title AS series_title,
+    series.release_year,
+    season.season_number AS target_season,
+    artifact_set.basename,
+    video.id AS video_artifact_id,
+    video.file_path AS video_file_path,
+    video.format AS video_format,
+    video.size_bytes AS video_size_bytes,
+    video.checksum_sha256 AS video_checksum_sha256,
+    subtitle.id AS subtitle_artifact_id,
+    subtitle.file_path AS subtitle_file_path,
+    subtitle.format AS subtitle_format,
+    subtitle.size_bytes AS subtitle_size_bytes,
+    subtitle.checksum_sha256 AS subtitle_checksum_sha256
+FROM episode_tasks AS task
+JOIN imports AS import ON import.task_id = task.id
+JOIN acquisitions AS acquisition ON acquisition.id = task.acquisition_id
+JOIN media_series AS series ON series.id = acquisition.series_id
+LEFT JOIN episode_mappings AS mapping ON mapping.id = task.mapping_id
+LEFT JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
+LEFT JOIN tmdb_seasons AS season ON season.id = episode.season_id
+JOIN artifact_sets AS artifact_set ON artifact_set.task_id = task.id
+JOIN media_artifacts AS video ON video.id = artifact_set.video_artifact_id AND video.kind = 'video'
+JOIN media_artifacts AS subtitle ON subtitle.id = artifact_set.subtitle_artifact_id AND subtitle.kind = 'subtitle' AND lower(subtitle.format) = 'ass'
+WHERE task.id = sqlc.arg(task_id)
+  AND import.id = sqlc.arg(import_id);
+
+-- name: GetTaskImportRecoveryState :one
+-- destination_claimed 包含其它导入对同一目标的两种占用：
+-- succeeded 成功引用，以及 running 状态下已登记（准入）目标的采用者；
+-- 本 import 自身排除，避免把待补偿的计划误读为他人占用。
+SELECT
+    COALESCE((SELECT task.state FROM episode_tasks AS task WHERE task.id = sqlc.arg(task_id)), '')::text AS task_state,
+    COALESCE(
+        (SELECT import.status FROM imports AS import WHERE import.id = sqlc.arg(import_id) AND import.task_id = sqlc.arg(task_id)),
+        ''
+    )::text AS import_state,
+    EXISTS (
+        SELECT 1
+        FROM imports AS claimed
+        WHERE claimed.id <> sqlc.arg(import_id)
+          AND (
+              (
+                  claimed.status = 'succeeded'
+                  AND (
+                      claimed.destination_video_path = sqlc.arg(destination_video_path)::text
+                      OR claimed.destination_subtitle_path = sqlc.arg(destination_subtitle_path)::text
+                  )
+              )
+              OR (
+                  claimed.status = 'running'
+                  AND (
+                      claimed.destination_video_path = sqlc.arg(destination_video_path)::text
+                      OR claimed.destination_subtitle_path = sqlc.arg(destination_subtitle_path)::text
+                  )
+              )
+          )
+    ) AS destination_claimed;
+
+-- name: LockImportRecoveryDestinations :execrows
+-- 对补偿涉及的两个目标路径取事务级 advisory 锁。导入提交（CompleteImport）
+-- 在同一键上先取锁后再写入 succeeded 引用，因此观察与删除之间的窗口
+-- 内建立的任何新成功引用都会阻塞补偿或被补偿感知，双方不能交叉。
+SELECT pg_advisory_xact_lock(
+    hashtextextended('import-destination:' || sqlc.arg(destination_video_path)::text, 0)
+),
+pg_advisory_xact_lock(
+    hashtextextended('import-destination:' || sqlc.arg(destination_subtitle_path)::text, 0)
+);
+
+-- name: ReleaseImportDestinationReservation :execrows
+-- 补偿安全回滚后释放本 import 的目标登记，使后续导入可以重新准入。
+-- 只在行仍处于 running（未进入终态）且登记路径与本次一致时清除。
+UPDATE imports
+SET destination_video_path = NULL,
+    destination_subtitle_path = NULL,
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND task_id = sqlc.arg(task_id)
+  AND status = 'running'
+  AND destination_video_path = sqlc.arg(destination_video_path)
+  AND destination_subtitle_path = sqlc.arg(destination_subtitle_path);
+
+-- name: ReserveImportDestinations :one
+-- 目标准入：把本对目标路径登记到 running 的 import 行。
+-- 该登记是“正在采用”的持久声明：其它导入的补偿观察会把 running 已登记目标
+-- 视为占用而保留文件；CompleteImport 校验成功提交路径与登记一致。
+-- 只有本 import 仍处于 running 且路径尚未登记（或与本次完全一致）时才接受。
+UPDATE imports
+SET destination_video_path = sqlc.arg(destination_video_path),
+    destination_subtitle_path = sqlc.arg(destination_subtitle_path),
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND task_id = sqlc.arg(task_id)
+  AND status = 'running'
+  AND (
+      (destination_video_path IS NULL AND destination_subtitle_path IS NULL)
+      OR (
+          destination_video_path = sqlc.arg(destination_video_path)
+          AND destination_subtitle_path = sqlc.arg(destination_subtitle_path)
+      )
+  )
+RETURNING id, destination_video_path, destination_subtitle_path;
+
 -- name: StartTaskImport :one
 UPDATE episode_tasks
 SET state = 'importing',
@@ -378,16 +495,18 @@ WHERE id = sqlc.arg(id)
 RETURNING *;
 
 -- name: CompleteImport :one
+-- 成功提交要求 import 已通过准入登记了完全一致的目标路径，
+-- 防止绕过准入的调用建立成功引用。
 UPDATE imports
 SET status = 'succeeded',
-    destination_video_path = sqlc.arg(destination_video_path),
-    destination_subtitle_path = sqlc.arg(destination_subtitle_path),
     error_code = NULL,
     error_message = NULL,
     completed_at = now(),
     updated_at = now()
 WHERE id = sqlc.arg(id)
   AND status = 'running'
+  AND destination_video_path = sqlc.arg(destination_video_path)
+  AND destination_subtitle_path = sqlc.arg(destination_subtitle_path)
 RETURNING *;
 
 -- name: MarkTaskImported :one

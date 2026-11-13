@@ -143,6 +143,7 @@ describe('taskFailureInfo', () => {
     ['subtitle_output_commit_failed', 'subtitle', '字幕处理失败：无法保存字幕结果', true],
     ['source_video_path_invalid', 'video', '视频转码失败：源视频路径不安全', false],
     ['library_path_invalid', 'import', '入库失败：媒体库路径不安全', false],
+    ['library_tree_unsupported', 'import', '入库失败：媒体库目录布局不受支持', false],
   ] as const)('maps backend code %s without relying on an English exception', (errorCode, failureStage, summary, canRetry) => {
     const info = taskFailureInfo(task({ errorCode, errorMessage: undefined, failureStage }));
 

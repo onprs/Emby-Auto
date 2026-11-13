@@ -22,6 +22,13 @@ func TestFinalRSSImportDisablesAndRetainsHistoryWithOptionalSourceCleanupIntegra
 	workflow := NewTaskWorkflow(db.New(fixture.pool), fixture.transactor, fixture.scheduler)
 
 	nonFinalSubscriptionID, nonFinalTaskID, nonFinalImportID, nonFinalOperationID := createRSSImportingTask(t, fixture, 1, 2, true)
+	if _, err := workflow.PrepareImportDestination(context.Background(), domain.ImportCompletion{
+		TaskID: nonFinalTaskID, ImportID: nonFinalImportID,
+		DestinationVideoPath:    "/library/Show/Season1/Show - S01E01.mkv",
+		DestinationSubtitlePath: "/library/Show/Season1/Show - S01E01.ass",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := workflow.CompleteImport(context.Background(), domain.ImportCompletion{
 		TaskID: nonFinalTaskID, ImportID: nonFinalImportID, OperationID: nonFinalOperationID,
 		DestinationVideoPath:    "/library/Show/Season1/Show - S01E01.mkv",
@@ -32,6 +39,13 @@ func TestFinalRSSImportDisablesAndRetainsHistoryWithOptionalSourceCleanupIntegra
 	assertRSSCompletionState(t, fixture, nonFinalSubscriptionID, true, false, 0)
 
 	preservedSubscriptionID, preservedTaskID, preservedImportID, preservedOperationID := createRSSImportingTask(t, fixture, 2, 2, false)
+	if _, err := workflow.PrepareImportDestination(context.Background(), domain.ImportCompletion{
+		TaskID: preservedTaskID, ImportID: preservedImportID,
+		DestinationVideoPath:    "/library/Preserved/Season1/Preserved - S01E02.mkv",
+		DestinationSubtitlePath: "/library/Preserved/Season1/Preserved - S01E02.ass",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := workflow.CompleteImport(context.Background(), domain.ImportCompletion{
 		TaskID: preservedTaskID, ImportID: preservedImportID, OperationID: preservedOperationID,
 		DestinationVideoPath:    "/library/Preserved/Season1/Preserved - S01E02.mkv",
@@ -43,6 +57,13 @@ func TestFinalRSSImportDisablesAndRetainsHistoryWithOptionalSourceCleanupIntegra
 	assertRSSCompletionRecordsRetained(t, fixture, preservedSubscriptionID, preservedTaskID)
 
 	cleanupSubscriptionID, cleanupTaskID, cleanupImportID, cleanupOperationID := createRSSImportingTask(t, fixture, 2, 2, true)
+	if _, err := workflow.PrepareImportDestination(context.Background(), domain.ImportCompletion{
+		TaskID: cleanupTaskID, ImportID: cleanupImportID,
+		DestinationVideoPath:    "/library/Cleanup/Season1/Cleanup - S01E02.mkv",
+		DestinationSubtitlePath: "/library/Cleanup/Season1/Cleanup - S01E02.ass",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := workflow.CompleteImport(context.Background(), domain.ImportCompletion{
 		TaskID: cleanupTaskID, ImportID: cleanupImportID, OperationID: cleanupOperationID,
 		DestinationVideoPath:    "/library/Cleanup/Season1/Cleanup - S01E02.mkv",
@@ -54,6 +75,13 @@ func TestFinalRSSImportDisablesAndRetainsHistoryWithOptionalSourceCleanupIntegra
 	assertRSSCompletionRecordsRetained(t, fixture, cleanupSubscriptionID, cleanupTaskID)
 
 	anchoredSubscriptionID, anchoredTaskID, anchoredImportID, anchoredOperationID := createRSSImportingTask(t, fixture, 2, 2, false, true)
+	if _, err := workflow.PrepareImportDestination(context.Background(), domain.ImportCompletion{
+		TaskID: anchoredTaskID, ImportID: anchoredImportID,
+		DestinationVideoPath:    "/library/Anchored/Season1/Anchored - S01E02.mkv",
+		DestinationSubtitlePath: "/library/Anchored/Season1/Anchored - S01E02.ass",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := workflow.CompleteImport(context.Background(), domain.ImportCompletion{
 		TaskID: anchoredTaskID, ImportID: anchoredImportID, OperationID: anchoredOperationID,
 		DestinationVideoPath:    "/library/Anchored/Season1/Anchored - S01E02.mkv",
@@ -77,6 +105,13 @@ WHERE id = $1`, fixture.seriesID); err != nil {
 	taskWorkflow := NewTaskWorkflow(db.New(fixture.pool), fixture.transactor, fixture.scheduler)
 	rssWorkflow := NewRSSWorkflow(db.New(fixture.pool), fixture.transactor, fixture.scheduler)
 	subscriptionID, taskID, importID, operationID := createRSSImportingTask(t, fixture, 2, 2, false, true)
+	if _, err := taskWorkflow.PrepareImportDestination(ctx, domain.ImportCompletion{
+		TaskID: taskID, ImportID: importID,
+		DestinationVideoPath:    "/library/Ongoing/Season1/Ongoing - S01E02.mkv",
+		DestinationSubtitlePath: "/library/Ongoing/Season1/Ongoing - S01E02.ass",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := taskWorkflow.CompleteImport(ctx, domain.ImportCompletion{
 		TaskID: taskID, ImportID: importID, OperationID: operationID,
 		DestinationVideoPath:    "/library/Ongoing/Season1/Ongoing - S01E02.mkv",
@@ -111,6 +146,13 @@ VALUES ($1, 'rss.subscription.delete', 'rss_subscription', $2, $3, 'succeeded',
 		t.Fatal(err)
 	}
 
+	if _, err := workflow.PrepareImportDestination(context.Background(), domain.ImportCompletion{
+		TaskID: taskID, ImportID: importID,
+		DestinationVideoPath:    "/library/Legacy/Season1/Legacy - S01E02.mkv",
+		DestinationSubtitlePath: "/library/Legacy/Season1/Legacy - S01E02.ass",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := workflow.CompleteImport(context.Background(), domain.ImportCompletion{
 		TaskID: taskID, ImportID: importID, OperationID: importOperationID,
 		DestinationVideoPath:    "/library/Legacy/Season1/Legacy - S01E02.mkv",
@@ -165,6 +207,13 @@ WHERE subscription_id = $1 AND source_episode = 1
 		TaskID: finalTaskID, ImportID: finalImportID, OperationID: finalOperationID,
 		DestinationVideoPath:    "/library/OutOfOrder/Season1/OutOfOrder - S01E02.mkv",
 		DestinationSubtitlePath: "/library/OutOfOrder/Season1/OutOfOrder - S01E02.ass",
+	}
+	if _, err := workflow.PrepareImportDestination(context.Background(), domain.ImportCompletion{
+		TaskID: finalTaskID, ImportID: finalImportID,
+		DestinationVideoPath:    "/library/OutOfOrder/Season1/OutOfOrder - S01E02.mkv",
+		DestinationSubtitlePath: "/library/OutOfOrder/Season1/OutOfOrder - S01E02.ass",
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if err := workflow.CompleteImport(context.Background(), completion); err != nil {
 		t.Fatalf("CompleteImport(final before sibling) error = %v", err)
@@ -255,6 +304,13 @@ UPDATE rss_subscriptions SET mapping_profile_id = $2 WHERE id = $1`, complementa
 		t.Fatal(err)
 	}
 
+	if _, err := workflow.PrepareImportDestination(ctx, domain.ImportCompletion{
+		TaskID: finalTaskID, ImportID: finalImportID,
+		DestinationVideoPath:    "/library/Complementary/Season1/Complementary - S01E02.mkv",
+		DestinationSubtitlePath: "/library/Complementary/Season1/Complementary - S01E02.ass",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := workflow.CompleteImport(ctx, domain.ImportCompletion{
 		TaskID: finalTaskID, ImportID: finalImportID, OperationID: finalOperationID,
 		DestinationVideoPath:    "/library/Complementary/Season1/Complementary - S01E02.mkv",
@@ -302,6 +358,13 @@ WHERE id = $1
 		t.Fatal(err)
 	}
 
+	if _, err := workflow.PrepareImportDestination(ctx, domain.ImportCompletion{
+		TaskID: taskID, ImportID: importID,
+		DestinationVideoPath:    "/library/ProfileChange/Season1/ProfileChange - S01E01.mkv",
+		DestinationSubtitlePath: "/library/ProfileChange/Season1/ProfileChange - S01E01.ass",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := workflow.CompleteImport(ctx, domain.ImportCompletion{
 		TaskID: taskID, ImportID: importID, OperationID: operationID,
 		DestinationVideoPath:    "/library/ProfileChange/Season1/ProfileChange - S01E01.mkv",
@@ -455,6 +518,13 @@ WHERE target_episode_id = $1
 	}
 	// VerifySubscription 已提交 absent 证据后，最终 import 可能先于 PersistPoll
 	// 获得订阅锁；完成判定必须直接拒绝这条较新的缺失证据。
+	if _, err := taskWorkflow.PrepareImportDestination(ctx, domain.ImportCompletion{
+		TaskID: finalTaskID, ImportID: finalImportID,
+		DestinationVideoPath:    "/library/Complementary/Season1/Complementary - S01E02.mkv",
+		DestinationSubtitlePath: "/library/Complementary/Season1/Complementary - S01E02.ass",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := taskWorkflow.CompleteImport(ctx, domain.ImportCompletion{
 		TaskID: finalTaskID, ImportID: finalImportID, OperationID: finalOperationID,
 		DestinationVideoPath:    "/library/Complementary/Season1/Complementary - S01E02.mkv",

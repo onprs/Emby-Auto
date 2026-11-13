@@ -255,6 +255,112 @@ func (workflow *AcquisitionDeletionWorkflow) LoadDeletionCommand(ctx context.Con
 	return command, nil
 }
 
+// DeleteImportedLibraryFiles 在导入目标路径 advisory 锁域内重新确认并执行显式
+// delete-imported 的库文件删除。candidates 是删除命令加载时快照的候选路径，
+// 只用来约束本次可删除范围；实际加锁集合和实时占用判定在事务内由新鲜查询
+// 决定，旧快照的 Preserve=false 不作为证据。remove 在持锁事务内执行文件系统
+// 安全回调，返回错误会回滚事务且不推进 CompleteDeletion。
+// 返回 prepared=false 表示同一 acquisition 仍有活动操作，调用方应等待后重试。
+func (workflow *AcquisitionDeletionWorkflow) DeleteImportedLibraryFiles(
+	ctx context.Context,
+	acquisitionID, operationID uuid.UUID,
+	candidates []domain.AcquisitionDeletionLibraryFile,
+	remove func(context.Context, []domain.AcquisitionDeletionLibraryFile) error,
+) (bool, error) {
+	if acquisitionID == uuid.Nil || remove == nil {
+		return true, nil
+	}
+	allowed := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate.FilePath) == "" {
+			continue
+		}
+		allowed[candidate.FilePath] = struct{}{}
+	}
+	if len(allowed) == 0 {
+		return true, nil
+	}
+	prepared := true
+	err := workflow.transactor.WithinTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(scope database.TxScope) error {
+		// 与 PrepareImportDestination/CompleteImport/RunImportCompensation 共用
+		// 同一命名空间和路径键；按视频→字幕、目标对稳定的顺序取锁。
+		pairs, err := scope.Queries.ListAcquisitionDeletionLibraryFilePairs(ctx, repository.UUIDToPG(acquisitionID))
+		if err != nil {
+			return fmt.Errorf("list imported destination lock candidates: %w", err)
+		}
+		locked := make(map[string]struct{}, len(pairs)*2)
+		for _, pair := range pairs {
+			_, videoAllowed := allowed[pair.VideoPath]
+			_, subtitleAllowed := allowed[pair.SubtitlePath]
+			if !videoAllowed && !subtitleAllowed {
+				continue
+			}
+			if _, err := scope.Queries.LockImportRecoveryDestinations(ctx, db.LockImportRecoveryDestinationsParams{
+				DestinationVideoPath:    pair.VideoPath,
+				DestinationSubtitlePath: pair.SubtitlePath,
+			}); err != nil {
+				return fmt.Errorf("lock imported destination paths: %w", err)
+			}
+			locked[pair.VideoPath] = struct{}{}
+			locked[pair.SubtitlePath] = struct{}{}
+		}
+		// 锁内复核同一 acquisition 的 readiness：新出现的活跃操作会阻止删除，
+		// 由调用方等待后重新加载命令，避免把正在退出的导入目标当成孤立文件。
+		active, err := scope.Queries.CountAcquisitionDeletionActiveOperations(ctx, db.CountAcquisitionDeletionActiveOperationsParams{
+			OperationID:   repository.UUIDToPG(operationID),
+			AcquisitionID: repository.UUIDToPG(acquisitionID),
+		})
+		if err != nil {
+			return fmt.Errorf("recheck acquisition deletion readiness: %w", err)
+		}
+		if active != 0 {
+			prepared = false
+			return nil
+		}
+		// 锁后独立语句读取最新的成功引用与 running 采用登记；查询失败保持
+		// 文件不动，不推进删除完成。
+		rows, err := scope.Queries.ListAcquisitionDeletionLibraryFilesForDeletion(ctx, repository.UUIDToPG(acquisitionID))
+		if err != nil {
+			return fmt.Errorf("reload imported destination claims: %w", err)
+		}
+		seen := make(map[string]struct{}, len(rows))
+		files := make([]domain.AcquisitionDeletionLibraryFile, 0, len(rows))
+		unlockedLiveFile := false
+		for _, row := range rows {
+			if row.Preserve {
+				continue
+			}
+			_, isAllowed := allowed[row.FilePath]
+			_, isLocked := locked[row.FilePath]
+			if !isAllowed || !isLocked {
+				// 快照之后出现了本尝试未加锁的活跃成功引用：本次不得删除，
+				// 让调用方重新加载命令并取得新的锁集合。
+				unlockedLiveFile = true
+				continue
+			}
+			if _, duplicate := seen[row.FilePath]; duplicate {
+				continue
+			}
+			seen[row.FilePath] = struct{}{}
+			files = append(files, domain.AcquisitionDeletionLibraryFile{FilePath: row.FilePath})
+		}
+		if unlockedLiveFile {
+			return fmt.Errorf("imported library destinations changed after the deletion command snapshot")
+		}
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
+		if len(files) == 0 {
+			return nil
+		}
+		return remove(ctx, files)
+	})
+	if err != nil {
+		return false, err
+	}
+	return prepared, nil
+}
+
 func (workflow *AcquisitionDeletionWorkflow) CompleteDeletion(ctx context.Context, acquisitionID, operationID uuid.UUID) (domain.AcquisitionDeletionResult, error) {
 	result := domain.AcquisitionDeletionResult{AcquisitionID: acquisitionID}
 	err := workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {

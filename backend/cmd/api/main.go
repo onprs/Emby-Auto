@@ -228,7 +228,6 @@ func buildRuntimeHandler(
 		pool.Close()
 		return nil, nil, fmt.Errorf("reconcile RSS subscription progress: %w", err)
 	}
-	taskWorkflow := service.NewTaskWorkflow(queries, transactor, operationScheduler)
 	catalogWorkflow := service.NewCatalogWorkflow(queries, transactor, operationScheduler)
 	embyCatalogWorkflow := service.NewEmbyCatalogWorkflow(queries, transactor, operationScheduler)
 	authentication := service.NewAuthentication(repository.NewAuth(queries), service.NewPasswordHasher(), cfg.SessionTTL)
@@ -238,6 +237,7 @@ func buildRuntimeHandler(
 		return nil, nil, err
 	}
 	configuration := service.NewConfigurationService(repository.NewConfiguration(queries, transactor), secretCipher)
+	taskWorkflow := service.NewTaskWorkflow(queries, transactor, operationScheduler)
 	tmdbSearcher := service.NewTMDbClientSearcher(configuration, cfg.TMDbBaseURL)
 	agentResolutions := service.NewAgentResolutionService(
 		queries, transactor, operationScheduler, configuration, catalogWorkflow, tmdbSearcher,

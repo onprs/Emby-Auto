@@ -50,6 +50,7 @@ Running the installer again preserves the installed version, configuration, and 
 
 - Install and configure PostgreSQL, qBittorrent, and Emby Server separately before setup.
 - The device must have access to download and library directories. qBittorrent and the application must use identical absolute download paths.
+- Emby library directories must contain real directories. Symbolic links inside a title or season directory are not followed, and the import fails with an unsupported library layout error.
 - The application account UID must match the owner of Emby media files.
 - Access locally or through an SSH tunnel by default. Configure HTTPS and secure session cookies for network access.
 - Back up the database, installation configuration, and media directories regularly.
