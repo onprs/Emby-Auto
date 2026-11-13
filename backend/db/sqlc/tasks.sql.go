@@ -772,8 +772,8 @@ SELECT
     latest_import.id AS import_id,
     COALESCE(latest_import.attempt, 0)::integer AS import_attempt,
     COALESCE(latest_import.status, '')::text AS import_status,
-    latest_import.destination_video_path,
-    latest_import.destination_subtitle_path,
+    completed_import.destination_video_path,
+    completed_import.destination_subtitle_path,
     latest_import.error_code AS import_error_code,
     latest_import.error_message AS import_error_message,
     latest_import.started_at AS import_started_at,
@@ -811,6 +811,9 @@ LEFT JOIN LATERAL (
     ORDER BY import.attempt DESC
     LIMIT 1
 ) AS latest_import ON true
+LEFT JOIN imports AS completed_import
+    ON completed_import.id = latest_import.id
+   AND completed_import.status = 'succeeded'
 LEFT JOIN LATERAL (
     SELECT cleanup.id, cleanup.task_id, cleanup.download_id, cleanup.attempt, cleanup.status, cleanup.torrent_removed, cleanup.staged_files_removed, cleanup.error_code, cleanup.error_message, cleanup.started_at, cleanup.completed_at, cleanup.created_at, cleanup.updated_at
     FROM cleanup_runs AS cleanup
@@ -823,7 +826,7 @@ LEFT JOIN LATERAL (
     FROM emby_library_items AS item
     WHERE item.present
       AND (
-          item.file_path = latest_import.destination_video_path
+          (latest_import.status = 'succeeded' AND item.file_path = latest_import.destination_video_path)
           OR (
               episode.tmdb_episode_id IS NOT NULL
               AND EXISTS (
@@ -834,7 +837,7 @@ LEFT JOIN LATERAL (
               )
           )
       )
-    ORDER BY (item.file_path = latest_import.destination_video_path) DESC, item.id
+    ORDER BY ((latest_import.status = 'succeeded' AND item.file_path = latest_import.destination_video_path)) DESC, item.id
     LIMIT 1
 ) AS related_emby_item ON true
 WHERE task.id = $1
@@ -1100,8 +1103,8 @@ SELECT
     latest_import.id AS import_id,
     COALESCE(latest_import.attempt, 0)::integer AS import_attempt,
     COALESCE(latest_import.status, '')::text AS import_status,
-    latest_import.destination_video_path,
-    latest_import.destination_subtitle_path,
+    completed_import.destination_video_path,
+    completed_import.destination_subtitle_path,
     latest_import.error_code AS import_error_code,
     latest_import.error_message AS import_error_message,
     latest_import.started_at AS import_started_at,
@@ -1139,6 +1142,9 @@ LEFT JOIN LATERAL (
     ORDER BY import.attempt DESC
     LIMIT 1
 ) AS latest_import ON true
+LEFT JOIN imports AS completed_import
+    ON completed_import.id = latest_import.id
+   AND completed_import.status = 'succeeded'
 LEFT JOIN LATERAL (
     SELECT cleanup.id, cleanup.task_id, cleanup.download_id, cleanup.attempt, cleanup.status, cleanup.torrent_removed, cleanup.staged_files_removed, cleanup.error_code, cleanup.error_message, cleanup.started_at, cleanup.completed_at, cleanup.created_at, cleanup.updated_at
     FROM cleanup_runs AS cleanup
@@ -1151,7 +1157,7 @@ LEFT JOIN LATERAL (
     FROM emby_library_items AS item
     WHERE item.present
       AND (
-          item.file_path = latest_import.destination_video_path
+          (latest_import.status = 'succeeded' AND item.file_path = latest_import.destination_video_path)
           OR (
               episode.tmdb_episode_id IS NOT NULL
               AND EXISTS (
@@ -1162,7 +1168,7 @@ LEFT JOIN LATERAL (
               )
           )
       )
-    ORDER BY (item.file_path = latest_import.destination_video_path) DESC, item.id
+    ORDER BY ((latest_import.status = 'succeeded' AND item.file_path = latest_import.destination_video_path)) DESC, item.id
     LIMIT 1
 ) AS related_emby_item ON true
 WHERE EXISTS (

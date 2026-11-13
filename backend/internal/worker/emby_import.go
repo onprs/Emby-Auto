@@ -20,8 +20,7 @@ const importRecoveryQueryTimeout = 5 * time.Second
 
 type TaskImportStore interface {
 	BeginImport(context.Context, uuid.UUID, uuid.UUID) (domain.ImportCommand, error)
-	// PrepareImportDestination 在文件系统操作前登记目标准入；返回 false
-	// 表示目标已被其它导入占用（库冲突）。
+	// PrepareImportDestination 在文件访问前登记采用意图；未准入时不得进入文件操作。
 	PrepareImportDestination(context.Context, domain.ImportCompletion) (bool, error)
 	CompleteImport(context.Context, domain.ImportCompletion) error
 	ObserveImportRecovery(context.Context, uuid.UUID, uuid.UUID, string, string) (domain.ImportRecoveryState, error)
@@ -126,19 +125,13 @@ func (handler *EmbyImportHandler) Handle(ctx context.Context, operation domain.O
 		DestinationVideoPath:    destinationVideo,
 		DestinationSubtitlePath: destinationSubtitle,
 	}
-	// 目标准入：文件系统操作前在事务内登记目标路径。其它导入占用同一目标
-	// 时拒绝并按库冲突结束，绝不进入 FS 阶段。
-	if _, admissionErr := handler.store.PrepareImportDestination(ctx, completion); admissionErr != nil {
-		admissionFailure := mediaStoreFailure("import", admissionErr)
-		var classified *Failure
-		if !errors.As(admissionFailure, &classified) {
-			return admissionFailure
-		}
-		var conflict *domain.MediaWorkflowError
-		if errors.As(admissionErr, &conflict) && conflict.Code == "library_destination_conflict" {
-			return permanentFailure("library_destination_conflict", "an Emby library destination contains different content", admissionErr)
-		}
-		return admissionFailure
+	// 准入声明必须先于文件访问；内容是否相同由后续校验判断。
+	admitted, admissionErr := handler.store.PrepareImportDestination(ctx, completion)
+	if admissionErr != nil {
+		return mediaStoreFailure("import", admissionErr)
+	}
+	if !admitted {
+		return retryableFailure("library_import_not_prepared", "the Emby library destination could not be prepared", nil)
 	}
 	created, err := importArtifactPair(
 		ctx,
@@ -151,22 +144,21 @@ func (handler *EmbyImportHandler) Handle(ctx context.Context, operation domain.O
 		handler.libraryAccess,
 	)
 	if err != nil {
-		var treeErr *unsupportedLibraryTreeError
-		if errors.As(err, &treeErr) {
-			return permanentFailure("library_tree_unsupported", "the Emby library directory layout is not supported", err)
-		}
-		var conflict *destinationConflictError
-		if errors.As(err, &conflict) {
-			return permanentFailure("library_destination_conflict", "an Emby library destination contains different content", err)
-		}
-		// pair 失败不再在函数内盲删：created 已创建文件交给安全补偿，
-		// 由持锁事务按当前数据库状态决定回滚或保留。
 		failure := retryableFailure("library_import_failed", "the paired media files could not be imported", err)
+		var treeErr *unsupportedLibraryTreeError
+		var conflict *destinationConflictError
+		switch {
+		case errors.As(err, &treeErr):
+			failure = permanentFailure("library_tree_unsupported", "the Emby library directory layout is not supported", err)
+		case errors.As(err, &conflict):
+			failure = permanentFailure("library_destination_conflict", "an Emby library destination contains different content", err)
+		}
 		var classified *Failure
 		if !errors.As(failure, &classified) {
 			return failure
 		}
-		return handler.compensateFailedImport(ctx, completion, created, classified)
+		// 不完整的文件对需要安全清理；业务错误仍保留原有可重试分类。
+		return handler.compensateImportFailure(ctx, completion, created, classified, false)
 	}
 	if completeErr := handler.store.CompleteImport(ctx, completion); completeErr != nil {
 		failure := mediaStoreFailure("import", completeErr)
@@ -194,12 +186,22 @@ func (handler *EmbyImportHandler) compensateFailedImport(
 	created []importedCommit,
 	failure *Failure,
 ) error {
+	return handler.compensateImportFailure(ctx, completion, created, failure, failure.Retryable)
+}
+
+// compensateImportFailure 将删除决策交给持锁观察；只有完整文件对可在重试时复用。
+func (handler *EmbyImportHandler) compensateImportFailure(
+	ctx context.Context,
+	completion domain.ImportCompletion,
+	created []importedCommit,
+	failure *Failure,
+	preserveForRetry bool,
+) error {
 	compensateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), importRecoveryQueryTimeout)
 	defer cancel()
 	if compensationStore, ok := handler.store.(importCompensationStore); ok && len(created) > 0 {
-		state, err := compensationStore.RunImportCompensation(compensateCtx, completion, failure.Retryable, func() bool {
-			rollbackImportedCommits(created)
-			return true
+		state, err := compensationStore.RunImportCompensation(compensateCtx, completion, preserveForRetry, func() bool {
+			return rollbackImportedCommits(created)
 		})
 		if err != nil {
 			// 数据库状态未知：保留已提交文件，避免因取消或连接中断盲删。
@@ -297,7 +299,7 @@ func importArtifactPair(
 	created := make([]importedCommit, 0, len(destinations))
 	defer func() {
 		if importErr != nil {
-			handlerlessCompensation(created)
+			committed = created
 		}
 	}()
 	for _, destination := range destinations {
@@ -363,7 +365,7 @@ func importArtifactPair(
 		}
 	}
 	// 提交后再次校验目录树，捕获本操作期间被替换为符号链接或特殊对象的目录；
-	// 失败时由上面的 defer 回滚本次创建的文件。
+	// 失败时返回创建回执，由上层在持锁观察后决定补偿。
 	if err := libraryAccess.ApplyTree(ctx, libraryTreeRoot); err != nil {
 		return nil, err
 	}
@@ -402,37 +404,39 @@ func adoptCommittedTemporary(temporary, final string, artifact domain.MediaArtif
 	return importedCommit{path: final, info: finalInfo, checksum: artifact.ChecksumSHA256}, true
 }
 
-// rollbackImportedCommits 只删除本次操作提交且身份仍一致的对象。
-// inode、大小与修改时间任一变化都说明目标已被替换或修改，保留现文件；
-// 三者均匹配时再核对内容校验和，避免文件系统重用 inode 或时间精度不足时误删。
-// handlerlessCompensation 是 importArtifactPair 内部失败时的即时回滚：
-// 此时尚未触及数据库（无成功引用、无登记），删除本次创建的文件是安全的；
-// 保留身份四重校验以防替换。若失败发生在导入提交之后，调用方不得使用
-// 本函数，应通过 compensateFailedImport 走数据库持锁补偿。
-func handlerlessCompensation(commits []importedCommit) {
-	rollbackImportedCommits(commits)
-}
-
-func rollbackImportedCommits(commits []importedCommit) {
+// rollbackImportedCommits 只删除本次创建且身份仍一致的文件。
+// 返回 true 表示所有回执路径均已不存在；未知、替换或删除失败时保留恢复登记。
+func rollbackImportedCommits(commits []importedCommit) bool {
+	removed := true
 	for index := len(commits) - 1; index >= 0; index-- {
 		commit := commits[index]
 		if commit.info == nil {
+			removed = false
 			continue
 		}
 		current, err := os.Lstat(commit.path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil || !current.Mode().IsRegular() || !os.SameFile(commit.info, current) {
+			removed = false
 			continue
 		}
 		if current.Size() != commit.info.Size() || !current.ModTime().Equal(commit.info.ModTime()) {
+			removed = false
 			continue
 		}
 		if err := verifyFileAgainstArtifact(context.Background(), commit.path, domain.MediaArtifact{
 			FilePath: commit.path, SizeBytes: current.Size(), ChecksumSHA256: commit.checksum,
 		}); err != nil {
+			removed = false
 			continue
 		}
-		_ = os.Remove(commit.path)
+		if err := os.Remove(commit.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			removed = false
+		}
 	}
+	return removed
 }
 
 func prepareImportDestination(ctx context.Context, destination importDestination, libraryAccess ImportedLibraryAccess) (bool, error) {

@@ -193,7 +193,7 @@ func TestEmbyImportUnsupportedLibraryTreeIsPermanentFailure(t *testing.T) {
 	}
 }
 
-func TestImportRollsBackCreatedFilesWhenPostCommitAccessFails(t *testing.T) {
+func TestImportReturnsCreatedFilesWhenPostCommitAccessFails(t *testing.T) {
 	root := t.TempDir()
 	libraryRoot := filepath.Join(root, "library")
 	destination := filepath.Join(libraryRoot, "Show", "Season1")
@@ -221,9 +221,16 @@ func TestImportRollsBackCreatedFilesWhenPostCommitAccessFails(t *testing.T) {
 		}
 		return nil
 	}
-	_, err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, operationID, access)
+	created, err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, operationID, access)
 	if err == nil {
 		t.Fatal("importArtifactPair() error = nil, want post-commit failure")
+	}
+	if len(created) != 2 {
+		t.Fatalf("本次创建回执数 = %d，预期 2", len(created))
+	}
+	// 文件阶段只返回回执；本用例单独验证确认安全后的身份清理。
+	if !rollbackImportedCommits(created) {
+		t.Fatal("已创建文件清理失败")
 	}
 	for _, path := range []string{destinationVideo, destinationSubtitle, importTemporaryPath(destinationVideo, operationID), importTemporaryPath(destinationSubtitle, operationID)} {
 		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
@@ -241,7 +248,7 @@ func TestImportRollsBackCreatedFilesWhenPostCommitAccessFails(t *testing.T) {
 	assertFileContent(t, destinationSubtitle, validASSFixture)
 }
 
-func TestImportRollsBackOnlyFilesCreatedByThisOperation(t *testing.T) {
+func TestImportRecoveryReceiptsExcludePreexistingFiles(t *testing.T) {
 	root := t.TempDir()
 	libraryRoot := filepath.Join(root, "library")
 	destination := filepath.Join(libraryRoot, "Show", "Season1")
@@ -271,8 +278,16 @@ func TestImportRollsBackOnlyFilesCreatedByThisOperation(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, uuid.New(), access); err == nil {
+	created, err := importArtifactPair(context.Background(), command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, uuid.New(), access)
+	if err == nil {
 		t.Fatal("importArtifactPair() error = nil, want failure")
+	}
+	if len(created) != 1 || created[0].path != destinationSubtitle {
+		t.Fatalf("本次创建回执 = %#v", created)
+	}
+	// 此单元场景中没有其它采用者，单独验证回执的身份保护清理。
+	if !rollbackImportedCommits(created) {
+		t.Fatal("本次字幕清理失败")
 	}
 	assertFileContent(t, destinationVideo, videoContent)
 	if _, err := os.Stat(destinationSubtitle); !os.IsNotExist(err) {
@@ -280,7 +295,7 @@ func TestImportRollsBackOnlyFilesCreatedByThisOperation(t *testing.T) {
 	}
 }
 
-func TestImportCancellationAfterCommitRollsBackCreatedFiles(t *testing.T) {
+func TestImportCancellationAfterCommitReturnsRecoveryReceipts(t *testing.T) {
 	root := t.TempDir()
 	libraryRoot := filepath.Join(root, "library")
 	destination := filepath.Join(libraryRoot, "Show", "Season1")
@@ -306,15 +321,22 @@ func TestImportCancellationAfterCommitRollsBackCreatedFiles(t *testing.T) {
 	cancellation := errors.New("test cancellation")
 	access := &importAccessHook{testImportedLibraryAccess: newTestImportedLibraryAccess()}
 	access.beforeApply = func(path string) error {
-		// 提交后的权限应用阶段收到取消，已提交的文件必须回滚。
+		// 提交后的权限应用阶段收到取消，上层仍需获得全部创建回执。
 		if path == destinationVideo {
 			cancel(cancellation)
 		}
 		return nil
 	}
-	_, err := importArtifactPair(ctx, command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, operationID, access)
+	created, err := importArtifactPair(ctx, command.Video, command.Subtitle, libraryRoot, destinationVideo, destinationSubtitle, operationID, access)
 	if !errors.Is(err, cancellation) {
 		t.Fatalf("importArtifactPair() error = %v, want cancellation", err)
+	}
+	if len(created) != 2 {
+		t.Fatalf("本次创建回执数 = %d，预期 2", len(created))
+	}
+	// 文件阶段只返回回执；本用例单独验证确认安全后的身份清理。
+	if !rollbackImportedCommits(created) {
+		t.Fatal("已创建文件清理失败")
 	}
 	for _, path := range []string{destinationVideo, destinationSubtitle, importTemporaryPath(destinationVideo, operationID), importTemporaryPath(destinationSubtitle, operationID)} {
 		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
