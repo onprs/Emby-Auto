@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -18,6 +19,12 @@ const acquisitionDeletionGuardInterval = cancellationReconcileInterval
 type AcquisitionDeleteStore interface {
 	DeletionReady(context.Context, uuid.UUID, uuid.UUID) (bool, error)
 	LoadDeletionCommand(context.Context, uuid.UUID) (domain.AcquisitionDeletionCommand, error)
+	// DeleteImportedLibraryFiles 在导入目标路径锁域内重新判定占用并执行删除。
+	// 该能力是显式 delete-imported 的必需依赖，不允许以无锁路径回退。
+	DeleteImportedLibraryFiles(
+		context.Context, uuid.UUID, uuid.UUID, []domain.AcquisitionDeletionLibraryFile,
+		func(context.Context, []domain.AcquisitionDeletionLibraryFile) error,
+	) (bool, error)
 	CompleteDeletion(context.Context, uuid.UUID, uuid.UUID) (domain.AcquisitionDeletionResult, error)
 }
 
@@ -85,7 +92,7 @@ func (handler *AcquisitionDeleteHandler) deleteAcquisition(ctx context.Context, 
 	if err := handler.removeTorrents(ctx, settings, command.Downloads); err != nil {
 		return err
 	}
-	if err := removeDeletionFiles(settings.Paths, command, deleteImported); err != nil {
+	if err := handler.removeDeletionFiles(ctx, acquisitionID, operationID, settings.Paths, command, deleteImported); err != nil {
 		return err
 	}
 	if _, err := handler.store.CompleteDeletion(ctx, acquisitionID, operationID); err != nil {
@@ -136,7 +143,13 @@ func (handler *AcquisitionDeleteHandler) removeTorrents(ctx context.Context, set
 	return nil
 }
 
-func removeDeletionFiles(paths domain.PathSettings, command domain.AcquisitionDeletionCommand, deleteImported bool) error {
+func (handler *AcquisitionDeleteHandler) removeDeletionFiles(
+	ctx context.Context,
+	acquisitionID, operationID uuid.UUID,
+	paths domain.PathSettings,
+	command domain.AcquisitionDeletionCommand,
+	deleteImported bool,
+) error {
 	stagingRoots := []string{paths.StagingRoot, paths.WorkRoot}
 	libraryRoots := []string{paths.EffectiveAnimeLibraryRoot(), paths.MovieLibraryRoot}
 	seenFiles := make(map[string]struct{}, len(command.ArtifactPaths))
@@ -155,20 +168,23 @@ func removeDeletionFiles(paths domain.PathSettings, command domain.AcquisitionDe
 	}
 
 	if deleteImported {
-		seenLibraryFiles := make(map[string]struct{}, len(command.LibraryFiles))
-		for _, libraryFile := range command.LibraryFiles {
-			if libraryFile.Preserve {
-				continue
+		// 已入库文件只能在统一的目标路径锁域内，由锁后的实时占用判定
+		// 决定后删除；这里传入安全删除回调，不自行判断快照 Preserve。
+		prepared, err := handler.store.DeleteImportedLibraryFiles(
+			ctx, acquisitionID, operationID, command.LibraryFiles,
+			func(callbackCtx context.Context, files []domain.AcquisitionDeletionLibraryFile) error {
+				return removeImportedLibraryFiles(callbackCtx, paths, files)
+			},
+		)
+		if err != nil {
+			var failure *Failure
+			if errors.As(err, &failure) {
+				return failure
 			}
-			cleaned := filepath.Clean(libraryFile.FilePath)
-			if _, exists := seenLibraryFiles[cleaned]; exists {
-				continue
-			}
-			seenLibraryFiles[cleaned] = struct{}{}
-			if err := removeAllowedPath(libraryFile.FilePath, libraryRoots, false); err != nil {
-				return acquisitionDeleteLibraryPathFailure(err)
-			}
-			pruneEmptyParents(filepath.Dir(libraryFile.FilePath), libraryRoots)
+			return retryableFailure("acquisition_delete_library_file_unavailable", "the imported media file deletion could not be secured", err)
+		}
+		if !prepared {
+			return river.JobSnooze(acquisitionDeletionGuardInterval)
 		}
 	}
 
@@ -209,6 +225,53 @@ func removeDeletionFiles(paths domain.PathSettings, command domain.AcquisitionDe
 				return acquisitionDeletePathFailure("task temporary directory", err)
 			}
 		}
+	}
+	return nil
+}
+
+// removeImportedLibraryFiles 在调用方持有的目标路径锁内执行库根、路径与符号链接
+// 安全检查以及实际 unlink。先验证全部目标再删除，避免某个目标不安全时前面
+// 的文件已被误删；ctx 取消或清理失败时立即返回，后续文件保持不动。
+func removeImportedLibraryFiles(ctx context.Context, paths domain.PathSettings, files []domain.AcquisitionDeletionLibraryFile) error {
+	libraryRoots := []string{paths.EffectiveAnimeLibraryRoot(), paths.MovieLibraryRoot}
+	seen := make(map[string]struct{}, len(files))
+	targets := make([]string, 0, len(files))
+	for _, file := range files {
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
+		if strings.TrimSpace(file.FilePath) == "" {
+			continue
+		}
+		cleaned := filepath.Clean(file.FilePath)
+		if _, exists := seen[cleaned]; exists {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		target, _, err := resolveAllowedPath(file.FilePath, libraryRoots)
+		if err != nil {
+			return acquisitionDeleteLibraryPathFailure(err)
+		}
+		info, err := os.Lstat(target)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return acquisitionDeleteLibraryPathFailure(err)
+		}
+		if info.IsDir() {
+			return acquisitionDeleteLibraryPathFailure(&cleanupPathSafetyError{cause: errors.New("imported library cleanup target must be a file")})
+		}
+		targets = append(targets, file.FilePath)
+	}
+	for _, path := range targets {
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
+		if err := removeAllowedPath(path, libraryRoots, false); err != nil {
+			return acquisitionDeleteLibraryPathFailure(err)
+		}
+		pruneEmptyParents(filepath.Dir(path), libraryRoots)
 	}
 	return nil
 }
