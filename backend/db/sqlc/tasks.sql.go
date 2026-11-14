@@ -678,6 +678,7 @@ LEFT JOIN LATERAL (
           OR (
               item.item_type = 'Episode'
               AND episode.tmdb_episode_id IS NOT NULL
+              AND item.tmdb_provider_id <> ''
               AND item.tmdb_provider_id = episode.tmdb_episode_id::text
           )
       )
@@ -1002,6 +1003,7 @@ LEFT JOIN LATERAL (
           OR (
               item.item_type = 'Episode'
               AND episode.tmdb_episode_id IS NOT NULL
+              AND item.tmdb_provider_id <> ''
               AND item.tmdb_provider_id = episode.tmdb_episode_id::text
           )
       )
