@@ -184,6 +184,7 @@ verify_archive() {
   local required
   for required in bin/emby-auto-api bin/emby-auto-worker bin/emby-auto-migration-check bin/emby-auto-host-control \
     bin/emby-auto-background-runtime bin/emby-auto-release-preflight bin/emby-auto-recover-stale-operations \
+    bin/emby-auto-history-retention \
     bin/emby-auto-migrate-runtime-addresses bin/emby-auto-migrate-staging-ownership web/index.html \
     config/emby-auto-api.service config/emby-auto-worker.service config/emby-auto-systemd-control.service config/worker-runtime.sh; do
     [[ -s "$release_source/$required" ]] || fail "发布包缺少 $required。"

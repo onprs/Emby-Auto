@@ -233,6 +233,14 @@ emby_auto_maintenance emby-auto-release-preflight --require-idle
 
 后台状态的 `verified=true` 表示 Worker 和下载状态通过核验。`transfers.active` 是实际活动 torrent 数量；预检中的 `downloads.active` 是业务记录数量，暂停后仍可保留。状态输出包括计数、下载摘要和进度。
 
+长期运行后，操作历史与 Agent 决议会持续累积。需要清理时先用维护函数查看候选，默认只统计不删除：
+
+```bash
+emby_auto_maintenance emby-auto-history-retention --older-than 2160h
+```
+
+确认候选数量后追加 `--apply` 分批删除。命令只清理早于截止时间且处于终态的操作与决议；仍在排队或运行、被扫描历史或映射引用、以及被映射保存、裁决、文件选择或字幕匹配引用的记录始终保留。默认每批 500 行、单次最多 20 批，可用 `--batch-size` 与 `--max-batches` 调整；`--older-than` 最少为 24h。建议先备份数据库并保留命令输出作为审计记录。
+
 备份范围包括 PostgreSQL 一致性备份、`/etc/emby-auto`、`/var/lib/emby-auto`，以及按既有存储策略备份的媒体和工作目录。`bootstrap.json` 与 `bootstrap.json.complete` 必须一起保留，包含的加密密钥用于读取数据库中保存的外部服务凭据。备份应加密保存并限制访问权限。
 
 ## 升级与已有部署迁移

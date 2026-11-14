@@ -233,6 +233,14 @@ emby_auto_maintenance emby-auto-release-preflight --require-idle
 
 `verified=true` confirms Worker and download state. `transfers.active` counts active torrents; preflight `downloads.active` counts business records, which may remain after pausing. Status output includes counts, download digests, and progress.
 
+Operation history and Agent resolutions accumulate over time. Preview retention candidates without deleting anything:
+
+```bash
+emby_auto_maintenance emby-auto-history-retention --older-than 2160h
+```
+
+Add `--apply` to delete candidates in bounded batches. Only terminal operations and resolutions older than the cutoff are removed. Queued or running records, records referenced by scan history or mappings, and records referenced by mapping saves, adjudications, file selection, or subtitle matching are always retained. Defaults are 500 rows per batch and 20 batches per run; adjust with `--batch-size` and `--max-batches`. `--older-than` must be at least 24h. Back up the database first and retain the command output as an audit record.
+
 Back up PostgreSQL consistently, `/etc/emby-auto`, `/var/lib/emby-auto`, and media and work directories according to your storage policy. Preserve both `bootstrap.json` and `bootstrap.json.complete`. The encryption key is required to read stored service credentials. Encrypt backups and restrict access.
 
 ## Upgrades and existing deployments

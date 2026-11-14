@@ -88,6 +88,7 @@ release_files=(
   bin/emby-auto-background-runtime
   bin/emby-auto-release-preflight
   bin/emby-auto-recover-stale-operations
+  bin/emby-auto-history-retention
   bin/emby-auto-migrate-runtime-addresses
   bin/emby-auto-migrate-staging-ownership
   web/index.html
@@ -119,7 +120,7 @@ cmp -s "${root_dir}/docs/direct-deployment.en.md" "${release_dir}/DEPLOYMENT.en.
 cmp -s "${root_dir}/LICENSE" "${release_dir}/LICENSE"
 cmp -s "${root_dir}/install.sh" "${release_dir}/install.sh"
 diff -qr "${root_dir}/apps/web/dist" "${release_dir}/web" >/dev/null
-for binary in emby-auto-api emby-auto-worker emby-auto-migration-check emby-auto-host-control emby-auto-background-runtime emby-auto-release-preflight emby-auto-recover-stale-operations emby-auto-migrate-runtime-addresses emby-auto-migrate-staging-ownership; do
+for binary in emby-auto-api emby-auto-worker emby-auto-migration-check emby-auto-host-control emby-auto-background-runtime emby-auto-release-preflight emby-auto-recover-stale-operations emby-auto-history-retention emby-auto-migrate-runtime-addresses emby-auto-migrate-staging-ownership; do
   test -s "${release_dir}/bin/${binary}"
   go version -m "${release_dir}/bin/${binary}" >/dev/null
   case "${target_arch}" in
@@ -134,7 +135,7 @@ done
 test -s "${release_dir}-linux-${target_arch}.tar.gz"
 release_name="$(basename "${release_dir}")"
 release_parent="$(dirname "${release_dir}")"
-for binary in emby-auto-api emby-auto-worker emby-auto-migration-check emby-auto-host-control emby-auto-background-runtime emby-auto-release-preflight emby-auto-recover-stale-operations emby-auto-migrate-runtime-addresses emby-auto-migrate-staging-ownership; do
+for binary in emby-auto-api emby-auto-worker emby-auto-migration-check emby-auto-host-control emby-auto-background-runtime emby-auto-release-preflight emby-auto-recover-stale-operations emby-auto-history-retention emby-auto-migrate-runtime-addresses emby-auto-migrate-staging-ownership; do
   (
     cd "${release_parent}"
     tar -tzvf "${release_name}-linux-${target_arch}.tar.gz" "${release_name}/bin/${binary}"
