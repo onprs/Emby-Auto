@@ -658,11 +658,13 @@ func (workflow *RSSWorkflow) RequestSubscriptionDeletion(
 			operation = existing
 			return nil
 		}
-		if _, err := scope.Queries.GetRSSSubscription(ctx, repository.UUIDToPG(id)); errors.Is(err, pgx.ErrNoRows) {
+		locked, err := scope.Queries.LockRSSSubscriptionDeletionState(ctx, repository.UUIDToPG(id))
+		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrNotFound
 		} else if err != nil {
-			return fmt.Errorf("load RSS subscription for deletion: %w", err)
+			return fmt.Errorf("lock RSS subscription for deletion: %w", err)
 		}
+		pollState := rssSubscriptionDeletionPollStateFrom(locked)
 		archived, err := scope.Queries.ArchiveRSSSubscription(ctx, db.ArchiveRSSSubscriptionParams{
 			ID:              repository.UUIDToPG(id),
 			ExpectedVersion: expectedVersion,
@@ -674,7 +676,7 @@ func (workflow *RSSWorkflow) RequestSubscriptionDeletion(
 			return fmt.Errorf("archive RSS subscription: %w", err)
 		}
 		operation, err = scheduleRSSSubscriptionDeletionInTx(
-			ctx, scope, workflow.operations, id, idempotencyKey, deleteImported, actorUserID, uuid.Nil, "manual",
+			ctx, scope, workflow.operations, id, idempotencyKey, deleteImported, actorUserID, uuid.Nil, "manual", &pollState,
 		)
 		if err != nil {
 			return err
@@ -689,6 +691,18 @@ func (workflow *RSSWorkflow) RequestSubscriptionDeletion(
 	return operation, nil
 }
 
+// rssSubscriptionDeletionPollStateFrom 把行锁内读到的订阅状态转为随操作持久化的快照。
+func rssSubscriptionDeletionPollStateFrom(
+	locked db.LockRSSSubscriptionDeletionStateRow,
+) domain.RSSSubscriptionDeletionPollState {
+	state := domain.RSSSubscriptionDeletionPollState{Enabled: locked.Enabled, Version: locked.Version}
+	if locked.NextPollAt.Valid {
+		nextPollAt := locked.NextPollAt.Time.UTC()
+		state.NextPollAt = &nextPollAt
+	}
+	return state
+}
+
 func scheduleRSSSubscriptionDeletionInTx(
 	ctx context.Context,
 	scope database.TxScope,
@@ -699,10 +713,11 @@ func scheduleRSSSubscriptionDeletionInTx(
 	actorUserID uuid.UUID,
 	excludedOperationID uuid.UUID,
 	trigger string,
+	deletionPollState *domain.RSSSubscriptionDeletionPollState,
 ) (domain.Operation, error) {
 	return scheduleRSSSubscriptionCleanupInTx(
 		ctx, scope, operations, subscriptionID, idempotencyKey, deleteImported,
-		actorUserID, excludedOperationID, trigger, appqueue.KindRSSSubscriptionDelete, "delete",
+		actorUserID, excludedOperationID, trigger, appqueue.KindRSSSubscriptionDelete, "delete", deletionPollState,
 	)
 }
 
@@ -718,8 +733,9 @@ func scheduleRSSSubscriptionCleanupInTx(
 	trigger string,
 	kind string,
 	command string,
+	deletionPollState *domain.RSSSubscriptionDeletionPollState,
 ) (domain.Operation, error) {
-	if err := requestResourceOperationCancellations(ctx, scope, "rss_subscription", subscriptionID, actorUserID); err != nil {
+	if err := requestResourceOperationCancellations(ctx, scope, operations, "rss_subscription", subscriptionID, actorUserID); err != nil {
 		return domain.Operation{}, err
 	}
 	acquisitionIDs, err := scope.Queries.ListSubscriptionDeletionAcquisitionIDs(ctx, repository.UUIDToPG(subscriptionID))
@@ -731,6 +747,13 @@ func scheduleRSSSubscriptionCleanupInTx(
 			return domain.Operation{}, fmt.Errorf("prepare RSS acquisition cleanup: %w", err)
 		}
 	}
+	payload := map[string]any{
+		"command": command, "subscriptionId": subscriptionID, "actorUserId": actorUserID,
+		"deleteImported": deleteImported, "trigger": trigger,
+	}
+	if deletionPollState != nil {
+		payload["pollState"] = *deletionPollState
+	}
 	scheduled, err := operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
 		Kind:           kind,
 		ResourceType:   "rss_subscription",
@@ -738,11 +761,8 @@ func scheduleRSSSubscriptionCleanupInTx(
 		IdempotencyKey: idempotencyKey,
 		MaxAttempts:    3,
 		Timeout:        30 * time.Minute,
-		Payload: map[string]any{
-			"command": command, "subscriptionId": subscriptionID, "actorUserId": actorUserID,
-			"deleteImported": deleteImported, "trigger": trigger,
-		},
-		ActorUserID: actorUserID,
+		Payload:        payload,
+		ActorUserID:    actorUserID,
 	})
 	if err != nil {
 		return domain.Operation{}, fmt.Errorf("schedule RSS subscription cleanup: %w", err)

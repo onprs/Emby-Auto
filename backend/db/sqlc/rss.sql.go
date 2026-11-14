@@ -3429,6 +3429,36 @@ func (q *Queries) LockRSSSubscriptionAtFulfillment(ctx context.Context, subscrip
 	return i, err
 }
 
+const lockRSSSubscriptionDeletionState = `-- name: LockRSSSubscriptionDeletionState :one
+SELECT
+    subscription.id,
+    subscription.enabled,
+    subscription.next_poll_at,
+    subscription.version
+FROM rss_subscriptions AS subscription
+WHERE subscription.id = $1
+FOR UPDATE OF subscription
+`
+
+type LockRSSSubscriptionDeletionStateRow struct {
+	ID         pgtype.UUID        `db:"id" json:"id"`
+	Enabled    bool               `db:"enabled" json:"enabled"`
+	NextPollAt pgtype.Timestamptz `db:"next_poll_at" json:"next_poll_at"`
+	Version    int32              `db:"version" json:"version"`
+}
+
+func (q *Queries) LockRSSSubscriptionDeletionState(ctx context.Context, id pgtype.UUID) (LockRSSSubscriptionDeletionStateRow, error) {
+	row := q.db.QueryRow(ctx, lockRSSSubscriptionDeletionState, id)
+	var i LockRSSSubscriptionDeletionStateRow
+	err := row.Scan(
+		&i.ID,
+		&i.Enabled,
+		&i.NextPollAt,
+		&i.Version,
+	)
+	return i, err
+}
+
 const lockRSSSubscriptionForEntryReservation = `-- name: LockRSSSubscriptionForEntryReservation :one
 SELECT subscription.id, subscription.series_id, subscription.mapping_profile_id, subscription.name, subscription.feed_url, subscription.enabled, subscription.poll_interval_seconds, subscription.last_polled_at, subscription.next_poll_at, subscription.version, subscription.created_at, subscription.updated_at, subscription.source_season, subscription.deleted_at, subscription.auto_review, subscription.cleanup_source_on_completion, subscription.completed_at, subscription.include_keywords, subscription.exclude_keywords, subscription.auto_episode_mapping
 FROM rss_entries AS entry
@@ -4378,6 +4408,122 @@ func (q *Queries) RestoreCompletedRSSEntry(ctx context.Context, arg RestoreCompl
 		&i.AgentResolutionID,
 		&i.FulfillmentSource,
 		&i.SourceEpisodeFractionHundredths,
+	)
+	return i, err
+}
+
+const restoreRSSSubscriptionAfterFailedDeletion = `-- name: RestoreRSSSubscriptionAfterFailedDeletion :one
+UPDATE rss_subscriptions AS subscription
+SET deleted_at = NULL,
+    version = version + 1,
+    updated_at = now()
+WHERE subscription.id = $1
+  AND subscription.deleted_at IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM operations AS operation
+      WHERE operation.kind = 'rss.subscription.delete'
+        AND operation.resource_type = 'rss_subscription'
+        AND operation.resource_id = subscription.id
+        AND operation.status IN ('queued', 'running')
+        AND operation.id <> $2
+  )
+RETURNING subscription.id, subscription.series_id, subscription.mapping_profile_id, subscription.name, subscription.feed_url, subscription.enabled, subscription.poll_interval_seconds, subscription.last_polled_at, subscription.next_poll_at, subscription.version, subscription.created_at, subscription.updated_at, subscription.source_season, subscription.deleted_at, subscription.auto_review, subscription.cleanup_source_on_completion, subscription.completed_at, subscription.include_keywords, subscription.exclude_keywords, subscription.auto_episode_mapping
+`
+
+type RestoreRSSSubscriptionAfterFailedDeletionParams struct {
+	ID          pgtype.UUID `db:"id" json:"id"`
+	OperationID pgtype.UUID `db:"operation_id" json:"operation_id"`
+}
+
+func (q *Queries) RestoreRSSSubscriptionAfterFailedDeletion(ctx context.Context, arg RestoreRSSSubscriptionAfterFailedDeletionParams) (RssSubscription, error) {
+	row := q.db.QueryRow(ctx, restoreRSSSubscriptionAfterFailedDeletion, arg.ID, arg.OperationID)
+	var i RssSubscription
+	err := row.Scan(
+		&i.ID,
+		&i.SeriesID,
+		&i.MappingProfileID,
+		&i.Name,
+		&i.FeedUrl,
+		&i.Enabled,
+		&i.PollIntervalSeconds,
+		&i.LastPolledAt,
+		&i.NextPollAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SourceSeason,
+		&i.DeletedAt,
+		&i.AutoReview,
+		&i.CleanupSourceOnCompletion,
+		&i.CompletedAt,
+		&i.IncludeKeywords,
+		&i.ExcludeKeywords,
+		&i.AutoEpisodeMapping,
+	)
+	return i, err
+}
+
+const restoreRSSSubscriptionAfterFailedDeletionWithPollState = `-- name: RestoreRSSSubscriptionAfterFailedDeletionWithPollState :one
+UPDATE rss_subscriptions AS subscription
+SET deleted_at = NULL,
+    enabled = $1,
+    next_poll_at = $2,
+    version = version + 1,
+    updated_at = now()
+WHERE subscription.id = $3
+  AND subscription.deleted_at IS NOT NULL
+  AND subscription.version = $4
+  AND NOT EXISTS (
+      SELECT 1
+      FROM operations AS operation
+      WHERE operation.kind = 'rss.subscription.delete'
+        AND operation.resource_type = 'rss_subscription'
+        AND operation.resource_id = subscription.id
+        AND operation.status IN ('queued', 'running')
+        AND operation.id <> $5
+  )
+RETURNING subscription.id, subscription.series_id, subscription.mapping_profile_id, subscription.name, subscription.feed_url, subscription.enabled, subscription.poll_interval_seconds, subscription.last_polled_at, subscription.next_poll_at, subscription.version, subscription.created_at, subscription.updated_at, subscription.source_season, subscription.deleted_at, subscription.auto_review, subscription.cleanup_source_on_completion, subscription.completed_at, subscription.include_keywords, subscription.exclude_keywords, subscription.auto_episode_mapping
+`
+
+type RestoreRSSSubscriptionAfterFailedDeletionWithPollStateParams struct {
+	Enabled         bool               `db:"enabled" json:"enabled"`
+	NextPollAt      pgtype.Timestamptz `db:"next_poll_at" json:"next_poll_at"`
+	ID              pgtype.UUID        `db:"id" json:"id"`
+	ArchivedVersion int32              `db:"archived_version" json:"archived_version"`
+	OperationID     pgtype.UUID        `db:"operation_id" json:"operation_id"`
+}
+
+func (q *Queries) RestoreRSSSubscriptionAfterFailedDeletionWithPollState(ctx context.Context, arg RestoreRSSSubscriptionAfterFailedDeletionWithPollStateParams) (RssSubscription, error) {
+	row := q.db.QueryRow(ctx, restoreRSSSubscriptionAfterFailedDeletionWithPollState,
+		arg.Enabled,
+		arg.NextPollAt,
+		arg.ID,
+		arg.ArchivedVersion,
+		arg.OperationID,
+	)
+	var i RssSubscription
+	err := row.Scan(
+		&i.ID,
+		&i.SeriesID,
+		&i.MappingProfileID,
+		&i.Name,
+		&i.FeedUrl,
+		&i.Enabled,
+		&i.PollIntervalSeconds,
+		&i.LastPolledAt,
+		&i.NextPollAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SourceSeason,
+		&i.DeletedAt,
+		&i.AutoReview,
+		&i.CleanupSourceOnCompletion,
+		&i.CompletedAt,
+		&i.IncludeKeywords,
+		&i.ExcludeKeywords,
+		&i.AutoEpisodeMapping,
 	)
 	return i, err
 }

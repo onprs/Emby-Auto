@@ -337,9 +337,6 @@ func (workflow *TaskCommandWorkflow) Cancel(ctx context.Context, taskID uuid.UUI
 			operation = existing
 			return nil
 		}
-		if err := requestResourceOperationCancellations(ctx, scope, "episode_task", taskID, actorUserID); err != nil {
-			return err
-		}
 		task, err := scope.Queries.LockEpisodeTask(ctx, repository.UUIDToPG(taskID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrNotFound
@@ -361,6 +358,10 @@ func (workflow *TaskCommandWorkflow) Cancel(ctx context.Context, taskID uuid.UUI
 			return fmt.Errorf("cancel task: %w", err)
 		}
 		_ = cancelled
+		// 任务状态先按乐观锁提交，再取消排队操作；排队操作的资源级取消会再次推进版本。
+		if err := requestResourceOperationCancellations(ctx, scope, workflow.operations, "episode_task", taskID, actorUserID); err != nil {
+			return err
+		}
 		scheduled, err := workflow.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
 			Kind:           appqueue.KindTaskCancel,
 			ResourceType:   "episode_task",
