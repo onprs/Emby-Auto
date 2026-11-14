@@ -22,6 +22,39 @@ import (
 	"github.com/riverqueue/river/rivertype"
 )
 
+const (
+	settlementErrorCode    = "deletion_finalization_interrupted"
+	settlementErrorMessage = "the deletion failed and its interrupted terminal recovery was settled by maintenance"
+)
+
+// staleCandidatePredicate 是两类候选共享的中断条件；$1 为 stale-after 间隔，$2 为可选 kind。
+const staleCandidatePredicate = `
+WHERE operation.status = 'running'
+  AND operation.cancel_requested_at IS NULL
+  AND operation.heartbeat_at < now() - $1::interval
+  AND ($2::text = '' OR operation.kind = $2::text)`
+
+// terminalSettlementPredicate 只放行被证明已进入 River 终态丢弃、且 operation 与
+// 当前 attempt 仍 running 的删除操作；身份以 attempt_count 与 job.attempt 对齐。
+const terminalSettlementPredicate = `
+  AND job.state = 'discarded'
+  AND attempt.attempt = operation.attempt_count
+  AND job.attempt = operation.attempt_count
+  AND operation.attempt_count BETWEEN 1 AND operation.max_attempts
+  AND (
+      (operation.kind = 'acquisition.delete' AND operation.resource_type = 'acquisition')
+      OR (operation.kind = 'rss.subscription.delete' AND operation.resource_type = 'rss_subscription')
+  )`
+
+const candidateSelect = `
+SELECT operation.id, operation.river_job_id, attempt.attempt, operation.kind,
+       operation.resource_type, operation.resource_id
+FROM operations AS operation
+JOIN river_job AS job ON job.id = operation.river_job_id
+JOIN operation_attempts AS attempt
+  ON attempt.operation_id = operation.id
+ AND attempt.status = 'running'`
+
 type recoveryCandidate struct {
 	id           pgtype.UUID
 	riverJobID   int64
@@ -29,6 +62,15 @@ type recoveryCandidate struct {
 	kind         string
 	resourceType *string
 	resourceID   pgtype.UUID
+}
+
+type eligibilityCounts struct {
+	staleRecovery int64
+	settlement    int64
+}
+
+func (counts eligibilityCounts) total() int64 {
+	return counts.staleRecovery + counts.settlement
 }
 
 func main() {
@@ -71,13 +113,15 @@ func main() {
 	}
 	defer pool.Close()
 
-	eligible, err := countEligible(ctx, pool, *staleAfter, *kind)
+	counts, err := countEligible(ctx, pool, *staleAfter, *kind)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "count eligible operations: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("eligible=%d\n", eligible)
-	if !*apply || eligible == 0 {
+	fmt.Printf("eligible=%d\n", counts.total())
+	fmt.Printf("staleRecovery=%d\n", counts.staleRecovery)
+	fmt.Printf("terminalSettlement=%d\n", counts.settlement)
+	if !*apply || counts.total() == 0 {
 		fmt.Println("recover stale operations: dry-run")
 		return
 	}
@@ -86,9 +130,35 @@ func main() {
 	service.RegisterProgressCommitHook(transactor)
 	riverDriver := riverpgxv5.New(pool)
 	recovered := 0
+	settled := 0
 	for {
-		changed := false
+		progressed := false
+		rescuedThisRun := false
+		settledThisRun := false
 		err := transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+			terminal, terminalFound, err := lockTerminalSettlementCandidate(ctx, scope.Tx, *staleAfter, *kind)
+			if err != nil {
+				return err
+			}
+			if terminalFound {
+				locked, err := scope.Queries.GetOperation(ctx, terminal.id)
+				if err != nil {
+					return fmt.Errorf("load terminal settlement candidate: %w", err)
+				}
+				settlement, err := repository.SettleTerminalDeletionFailureInTx(
+					ctx, scope.Queries, locked, terminal.attempt, settlementErrorCode, settlementErrorMessage,
+				)
+				if err != nil {
+					return fmt.Errorf("settle terminal deletion failure: %w", err)
+				}
+				if !settlement {
+					return nil
+				}
+				progressed = true
+				settledThisRun = true
+				return nil
+			}
+
 			candidate, found, err := lockCandidate(ctx, scope.Tx, *staleAfter, *kind)
 			if err != nil || !found {
 				return err
@@ -131,58 +201,76 @@ func main() {
 			}); err != nil {
 				return fmt.Errorf("append recovery event: %w", err)
 			}
-			changed = true
+			progressed = true
+			rescuedThisRun = true
 			return nil
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "recover stale operation: %v\n", err)
 			os.Exit(1)
 		}
-		if !changed {
+		if !progressed {
 			break
 		}
-		recovered++
+		if settledThisRun {
+			settled++
+		} else if rescuedThisRun {
+			recovered++
+		}
 	}
 	fmt.Printf("recovered=%d\n", recovered)
+	fmt.Printf("settled=%d\n", settled)
 }
 
 func countEligible(ctx context.Context, pool interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
-}, staleAfter time.Duration, kind string) (int64, error) {
-	var count int64
-	err := pool.QueryRow(ctx, `
+}, staleAfter time.Duration, kind string) (eligibilityCounts, error) {
+	var counts eligibilityCounts
+	if err := pool.QueryRow(ctx, `
 SELECT count(DISTINCT operation.id)::bigint
 FROM operations AS operation
 JOIN river_job AS job ON job.id = operation.river_job_id
 JOIN operation_attempts AS attempt
   ON attempt.operation_id = operation.id
  AND attempt.status = 'running'
-WHERE operation.status = 'running'
-  AND operation.cancel_requested_at IS NULL
-  AND operation.heartbeat_at < now() - $1::interval
-  AND job.state = 'running'
-  AND ($2::text = '' OR operation.kind = $2::text)`, staleAfter.String(), kind).Scan(&count)
-	return count, err
-}
-
-func lockCandidate(ctx context.Context, tx pgx.Tx, staleAfter time.Duration, kind string) (recoveryCandidate, bool, error) {
-	var candidate recoveryCandidate
-	err := tx.QueryRow(ctx, `
-SELECT operation.id, operation.river_job_id, attempt.attempt, operation.kind,
-       operation.resource_type, operation.resource_id
+`+staleCandidatePredicate+"\n  AND job.state = 'running'", staleAfter.String(), kind).Scan(&counts.staleRecovery); err != nil {
+		return counts, err
+	}
+	if err := pool.QueryRow(ctx, `
+SELECT count(DISTINCT operation.id)::bigint
 FROM operations AS operation
 JOIN river_job AS job ON job.id = operation.river_job_id
 JOIN operation_attempts AS attempt
   ON attempt.operation_id = operation.id
  AND attempt.status = 'running'
-WHERE operation.status = 'running'
-  AND operation.cancel_requested_at IS NULL
-  AND operation.heartbeat_at < now() - $1::interval
-  AND job.state = 'running'
-  AND ($2::text = '' OR operation.kind = $2::text)
-ORDER BY operation.heartbeat_at, operation.id, attempt.attempt DESC
-LIMIT 1
-FOR UPDATE OF operation, job, attempt SKIP LOCKED`, staleAfter.String(), kind).Scan(
+`+staleCandidatePredicate+terminalSettlementPredicate, staleAfter.String(), kind).Scan(&counts.settlement); err != nil {
+		return counts, err
+	}
+	return counts, nil
+}
+
+// lockCandidate 只选取既有 running-stale 中断重排候选；job 已进入其它状态时
+// 不在此路径处理，避免把终态丢弃记录误判为可重排。
+func lockCandidate(ctx context.Context, tx pgx.Tx, staleAfter time.Duration, kind string) (recoveryCandidate, bool, error) {
+	var candidate recoveryCandidate
+	err := tx.QueryRow(ctx, candidateSelect+staleCandidatePredicate+"\n  AND job.state = 'running'\nORDER BY operation.heartbeat_at, operation.id, attempt.attempt DESC\nLIMIT 1\nFOR UPDATE OF operation, job, attempt SKIP LOCKED", staleAfter.String(), kind).Scan(
+		&candidate.id, &candidate.riverJobID, &candidate.attempt, &candidate.kind,
+		&candidate.resourceType, &candidate.resourceID,
+	)
+	if err == pgx.ErrNoRows {
+		return recoveryCandidate{}, false, nil
+	}
+	if err != nil {
+		return recoveryCandidate{}, false, err
+	}
+	return candidate, true, nil
+}
+
+// lockTerminalSettlementCandidate 在事务内锁定并复检终态结算候选。dry-run 的
+// 观测结果不是授权快照，apply 必须重新满足同一组身份、时效、预算与资源条件。
+func lockTerminalSettlementCandidate(ctx context.Context, tx pgx.Tx, staleAfter time.Duration, kind string) (recoveryCandidate, bool, error) {
+	var candidate recoveryCandidate
+	err := tx.QueryRow(ctx, candidateSelect+staleCandidatePredicate+terminalSettlementPredicate+"\nORDER BY operation.heartbeat_at, operation.id\nLIMIT 1\nFOR UPDATE OF operation, job, attempt SKIP LOCKED", staleAfter.String(), kind).Scan(
 		&candidate.id, &candidate.riverJobID, &candidate.attempt, &candidate.kind,
 		&candidate.resourceType, &candidate.resourceID,
 	)
