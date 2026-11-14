@@ -63,9 +63,12 @@ qBittorrent 或 Emby 使用独立账户（宿主机或其它容器）时，还�
 ```bash
 sudo apt-get install -y acl
 sudo usermod -aG emby-auto qbittorrent
-sudo chgrp -R emby-auto /srv/emby-auto/downloads
-sudo chmod -R g+rwX /srv/emby-auto/downloads
-sudo find /srv/emby-auto/downloads -type d -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+# 只处理本应用的下载缓存，不跟随符号链接；已有子目录与文件一并补齐。
+sudo find /srv/emby-auto/downloads -type d -exec chgrp emby-auto {} + \
+  -exec chmod g+rwx,g+s {} + \
+  -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+sudo find /srv/emby-auto/downloads -type f -exec chgrp emby-auto {} + \
+  -exec chmod g+rw {} +
 ```
 
   qBittorrent 容器需以相同 GID 运行或在挂载时保留组权限；独立宿主账户修改组后需重启服务。
@@ -202,7 +205,7 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml down
 docker compose --env-file deploy/.env -f deploy/compose.yaml down --volumes
 ```
 
-`--volumes` 删除 PostgreSQL 数据与安装配置；宿主机媒体目录仍需按存储策略单独处理。镜像可用 `docker image rm emby-auto-backend:local emby-auto-web:local` 清理。
+`--volumes` 删除 PostgreSQL 数据与安装配置；宿主机媒体目录仍需按存储策略单独处理。镜像可用 `docker image rm "emby-auto-backend:${EMBY_AUTO_IMAGE_TAG:-local}" "emby-auto-web:${EMBY_AUTO_IMAGE_TAG:-local}"` 清理；自定义 `EMBY_AUTO_IMAGE_TAG` 时先在当前 shell 导出 `deploy/.env` 中的值。
 
 ### 从备份恢复
 
@@ -238,7 +241,7 @@ curl --fail http://127.0.0.1:<APP_PORT>/api/v1/setup/status
 curl --fail http://127.0.0.1:<APP_PORT>/api/v1/health/ready
 ```
 
-`setup/status` 应为 `state=completed`；若为 `unavailable`，检查两个初始化文件是否成对、权限是否正确以及数据库是否恢复完整。恢复失败时保持 Worker 停止，不要只恢复数据库或只恢复 `bootstrap.json`。
+`setup/status` 应为 `state=completed`；若 `curl --fail` 返回非零或 HTTP 503 `service_unavailable`，检查两个初始化文件是否成对、权限是否正确以及数据库是否恢复完整。该接口的状态值只有 `required`、`initializing`、`completed`，没有 `unavailable`。恢复失败时保持 Worker 停止，不要只恢复数据库或只恢复 `bootstrap.json`。
 
 ## 故障排查
 

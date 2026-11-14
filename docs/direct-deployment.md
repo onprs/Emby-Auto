@@ -80,7 +80,7 @@ sudo usermod -aG emby-share qbittorrent
 sudo systemctl restart qbittorrent
 ```
 
-已有安装未使用共享组时，重复执行安装命令并添加 `--share-group` 会实际应用组成员与目录权限，并写入安装记录。已有媒体库使用 `--user 媒体账户 --share-group 共享组` 时，媒体账户负责媒体文件所有权，共享组负责下载目录协作；账户 UID 和 GID 仍必须大于 0。
+已有安装未使用共享组时，重复执行安装命令并添加 `--share-group` 会实际应用组成员与目录权限，并写入安装记录。使用 `--share-group` 需要 `setfacl`；全新安装时安装器会在 Debian/Ubuntu 上尝试安装 `acl`，已有安装重跑或离线环境请先执行 `sudo apt-get install -y acl`。已有媒体库使用 `--user 媒体账户 --share-group 共享组` 时，媒体账户负责媒体文件所有权，共享组负责下载目录协作；账户 UID 和 GID 仍必须大于 0。
 
 也可以不重跑安装器，手工补充权限（示例使用应用账户同名组 `emby-auto`）：
 
@@ -283,7 +283,7 @@ emby_auto_maintenance emby-auto-release-preflight --require-idle
 
 ## 升级与已有部署迁移
 
-升级前备份数据库和应用配置。以下命令使用本文档前文的 `emby_auto_maintenance` 函数；在新终端执行时，先重新定义该函数。
+升级前备份数据库和应用配置。步骤 1 与 3 需在同一 shell 会话执行；在新终端执行步骤 3 时，先设置 `new_release_id` 并重新定义该函数。
 
 ### 1. 准备并校验新版本目录
 
@@ -337,55 +337,151 @@ emby_auto_maintenance emby-auto-recover-stale-operations --worker-stopped --stal
 
 ### 3. 切换、验证与回滚
 
+代码块默认等待 600 秒；迁移耗时更长时，先设置 `EMBY_AUTO_UPGRADE_READY_TIMEOUT`（秒）。自定义端口时，同时设置 `EMBY_AUTO_UPGRADE_READY_URL`。
+
 ```bash
 (
   set -eE
+  : "${new_release_id:?请先执行步骤 1，或在新终端设置 new_release_id}"
+  ready_timeout="${EMBY_AUTO_UPGRADE_READY_TIMEOUT:-600}"
+  ready_url="${EMBY_AUTO_UPGRADE_READY_URL:-http://127.0.0.1:18080/api/v1/health/ready}"
+  [[ "${ready_timeout}" =~ ^[1-9][0-9]*$ ]] || {
+    echo 'EMBY_AUTO_UPGRADE_READY_TIMEOUT 必须是正整数秒数。' >&2
+    exit 1
+  }
+  if ! declare -F emby_auto_maintenance >/dev/null; then
+    echo '未找到 emby_auto_maintenance；请先按上文定义维护函数。' >&2
+    exit 1
+  fi
   release_path="/opt/emby-auto/releases/${new_release_id}"
   previous_release_id="$(basename "$(readlink -f /opt/emby-auto/current)")"
   [[ -d "${release_path}" ]] || { echo "版本目录不存在：${release_path}" >&2; exit 1; }
+  [[ -n "${previous_release_id}" && -d "/opt/emby-auto/releases/${previous_release_id}" ]] \
+    || { echo '无法确定上一版本目录，未停止服务。' >&2; exit 1; }
   (cd "${release_path}" && sha256sum --check --strict SHA256SUMS)
   for service in api worker systemd-control; do
     [[ -s "${release_path}/config/emby-auto-${service}.service" ]] \
       || { echo "新版本缺少 emby-auto-${service}.service" >&2; exit 1; }
   done
+  worker_state="$(systemctl show emby-auto-worker.service --property=ActiveState --value 2>/dev/null || true)"
+  case "${worker_state}" in
+    active|activating|reloading|deactivating)
+      echo 'Worker 仍在运行；请先完成步骤 2 的正式 stopped 转换与门禁核验。' >&2
+      exit 1
+      ;;
+  esac
   install_units() {
     local service
     for service in api worker systemd-control; do
       sudo install -o root -g root -m 0644 \
         "/opt/emby-auto/current/config/emby-auto-${service}.service" \
-        "/etc/systemd/system/emby-auto-${service}.service"
+        "/etc/systemd/system/emby-auto-${service}.service" || return 1
     done
-    sudo systemctl daemon-reload
+    sudo systemctl daemon-reload || return 1
+  }
+  running_release() {
+    local unit=$1 pid exe
+    pid="$(systemctl show "${unit}" --property=MainPID --value 2>/dev/null)" || return 1
+    [[ "${pid}" =~ ^[1-9][0-9]*$ ]] || return 1
+    exe="$(readlink -f "/proc/${pid}/exe" 2>/dev/null)" || return 1
+    [[ "${exe}" == /opt/emby-auto/releases/*/bin/* ]] || return 1
+    exe="${exe#/opt/emby-auto/releases/}"
+    printf '%s\n' "${exe%%/*}"
+  }
+  wait_ready() {
+    local expected=$1 deadline=$((SECONDS + ready_timeout)) remaining request_max
+    local state code api_release control_release
+    while (( SECONDS < deadline )); do
+      state="$(systemctl show emby-auto-api.service --property=ActiveState --value 2>/dev/null || true)"
+      if [[ "${state}" == failed || "${state}" == inactive ]]; then
+        echo "API 单元在就绪前进入 ${state}。" >&2
+        return 1
+      fi
+      state="$(systemctl show emby-auto-systemd-control.service --property=ActiveState --value 2>/dev/null || true)"
+      if [[ "${state}" == failed || "${state}" == inactive ]]; then
+        echo "控制服务在就绪前进入 ${state}。" >&2
+        return 1
+      fi
+      api_release="$(running_release emby-auto-api.service || true)"
+      control_release="$(running_release emby-auto-systemd-control.service || true)"
+      if [[ "${api_release}" == "${expected}" && "${control_release}" == "${expected}" ]]; then
+        remaining=$((deadline - SECONDS))
+        (( remaining > 0 )) || break
+        request_max=$(( remaining < 25 ? remaining : 25 ))
+        code="$(curl --silent --show-error --noproxy '*' \
+          --connect-timeout 2 --max-time "${request_max}" \
+          --output /dev/null --write-out '%{http_code}' "${ready_url}" 2>/dev/null || true)"
+        if [[ "${code}" == 200 ]]; then
+          echo "版本 ${expected} 已就绪。"
+          return 0
+        fi
+        echo "等待版本 ${expected} 就绪（HTTP ${code:-连接失败}）。" >&2
+      else
+        echo "等待版本 ${expected} 启动（当前 API=${api_release:-无}，控制=${control_release:-无}）。" >&2
+      fi
+      sleep 2
+    done
+    echo "等待版本 ${expected} 就绪超过 ${ready_timeout} 秒；可按实际迁移耗时调大 EMBY_AUTO_UPGRADE_READY_TIMEOUT。" >&2
+    return 1
+  }
+  rollback_failed() {
+    local reason=$1
+    echo "回滚失败：${reason}" >&2
+    if ! sudo systemctl stop emby-auto-api.service emby-auto-systemd-control.service >/dev/null 2>&1; then
+      echo '无法停止 API 或控制服务；请立即执行 sudo systemctl stop emby-auto-api.service emby-auto-systemd-control.service。' >&2
+    fi
+    echo '服务已停止或已尝试停止，Worker 保持停止。不要重复执行切换；请检查 journalctl -u emby-auto-api -u emby-auto-systemd-control。' >&2
+    echo '若失败发生在恢复 current 之前，current 仍指向新版本；不要把它当作已回滚。' >&2
+    echo '若新版本已执行数据库迁移，旧二进制可能无法读取新 schema；不要自动恢复或删除数据库，请前滚修复或按升级前的一致性备份走正式恢复流程。' >&2
+    exit 2
   }
   rollback_release() {
+    trap - ERR
+    set +e
+    local worker_state
     echo '切换或验证失败，回滚到上一版本。' >&2
-    sudo ln -sfn "releases/${previous_release_id}" /opt/emby-auto/current.next
-    sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
-    install_units
-    sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service
-    if ! curl --fail --max-time 10 http://127.0.0.1:18080/api/v1/health/ready; then
-      echo '回滚后旧版本也未通过就绪检查；请运行 journalctl -u emby-auto-api -u emby-auto-worker 排查，不要重复执行切换。' >&2
-      exit 2
-    fi
+    worker_state="$(systemctl show emby-auto-worker.service --property=ActiveState --value 2>/dev/null || true)"
+    case "${worker_state}" in
+      active|activating|reloading|deactivating)
+        echo 'Worker 正在运行；回滚前必须先执行正式 stopped 转换并核对门禁。' >&2
+        exit 2
+        ;;
+    esac
+    sudo systemctl stop emby-auto-api.service emby-auto-systemd-control.service || \
+      rollback_failed '无法停止新版本 API 或控制服务。'
+    sudo ln -sfn "releases/${previous_release_id}" /opt/emby-auto/current.next || \
+      rollback_failed '无法写入上一版本 current 链接。'
+    sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current || \
+      rollback_failed '无法切换 current 到上一版本。'
+    install_units || rollback_failed '无法安装上一版本 unit 或重新加载 systemd。'
+    sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service || \
+      rollback_failed '无法启动上一版本 API 或控制服务。'
+    wait_ready "${previous_release_id}" || rollback_failed '上一版本未在预算内就绪。'
+    echo '已回滚到上一版本并通过就绪检查；Worker 保持停止。' >&2
     exit 1
   }
-  sudo systemctl stop emby-auto-api.service emby-auto-systemd-control.service
-  # 切换 current 之后到恢复后台之前的任何失败都执行回滚：set -eE 使函数内的
-  # 错误也触发 ERR trap，覆盖安装 unit、daemon-reload、启动与就绪检查。
   rollback_on_error() { rollback_release; }
+  sudo systemctl stop emby-auto-api.service emby-auto-systemd-control.service || {
+    echo '无法停止当前 API 或控制服务，尚未切换 current。' >&2
+    exit 1
+  }
+  # 切换 current 之后到后台恢复之前的任何失败都执行回滚：set -eE 使函数内的
+  # 错误也触发 ERR trap，覆盖安装 unit、daemon-reload、启动、就绪与迁移检查。
   trap rollback_on_error ERR
   sudo ln -sfn "releases/${new_release_id}" /opt/emby-auto/current.next
   sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
   install_units
   sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service
-  curl --fail --max-time 10 http://127.0.0.1:18080/api/v1/health/ready
+  wait_ready "${new_release_id}"
   emby_auto_maintenance emby-auto-migration-check
-  emby_auto_maintenance emby-auto-background-runtime --state running
   trap - ERR
+  echo "已切换到 ${new_release_id} 并通过就绪与迁移检查；后台仍保持停止。"
 )
 ```
 
-切换后（包括安装 unit、重新加载、启动与就绪检查）的任何失败都会自动把 `current` 指回上一版本、重装旧 unit 并重启旧 API；回滚后仍不健康时输出明确提示并退出。Worker 在整个过程中保持停止。已经执行新版本数据库迁移时，旧版本是否可运行取决于迁移兼容性；必要时恢复升级前的数据库备份。
+退出码：`0` 表示切换与验证成功；`1` 表示已回滚到上一版本且旧版本通过独立的就绪与运行版本检查；`2` 表示回滚失败或被阻断，服务停止或已尝试停止，Worker 保持停止。就绪等待只在新版本或旧版本自身超时、或单元进入 `failed`/`inactive` 时结束；连接未建立和 HTTP 503 会继续等待。单次请求不超过 25 秒，默认总预算 600 秒。应用没有单独的启动超时：`DATABASE_CONNECT_TIMEOUT` 只限制单次数据库连接，`SHUTDOWN_TIMEOUT` 只用于停止；后台恢复命令的 `--timeout`（默认 3m，最大 10m）与就绪预算相互独立。迁移耗时更长时必须调大 `EMBY_AUTO_UPGRADE_READY_TIMEOUT`。
+
+自动回滚只恢复代码与 unit，不恢复数据库。新版本一旦完成 schema 迁移，旧二进制可能无法读取新 schema；此时回滚会以退出码 2 停止并提示前滚或按升级前一致性备份走正式恢复。数据库恢复与代码回滚分开执行，不要自动 drop/restore 数据库或删除状态。
 
 升级成功后同步安装记录中的版本，避免后续安装器把实际运行的版本当成旧记录（将 `v0.2.0` 换成步骤 1 的 `release_tag`）：
 
@@ -395,7 +491,23 @@ if [[ -f /etc/emby-auto/installer.env ]]; then
 fi
 ```
 
-保留运行环境、初始化文件、控制服务的账户绑定和应用账户 drop-in；自定义端口时调整检查命令。恢复后台后确认 `verified=true`、`transfers.runtimeMarks=0`，并核验原有任务。恢复失败或结果不明时，先只读查询状态，再执行正式 `stopped` 转换并核对门禁。数据库迁移失败时保持 Worker 停止。
+切换与 API 验证期间 Worker 保持停止。确认新版本后，再单独执行正式后台恢复：
+
+```bash
+emby_auto_maintenance emby-auto-background-runtime --state running
+```
+
+该命令会先取消应用 torrent 的暂停标记，再启动 Worker；任一步失败或结果不明时，可能已有 torrent 或 Worker 部分恢复。此时先只读查询，再执行正式 `stopped` 转换并核对门禁：
+
+```bash
+emby_auto_maintenance emby-auto-background-runtime --state status
+emby_auto_maintenance emby-auto-background-runtime --state stopped
+emby_auto_maintenance emby-auto-release-preflight --require-idle
+```
+
+确认 `state=stopped`、`verified=true`、`transfers.active=0` 后，再决定前滚修复或按升级前备份回滚；不要直接 `systemctl start emby-auto-worker.service` 代替正式流程，也不要在未核实状态时直接切回旧版本。恢复成功后确认 `verified=true`、`transfers.runtimeMarks=0`，并核验原有任务。数据库迁移失败时保持 Worker 停止。
+
+保留运行环境、初始化文件、控制服务的账户绑定和应用账户 drop-in；自定义端口时调整 `EMBY_AUTO_UPGRADE_READY_URL`。
 
 安装器会拒绝版本不兼容的安装记录。旧部署按手动部署步骤准备新版本，保留原有数据库、运行配置和初始化文件，并配置后台控制服务。旧安装器创建的 PostgreSQL 和 Nginx 继续由用户管理。
 
@@ -427,7 +539,7 @@ emby_auto_maintenance emby-auto-migrate-staging-ownership --uid "$(id -u emby)" 
 
 ## 卸载
 
-默认只停用并移除应用服务与程序，保留数据库、配置和媒体数据：
+默认只停用并移除应用服务定义（unit），保留程序、数据库、配置和媒体数据：
 
 ```bash
 sudo systemctl disable --now emby-auto-worker.service emby-auto-api.service emby-auto-systemd-control.service
@@ -437,7 +549,64 @@ sudo systemctl daemon-reload
 sudo rm -rf /run/emby-auto-systemd
 ```
 
-保留范围包括 `/opt/emby-auto`、`/etc/emby-auto`、`/var/lib/emby-auto`、`/srv/emby-auto`、应用账户和 PostgreSQL 数据库。需要重新启用时，按手动部署步骤安装相同或更新版本，保留原配置与初始化文件。
+保留范围包括 `/opt/emby-auto`、`/etc/emby-auto`、`/var/lib/emby-auto`、`/srv/emby-auto`、应用账户和 PostgreSQL 数据库。unit 文件和 `emby-auto-{api,worker}.service.d` 中的 User/Group drop-in 已被删除，重新启用时必须重建。
+
+不要靠重跑安装器自动恢复：`/etc/emby-auto/installed` 仍在，安装器的已安装分支只核验现有服务；unit 已删除时会检查失败，`--no-start` 只返回成功，不会重建 unit。也不要用 `runtime.env.example` 覆盖已保留的 `/etc/emby-auto/runtime.env`。
+
+重新启用按以下顺序执行：
+
+1. 从保留的当前版本重装 unit：
+
+```bash
+for service in api worker systemd-control; do
+  sudo install -o root -g root -m 0644 \
+    "/opt/emby-auto/current/config/emby-auto-${service}.service" \
+    "/etc/systemd/system/emby-auto-${service}.service"
+done
+sudo systemctl daemon-reload
+```
+
+2. 重建两个 User/Group drop-in。安装器部署均需要，默认 `emby-auto` 账户也通过 drop-in 覆盖 unit 中的 `emby`。手动部署没有 `installer.env` 时，把 `service_user` 设为实际服务账户：
+
+```bash
+service_user="${service_user:-$(sudo sed -n 's/^service_user=//p' /etc/emby-auto/installer.env)}"
+[[ -n "$service_user" ]] || { echo '无法读取安装记录中的 service_user。' >&2; exit 1; }
+service_group="$(id -gn "$service_user")"
+for service in api worker; do
+  sudo install -d -m 0755 "/etc/systemd/system/emby-auto-${service}.service.d"
+  printf '[Service]\nUser=%s\nGroup=%s\n' "$service_user" "$service_group" | \
+    sudo tee "/etc/systemd/system/emby-auto-${service}.service.d/installer.conf" >/dev/null
+done
+```
+
+原 drop-in 还包含其它设置时一并恢复；`/etc/emby-auto/host-control.env` 的 `EMBY_AUTO_SERVICE_UID`/`EMBY_AUTO_SERVICE_GID` 必须与该账户一致。
+
+3. 核对保留的运行环境与初始化文件，不要重写：
+
+```bash
+for file in /etc/emby-auto/runtime.env /var/lib/emby-auto/bootstrap.json /var/lib/emby-auto/bootstrap.json.complete; do
+  sudo test -f "$file" || { echo "缺少 $file；请从备份恢复。" >&2; exit 1; }
+done
+sudo chown "root:$(id -gn "$service_user")" /etc/emby-auto/runtime.env
+sudo chmod 0640 /etc/emby-auto/runtime.env
+```
+
+4. 启动控制服务和 API，先不启动 Worker：
+
+```bash
+sudo systemctl enable --now emby-auto-systemd-control.service emby-auto-api.service
+curl --fail http://127.0.0.1:18080/api/v1/setup/status
+curl --fail http://127.0.0.1:18080/api/v1/health/ready
+```
+
+5. 按正式后台流程恢复 Worker 与暂停的 torrent，并核对状态：
+
+```bash
+emby_auto_maintenance emby-auto-background-runtime --state running
+emby_auto_maintenance emby-auto-background-runtime --state status
+```
+
+`runtime.env` 或初始化文件缺失时从备份恢复；不要用示例文件重建密钥或管理员记录。`/opt/emby-auto` 已被销毁时按首次安装或从备份恢复处理，不要套用本节的重启用步骤。
 
 确认不再需要数据后，再单独执行销毁操作（不可恢复）。媒体目录可能包含用户文件，删除前自行确认：
 
@@ -469,15 +638,21 @@ pg_restore --clean --if-exists --no-owner \
   /path/to/emby_auto.dump
 ```
 
-3. 恢复 `/etc/emby-auto` 并修正权限：
+3. 恢复 `/etc/emby-auto` 并修正权限。手动部署可能没有 `installer.env` 或 `host-control.env`，仅在文件存在时修正：
 
 ```bash
 sudo install -d -o root -g root -m 0755 /etc/emby-auto
 sudo cp -a /path/to/backup/etc-emby-auto/. /etc/emby-auto/
-sudo chown root:root /etc/emby-auto/installer.env /etc/emby-auto/host-control.env
-sudo chmod 0600 /etc/emby-auto/installer.env /etc/emby-auto/host-control.env
-sudo chown root:<应用组> /etc/emby-auto/runtime.env
-sudo chmod 0640 /etc/emby-auto/runtime.env
+for file in installer.env host-control.env; do
+  if [[ -f "/etc/emby-auto/$file" ]]; then
+    sudo chown root:root "/etc/emby-auto/$file"
+    sudo chmod 0600 "/etc/emby-auto/$file"
+  fi
+done
+if [[ -f /etc/emby-auto/runtime.env ]]; then
+  sudo chown root:<应用组> /etc/emby-auto/runtime.env
+  sudo chmod 0640 /etc/emby-auto/runtime.env
+fi
 ```
 
 4. 成对恢复初始化文件。两个文件必须来自同一备份，由应用账户所有，不要手工编辑 `.complete`：
@@ -499,4 +674,4 @@ curl --fail http://127.0.0.1:18080/api/v1/setup/status
 curl --fail http://127.0.0.1:18080/api/v1/health/ready
 ```
 
-`setup/status` 应为 `state=completed`；若为 `unavailable`，检查 `bootstrap.json` 与 `.complete` 是否成对、文件权限和数据库连接。登录确认管理员与外部服务配置可用后，再按正式后台流程恢复 Worker，并核对任务与下载状态。
+`setup/status` 应为 `state=completed`；若 `curl --fail` 返回非零或 HTTP 503 `service_unavailable`，检查 `bootstrap.json` 与 `.complete` 是否成对、文件权限和数据库连接。该接口的状态值只有 `required`、`initializing`、`completed`，没有 `unavailable`。登录确认管理员与外部服务配置可用后，再按正式后台流程恢复 Worker，并核对任务与下载状态。

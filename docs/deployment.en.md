@@ -63,9 +63,12 @@ When qBittorrent or Emby runs as a separate account (on the host or in another c
 ```bash
 sudo apt-get install -y acl
 sudo usermod -aG emby-auto qbittorrent
-sudo chgrp -R emby-auto /srv/emby-auto/downloads
-sudo chmod -R g+rwX /srv/emby-auto/downloads
-sudo find /srv/emby-auto/downloads -type d -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+# Touch only this application's download cache; do not follow symlinks.
+sudo find /srv/emby-auto/downloads -type d -exec chgrp emby-auto {} + \
+  -exec chmod g+rwx,g+s {} + \
+  -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+sudo find /srv/emby-auto/downloads -type f -exec chgrp emby-auto {} + \
+  -exec chmod g+rw {} +
 ```
 
   A qBittorrent container must run with the same GID or preserve group permissions through its mount; a host service picks up the new group after a restart.
@@ -202,7 +205,7 @@ Destroy data separately only after confirming it is no longer needed (irreversib
 docker compose --env-file deploy/.env -f deploy/compose.yaml down --volumes
 ```
 
-`--volumes` deletes the PostgreSQL data and installation configuration; host media directories still require separate handling under your storage policy. Remove local images with `docker image rm emby-auto-backend:local emby-auto-web:local`.
+`--volumes` deletes the PostgreSQL data and installation configuration; host media directories still require separate handling under your storage policy. Remove local images with `docker image rm "emby-auto-backend:${EMBY_AUTO_IMAGE_TAG:-local}" "emby-auto-web:${EMBY_AUTO_IMAGE_TAG:-local}"`; when using a custom `EMBY_AUTO_IMAGE_TAG`, export its value from `deploy/.env` in the current shell first.
 
 ### Restore from Backup
 
@@ -238,7 +241,7 @@ curl --fail http://127.0.0.1:<APP_PORT>/api/v1/setup/status
 curl --fail http://127.0.0.1:<APP_PORT>/api/v1/health/ready
 ```
 
-`setup/status` should report `state=completed`. If it reports `unavailable`, check that both setup files form a pair, their permissions, and the restored database. If recovery fails, keep Worker stopped; never restore only the database or only `bootstrap.json`.
+`setup/status` should report `state=completed`. If `curl --fail` exits nonzero or returns HTTP 503 `service_unavailable`, check that both setup files form a pair, their permissions, and the restored database. The endpoint's state values are only `required`, `initializing`, and `completed`; it never reports `unavailable`. If recovery fails, keep Worker stopped; never restore only the database or only `bootstrap.json`.
 
 ## Troubleshooting
 

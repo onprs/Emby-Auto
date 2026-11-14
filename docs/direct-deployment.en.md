@@ -80,7 +80,7 @@ sudo usermod -aG emby-share qbittorrent
 sudo systemctl restart qbittorrent
 ```
 
-For an existing installation without a shared group, rerunning the installer with `--share-group` applies the membership and directory permissions and records them in the installer record. With `--user MEDIA_ACCOUNT --share-group GROUP`, the media account owns library files and the shared group coordinates download directories. The account UID and GID must still be nonzero.
+For an existing installation without a shared group, rerunning the installer with `--share-group` applies the membership and directory permissions and records them in the installer record. The `--share-group` path requires `setfacl`; a fresh installation tries to install `acl` on Debian/Ubuntu, while an existing installation or an offline environment needs `sudo apt-get install -y acl` first. With `--user MEDIA_ACCOUNT --share-group GROUP`, the media account owns library files and the shared group coordinates download directories. The account UID and GID must still be nonzero.
 
 Alternatively, apply the permissions manually without rerunning the installer (the example uses the application account's primary group `emby-auto`):
 
@@ -284,7 +284,7 @@ Back up PostgreSQL consistently, `/etc/emby-auto`, `/var/lib/emby-auto`, and med
 
 ## Upgrades and existing deployments
 
-Back up the database and application configuration before upgrading. The commands below use the `emby_auto_maintenance` function defined earlier; redefine it when starting a new shell.
+Back up the database and application configuration before upgrading. Run steps 1 and 3 in the same shell session; in a new shell, set `new_release_id` and redefine the function before step 3.
 
 ### 1. Prepare and verify the new release directory
 
@@ -338,56 +338,152 @@ Review the candidates, repeat the same command with `--apply`, and check runtime
 
 ### 3. Switch, verify, and roll back
 
+The block waits for 600 seconds by default. Set `EMBY_AUTO_UPGRADE_READY_TIMEOUT` (seconds) before running it when migrations need longer. For a custom port, also set `EMBY_AUTO_UPGRADE_READY_URL`.
+
 ```bash
 (
   set -eE
+  : "${new_release_id:?Run step 1 first, or set new_release_id in this shell}"
+  ready_timeout="${EMBY_AUTO_UPGRADE_READY_TIMEOUT:-600}"
+  ready_url="${EMBY_AUTO_UPGRADE_READY_URL:-http://127.0.0.1:18080/api/v1/health/ready}"
+  [[ "${ready_timeout}" =~ ^[1-9][0-9]*$ ]] || {
+    echo 'EMBY_AUTO_UPGRADE_READY_TIMEOUT must be a positive number of seconds.' >&2
+    exit 1
+  }
+  if ! declare -F emby_auto_maintenance >/dev/null; then
+    echo 'emby_auto_maintenance is not defined; define the maintenance helper first.' >&2
+    exit 1
+  fi
   release_path="/opt/emby-auto/releases/${new_release_id}"
   previous_release_id="$(basename "$(readlink -f /opt/emby-auto/current)")"
   [[ -d "${release_path}" ]] || { echo "release directory is missing: ${release_path}" >&2; exit 1; }
+  [[ -n "${previous_release_id}" && -d "/opt/emby-auto/releases/${previous_release_id}" ]] \
+    || { echo 'cannot determine the previous release directory; services were not stopped.' >&2; exit 1; }
   (cd "${release_path}" && sha256sum --check --strict SHA256SUMS)
   for service in api worker systemd-control; do
     [[ -s "${release_path}/config/emby-auto-${service}.service" ]] \
       || { echo "new release is missing emby-auto-${service}.service" >&2; exit 1; }
   done
+  worker_state="$(systemctl show emby-auto-worker.service --property=ActiveState --value 2>/dev/null || true)"
+  case "${worker_state}" in
+    active|activating|reloading|deactivating)
+      echo 'Worker is still running; complete the formal stopped transition and gate checks in step 2 first.' >&2
+      exit 1
+      ;;
+  esac
   install_units() {
     local service
     for service in api worker systemd-control; do
       sudo install -o root -g root -m 0644 \
         "/opt/emby-auto/current/config/emby-auto-${service}.service" \
-        "/etc/systemd/system/emby-auto-${service}.service"
+        "/etc/systemd/system/emby-auto-${service}.service" || return 1
     done
-    sudo systemctl daemon-reload
+    sudo systemctl daemon-reload || return 1
+  }
+  running_release() {
+    local unit=$1 pid exe
+    pid="$(systemctl show "${unit}" --property=MainPID --value 2>/dev/null)" || return 1
+    [[ "${pid}" =~ ^[1-9][0-9]*$ ]] || return 1
+    exe="$(readlink -f "/proc/${pid}/exe" 2>/dev/null)" || return 1
+    [[ "${exe}" == /opt/emby-auto/releases/*/bin/* ]] || return 1
+    exe="${exe#/opt/emby-auto/releases/}"
+    printf '%s\n' "${exe%%/*}"
+  }
+  wait_ready() {
+    local expected=$1 deadline=$((SECONDS + ready_timeout)) remaining request_max
+    local state code api_release control_release
+    while (( SECONDS < deadline )); do
+      state="$(systemctl show emby-auto-api.service --property=ActiveState --value 2>/dev/null || true)"
+      if [[ "${state}" == failed || "${state}" == inactive ]]; then
+        echo "API unit entered ${state} before readiness." >&2
+        return 1
+      fi
+      state="$(systemctl show emby-auto-systemd-control.service --property=ActiveState --value 2>/dev/null || true)"
+      if [[ "${state}" == failed || "${state}" == inactive ]]; then
+        echo "control service entered ${state} before readiness." >&2
+        return 1
+      fi
+      api_release="$(running_release emby-auto-api.service || true)"
+      control_release="$(running_release emby-auto-systemd-control.service || true)"
+      if [[ "${api_release}" == "${expected}" && "${control_release}" == "${expected}" ]]; then
+        remaining=$((deadline - SECONDS))
+        (( remaining > 0 )) || break
+        request_max=$(( remaining < 25 ? remaining : 25 ))
+        code="$(curl --silent --show-error --noproxy '*' \
+          --connect-timeout 2 --max-time "${request_max}" \
+          --output /dev/null --write-out '%{http_code}' "${ready_url}" 2>/dev/null || true)"
+        if [[ "${code}" == 200 ]]; then
+          echo "release ${expected} is ready."
+          return 0
+        fi
+        echo "waiting for release ${expected} readiness (HTTP ${code:-connection failed})." >&2
+      else
+        echo "waiting for release ${expected} processes (API=${api_release:-none}, control=${control_release:-none})." >&2
+      fi
+      sleep 2
+    done
+    echo "release ${expected} did not become ready within ${ready_timeout}s; raise EMBY_AUTO_UPGRADE_READY_TIMEOUT for longer migrations." >&2
+    return 1
+  }
+  rollback_failed() {
+    local reason=$1
+    echo "rollback failed: ${reason}" >&2
+    if ! sudo systemctl stop emby-auto-api.service emby-auto-systemd-control.service >/dev/null 2>&1; then
+      echo 'could not stop the API or control service; run sudo systemctl stop emby-auto-api.service emby-auto-systemd-control.service now.' >&2
+    fi
+    echo 'Services were stopped or a stop was attempted; Worker remains stopped. Do not rerun the switch; inspect journalctl -u emby-auto-api -u emby-auto-systemd-control.' >&2
+    echo 'If the failure occurred before current was restored, current still points at the new release; do not treat it as rolled back.' >&2
+    echo 'If the new release already migrated the schema, the old binary may be unable to read it. Do not restore or drop the database automatically; fix forward or use the consistent pre-upgrade backup through the documented restore flow.' >&2
+    exit 2
   }
   rollback_release() {
+    trap - ERR
+    set +e
+    local worker_state
     echo 'switch or verification failed; rolling back to the previous release.' >&2
-    sudo ln -sfn "releases/${previous_release_id}" /opt/emby-auto/current.next
-    sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
-    install_units
-    sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service
-    if ! curl --fail --max-time 10 http://127.0.0.1:18080/api/v1/health/ready; then
-      echo 'the previous release also failed the readiness check after rollback; inspect journalctl -u emby-auto-api -u emby-auto-worker and do not rerun the switch.' >&2
-      exit 2
-    fi
+    worker_state="$(systemctl show emby-auto-worker.service --property=ActiveState --value 2>/dev/null || true)"
+    case "${worker_state}" in
+      active|activating|reloading|deactivating)
+        echo 'Worker is running; complete the formal stopped transition and gate checks before rolling back.' >&2
+        exit 2
+        ;;
+    esac
+    sudo systemctl stop emby-auto-api.service emby-auto-systemd-control.service || \
+      rollback_failed 'could not stop the new API or control service.'
+    sudo ln -sfn "releases/${previous_release_id}" /opt/emby-auto/current.next || \
+      rollback_failed 'could not write the previous current link.'
+    sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current || \
+      rollback_failed 'could not point current at the previous release.'
+    install_units || rollback_failed 'could not install the previous units or reload systemd.'
+    sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service || \
+      rollback_failed 'could not start the previous API or control service.'
+    wait_ready "${previous_release_id}" || rollback_failed 'the previous release did not become ready within its budget.'
+    echo 'rolled back to the previous release and passed readiness; Worker remains stopped.' >&2
     exit 1
   }
-  sudo systemctl stop emby-auto-api.service emby-auto-systemd-control.service
-  # After current switches, every failure inside or outside functions - unit
-  # installation, daemon-reload, start, readiness - triggers the rollback via
-  # the ERR trap (set -eE extends it into functions).
   rollback_on_error() { rollback_release; }
+  sudo systemctl stop emby-auto-api.service emby-auto-systemd-control.service || {
+    echo 'could not stop the current API or control service; current was not switched.' >&2
+    exit 1
+  }
+  # After current switches, every failure inside or outside functions - unit
+  # installation, daemon-reload, start, readiness, migration check - triggers the
+  # rollback via the ERR trap (set -eE extends it into functions).
   trap rollback_on_error ERR
   sudo ln -sfn "releases/${new_release_id}" /opt/emby-auto/current.next
   sudo mv -Tf /opt/emby-auto/current.next /opt/emby-auto/current
   install_units
   sudo systemctl start emby-auto-systemd-control.service emby-auto-api.service
-  curl --fail --max-time 10 http://127.0.0.1:18080/api/v1/health/ready
+  wait_ready "${new_release_id}"
   emby_auto_maintenance emby-auto-migration-check
-  emby_auto_maintenance emby-auto-background-runtime --state running
   trap - ERR
+  echo "switched to ${new_release_id} and passed readiness and migration checks; background work remains stopped."
 )
 ```
 
-Any failure after the switch - including unit installation, daemon reload, start, or readiness - points `current` back to the previous release, reinstalls the old units, and restarts the old API; if the rollback itself is unhealthy the block reports it and exits. Worker stays stopped throughout. When the new release already applied database migrations, binary rollback depends on migration compatibility; restore the pre-upgrade database backup when necessary.
+Exit codes: `0` means the switch and verification succeeded; `1` means the code rolled back to the previous release and that release passed its own independent readiness and running-version checks; `2` means rollback failed or was blocked, services were stopped or a stop was attempted, and Worker remains stopped. Readiness waits end only when the new or previous release exhausts its own budget or a unit enters `failed`/`inactive`; connection failures and HTTP 503 keep waiting. Each request is capped at 25 seconds and the default total budget is 600 seconds. The application has no separate startup timeout: `DATABASE_CONNECT_TIMEOUT` only limits an individual database connection, `SHUTDOWN_TIMEOUT` only controls shutdown, and the background restore command's `--timeout` (default 3m, maximum 10m) is independent of the readiness budget; raise `EMBY_AUTO_UPGRADE_READY_TIMEOUT` when migrations take longer.
+
+Automatic rollback restores code and units only, not the database. Once the new release has migrated the schema, the old binary may be unable to read it; the rollback then exits 2 and tells the operator to fix forward or use the consistent pre-upgrade backup through the documented restore flow. Database restore and code rollback stay separate; do not drop or restore the database or delete state automatically.
 
 After a successful upgrade, update the installer record so later installations do not treat the running release as the old version (replace `v0.2.0` with `release_tag` from step 1):
 
@@ -397,7 +493,23 @@ if [[ -f /etc/emby-auto/installer.env ]]; then
 fi
 ```
 
-Preserve the environment, setup files, control-service identity binding, and application account drop-ins. Adjust checks for a custom port. Confirm `verified=true` and `transfers.runtimeMarks=0` after resuming, and verify existing jobs. If recovery fails or its result is uncertain, inspect state read-only, then perform the formal `stopped` transition and verify the gates. Keep Worker stopped after a failed database migration.
+Worker stays stopped during the switch and API verification. After confirming the new release, run the formal background restore separately:
+
+```bash
+emby_auto_maintenance emby-auto-background-runtime --state running
+```
+
+That command clears the runtime-pause marks on application torrents and then starts Worker. If any step fails or its result is uncertain, torrents or Worker may already be partially restored. Inspect state read-only, then perform the formal `stopped` transition and verify the gates:
+
+```bash
+emby_auto_maintenance emby-auto-background-runtime --state status
+emby_auto_maintenance emby-auto-background-runtime --state stopped
+emby_auto_maintenance emby-auto-release-preflight --require-idle
+```
+
+Only after confirming `state=stopped`, `verified=true`, and `transfers.active=0` should you decide between fixing forward and rolling back with the pre-upgrade backup. Do not start `emby-auto-worker.service` directly instead of the formal flow, and do not switch back to the old release before verifying that state. After a successful resume, confirm `verified=true` and `transfers.runtimeMarks=0`, and verify existing jobs. Keep Worker stopped after a failed database migration.
+
+Preserve the environment, setup files, control-service identity binding, and application account drop-ins; adjust `EMBY_AUTO_UPGRADE_READY_URL` for a custom port.
 
 The installer rejects incompatible installation records. Follow manual deployment steps for older deployments, preserve the database, environment and setup files, and configure background control. PostgreSQL and Nginx created by older installers remain user managed.
 
@@ -429,7 +541,7 @@ The address tool matches `host.docker.internal` by default; use `--from-host` fo
 
 ## Uninstall
 
-By default, only stop and remove the application services and programs; keep the database, configuration, and media data:
+By default, only stop and remove the application service definitions (units), keeping the programs, database, configuration, and media data:
 
 ```bash
 sudo systemctl disable --now emby-auto-worker.service emby-auto-api.service emby-auto-systemd-control.service
@@ -439,7 +551,64 @@ sudo systemctl daemon-reload
 sudo rm -rf /run/emby-auto-systemd
 ```
 
-This keeps `/opt/emby-auto`, `/etc/emby-auto`, `/var/lib/emby-auto`, `/srv/emby-auto`, the application account, and the PostgreSQL database. To re-enable the deployment, install the same or a newer release following the manual deployment steps and keep the existing configuration and setup files.
+This keeps `/opt/emby-auto`, `/etc/emby-auto`, `/var/lib/emby-auto`, `/srv/emby-auto`, the application account, and the PostgreSQL database. The unit files and the User/Group drop-ins under `emby-auto-{api,worker}.service.d` are removed and must be recreated before re-enabling.
+
+Do not rerun the installer expecting automatic recovery: `/etc/emby-auto/installed` remains, the installer's installed branch only verifies existing services, and it fails once the units are gone. `--no-start` only returns success and does not recreate units. Do not overwrite the preserved `/etc/emby-auto/runtime.env` with `runtime.env.example`.
+
+Re-enable in this order:
+
+1. Reinstall the units from the preserved current release:
+
+```bash
+for service in api worker systemd-control; do
+  sudo install -o root -g root -m 0644 \
+    "/opt/emby-auto/current/config/emby-auto-${service}.service" \
+    "/etc/systemd/system/emby-auto-${service}.service"
+done
+sudo systemctl daemon-reload
+```
+
+2. Recreate both User/Group drop-ins. Installer deployments always need them, including the default `emby-auto` account, because the shipped units use `emby`. For a manual deployment without `installer.env`, set `service_user` to the actual service account:
+
+```bash
+service_user="${service_user:-$(sudo sed -n 's/^service_user=//p' /etc/emby-auto/installer.env)}"
+[[ -n "$service_user" ]] || { echo 'cannot read service_user from the installer record.' >&2; exit 1; }
+service_group="$(id -gn "$service_user")"
+for service in api worker; do
+  sudo install -d -m 0755 "/etc/systemd/system/emby-auto-${service}.service.d"
+  printf '[Service]\nUser=%s\nGroup=%s\n' "$service_user" "$service_group" | \
+    sudo tee "/etc/systemd/system/emby-auto-${service}.service.d/installer.conf" >/dev/null
+done
+```
+
+Restore any other settings the original drop-ins contained. `EMBY_AUTO_SERVICE_UID` and `EMBY_AUTO_SERVICE_GID` in `/etc/emby-auto/host-control.env` must match the same account.
+
+3. Check the preserved environment and setup files without rewriting them:
+
+```bash
+for file in /etc/emby-auto/runtime.env /var/lib/emby-auto/bootstrap.json /var/lib/emby-auto/bootstrap.json.complete; do
+  sudo test -f "$file" || { echo "missing $file; restore it from backup." >&2; exit 1; }
+done
+sudo chown "root:$(id -gn "$service_user")" /etc/emby-auto/runtime.env
+sudo chmod 0640 /etc/emby-auto/runtime.env
+```
+
+4. Start the control service and API without starting Worker:
+
+```bash
+sudo systemctl enable --now emby-auto-systemd-control.service emby-auto-api.service
+curl --fail http://127.0.0.1:18080/api/v1/setup/status
+curl --fail http://127.0.0.1:18080/api/v1/health/ready
+```
+
+5. Restore Worker and paused torrents through the formal background flow and verify the state:
+
+```bash
+emby_auto_maintenance emby-auto-background-runtime --state running
+emby_auto_maintenance emby-auto-background-runtime --state status
+```
+
+If `runtime.env` or a setup file is missing, restore it from backup instead of recreating keys or the administrator record from examples. If `/opt/emby-auto` was destroyed, use a fresh installation or backup restore instead of these re-enable steps.
 
 Destroy data separately only after confirming it is no longer needed (irreversible). Media directories may contain user files:
 
@@ -471,15 +640,21 @@ pg_restore --clean --if-exists --no-owner \
   /path/to/emby_auto.dump
 ```
 
-3. Restore `/etc/emby-auto` and correct permissions:
+3. Restore `/etc/emby-auto` and correct permissions. Manual deployments may not have `installer.env` or `host-control.env`, so only adjust files that exist:
 
 ```bash
 sudo install -d -o root -g root -m 0755 /etc/emby-auto
 sudo cp -a /path/to/backup/etc-emby-auto/. /etc/emby-auto/
-sudo chown root:root /etc/emby-auto/installer.env /etc/emby-auto/host-control.env
-sudo chmod 0600 /etc/emby-auto/installer.env /etc/emby-auto/host-control.env
-sudo chown root:<application-group> /etc/emby-auto/runtime.env
-sudo chmod 0640 /etc/emby-auto/runtime.env
+for file in installer.env host-control.env; do
+  if [[ -f "/etc/emby-auto/$file" ]]; then
+    sudo chown root:root "/etc/emby-auto/$file"
+    sudo chmod 0600 "/etc/emby-auto/$file"
+  fi
+done
+if [[ -f /etc/emby-auto/runtime.env ]]; then
+  sudo chown root:<application-group> /etc/emby-auto/runtime.env
+  sudo chmod 0640 /etc/emby-auto/runtime.env
+fi
 ```
 
 4. Restore both setup files as a pair. They must come from the same backup, be owned by the application account, and the `.complete` file must not be edited:
@@ -501,4 +676,4 @@ curl --fail http://127.0.0.1:18080/api/v1/setup/status
 curl --fail http://127.0.0.1:18080/api/v1/health/ready
 ```
 
-`setup/status` should report `state=completed`. If it reports `unavailable`, check that `bootstrap.json` and `.complete` form a pair, their permissions, and the database connection. After confirming the administrator and external-service configuration in the UI, resume Worker through the formal background flow and verify jobs and downloads.
+`setup/status` should report `state=completed`. If `curl --fail` exits nonzero or returns HTTP 503 `service_unavailable`, check that `bootstrap.json` and `.complete` form a pair, their permissions, and the database connection. The endpoint's state values are only `required`, `initializing`, and `completed`; it never reports `unavailable`. After confirming the administrator and external-service configuration in the UI, resume Worker through the formal background flow and verify jobs and downloads.
