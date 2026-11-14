@@ -523,9 +523,22 @@ func restoreAcquisitionDeletionResource(ctx context.Context, queries *db.Queries
 }
 
 func restoreRSSSubscriptionDeletionResource(ctx context.Context, queries *db.Queries, operation db.Operation, code string) error {
-	restored, err := queries.RestoreRSSSubscriptionAfterFailedDeletion(ctx, db.RestoreRSSSubscriptionAfterFailedDeletionParams{
-		ID: operation.ResourceID, OperationID: operation.ID,
-	})
+	pollState, hasPollState := decodeRSSSubscriptionDeletionPollState(operation.Payload)
+	var restored db.RssSubscription
+	var err error
+	if hasPollState {
+		restored, err = queries.RestoreRSSSubscriptionAfterFailedDeletionWithPollState(ctx, db.RestoreRSSSubscriptionAfterFailedDeletionWithPollStateParams{
+			Enabled:         pollState.Enabled,
+			NextPollAt:      nullableTimestamptz(pollState.NextPollAt),
+			ID:              operation.ResourceID,
+			ArchivedVersion: pollState.Version + 1,
+			OperationID:     operation.ID,
+		})
+	} else {
+		restored, err = queries.RestoreRSSSubscriptionAfterFailedDeletion(ctx, db.RestoreRSSSubscriptionAfterFailedDeletionParams{
+			ID: operation.ResourceID, OperationID: operation.ID,
+		})
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -539,7 +552,11 @@ func restoreRSSSubscriptionDeletionResource(ctx context.Context, queries *db.Que
 		return fmt.Errorf("restore RSS acquisitions after failed deletion: %w", err)
 	}
 	resourceType := "rss_subscription"
-	data, err := json.Marshal(map[string]any{"status": "deletion_failed", "errorCode": code})
+	eventData := map[string]any{"status": "deletion_failed", "errorCode": code, "pollStateRestored": hasPollState}
+	if hasPollState {
+		eventData["enabled"] = pollState.Enabled
+	}
+	data, err := json.Marshal(eventData)
 	if err != nil {
 		return fmt.Errorf("encode RSS deletion recovery event: %w", err)
 	}
@@ -550,6 +567,33 @@ func restoreRSSSubscriptionDeletionResource(ctx context.Context, queries *db.Que
 		return fmt.Errorf("append RSS deletion recovery event: %w", err)
 	}
 	return nil
+}
+
+// decodeRSSSubscriptionDeletionPollState 从删除操作 payload 读取归档前的轮询意图。
+// 旧在途操作没有该快照，返回 false，恢复保持既有的仅清 deleted_at 行为，不得猜测
+// 原 enabled；version 必须为正数，才能用作归档后的乐观锁守卫。
+func decodeRSSSubscriptionDeletionPollState(payload []byte) (domain.RSSSubscriptionDeletionPollState, bool) {
+	if len(payload) == 0 {
+		return domain.RSSSubscriptionDeletionPollState{}, false
+	}
+	var envelope struct {
+		PollState *domain.RSSSubscriptionDeletionPollState `json:"pollState"`
+	}
+	if json.Unmarshal(payload, &envelope) != nil || envelope.PollState == nil {
+		return domain.RSSSubscriptionDeletionPollState{}, false
+	}
+	state := *envelope.PollState
+	if state.Version <= 0 {
+		return domain.RSSSubscriptionDeletionPollState{}, false
+	}
+	return state, true
+}
+
+func nullableTimestamptz(value *time.Time) pgtype.Timestamptz {
+	if value == nil {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: value.UTC(), Valid: true}
 }
 
 func cancelOperationResource(ctx context.Context, queries *db.Queries, operation db.Operation) error {
