@@ -149,7 +149,7 @@ SESSION_COOKIE_SECURE=false
 TRUSTED_PROXY_CIDRS=127.0.0.0/8,::1/128
 ```
 
-保留数据库连接和加密密钥为空，首次打开页面时由初始化向导设置。`WEB_ROOT` 指定应用提供的网页目录；独立托管网页时可留空，并自行将 `/api/` 转发到应用。`TRUSTED_PROXY_CIDRS` 声明本机反向代理网段；只有来自这些网段的请求才采信 `X-Forwarded-For`，登录限流据此按真实客户端地址计数。安装初始化总时长上限由 `SETUP_INITIALIZE_TIMEOUT`（默认 `10m`）控制；迁移逐条事务，超时后直接重试即可继续。登录失败的全局预算耗尽后，短时间内即使口令正确也会返回 `429` 与 `Retry-After`，按提示等待后重试即可。
+保留数据库连接和加密密钥为空，首次打开页面时由初始化向导设置。`WEB_ROOT` 指定应用提供的网页目录；独立托管网页时可留空，并自行将 `/api/` 转发到应用。`TRUSTED_PROXY_CIDRS` 声明本机反向代理网段；只有来自这些网段的请求才采信 `X-Forwarded-For`，登录限流据此按真实客户端地址计数。安装初始化总时长上限由 `SETUP_INITIALIZE_TIMEOUT`（默认 `10m`）控制；迁移逐条事务，超时后直接重试即可继续。登录失败的全局预算耗尽后，短时间内即使口令正确也会返回 `429` 与 `Retry-After`。失败计数按 10 分钟窗口统计；`Retry-After` 只是当前建议等待的秒数，持续失败可能再次触发限流，等待一次不保证成功。无需重启服务。
 
 ### 4. 配置应用服务
 
@@ -202,9 +202,9 @@ sudo systemctl enable --now emby-auto-systemd-control.service emby-auto-api.serv
 - 将网页和 `/api/` 请求转发到同一应用入口，并传递原始 Host 和协议。
 - `/api/v1/events` 使用长连接 SSE，并关闭响应缓冲。
 - 媒体预览请求透传 `Range` 和 `If-Range`，支持流式响应。
-- `/api/v1/auth/login` 按来源限速，并按 `TRUSTED_PROXY_CIDRS` 声明的代理网段传递 `X-Forwarded-For`。
+- 外层反向代理按最终客户端来源限速 `/api/v1/auth/login`，并按 `TRUSTED_PROXY_CIDRS` 声明的代理网段传递 `X-Forwarded-For`。
 
-发布包中的 `config/nginx.conf` 是可选回环代理示例，监听 `127.0.0.1:18079`，并为 `/api/v1/auth/login` 配置了 `limit_req`。使用 Nginx 时可按自己的站点和证书配置调整；使用其它代理时按对应产品配置对应的限速与转发头。
+发布包中的 `config/nginx.conf` 是可选回环转发示例，监听 `127.0.0.1:18079`，不内置登录限速；它位于外层代理之后，只看到外层代理地址。登录限速应放在接收客户端连接的外层代理，并按最终客户端来源执行；使用 Nginx 时可按自己的站点和证书配置调整，使用其它代理时配置对应的限速与转发头。
 
 HTTPS 可用后，将 `/etc/emby-auto/runtime.env` 的 `SESSION_COOKIE_SECURE` 设为 `true`，并重启 API：
 
