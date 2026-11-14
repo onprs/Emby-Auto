@@ -131,6 +131,7 @@ fetch() {
 }
 curl() {
   [[ "\${HEALTH_FAIL:-0}" != 1 ]] || return 22
+  printf '%s\\n' "$*" >>"$TEST_ROOT/curl.log"
   if [[ "$*" == *'/api/v1/setup/status'* ]]; then
     printf '{"state":"required","databaseConfigured":false,"databaseManagedExternally":false}\\n' >"\${*: -1}"
   else
@@ -307,6 +308,133 @@ test('旧版安装记录升级时持久化共享组并拒绝不同组', (t) => {
   assert.equal(readFileSync(installerRecord(f), 'utf8'), record);
   assert.ok(!existsSync(join(f.sandbox, 'usermod.log')));
   assert.ok(!existsSync(join(f.sandbox, 'setfacl.log')));
+});
+
+const NO_START_EFFECTS = ['usermod.log', 'setfacl.log', 'chgrp.log', 'curl.log'];
+
+function noStartFixture(t) {
+  const f = fixture(t);
+  const result = f.run();
+  assert.equal(result.status, 0, result.output);
+  writeBaseRecord(f);
+  const runtimePath = join(f.sandbox, 'etc/emby-auto/runtime.env');
+  const environment = readFileSync(runtimePath, 'utf8');
+  const serviceBefore = readFileSync(join(f.sandbox, 'service.log'), 'utf8');
+  for (const name of NO_START_EFFECTS) rmSync(join(f.sandbox, name), { force: true });
+  return { f, runtimePath, environment, serviceBefore };
+}
+
+test('已安装后 --no-start 与显式共享组实际应用且不探测或启停服务', (t) => {
+  for (const source of ['base', 'empty']) {
+    const f = fixture(t);
+    let result = f.run();
+    assert.equal(result.status, 0, result.output);
+    if (source === 'base') writeBaseRecord(f);
+    assert.doesNotMatch(readFileSync(installerRecord(f), 'utf8'), /^share_group=qb-share$/m);
+    const runtimePath = join(f.sandbox, 'etc/emby-auto/runtime.env');
+    const environment = readFileSync(runtimePath, 'utf8');
+    const serviceBefore = readFileSync(join(f.sandbox, 'service.log'), 'utf8');
+    for (const name of NO_START_EFFECTS) rmSync(join(f.sandbox, name), { force: true });
+    result = f.run(['--no-start', '--share-group', 'qb-share'], { SHARE_GID: '2001', TEST_GROUPS_AFTER_USERMOD: 'emby-auto qb-share' });
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.stdout, /现有服务状态保持原样/);
+    assert.match(result.stdout, /共享组 qb-share/);
+    const record = readFileSync(installerRecord(f), 'utf8');
+    assert.match(record, /^share_group=qb-share$/m, source);
+    assert.equal(record.match(/^share_group=/gm).length, 1, source);
+    assert.equal(statSync(installerRecord(f)).mode & 0o777, 0o600, source);
+    for (const line of ['installer_format=3', 'service_user=emby-auto', 'web_port=18080', 'version=latest']) {
+      assert.match(record, new RegExp(`^${line}$`, 'm'), `${source}: ${line}`);
+    }
+    assert.match(readFileSync(join(f.sandbox, 'usermod.log'), 'utf8'), /-aG qb-share emby-auto/, source);
+    const acl = readFileSync(join(f.sandbox, 'setfacl.log'), 'utf8');
+    assert.match(acl, /g:qb-share:rwx/, source);
+    assert.match(acl, /-d -m g:qb-share:rwx/, source);
+    assert.match(readFileSync(join(f.sandbox, 'chgrp.log'), 'utf8'), /qb-share/, source);
+    assert.equal(readFileSync(runtimePath, 'utf8'), environment, `${source}: 不得改写 runtime.env`);
+    assert.equal(readFileSync(join(f.sandbox, 'service.log'), 'utf8'), serviceBefore, `${source}: --no-start 不得执行服务命令`);
+    assert.ok(!existsSync(join(f.sandbox, 'curl.log')), `${source}: --no-start 不得执行健康探测`);
+    assert.ok(existsSync(join(f.sandbox, 'etc/emby-auto/installed')), source);
+  }
+});
+
+test('已安装 --no-start 未显式请求共享组时不修改记录或权限', (t) => {
+  const f = fixture(t);
+  let result = f.run(['--share-group', 'qb-share'], { SHARE_GID: '2001', TEST_GROUPS_AFTER_USERMOD: 'emby-auto qb-share' });
+  assert.equal(result.status, 0, result.output);
+  const record = readFileSync(installerRecord(f), 'utf8');
+  const serviceBefore = readFileSync(join(f.sandbox, 'service.log'), 'utf8');
+  for (const name of NO_START_EFFECTS) rmSync(join(f.sandbox, name), { force: true });
+  result = f.run(['--no-start'], { SHARE_GID: '2001' });
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.stdout, /应用已经安装/);
+  assert.doesNotMatch(result.stdout, /共享组/);
+  assert.equal(readFileSync(installerRecord(f), 'utf8'), record);
+  for (const name of NO_START_EFFECTS) assert.ok(!existsSync(join(f.sandbox, name)), name);
+  assert.equal(readFileSync(join(f.sandbox, 'service.log'), 'utf8'), serviceBefore);
+});
+
+test('已安装 --no-start 显式共享组失败时不写记录也不报成功', (t) => {
+  for (const [extraEnv, message] of [
+    [{ USERMOD_FAIL: '1', TEST_GROUPS: 'emby-auto' }, /无法将账户 emby-auto 加入共享组 qb-share/],
+    [{ SETFACL_FAIL: '1', TEST_GROUPS: 'emby-auto qb-share' }, /共享组 qb-share 的访问 ACL/],
+    [{ NO_ACL: '1', TEST_GROUPS: 'emby-auto qb-share' }, /缺少 setfacl/],
+  ]) {
+    const f = fixture(t);
+    let result = f.run();
+    assert.equal(result.status, 0, result.output);
+    writeBaseRecord(f);
+    const before = readFileSync(installerRecord(f), 'utf8');
+    const serviceBefore = readFileSync(join(f.sandbox, 'service.log'), 'utf8');
+    for (const name of NO_START_EFFECTS) rmSync(join(f.sandbox, name), { force: true });
+    result = f.run(['--no-start', '--share-group', 'qb-share'], { SHARE_GID: '2001', ...extraEnv });
+    assert.notEqual(result.status, 0);
+    assert.match(result.output, message);
+    assert.doesNotMatch(result.stdout, /共享组 qb-share 的成员与目录权限已应用|Emby Auto 已安装/);
+    assert.equal(readFileSync(installerRecord(f), 'utf8'), before);
+    assert.equal(readFileSync(join(f.sandbox, 'service.log'), 'utf8'), serviceBefore);
+    assert.ok(!existsSync(join(f.sandbox, 'curl.log')));
+    assert.ok(existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
+  }
+});
+
+test('已安装 --no-start 共享组记录写入失败时不报成功，恢复后重试成功', (t) => {
+  const { f, serviceBefore } = noStartFixture(t);
+  const configDir = join(f.sandbox, 'etc/emby-auto');
+  const before = readFileSync(installerRecord(f), 'utf8');
+  chmodSync(configDir, 0o500);
+  let result;
+  try {
+    result = f.run(['--no-start', '--share-group', 'qb-share'], { SHARE_GID: '2001', TEST_GROUPS_AFTER_USERMOD: 'emby-auto qb-share' });
+  } finally {
+    chmodSync(configDir, 0o755);
+  }
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /无法写入安装记录中的共享组/);
+  assert.doesNotMatch(result.stdout, /共享组 qb-share 的成员与目录权限已应用/);
+  assert.equal(readFileSync(installerRecord(f), 'utf8'), before);
+  assert.match(readFileSync(join(f.sandbox, 'setfacl.log'), 'utf8'), /g:qb-share:rwx/);
+  assert.equal(readFileSync(join(f.sandbox, 'service.log'), 'utf8'), serviceBefore);
+  assert.ok(!existsSync(join(f.sandbox, 'curl.log')));
+  assert.ok(existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
+  result = f.run(['--no-start', '--share-group', 'qb-share'], { SHARE_GID: '2001' });
+  assert.equal(result.status, 0, result.output);
+  assert.match(readFileSync(installerRecord(f), 'utf8'), /^share_group=qb-share$/m);
+});
+
+test('已安装 --no-start 显式不同共享组在改动前拒绝', (t) => {
+  const f = fixture(t);
+  let result = f.run(['--share-group', 'qb-share'], { SHARE_GID: '2001', TEST_GROUPS_AFTER_USERMOD: 'emby-auto qb-share' });
+  assert.equal(result.status, 0, result.output);
+  const record = readFileSync(installerRecord(f), 'utf8');
+  const serviceBefore = readFileSync(join(f.sandbox, 'service.log'), 'utf8');
+  for (const name of NO_START_EFFECTS) rmSync(join(f.sandbox, name), { force: true });
+  result = f.run(['--no-start', '--share-group', 'other-share'], { SHARE_GID: '2002' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /不同的共享组/);
+  assert.equal(readFileSync(installerRecord(f), 'utf8'), record);
+  for (const name of NO_START_EFFECTS) assert.ok(!existsSync(join(f.sandbox, name)), name);
+  assert.equal(readFileSync(join(f.sandbox, 'service.log'), 'utf8'), serviceBefore);
 });
 
 test('prepared 启动检查失败后重试携带共享组实际应用并完成安装', (t) => {
