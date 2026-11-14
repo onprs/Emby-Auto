@@ -90,10 +90,19 @@ sudo usermod -aG emby-auto qbittorrent
 sudo chgrp emby-auto /srv/emby-auto/downloads
 sudo chmod 2770 /srv/emby-auto/downloads
 sudo setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx /srv/emby-auto/downloads
+
+# The installer only adjusts the top-level downloads, work, and staging directories.
+# Complete existing download-cache subdirectories and regular files with these bounded
+# commands. They touch only this application's download directory and do not follow symlinks.
+sudo find /srv/emby-auto/downloads -type d -exec chgrp emby-auto {} + \
+  -exec chmod g+rwx,g+s {} + \
+  -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+sudo find /srv/emby-auto/downloads -type f -exec chgrp emby-auto {} + \
+  -exec chmod g+rw {} +
 sudo systemctl restart qbittorrent
 ```
 
-The default ACL keeps group write permission on subdirectories that qBittorrent creates with the common `umask 022`. A shared group alone, without a default ACL or `umask 002`, still prevents the application from removing those subdirectories. Emby only needs read and traverse access; for stricter existing libraries, grant the Emby account a read-only ACL. Do not make the whole media directory `0777`.
+The default ACL keeps group write permission on subdirectories that qBittorrent creates afterwards with the common `umask 022`; existing download-cache subtrees are not repaired by a top-level default ACL and need the bounded commands above. A shared group alone, without a default ACL or `umask 002`, still prevents the application from removing those subdirectories. Emby only needs read and traverse access; for stricter existing libraries, grant the Emby account a read-only ACL. Do not make the whole media directory `0777`.
 
 ## Directories and services
 

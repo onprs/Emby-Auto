@@ -90,10 +90,18 @@ sudo usermod -aG emby-auto qbittorrent
 sudo chgrp emby-auto /srv/emby-auto/downloads
 sudo chmod 2770 /srv/emby-auto/downloads
 sudo setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx /srv/emby-auto/downloads
+
+# 安装器只调整 downloads、work、staging 顶层目录；下载缓存中已有的子目录与文件
+# 按下面的有界命令补齐。命令仅处理本应用的下载目录，不跟随符号链接。
+sudo find /srv/emby-auto/downloads -type d -exec chgrp emby-auto {} + \
+  -exec chmod g+rwx,g+s {} + \
+  -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+sudo find /srv/emby-auto/downloads -type f -exec chgrp emby-auto {} + \
+  -exec chmod g+rw {} +
 sudo systemctl restart qbittorrent
 ```
 
-默认 ACL 让 qBittorrent 使用常见 `umask 022` 创建的子目录仍保留组写权限；只设置共享组而缺少默认 ACL 或 `umask 002` 时，应用仍无法删除这些子目录。Emby 只需要读取和遍历；已有媒体库权限更严格时，可单独为 Emby 账户添加只读 ACL。不要把整个媒体目录改成 `0777`。
+默认 ACL 让 qBittorrent 之后使用常见 `umask 022` 创建的子目录仍保留组写权限；已有安装的下载缓存子树不会因顶层默认 ACL 自动修复，需要执行上面的有界补齐命令。只设置共享组而缺少默认 ACL 或 `umask 002` 时，应用仍无法删除这些子目录。Emby 只需要读取和遍历；已有媒体库权限更严格时，可单独为 Emby 账户添加只读 ACL。不要把整个媒体目录改成 `0777`。
 
 ## 部署目录与服务
 
