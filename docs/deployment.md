@@ -63,9 +63,12 @@ qBittorrent 或 Emby 使用独立账户（宿主机或其它容器）时，还�
 ```bash
 sudo apt-get install -y acl
 sudo usermod -aG emby-auto qbittorrent
-sudo chgrp -R emby-auto /srv/emby-auto/downloads
-sudo chmod -R g+rwX /srv/emby-auto/downloads
-sudo find /srv/emby-auto/downloads -type d -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+# 只处理本应用的下载缓存，不跟随符号链接；已有子目录与文件一并补齐。
+sudo find /srv/emby-auto/downloads -type d -exec chgrp emby-auto {} + \
+  -exec chmod g+rwx,g+s {} + \
+  -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+sudo find /srv/emby-auto/downloads -type f -exec chgrp emby-auto {} + \
+  -exec chmod g+rw {} +
 ```
 
   qBittorrent 容器需以相同 GID 运行或在挂载时保留组权限；独立宿主账户修改组后需重启服务。
@@ -165,7 +168,7 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml start worker
 升级或维护前应备份：
 
 - `postgres-data` 中的 PostgreSQL 数据，包括业务数据与安装状态；优先使用 `pg_dump` 生成一致性备份。
-- `app-data` 中的 `bootstrap.json`。
+- `app-data` 中的 `bootstrap.json` 与 `bootstrap.json.complete`，两者必须成对保留。
 - `deploy/.env`。
 - 媒体目录，按存储系统的既有策略独立备份。
 
@@ -188,13 +191,57 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml ps
 
 API 启动时会依次执行应用迁移与 River 迁移。就绪检查失败时，应保持 Worker 停止并检查 API 日志；不得让旧 Worker 连接迁移失败或不兼容的数据库。
 
-### 停止与删除容器
+### 停止与卸载
 
 ```bash
 docker compose --env-file deploy/.env -f deploy/compose.yaml down
 ```
 
-该命令保留命名卷。仅在确认永久删除 PostgreSQL 数据和安装配置时才可使用 `down --volumes`。
+该命令停止并删除容器与网络，保留 `postgres-data`、`app-data` 命名卷和 `deploy/.env`，宿主机媒体目录不受影响。重新启动按“启动与首次安装”执行。
+
+确认不再需要数据后，再单独执行销毁操作（不可恢复）：
+
+```bash
+docker compose --env-file deploy/.env -f deploy/compose.yaml down --volumes
+```
+
+`--volumes` 删除 PostgreSQL 数据与安装配置；宿主机媒体目录仍需按存储策略单独处理。镜像可用 `docker image rm "emby-auto-backend:${EMBY_AUTO_IMAGE_TAG:-local}" "emby-auto-web:${EMBY_AUTO_IMAGE_TAG:-local}"` 清理；自定义 `EMBY_AUTO_IMAGE_TAG` 时先在当前 shell 导出 `deploy/.env` 中的值。
+
+### 从备份恢复
+
+恢复顺序为 PostgreSQL、初始化文件、服务。数据库与 `bootstrap.json` 必须来自同一套备份。先停止 Worker 和 API：
+
+```bash
+docker compose --env-file deploy/.env -f deploy/compose.yaml stop worker api
+docker compose --env-file deploy/.env -f deploy/compose.yaml up -d postgres
+```
+
+恢复数据库（示例为自定义格式备份）：
+
+```bash
+docker compose --env-file deploy/.env -f deploy/compose.yaml exec -T postgres \
+  sh -c 'pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  < /path/to/emby_auto.dump
+```
+
+将两个初始化文件成对写入 `app-data`，并设为应用 UID/GID 与 `0600`（占位符使用 `deploy/.env` 中的 `APP_UID`/`APP_GID`）：
+
+```bash
+docker compose --env-file deploy/.env -f deploy/compose.yaml run --rm --no-deps \
+  --user 0 -v /path/to/backup:/backup:ro --entrypoint sh api -c \
+  'install -o <APP_UID> -g <APP_GID> -m 0600 /backup/bootstrap.json /data/bootstrap.json && \
+   install -o <APP_UID> -g <APP_GID> -m 0600 /backup/bootstrap.json.complete /data/bootstrap.json.complete'
+docker compose --env-file deploy/.env -f deploy/compose.yaml up -d api worker
+```
+
+核对初始化状态与就绪检查：
+
+```bash
+curl --fail http://127.0.0.1:<APP_PORT>/api/v1/setup/status
+curl --fail http://127.0.0.1:<APP_PORT>/api/v1/health/ready
+```
+
+`setup/status` 应为 `state=completed`；若 `curl --fail` 返回非零或 HTTP 503 `service_unavailable`，检查两个初始化文件是否成对、权限是否正确以及数据库是否恢复完整。该接口的状态值只有 `required`、`initializing`、`completed`，没有 `unavailable`。恢复失败时保持 Worker 停止，不要只恢复数据库或只恢复 `bootstrap.json`。
 
 ## 故障排查
 

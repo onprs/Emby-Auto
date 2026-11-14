@@ -89,7 +89,7 @@ npm run check:generated
 
 `list_pagination_capacity_integration_test.go` 比较 64 条与 8192 条历史数据，在固定页大小下检查 SQL 次数、返回行数、候选 ID、分配量和补算批次。修改列表路径时保持这些约束，详情读取范围应随当前页的关联数据变化。
 
-安装器单元测试在临时目录中模拟系统服务与软件包操作，不会修改本机的服务、数据库或媒体目录。CI 还会在 GitHub 托管的 Ubuntu 22.04/24.04 临时设备上，用本次构建的发布包验证真实的软件包安装、systemd 服务、数据库连接和重复安装。`scripts/deploy/check-install-systemd.sh` 仅用于这些临时 CI 设备。
+安装器单元测试在临时目录中模拟系统服务与软件包操作，不会修改本机的服务、数据库或媒体目录。CI 还会在 GitHub 托管的 Ubuntu 22.04/24.04 临时设备上，用本次构建的发布包验证真实的软件包安装、systemd 服务、初始化状态（`databaseConfigured=false`）和重复安装；这些检查不连接 PostgreSQL，也不覆盖 Debian 12/13、Ubuntu 26.04 或 arm64 的运行态。`scripts/deploy/check-install-systemd.sh` 仅用于这些临时 CI 设备。
 
 ## 构建 Linux 发布包
 
