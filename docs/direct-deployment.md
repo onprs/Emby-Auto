@@ -479,7 +479,7 @@ emby_auto_maintenance emby-auto-recover-stale-operations --worker-stopped --stal
 )
 ```
 
-退出码：`0` 表示切换与验证成功；`1` 表示已回滚到上一版本且旧版本通过独立的就绪与运行版本检查；`2` 表示回滚失败或被阻断，服务停止或已尝试停止，Worker 保持停止。就绪等待只在新版本或旧版本自身超时、或单元进入 `failed`/`inactive` 时结束；连接未建立和 HTTP 503 会继续等待。单次请求不超过 25 秒，默认总预算 600 秒。应用没有单独的启动超时：`DATABASE_CONNECT_TIMEOUT` 只限制单次数据库连接，`SHUTDOWN_TIMEOUT` 只用于停止；后台恢复命令的 `--timeout`（默认 3m，最大 10m）与就绪预算相互独立。迁移耗时更长时必须调大 `EMBY_AUTO_UPGRADE_READY_TIMEOUT`。
+退出码：`0` 表示切换与验证成功；`1` 表示已回滚到上一版本且旧版本通过独立的就绪与运行版本检查；`2` 表示回滚失败或被门禁阻断，需要先核实实际状态。普通回滚失败会尝试停止 API 与控制服务并在输出中说明结果，但尝试停止不等于已停止。因 Worker 正在运行而被门禁阻断时不会执行回滚：`current` 可能仍指向新版本，API、控制服务与 Worker 也可能仍在运行，输出会明确提示。此时先查询实际状态，执行正式 `stopped` 转换并核对门禁（`state=stopped`、`verified=true`、`transfers.active=0`），再决定前滚修复或按升级前备份恢复；不要根据退出码 2 假定服务已停止或已回滚。就绪等待只在新版本或旧版本自身超时、或单元进入 `failed`/`inactive` 时结束；连接未建立和 HTTP 503 会继续等待。单次请求不超过 25 秒，默认总预算 600 秒。应用没有单独的启动超时：`DATABASE_CONNECT_TIMEOUT` 只限制单次数据库连接，`SHUTDOWN_TIMEOUT` 只用于停止；后台恢复命令的 `--timeout`（默认 3m，最大 10m）与就绪预算相互独立。迁移耗时更长时必须调大 `EMBY_AUTO_UPGRADE_READY_TIMEOUT`。
 
 自动回滚只恢复代码与 unit，不恢复数据库。新版本一旦完成 schema 迁移，旧二进制可能无法读取新 schema；此时回滚会以退出码 2 停止并提示前滚或按升级前一致性备份走正式恢复。数据库恢复与代码回滚分开执行，不要自动 drop/restore 数据库或删除状态。
 
