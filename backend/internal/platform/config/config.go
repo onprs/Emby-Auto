@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/base64"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -23,6 +24,8 @@ const (
 	defaultDownloadSyncInterval   = 15 * time.Second
 	defaultRSSScheduleConcurrency = 4
 	defaultBootstrapConfigPath    = "runtime/bootstrap.json"
+	// defaultTrustedProxyCIDRs 默认只信任回环代理提供的 X-Forwarded-For。
+	defaultTrustedProxyCIDRs = "127.0.0.0/8,::1/128"
 	// defaultSetupInitializeTimeout 是单次安装初始化的默认总时长上限。
 	defaultSetupInitializeTimeout = 10 * time.Minute
 )
@@ -52,6 +55,10 @@ type Config struct {
 	SearchProviderURLTemplate         string
 	MediaOwnerUID                     int
 	HostControlExecutable             string
+
+	// TrustedProxyCIDRs 列出可代表客户端提供 X-Forwarded-For 的代理网段。
+	// 默认包含回环网段；其它来源只使用 TCP 对端地址，不采信代理头。
+	TrustedProxyCIDRs []*net.IPNet
 }
 
 // Load reads process settings from environment variables.
@@ -86,6 +93,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cookieSecure, err := boolFromEnv("SESSION_COOKIE_SECURE", false)
+	if err != nil {
+		return Config{}, err
+	}
+	trustedProxyCIDRs, err := trustedProxyCIDRsFromEnv("TRUSTED_PROXY_CIDRS")
 	if err != nil {
 		return Config{}, err
 	}
@@ -150,6 +161,7 @@ func Load() (Config, error) {
 		LogLevel:                          stringFromEnv("LOG_LEVEL", defaultLogLevel),
 		SessionTTL:                        sessionTTL,
 		SessionCookieSecure:               cookieSecure,
+		TrustedProxyCIDRs:                 trustedProxyCIDRs,
 		ConfigEncryptionKey:               encryptionKey,
 		RiverGeneralWorkers:               generalWorkers,
 		RiverTranscodeWorkers:             transcodeWorkers,
@@ -231,6 +243,32 @@ func encryptionKeyFromEnv(name string) ([]byte, error) {
 		return nil, nil
 	}
 	return encryptionKeyFromValue(name, value)
+}
+
+// trustedProxyCIDRsFromEnv 解析逗号分隔的代理网段（CIDR）列表。
+// 未设置时使用回环网段：直接部署的官方示例由本机反向代理转发，回环以外的来源
+// 仍只使用 TCP 对端地址，不采信任何代理头。
+func trustedProxyCIDRsFromEnv(name string) ([]*net.IPNet, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		value = defaultTrustedProxyCIDRs
+	}
+	cidrs := make([]*net.IPNet, 0, 4)
+	for _, entry := range strings.Split(value, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		_, network, err := net.ParseCIDR(entry)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: every entry must be an IPv4 or IPv6 CIDR", name)
+		}
+		cidrs = append(cidrs, network)
+	}
+	if len(cidrs) == 0 {
+		return nil, fmt.Errorf("parse %s: at least one CIDR is required when set", name)
+	}
+	return cidrs, nil
 }
 
 func encryptionKeyFromValue(name, value string) ([]byte, error) {

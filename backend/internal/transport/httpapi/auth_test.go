@@ -17,6 +17,7 @@ import (
 type authenticationStub struct {
 	loginResult        service.LoginResult
 	loginErr           error
+	loginCalls         int
 	authenticated      domain.Session
 	authenticateErr    error
 	authenticatedToken string
@@ -24,6 +25,7 @@ type authenticationStub struct {
 }
 
 func (stub *authenticationStub) Login(context.Context, string, string) (service.LoginResult, error) {
+	stub.loginCalls++
 	return stub.loginResult, stub.loginErr
 }
 func (stub *authenticationStub) Authenticate(_ context.Context, token string) (domain.Session, error) {

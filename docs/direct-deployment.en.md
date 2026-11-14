@@ -146,9 +146,10 @@ API_ADDRESS=127.0.0.1:18080
 WEB_ROOT=/opt/emby-auto/current/web
 BOOTSTRAP_CONFIG_PATH=/var/lib/emby-auto/bootstrap.json
 SESSION_COOKIE_SECURE=false
+TRUSTED_PROXY_CIDRS=127.0.0.0/8,::1/128
 ```
 
-Leave the database connection and encryption key unset so the setup wizard can configure them. `WEB_ROOT` selects the directory served by the application. If you host the web files separately, leave it unset and forward `/api/` to the application yourself. `SETUP_INITIALIZE_TIMEOUT` (default `10m`) bounds one setup initialization; migrations are applied one transaction at a time, so a retry after a timeout continues safely.
+Leave the database connection and encryption key unset so the setup wizard can configure them. `WEB_ROOT` selects the directory served by the application. If you host the web files separately, leave it unset and forward `/api/` to the application yourself. `TRUSTED_PROXY_CIDRS` declares the loopback reverse proxy networks; `X-Forwarded-For` is trusted only from these networks, and login throttling keys on the real client address. `SETUP_INITIALIZE_TIMEOUT` (default `10m`) bounds one setup initialization; migrations are applied one transaction at a time, so a retry after a timeout continues safely. Once the global login failure budget is exhausted, even a correct password is briefly rejected with `429` and `Retry-After`. Failure counts use a 10-minute window; `Retry-After` is only the current delay hint, and continued failures can trigger throttling again, so waiting once does not guarantee success. No service restart is needed.
 
 ### 4. Configure application services
 
@@ -201,8 +202,9 @@ The proxy must:
 - Forward the web interface and `/api/` to the same application endpoint, preserving the original host and protocol.
 - Support long-lived SSE at `/api/v1/events` without response buffering.
 - Forward `Range` and `If-Range` for media previews and stream the response.
+- Rate-limit `/api/v1/auth/login` per source at the outer reverse proxy and forward `X-Forwarded-For` from the networks declared in `TRUSTED_PROXY_CIDRS`.
 
-The release includes `config/nginx.conf` as an optional loopback proxy example on `127.0.0.1:18079`. Adapt it to your own Nginx site and certificate configuration, or use your selected proxy's configuration.
+The release includes `config/nginx.conf` as an optional loopback forwarding example on `127.0.0.1:18079`; it does not include login rate limiting and sits behind the outer proxy, so it only sees the proxy address. Apply login rate limiting at the outer proxy that receives client connections, keyed by the final client source. Adapt the example to your own Nginx site and certificate configuration, or configure the equivalent rate limit and forwarding headers in your selected proxy.
 
 Once HTTPS works, set `SESSION_COOKIE_SECURE=true` in `/etc/emby-auto/runtime.env` and restart API:
 

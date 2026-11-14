@@ -75,6 +75,12 @@ grep -Fq 'listen 127.0.0.1:18079;' "${root_dir}/deploy/direct/nginx.conf"
 grep -Fq 'proxy_buffering off;' "${root_dir}/deploy/direct/nginx.conf"
 grep -Fq 'proxy_set_header Range $http_range;' "${root_dir}/deploy/direct/nginx.conf"
 
+# 可选回环代理位于外层代理之后；按对端 IP 限速登录会把不同客户端合并到同一个桶。
+if grep -Fq 'limit_req' "${root_dir}/deploy/direct/nginx.conf"; then
+  echo "the optional loopback nginx must not rate-limit login by proxy peer address" >&2
+  exit 1
+fi
+
 if [[ "${mode}" == "static" ]]; then
   echo "direct Linux deployment static checks passed"
   exit 0
