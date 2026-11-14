@@ -676,13 +676,10 @@ LEFT JOIN LATERAL (
       AND (
           item.file_path = latest_import.destination_video_path
           OR (
-              episode.tmdb_episode_id IS NOT NULL
-              AND EXISTS (
-                  SELECT 1
-                  FROM jsonb_each_text(item.provider_ids) AS provider
-                  WHERE lower(provider.key) IN ('tmdb', 'themoviedb')
-                    AND provider.value = episode.tmdb_episode_id::text
-              )
+              item.item_type = 'Episode'
+              AND episode.tmdb_episode_id IS NOT NULL
+              AND item.tmdb_provider_id <> ''
+              AND item.tmdb_provider_id = episode.tmdb_episode_id::text
           )
       )
     ORDER BY (item.file_path = latest_import.destination_video_path) DESC, item.id
@@ -1004,13 +1001,10 @@ LEFT JOIN LATERAL (
       AND (
           item.file_path = latest_import.destination_video_path
           OR (
-              episode.tmdb_episode_id IS NOT NULL
-              AND EXISTS (
-                  SELECT 1
-                  FROM jsonb_each_text(item.provider_ids) AS provider
-                  WHERE lower(provider.key) IN ('tmdb', 'themoviedb')
-                    AND provider.value = episode.tmdb_episode_id::text
-              )
+              item.item_type = 'Episode'
+              AND episode.tmdb_episode_id IS NOT NULL
+              AND item.tmdb_provider_id <> ''
+              AND item.tmdb_provider_id = episode.tmdb_episode_id::text
           )
       )
     ORDER BY (item.file_path = latest_import.destination_video_path) DESC, item.id
