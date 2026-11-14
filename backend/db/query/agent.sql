@@ -627,6 +627,7 @@ SET status = sqlc.arg(status),
     version = version + 1,
     updated_at = now()
 WHERE id = sqlc.arg(id)
+  AND operation_id = sqlc.arg(operation_id)
   AND status IN ('queued', 'running', 'proposed')
 RETURNING *;
 
@@ -640,6 +641,7 @@ SET status = 'failed',
     version = version + 1,
     updated_at = now()
 WHERE id = sqlc.arg(id)
+  AND operation_id = sqlc.arg(operation_id)
   AND status IN ('running', 'proposed')
 RETURNING *;
 
@@ -679,6 +681,7 @@ SET status = sqlc.arg(status),
     version = version + 1,
     updated_at = now()
 WHERE id = sqlc.arg(id)
+  AND operation_id = sqlc.arg(operation_id)
   AND status IN ('queued', 'running', 'proposed')
 RETURNING *;
 

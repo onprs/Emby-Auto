@@ -425,35 +425,66 @@ func (service *AgentResolutionService) CreateAutomatic(ctx context.Context, inpu
 	jobTimeout := agentJobTimeout(agentToolStepBudget(input.Capability, snapshot), requestTimeout)
 	result := AgentResolutionCommandResult{}
 	err = service.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
-		scheduled, scheduleErr := service.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
-			Kind: appqueue.KindAgentResolve, ResourceType: "agent_resolution", ResourceID: resolutionID,
-			IdempotencyKey: idempotencyKey, MaxAttempts: 3, Timeout: jobTimeout,
-			Payload: map[string]any{"resolutionId": resolutionID},
-		})
-		if scheduleErr != nil {
-			return scheduleErr
+		// 先按身份读取既有决议：历史行（例如 base 写入的 60 秒 operation）
+		// 的真实命令与当前预算不同，不能再用新命令去撞它的幂等键。
+		loaded, loadErr := scope.Queries.GetAgentResolution(ctx, repository.UUIDToPG(resolutionID))
+		exists := loadErr == nil
+		if loadErr != nil && !errors.Is(loadErr, pgx.ErrNoRows) {
+			return fmt.Errorf("load Agent resolution identity: %w", loadErr)
 		}
-		inserted, createErr := scope.Queries.CreateAgentResolution(ctx, db.CreateAgentResolutionParams{
-			ID: repository.UUIDToPG(resolutionID), OperationID: repository.UUIDToPG(scheduled.Operation.ID),
-			ResourceVersion: intPointerToInt32(snapshot.ResourceVersion), Capability: string(input.Capability),
-			ResourceType: snapshot.ResourceType, ResourceID: repository.UUIDToPG(input.ResourceID), Trigger: "automatic",
-			InputFingerprint: snapshot.Fingerprint[:], ConfigurationVersion: configuration.Version,
-			Protocol: settings.Protocol, ProviderOrigin: origin, Model: settings.Model,
-			PromptVersion: promptVersion, ToolsetVersion: agentharness.ToolsetVersion,
-		})
-		if createErr != nil {
-			return fmt.Errorf("create Agent resolution: %w", createErr)
+		if exists && repository.UUIDFromPG(loaded.ID) != resolutionID {
+			return NewError("idempotency_conflict", "the Agent resolution identity conflicts with an existing command", ErrStateConflict, nil)
+		}
+		queued := false
+		if !exists {
+			scheduled, scheduleErr := service.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
+				Kind: appqueue.KindAgentResolve, ResourceType: "agent_resolution", ResourceID: resolutionID,
+				IdempotencyKey: idempotencyKey, MaxAttempts: 3, Timeout: jobTimeout,
+				Payload: map[string]any{"resolutionId": resolutionID},
+			})
+			if scheduleErr != nil {
+				return scheduleErr
+			}
+			inserted, createErr := scope.Queries.CreateAgentResolution(ctx, db.CreateAgentResolutionParams{
+				ID: repository.UUIDToPG(resolutionID), OperationID: repository.UUIDToPG(scheduled.Operation.ID),
+				ResourceVersion: intPointerToInt32(snapshot.ResourceVersion), Capability: string(input.Capability),
+				ResourceType: snapshot.ResourceType, ResourceID: repository.UUIDToPG(input.ResourceID), Trigger: "automatic",
+				InputFingerprint: snapshot.Fingerprint[:], ConfigurationVersion: configuration.Version,
+				Protocol: settings.Protocol, ProviderOrigin: origin, Model: settings.Model,
+				PromptVersion: promptVersion, ToolsetVersion: agentharness.ToolsetVersion,
+			})
+			if createErr != nil {
+				return fmt.Errorf("create Agent resolution: %w", createErr)
+			}
+			queued = inserted
 		}
 		row, lockErr := scope.Queries.LockAgentResolution(ctx, repository.UUIDToPG(resolutionID))
 		if lockErr != nil {
 			return fmt.Errorf("lock Agent resolution: %w", lockErr)
 		}
-		if !bytes.Equal(row.InputFingerprint, snapshot.Fingerprint[:]) {
+		if !agentResolutionIdentityMatches(row, input, snapshot, configuration, settings, origin, promptVersion) {
 			return NewError("idempotency_conflict", "the Agent resolution identity conflicts with an existing command", ErrStateConflict, nil)
 		}
-		operation := scheduled.Operation
-		queued := inserted
-		if !inserted && (row.Status == string(domain.AgentResolutionCancelled) || row.Status == string(domain.AgentResolutionExpired)) {
+		// 决议的 operation 关联也是身份的一部分：kind/resource/payload 必须归属于
+		// 该决议；预算差异属于历史命令形态，不在此处改写。
+		storedOperation, operationErr := scope.Queries.GetOperation(ctx, row.OperationID)
+		if errors.Is(operationErr, pgx.ErrNoRows) {
+			return fmt.Errorf("load Agent resolution operation: %w", operationErr)
+		}
+		if operationErr != nil {
+			return fmt.Errorf("load Agent resolution operation: %w", operationErr)
+		}
+		if !agentResolutionOperationMatches(storedOperation, resolutionID) {
+			return NewError("idempotency_conflict", "the Agent resolution operation conflicts with its identity", ErrStateConflict, nil)
+		}
+		operation := operationFromDB(storedOperation)
+		if row.Status == string(domain.AgentResolutionCancelled) || row.Status == string(domain.AgentResolutionExpired) {
+			if row.Version >= 10 {
+				// 恢复上限已用尽：明确终止，不创建新 operation，也不改写旧预算。
+				return NewError("agent_resolution_requeue_exhausted", "the Agent resolution reached its automatic recovery limit", ErrStateConflict, map[string]any{
+					"resolutionId": resolutionID, "version": int(row.Version),
+				})
+			}
 			// 同一身份的决议已取消/失效时，原操作已进入终态。按同一身份重新排队，
 			// 否则条目会永久停留在未解析状态且无法重建决议身份。
 			requeue, requeueErr := service.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
@@ -468,12 +499,7 @@ func (service *AgentResolutionService) CreateAutomatic(ctx context.Context, inpu
 				OperationID: repository.UUIDToPG(requeue.Operation.ID), ID: repository.UUIDToPG(resolutionID),
 			})
 			if errors.Is(updateErr, pgx.ErrNoRows) {
-				if row.Version >= 10 {
-					// 恢复上限已用尽：明确终止而不是让调用方把 state_conflict 当作良性并发。
-					return NewError("agent_resolution_requeue_exhausted", "the Agent resolution reached its automatic recovery limit", ErrStateConflict, map[string]any{
-						"resolutionId": resolutionID, "version": int(row.Version),
-					})
-				}
+				// 行锁内状态/版本已被并发改写：回滚本次事务，避免遗留无人接管的 operation。
 				return NewError("state_conflict", "the Agent resolution changed before it was requeued", ErrStateConflict, nil)
 			}
 			if updateErr != nil {
@@ -482,9 +508,6 @@ func (service *AgentResolutionService) CreateAutomatic(ctx context.Context, inpu
 			row = requeued
 			operation = requeue.Operation
 			queued = true
-		}
-		if !queued && repository.UUIDFromPG(row.OperationID) != operation.ID {
-			return NewError("idempotency_conflict", "the Agent resolution identity conflicts with an existing command", ErrStateConflict, nil)
 		}
 		if queued {
 			encoded, _ := json.Marshal(map[string]any{"capability": input.Capability, "status": domain.AgentResolutionQueued})
@@ -527,41 +550,41 @@ func (service *AgentResolutionService) Run(ctx context.Context, operation domain
 	}
 	settings := configuration.Settings.Agent.WithDefaults()
 	if !settings.Enabled || !agentCapabilityEnabled(settings, resolution.Capability) {
-		return service.finishInactive(ctx, resolution, domain.AgentResolutionCancelled, "agent_disabled", "Agent assistance was disabled before execution")
+		return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionCancelled, "agent_disabled", "Agent assistance was disabled before execution")
 	}
 	if resolution.Capability == domain.AgentCapabilityRSSPreacquisitionMapping {
 		current, err := service.queries.IsCurrentRSSPreacquisitionMappingScope(ctx, repository.UUIDToPG(resolution.ResourceID))
 		if errors.Is(err, pgx.ErrNoRows) {
-			return service.finishInactive(ctx, resolution, domain.AgentResolutionExpired, "agent_resolution_stale", "RSS pre-acquisition Mapping scope is no longer available")
+			return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "RSS pre-acquisition Mapping scope is no longer available")
 		}
 		if err != nil {
 			return fmt.Errorf("select current RSS pre-acquisition Mapping scope: %w", err)
 		}
 		if current == nil || !*current {
-			return service.finishInactive(ctx, resolution, domain.AgentResolutionExpired, "agent_resolution_stale", "RSS pre-acquisition Mapping scope was superseded")
+			return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "RSS pre-acquisition Mapping scope was superseded")
 		}
 	}
 	if resolution.Capability == domain.AgentCapabilityEpisodeMapping {
 		canonical, err := service.queries.IsCanonicalRSSAgentMappingAcquisition(ctx, repository.UUIDToPG(resolution.ResourceID))
 		if errors.Is(err, pgx.ErrNoRows) {
-			return service.finishInactive(ctx, resolution, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent Mapping resource is no longer available")
+			return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent Mapping resource is no longer available")
 		}
 		if err != nil {
 			return fmt.Errorf("select canonical Agent Mapping acquisition: %w", err)
 		}
 		if !canonical {
-			return service.finishInactive(ctx, resolution, domain.AgentResolutionCancelled, "agent_mapping_superseded", "another acquisition is the RSS Mapping anchor")
+			return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionCancelled, "agent_mapping_superseded", "another acquisition is the RSS Mapping anchor")
 		}
 	}
 	if !agentResolutionConfigurationMatches(configuration, resolution) {
-		return service.finishInactive(ctx, resolution, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent configuration changed before execution")
+		return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent configuration changed before execution")
 	}
 	snapshot, err := service.buildAgentContext(ctx, resolution.Capability, resolution.ResourceID)
 	if err != nil {
-		return service.finishInactive(ctx, resolution, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent resource context is no longer available")
+		return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent resource context is no longer available")
 	}
 	if !bytes.Equal(snapshot.Fingerprint[:], resolution.InputFingerprint) || !sameOptionalInt(snapshot.ResourceVersion, resolution.ResourceVersion) {
-		return service.finishInactive(ctx, resolution, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent resource context changed before execution")
+		return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent resource context changed before execution")
 	}
 
 	if resolution.Status != domain.AgentResolutionProposed {
@@ -615,9 +638,9 @@ func (service *AgentResolutionService) Run(ctx context.Context, operation domain
 	}
 	currentSnapshot, err := service.buildAgentContext(ctx, resolution.Capability, resolution.ResourceID)
 	if err != nil || !bytes.Equal(currentSnapshot.Fingerprint[:], resolution.InputFingerprint) || !sameOptionalInt(currentSnapshot.ResourceVersion, resolution.ResourceVersion) {
-		return service.finishInactive(ctx, resolution, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent resource context changed during execution")
+		return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent resource context changed during execution")
 	}
-	return service.validateAndApply(ctx, resolution, snapshot)
+	return service.validateAndApply(ctx, operation.ID, resolution, snapshot)
 }
 
 func (service *AgentResolutionService) Get(ctx context.Context, id uuid.UUID) (domain.AgentResolution, error) {
@@ -739,6 +762,7 @@ func AutomaticAgentResolutionRetryable(resolution domain.AgentResolution) bool {
 
 func (service *AgentResolutionService) validateAndApply(
 	ctx context.Context,
+	operationID uuid.UUID,
 	resolution domain.AgentResolution,
 	snapshot agentContextSnapshot,
 ) error {
@@ -746,7 +770,7 @@ func (service *AgentResolutionService) validateAndApply(
 	if err != nil {
 		return err
 	}
-	configuration, current, err := service.loadAgentApplicationConfiguration(ctx, resolution)
+	configuration, current, err := service.loadAgentApplicationConfiguration(ctx, operationID, resolution)
 	if err != nil || !current {
 		return err
 	}
@@ -758,10 +782,10 @@ func (service *AgentResolutionService) validateAndApply(
 		return err
 	}
 	if validation.Verdict != domain.AgentValidationAutoApplicable {
-		return service.failAutomaticProposal(ctx, resolution, validation)
+		return service.failAutomaticProposal(ctx, operationID, resolution, validation)
 	}
 	if !agentCapabilityAutomatic(configuration.Settings.Agent, resolution.Capability) {
-		return service.failAutomaticProposal(ctx, resolution, domain.AgentProposalValidation{
+		return service.failAutomaticProposal(ctx, operationID, resolution, domain.AgentProposalValidation{
 			Verdict: domain.AgentValidationInvalid, ReasonCodes: []string{"agent_capability_not_automatic"},
 		})
 	}
@@ -771,7 +795,7 @@ func (service *AgentResolutionService) validateAndApply(
 		return err
 	}
 	if service.rssRealtime != nil {
-		if _, current, err := service.loadAgentApplicationConfiguration(ctx, resolution); err != nil || !current {
+		if _, current, err := service.loadAgentApplicationConfiguration(ctx, operationID, resolution); err != nil || !current {
 			return err
 		}
 	}
@@ -791,7 +815,7 @@ func (service *AgentResolutionService) validateAndApply(
 	case domain.AgentCapabilitySubtitleVideoMatch:
 		return service.applySubtitleVideoMatch(ctx, resolution, proposal.(domain.AgentSubtitleVideoMatchProposal), validation)
 	default:
-		return service.failAutomaticProposal(ctx, resolution, domain.AgentProposalValidation{
+		return service.failAutomaticProposal(ctx, operationID, resolution, domain.AgentProposalValidation{
 			Verdict: domain.AgentValidationInvalid, ReasonCodes: []string{"agent_capability_unsupported"},
 		})
 	}
@@ -803,23 +827,24 @@ func agentResolutionConfigurationMatches(configuration domain.Configuration, res
 		settings.Model == resolution.Model && providerOrigin(settings.BaseURL) == resolution.ProviderOrigin
 }
 
-func (service *AgentResolutionService) loadAgentApplicationConfiguration(ctx context.Context, resolution domain.AgentResolution) (domain.Configuration, bool, error) {
+func (service *AgentResolutionService) loadAgentApplicationConfiguration(ctx context.Context, operationID uuid.UUID, resolution domain.AgentResolution) (domain.Configuration, bool, error) {
 	configuration, err := service.configuration.Load(ctx)
 	if err != nil {
 		return domain.Configuration{}, false, err
 	}
 	settings := configuration.Settings.Agent.WithDefaults()
 	if !settings.Enabled || !agentCapabilityEnabled(settings, resolution.Capability) {
-		return configuration, false, service.finishInactive(ctx, resolution, domain.AgentResolutionCancelled, "agent_disabled", "Agent assistance was disabled before application")
+		return configuration, false, service.finishInactive(ctx, resolution, operationID, domain.AgentResolutionCancelled, "agent_disabled", "Agent assistance was disabled before application")
 	}
 	if !agentResolutionConfigurationMatches(configuration, resolution) {
-		return configuration, false, service.finishInactive(ctx, resolution, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent configuration changed before application")
+		return configuration, false, service.finishInactive(ctx, resolution, operationID, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent configuration changed before application")
 	}
 	return configuration, true, nil
 }
 
 func (service *AgentResolutionService) failAutomaticProposal(
 	ctx context.Context,
+	operationID uuid.UUID,
 	resolution domain.AgentResolution,
 	validation domain.AgentProposalValidation,
 ) error {
@@ -833,6 +858,7 @@ func (service *AgentResolutionService) failAutomaticProposal(
 	err := service.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
 		updated, err := scope.Queries.FailValidatedAgentResolution(ctx, db.FailValidatedAgentResolutionParams{
 			Validation: validationJSON, ErrorCode: &code, ErrorMessage: &message, ID: repository.UUIDToPG(resolution.ID),
+			OperationID: repository.UUIDToPG(operationID),
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
@@ -1860,10 +1886,11 @@ func downloadResolutionItemsFromAgentProposal(files []db.DownloadFile, proposal 
 	return items, nil
 }
 
-func (service *AgentResolutionService) finishInactive(ctx context.Context, resolution domain.AgentResolution, status domain.AgentResolutionStatus, code, message string) error {
+func (service *AgentResolutionService) finishInactive(ctx context.Context, resolution domain.AgentResolution, operationID uuid.UUID, status domain.AgentResolutionStatus, code, message string) error {
 	return service.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
 		failed, err := scope.Queries.FailAgentResolution(ctx, db.FailAgentResolutionParams{
 			Status: string(status), ErrorCode: &code, ErrorMessage: &message, ID: repository.UUIDToPG(resolution.ID),
+			OperationID: repository.UUIDToPG(operationID),
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
@@ -2099,6 +2126,56 @@ func sameOptionalInt(left, right *int) bool {
 		return left == nil && right == nil
 	}
 	return *left == *right
+}
+
+func sameOptionalInt32(left, right *int32) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+// agentResolutionIdentityMatches 在同一事务、决议行锁内验证既有行的完整
+// 身份。身份摘要命中后仍逐项核对 canonical resource/config/fingerprint，
+// 避免把陈旧或手工改写的行当作同一命令。
+func agentResolutionIdentityMatches(
+	row db.AgentResolution,
+	input AutomaticAgentResolutionRequest,
+	snapshot agentContextSnapshot,
+	configuration domain.Configuration,
+	settings domain.AgentSettings,
+	origin string,
+	promptVersion string,
+) bool {
+	return row.Capability == string(input.Capability) &&
+		row.ResourceType == snapshot.ResourceType &&
+		repository.UUIDFromPG(row.ResourceID) == input.ResourceID &&
+		row.Trigger == "automatic" &&
+		row.ConfigurationVersion == configuration.Version &&
+		row.Protocol == settings.Protocol &&
+		row.ProviderOrigin == origin &&
+		row.Model == settings.Model &&
+		row.PromptVersion == promptVersion &&
+		row.ToolsetVersion == agentharness.ToolsetVersion &&
+		bytes.Equal(row.InputFingerprint, snapshot.Fingerprint[:]) &&
+		sameOptionalInt32(row.ResourceVersion, intPointerToInt32(snapshot.ResourceVersion))
+}
+
+// agentResolutionOperationMatches 校验决议引用的 operation 确实属于该决议：
+// kind、resource 与 payload 归属必须一致。历史 operation 的预算差异不在此
+// 处校验或改写。
+func agentResolutionOperationMatches(operation db.Operation, resolutionID uuid.UUID) bool {
+	if operation.Kind != appqueue.KindAgentResolve || valueOrEmpty(operation.ResourceType) != "agent_resolution" ||
+		repository.UUIDFromPG(operation.ResourceID) != resolutionID {
+		return false
+	}
+	var payload struct {
+		ResolutionID uuid.UUID `json:"resolutionId"`
+	}
+	if err := json.Unmarshal(operation.Payload, &payload); err != nil {
+		return false
+	}
+	return payload.ResolutionID == resolutionID
 }
 
 func serviceCode(err error, fallback string) string {

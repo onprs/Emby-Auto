@@ -463,6 +463,7 @@ SET status = $1,
     version = version + 1,
     updated_at = now()
 WHERE id = $4
+  AND operation_id = $5
   AND status IN ('queued', 'running', 'proposed')
 RETURNING id, operation_id, version, capability, resource_type, resource_id, resource_version, trigger, status, input_fingerprint, configuration_version, protocol, provider_origin, model, prompt_version, toolset_version, proposal, validation, error_code, error_message, input_tokens, output_tokens, tool_call_count, latency_milliseconds, created_by, reviewed_by, review_decision, created_at, started_at, completed_at, reviewed_at, applied_at, updated_at
 `
@@ -472,6 +473,7 @@ type FailAgentResolutionParams struct {
 	ErrorCode    *string     `db:"error_code" json:"error_code"`
 	ErrorMessage *string     `db:"error_message" json:"error_message"`
 	ID           pgtype.UUID `db:"id" json:"id"`
+	OperationID  pgtype.UUID `db:"operation_id" json:"operation_id"`
 }
 
 func (q *Queries) FailAgentResolution(ctx context.Context, arg FailAgentResolutionParams) (AgentResolution, error) {
@@ -480,6 +482,7 @@ func (q *Queries) FailAgentResolution(ctx context.Context, arg FailAgentResoluti
 		arg.ErrorCode,
 		arg.ErrorMessage,
 		arg.ID,
+		arg.OperationID,
 	)
 	var i AgentResolution
 	err := row.Scan(
@@ -530,6 +533,7 @@ SET status = 'failed',
     version = version + 1,
     updated_at = now()
 WHERE id = $4
+  AND operation_id = $5
   AND status IN ('running', 'proposed')
 RETURNING id, operation_id, version, capability, resource_type, resource_id, resource_version, trigger, status, input_fingerprint, configuration_version, protocol, provider_origin, model, prompt_version, toolset_version, proposal, validation, error_code, error_message, input_tokens, output_tokens, tool_call_count, latency_milliseconds, created_by, reviewed_by, review_decision, created_at, started_at, completed_at, reviewed_at, applied_at, updated_at
 `
@@ -539,6 +543,7 @@ type FailValidatedAgentResolutionParams struct {
 	ErrorCode    *string     `db:"error_code" json:"error_code"`
 	ErrorMessage *string     `db:"error_message" json:"error_message"`
 	ID           pgtype.UUID `db:"id" json:"id"`
+	OperationID  pgtype.UUID `db:"operation_id" json:"operation_id"`
 }
 
 func (q *Queries) FailValidatedAgentResolution(ctx context.Context, arg FailValidatedAgentResolutionParams) (AgentResolution, error) {
@@ -547,6 +552,7 @@ func (q *Queries) FailValidatedAgentResolution(ctx context.Context, arg FailVali
 		arg.ErrorCode,
 		arg.ErrorMessage,
 		arg.ID,
+		arg.OperationID,
 	)
 	var i AgentResolution
 	err := row.Scan(
@@ -2114,6 +2120,7 @@ SET status = $1,
     version = version + 1,
     updated_at = now()
 WHERE id = $4
+  AND operation_id = $5
   AND status IN ('queued', 'running', 'proposed')
 RETURNING id, operation_id, version, capability, resource_type, resource_id, resource_version, trigger, status, input_fingerprint, configuration_version, protocol, provider_origin, model, prompt_version, toolset_version, proposal, validation, error_code, error_message, input_tokens, output_tokens, tool_call_count, latency_milliseconds, created_by, reviewed_by, review_decision, created_at, started_at, completed_at, reviewed_at, applied_at, updated_at
 `
@@ -2123,6 +2130,7 @@ type MarkAgentResolutionOperationTerminalParams struct {
 	ErrorCode    *string     `db:"error_code" json:"error_code"`
 	ErrorMessage *string     `db:"error_message" json:"error_message"`
 	ID           pgtype.UUID `db:"id" json:"id"`
+	OperationID  pgtype.UUID `db:"operation_id" json:"operation_id"`
 }
 
 func (q *Queries) MarkAgentResolutionOperationTerminal(ctx context.Context, arg MarkAgentResolutionOperationTerminalParams) (AgentResolution, error) {
@@ -2131,6 +2139,7 @@ func (q *Queries) MarkAgentResolutionOperationTerminal(ctx context.Context, arg 
 		arg.ErrorCode,
 		arg.ErrorMessage,
 		arg.ID,
+		arg.OperationID,
 	)
 	var i AgentResolution
 	err := row.Scan(

@@ -546,7 +546,7 @@ func failAgentResolutionResource(
 	message string,
 ) error {
 	resolution, err := queries.MarkAgentResolutionOperationTerminal(ctx, db.MarkAgentResolutionOperationTerminalParams{
-		Status: status, ErrorCode: &code, ErrorMessage: &message, ID: operation.ResourceID,
+		Status: status, ErrorCode: &code, ErrorMessage: &message, ID: operation.ResourceID, OperationID: operation.ID,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
