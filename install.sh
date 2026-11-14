@@ -176,26 +176,62 @@ resolve_share_group() {
   [[ "$share_gid" =~ ^[0-9]+$ ]] && (( share_gid > 0 )) || fail "共享组 $share_group 的 GID 无效。"
 }
 
+write_share_group_setting() {
+  [[ -n "$share_group" ]] || return 0
+  local record="$config_dir/installer.env" next="$config_dir/installer.env.next" saved program
+  [[ -f "$record" ]] || fail '安装记录缺失，无法写入共享组；请按部署文档恢复安装记录。'
+  saved="$(read_setting share_group)"
+  [[ "$saved" != "$share_group" ]] || return 0
+  # 不同共享组已在 load_settings 拒绝；这里保留同一保护，写入前不修改成员与目录权限。
+  [[ -z "$saved" ]] || fail '已有安装使用不同的共享组，请保留原参数或按部署文档调整目录权限。'
+  # 幂等 upsert：已有行（含空值或重复行）统一替换为一条，缺失行插在 service_user 之后；
+  # 其它字段原样保留，经同目录临时文件以 0600 原子替换后再回读校验。
+  if grep -q '^share_group=' "$record"; then
+    program='/^share_group=/ { if (!written) { printf "share_group=%s\n", group; written = 1 } next } { print }'
+  else
+    program='{ print } /^service_user=/ && !written { printf "share_group=%s\n", group; written = 1 } END { if (!written) printf "share_group=%s\n", group }'
+  fi
+  (umask 077; awk -v group="$share_group" "$program" "$record" >"$next") || {
+    rm -f "$next"
+    fail '无法写入安装记录中的共享组，共享组目录权限可能已应用；修复原因后用相同命令重试。'
+  }
+  chmod 0600 "$next" || {
+    rm -f "$next"
+    fail '无法设置安装记录的权限；共享组目录权限可能已应用，修复原因后重试。'
+  }
+  mv -f "$next" "$record" || {
+    rm -f "$next"
+    fail '无法更新安装记录中的共享组，共享组目录权限可能已应用；修复原因后用相同命令重试。'
+  }
+  [[ "$(read_setting share_group)" == "$share_group" ]] || fail '安装记录中的共享组未通过回读校验，请检查 /etc/emby-auto/installer.env。'
+}
+
+apply_share_group_request() {
+  [[ -n "$share_group" ]] || return 0
+  # 先确认能力，再修改成员与目录权限，避免缺少 setfacl 时留下不完整的成员变更。
+  command -v setfacl >/dev/null 2>&1 || fail '缺少 setfacl，无法配置共享组目录权限；请先安装 acl 软件包。'
+  ensure_share_group_membership
+  apply_share_group_access
+}
+
 apply_share_group_access() {
   command -v setfacl >/dev/null 2>&1 || fail '缺少 setfacl，无法配置共享组目录权限；请先安装 acl 软件包。'
   local directory
   for directory in "$storage_dir/downloads" "$storage_dir/work" "$storage_dir/staging"; do
     apply_share_group_directory "$directory"
   done
-  if [[ "$(read_setting share_group)" != "$share_group" ]]; then
-    (umask 077; sed "s/^share_group=.*/share_group=$share_group/" "$config_dir/installer.env" >"$config_dir/installer.env.next")
-    mv -f "$config_dir/installer.env.next" "$config_dir/installer.env"
-  fi
+  # 目录权限实际应用并校验后才写安装记录；写入失败以非零退出，不输出共享成功文案。
+  write_share_group_setting
 }
 
 apply_share_group_directory() {
   local directory="${1:?用法: apply_share_group_directory <目录>}"
   [[ -d "$directory" ]] || fail "目录 $directory 不存在，无法应用共享组。"
   runuser -u "$service_user" -- test -w "$directory" || fail "账户 $service_user 无法写入 $directory。"
-  chgrp "$share_group" "$directory"
-  chmod 2770 "$directory"
-  setfacl -m "g:${share_group}:rwx" -m "m::rwx" "$directory"
-  setfacl -d -m "g:${share_group}:rwx" -m "m::rwx" "$directory"
+  chgrp "$share_group" "$directory" || fail "无法将 $directory 的属组改为共享组 $share_group。"
+  chmod 2770 "$directory" || fail "无法设置 $directory 的 setgid 与组写权限。"
+  setfacl -m "g:${share_group}:rwx" -m "m::rwx" "$directory" || fail "无法为 $directory 设置共享组 $share_group 的访问 ACL。"
+  setfacl -d -m "g:${share_group}:rwx" -m "m::rwx" "$directory" || fail "无法为 $directory 设置共享组 $share_group 的默认 ACL。"
 }
 
 share_group_primary_group() {
@@ -349,9 +385,8 @@ prepare_account_and_storage() {
     (umask 077; printf 'installer_format=%s\nservice_user=%s\nshare_group=%s\nweb_port=%s\nversion=%s\n' \
       "$installer_format" "$service_user" "$share_group" "$web_port" "$version" >"$config_dir/installer.env.next")
     mv -f "$config_dir/installer.env.next" "$config_dir/installer.env"
-  elif [[ -n "$share_group" && "$(read_setting share_group)" != "$share_group" ]]; then
-    (umask 077; sed "s/^share_group=.*/share_group=$share_group/" "$config_dir/installer.env" >"$config_dir/installer.env.next")
-    mv -f "$config_dir/installer.env.next" "$config_dir/installer.env"
+  else
+    write_share_group_setting
   fi
 }
 
@@ -491,10 +526,7 @@ main() {
     if (( prepare_only == 0 )); then
       # 已有安装请求共享组时实际应用成员与目录 ACL，并持久化到安装记录；
       # 失败即整体失败，不能只输出文案假装已生效。
-      if [[ -n "$share_group" ]]; then
-        ensure_share_group_membership
-        apply_share_group_access
-      fi
+      apply_share_group_request
       check_health any
       show_access
     else
@@ -506,20 +538,32 @@ main() {
   if (( finalize_only == 1 )); then
     [[ -f "$config_dir/prepared" ]] || fail '尚未准备应用，无法完成安装登记。'
     verify_prepared_release
+    if [[ -n "$share_group" ]]; then
+      # --finalize 只补齐共享组成员、目录 ACL 与安装记录；不启动、停止或重启现有服务。
+      apply_share_group_request
+    fi
     check_health running
     touch "$config_dir/installed"
     installation_completed=1
     show_access
     return
   fi
+  local prepared_now=0
   if [[ ! -f "$config_dir/prepared" ]]; then
     download_release
     install_dependencies
     prepare_account_and_storage
     install_application
     touch "$config_dir/prepared"
+    prepared_now=1
   fi
   verify_prepared_release
+  if (( prepared_now == 0 )) && [[ -n "$share_group" ]]; then
+    # 首次安装因启动检查失败留下 prepared 后重跑：补齐依赖、成员、目录 ACL 与安装记录，
+    # 再启动与核验；新安装已在 prepare 阶段应用，避免重复。
+    command -v setfacl >/dev/null 2>&1 || install_dependencies
+    apply_share_group_request
+  fi
   if (( prepare_only == 1 )); then
     installation_completed=1
     log '应用与服务已准备。迁移旧配置后先启动控制服务和 API，再通过正式后台恢复命令启动 Worker。'

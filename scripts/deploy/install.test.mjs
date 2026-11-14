@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -80,8 +80,15 @@ getent() {
   [[ "$1" == group && "\${NO_SHARE_GROUP:-0}" != 1 ]] || return 2
   printf '%s:x:%s:\\n' "$2" "\${SHARE_GID:-2000}"
 }
-usermod() { printf '%s\\n' "$*" >>"$TEST_ROOT/usermod.log"; printf '%s\\n' "\${TEST_GROUPS_AFTER_USERMOD:-emby-auto}" >"$TEST_ROOT/.groups"; }
-setfacl() { printf '%s\\n' "$*" >>"$TEST_ROOT/setfacl.log"; }
+usermod() {
+  [[ "\${USERMOD_FAIL:-0}" != 1 ]] || return 1
+  printf '%s\\n' "$*" >>"$TEST_ROOT/usermod.log"
+  printf '%s\\n' "\${TEST_GROUPS_AFTER_USERMOD:-emby-auto}" >"$TEST_ROOT/.groups"
+}
+setfacl() {
+  [[ "\${SETFACL_FAIL:-0}" != 1 ]] || return 1
+  printf '%s\\n' "$*" >>"$TEST_ROOT/setfacl.log"
+}
 install() {
   local args=()
   while (( $# )); do
@@ -243,7 +250,10 @@ test('已安装后新增共享组实际应用成员、目录 ACL 并写入安装
   rmSync(join(f.sandbox, 'setfacl.log'), { force: true });
   result = f.run(['--share-group', 'qb-share'], { SHARE_GID: '2001', TEST_GROUPS_AFTER_USERMOD: 'emby-auto qb-share' });
   assert.equal(result.status, 0, result.output);
-  assert.match(readFileSync(recordPath, 'utf8'), /^share_group=qb-share$/m);
+  const record = readFileSync(recordPath, 'utf8');
+  assert.match(record, /^share_group=qb-share$/m);
+  assert.equal(record.match(/^share_group=/gm).length, 1);
+  assert.equal(statSync(recordPath).mode & 0o777, 0o600);
   assert.match(readFileSync(join(f.sandbox, 'usermod.log'), 'utf8'), /-aG qb-share emby-auto/);
   const acl = readFileSync(join(f.sandbox, 'setfacl.log'), 'utf8');
   assert.match(acl, /g:qb-share:rwx/);
@@ -263,6 +273,161 @@ test('已安装后共享组变更失败时如实失败且不写入安装记录',
   result = f.run(['--share-group', 'qb-share'], { SHARE_GID: '2001', NO_SHARE_GROUP: '1' });
   assert.notEqual(result.status, 0);
   assert.equal(readFileSync(recordPath, 'utf8'), before);
+});
+
+function installerRecord(f) {
+  return join(f.sandbox, 'etc/emby-auto/installer.env');
+}
+
+// base 3a42d41 实际写出的记录格式：installer_format/service_user/web_port/version，无 share_group 行。
+function writeBaseRecord(f, extraLines = []) {
+  writeFileSync(installerRecord(f), ['installer_format=3', 'service_user=emby-auto', 'web_port=18080', 'version=latest', ...extraLines].join('\n') + '\n');
+}
+
+test('旧版安装记录升级时持久化共享组并拒绝不同组', (t) => {
+  const f = fixture(t);
+  let result = f.run();
+  assert.equal(result.status, 0, result.output);
+  writeBaseRecord(f, ['custom_note=preserve']);
+  for (const name of ['usermod.log', 'setfacl.log']) rmSync(join(f.sandbox, name), { force: true });
+  result = f.run(['--share-group', 'qb-share'], { SHARE_GID: '2001', TEST_GROUPS_AFTER_USERMOD: 'emby-auto qb-share' });
+  assert.equal(result.status, 0, result.output);
+  const record = readFileSync(installerRecord(f), 'utf8');
+  for (const line of ['installer_format=3', 'service_user=emby-auto', 'web_port=18080', 'version=latest', 'custom_note=preserve', 'share_group=qb-share']) {
+    assert.match(record, new RegExp(`^${line}$`, 'm'), line);
+  }
+  assert.equal(record.match(/^share_group=/gm).length, 1);
+  assert.equal(statSync(installerRecord(f)).mode & 0o777, 0o600);
+  assert.match(result.stdout, /下载目录使用共享组 qb-share/);
+  assert.match(readFileSync(join(f.sandbox, 'setfacl.log'), 'utf8'), /g:qb-share:rwx/);
+  for (const name of ['usermod.log', 'setfacl.log']) rmSync(join(f.sandbox, name), { force: true });
+  result = f.run(['--share-group', 'other-share'], { SHARE_GID: '2002' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /不同的共享组/);
+  assert.equal(readFileSync(installerRecord(f), 'utf8'), record);
+  assert.ok(!existsSync(join(f.sandbox, 'usermod.log')));
+  assert.ok(!existsSync(join(f.sandbox, 'setfacl.log')));
+});
+
+test('prepared 启动检查失败后重试携带共享组实际应用并完成安装', (t) => {
+  const f = fixture(t);
+  let result = f.run([], { HEALTH_FAIL: '1' });
+  assert.notEqual(result.status, 0);
+  assert.ok(existsSync(join(f.sandbox, 'etc/emby-auto/prepared')));
+  assert.ok(!existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
+  for (const name of ['usermod.log', 'setfacl.log']) rmSync(join(f.sandbox, name), { force: true });
+  result = f.run(['--share-group', 'qb-share'], { SHARE_GID: '2001', TEST_GROUPS_AFTER_USERMOD: 'emby-auto qb-share' });
+  assert.equal(result.status, 0, result.output);
+  assert.ok(existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
+  assert.match(readFileSync(join(f.sandbox, 'usermod.log'), 'utf8'), /-aG qb-share emby-auto/);
+  assert.match(readFileSync(join(f.sandbox, 'setfacl.log'), 'utf8'), /g:qb-share:rwx/);
+  assert.match(readFileSync(installerRecord(f), 'utf8'), /^share_group=qb-share$/m);
+  assert.match(result.stdout, /下载目录使用共享组 qb-share/);
+});
+
+test('旧版准备记录在 prepared 重试时写入共享组并完成安装', (t) => {
+  const f = fixture(t);
+  let result = f.run(['--no-start']);
+  assert.equal(result.status, 0, result.output);
+  writeBaseRecord(f);
+  for (const name of ['usermod.log', 'setfacl.log']) rmSync(join(f.sandbox, name), { force: true });
+  result = f.run(['--share-group', 'qb-share'], { SHARE_GID: '2001', TEST_GROUPS_AFTER_USERMOD: 'emby-auto qb-share' });
+  assert.equal(result.status, 0, result.output);
+  assert.ok(existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
+  const record = readFileSync(installerRecord(f), 'utf8');
+  assert.match(record, /^share_group=qb-share$/m);
+  assert.match(record, /^installer_format=3$/m);
+  assert.match(record, /^version=latest$/m);
+  assert.match(readFileSync(join(f.sandbox, 'setfacl.log'), 'utf8'), /g:qb-share:rwx/);
+  assert.match(result.stdout, /下载目录使用共享组 qb-share/);
+});
+
+test('旧版准备记录在 --finalize 携带共享组时应用并持久化且不启停服务', (t) => {
+  const f = fixture(t);
+  let result = f.run(['--no-start']);
+  assert.equal(result.status, 0, result.output);
+  writeBaseRecord(f);
+  const runtimePath = join(f.sandbox, 'etc/emby-auto/runtime.env');
+  const environment = readFileSync(runtimePath, 'utf8');
+  rmSync(join(f.sandbox, 'service.log'), { force: true });
+  for (const name of ['usermod.log', 'setfacl.log']) rmSync(join(f.sandbox, name), { force: true });
+  result = f.run(['--finalize', '--share-group', 'qb-share'], { SHARE_GID: '2001', TEST_GROUPS: 'emby-auto qb-share' });
+  assert.equal(result.status, 0, result.output);
+  assert.ok(existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
+  assert.match(readFileSync(installerRecord(f), 'utf8'), /^share_group=qb-share$/m);
+  assert.match(readFileSync(join(f.sandbox, 'setfacl.log'), 'utf8'), /g:qb-share:rwx/);
+  assert.equal(readFileSync(runtimePath, 'utf8'), environment);
+  assert.match(result.stdout, /下载目录使用共享组 qb-share/);
+  assert.doesNotMatch(readFileSync(join(f.sandbox, 'service.log'), 'utf8'), /enable|start |stop |daemon-reload/);
+});
+
+test('重复携带相同共享组时安装记录与目录 ACL 保持幂等', (t) => {
+  const f = fixture(t);
+  let result = f.run(['--share-group', 'qb-share'], { SHARE_GID: '2001', TEST_GROUPS_AFTER_USERMOD: 'emby-auto qb-share' });
+  assert.equal(result.status, 0, result.output);
+  const record = readFileSync(installerRecord(f), 'utf8');
+  for (const name of ['usermod.log', 'setfacl.log']) rmSync(join(f.sandbox, name), { force: true });
+  result = f.run(['--share-group', 'qb-share'], { SHARE_GID: '2001' });
+  assert.equal(result.status, 0, result.output);
+  assert.equal(readFileSync(installerRecord(f), 'utf8'), record);
+  assert.ok(!existsSync(join(f.sandbox, 'usermod.log')));
+  assert.match(readFileSync(join(f.sandbox, 'setfacl.log'), 'utf8'), /g:qb-share:rwx/);
+});
+
+test('共享组成员或目录 ACL 写入失败时不标记安装完成也不写安装记录', (t) => {
+  for (const [extraEnv, message] of [
+    [{ USERMOD_FAIL: '1', TEST_GROUPS: 'emby-auto' }, /无法将账户 emby-auto 加入共享组 qb-share/],
+    [{ SETFACL_FAIL: '1', TEST_GROUPS: 'emby-auto qb-share' }, /设置共享组 qb-share 的访问 ACL/],
+  ]) {
+    const f = fixture(t);
+    let result = f.run([], { HEALTH_FAIL: '1' });
+    assert.notEqual(result.status, 0);
+    const before = readFileSync(installerRecord(f), 'utf8');
+    result = f.run(['--share-group', 'qb-share'], { SHARE_GID: '2001', ...extraEnv });
+    assert.notEqual(result.status, 0);
+    assert.match(result.output, message);
+    assert.doesNotMatch(result.stdout, /Emby Auto 已安装/);
+    assert.ok(!existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
+    assert.equal(readFileSync(installerRecord(f), 'utf8'), before);
+  }
+});
+
+test('安装记录写入失败时不标记安装完成，恢复后可重试成功', (t) => {
+  const f = fixture(t);
+  let result = f.run([], { HEALTH_FAIL: '1' });
+  assert.notEqual(result.status, 0);
+  const configDir = join(f.sandbox, 'etc/emby-auto');
+  const before = readFileSync(installerRecord(f), 'utf8');
+  chmodSync(configDir, 0o500);
+  try {
+    result = f.run(['--share-group', 'qb-share'], { SHARE_GID: '2001', TEST_GROUPS_AFTER_USERMOD: 'emby-auto qb-share' });
+  } finally {
+    chmodSync(configDir, 0o755);
+  }
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /无法写入安装记录中的共享组/);
+  assert.doesNotMatch(result.stdout, /Emby Auto 已安装/);
+  assert.ok(!existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
+  assert.equal(readFileSync(installerRecord(f), 'utf8'), before);
+  // 目录 ACL 已应用；重试幂等重放后写入记录并标记安装完成。
+  assert.match(readFileSync(join(f.sandbox, 'setfacl.log'), 'utf8'), /g:qb-share:rwx/);
+  result = f.run(['--share-group', 'qb-share'], { SHARE_GID: '2001' });
+  assert.equal(result.status, 0, result.output);
+  assert.match(readFileSync(installerRecord(f), 'utf8'), /^share_group=qb-share$/m);
+  assert.ok(existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
+});
+
+test('--finalize 携带共享组但缺少 setfacl 时明确失败并保持准备状态', (t) => {
+  const f = fixture(t);
+  let result = f.run(['--no-start']);
+  assert.equal(result.status, 0, result.output);
+  const before = readFileSync(installerRecord(f), 'utf8');
+  result = f.run(['--finalize', '--share-group', 'qb-share'], { NO_ACL: '1', SHARE_GID: '2001', TEST_GROUPS: 'emby-auto qb-share' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /缺少 setfacl/);
+  assert.ok(!existsSync(join(f.sandbox, 'etc/emby-auto/installed')));
+  assert.equal(readFileSync(installerRecord(f), 'utf8'), before);
+  assert.ok(!existsSync(join(f.sandbox, 'usermod.log')));
 });
 
 test('Worker 真实失败在重跑时拒绝按暂停处理', (t) => {

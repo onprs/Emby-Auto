@@ -67,11 +67,11 @@ ssh -L 18080:127.0.0.1:18080 用户@设备地址
 
 | 目录 | 权限 | 用途与要求 |
 | --- | --- | --- |
-| `/srv/emby-auto/downloads` | `2770`，setgid 与默认 ACL | qBittorrent 写入，应用读取并删除缓存 |
+| `/srv/emby-auto/downloads` | `2770`，setgid；使用 `--share-group` 时另有默认 ACL | qBittorrent 写入，应用读取并删除缓存 |
 | `/srv/emby-auto/work`、`staging` | `2770`，setgid | 应用处理与入库暂存 |
 | `/srv/emby-auto/media/{anime,movies}` | `2775` | 应用写入；Emby 以其它账户读取与遍历 |
 
-qBittorrent、Emby 与应用通常由不同账户运行。推荐在安装时指定一个共享组，并让 qBittorrent 账户加入该组：
+qBittorrent、Emby 与应用通常由不同账户运行。推荐在安装时指定一个共享组，并让 qBittorrent 账户加入该组（组需提前创建，例如 `sudo groupadd emby-share`）：
 
 ```bash
 curl -fsSL https://github.com/onprs/Emby-Auto/releases/latest/download/install.sh | \
@@ -80,9 +80,9 @@ sudo usermod -aG emby-share qbittorrent
 sudo systemctl restart qbittorrent
 ```
 
-已有媒体库使用 `--user 媒体账户 --share-group 共享组` 时，媒体账户负责媒体文件所有权，共享组负责下载目录协作；账户 UID 和 GID 仍必须大于 0。
+已有安装未使用共享组时，重复执行安装命令并添加 `--share-group` 会实际应用组成员与目录权限，并写入安装记录。已有媒体库使用 `--user 媒体账户 --share-group 共享组` 时，媒体账户负责媒体文件所有权，共享组负责下载目录协作；账户 UID 和 GID 仍必须大于 0。
 
-已经安装但未使用共享组时，可以手工补充权限（示例使用应用账户同名组 `emby-auto`）：
+也可以不重跑安装器，手工补充权限（示例使用应用账户同名组 `emby-auto`）：
 
 ```bash
 sudo apt-get install -y acl

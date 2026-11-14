@@ -67,11 +67,11 @@ Automatic installation creates an `emby-auto` account by default; use `--user ME
 
 | Directory | Permissions | Purpose and requirements |
 | --- | --- | --- |
-| `/srv/emby-auto/downloads` | `2770`, setgid and default ACL | qBittorrent writes; the application reads and removes cached files |
+| `/srv/emby-auto/downloads` | `2770`, setgid; a default ACL applies with `--share-group` | qBittorrent writes; the application reads and removes cached files |
 | `/srv/emby-auto/work`, `staging` | `2770`, setgid | Application processing and import staging |
 | `/srv/emby-auto/media/{anime,movies}` | `2775` | The application writes; Emby reads and traverses as another account |
 
-qBittorrent, Emby, and the application usually run as different accounts. Prefer a shared group during installation, then add the qBittorrent account to it:
+qBittorrent, Emby, and the application usually run as different accounts. Prefer a shared group during installation, then add the qBittorrent account to it (create the group first, for example `sudo groupadd emby-share`):
 
 ```bash
 curl -fsSL https://github.com/onprs/Emby-Auto/releases/latest/download/install.sh | \
@@ -80,9 +80,9 @@ sudo usermod -aG emby-share qbittorrent
 sudo systemctl restart qbittorrent
 ```
 
-With `--user MEDIA_ACCOUNT --share-group GROUP`, the media account owns library files and the shared group coordinates download directories. The account UID and GID must still be nonzero.
+For an existing installation without a shared group, rerunning the installer with `--share-group` applies the membership and directory permissions and records them in the installer record. With `--user MEDIA_ACCOUNT --share-group GROUP`, the media account owns library files and the shared group coordinates download directories. The account UID and GID must still be nonzero.
 
-For an existing installation without a shared group, add the permissions manually (the example uses the application account's primary group `emby-auto`):
+Alternatively, apply the permissions manually without rerunning the installer (the example uses the application account's primary group `emby-auto`):
 
 ```bash
 sudo apt-get install -y acl
