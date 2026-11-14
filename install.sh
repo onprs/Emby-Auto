@@ -13,6 +13,7 @@ lock_dir="/run/emby-auto-install"
 version="latest"
 service_user=""
 share_group=""
+share_group_requested=0
 web_port=""
 release_archive=""
 release_checksums=""
@@ -59,7 +60,7 @@ parse_arguments() {
         case "$1" in
           --version) version="$2" ;;
           --user) service_user="$2" ;;
-          --share-group) share_group="$2" ;;
+          --share-group) share_group="$2"; share_group_requested=1 ;;
           --port) web_port="$2" ;;
           --archive) release_archive="$2" ;;
           --checksums) release_checksums="$2" ;;
@@ -530,7 +531,14 @@ main() {
       check_health any
       show_access
     else
-      log '应用已经安装，现有服务状态保持原样。'
+      # 已安装系统带 --no-start 时也落实显式共享组请求：只应用成员、目录 ACL 与安装
+      # 记录，不启动、停止、启用或重载服务，也不执行健康探测。
+      if (( share_group_requested == 1 )); then
+        apply_share_group_request
+        log "共享组 $share_group 的成员与目录权限已应用，并写入安装记录；现有服务状态保持原样。"
+      else
+        log '应用已经安装，现有服务状态保持原样。'
+      fi
     fi
     installation_completed=1
     return
