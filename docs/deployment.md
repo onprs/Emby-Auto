@@ -56,6 +56,22 @@ id -g emby
 
 `APP_UID` 和 `APP_GID` 必须大于 0。应用专用目录应提前创建，并允许该 UID/GID 读写。已有媒体库应遵循现有权限策略，不应为部署应用而执行无差别递归 `chown` 或 `chmod`。
 
+qBittorrent 或 Emby 使用独立账户（宿主机或其它容器）时，还要满足协作权限：
+
+- 下载目录需要 qBittorrent 写入，并允许应用删除其子目录。推荐使用共享组与默认 ACL，例如宿主机上的 `emby-auto` 组：
+
+```bash
+sudo apt-get install -y acl
+sudo usermod -aG emby-auto qbittorrent
+sudo chgrp -R emby-auto /srv/emby-auto/downloads
+sudo chmod -R g+rwX /srv/emby-auto/downloads
+sudo find /srv/emby-auto/downloads -type d -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+```
+
+  qBittorrent 容器需以相同 GID 运行或在挂载时保留组权限；独立宿主账户修改组后需重启服务。
+
+- 媒体库根需要允许 Emby 账户遍历和读取；已有库权限更严格时，单独为 Emby 账户添加只读 ACL，不要整体改为 `0777`。
+
 所有媒体目录都必须使用绝对路径。Compose 会在宿主机与 API/Worker 容器中保留相同路径；如果 qBittorrent 运行在另一个容器中，其下载目录也必须挂载到相同的容器路径。
 
 Web 默认使用宿主端口 `8080`。该端口已被 qBittorrent 或其它服务占用时，应在 `deploy/.env` 中为 `APP_PORT` 配置空闲端口。

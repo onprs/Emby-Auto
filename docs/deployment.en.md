@@ -56,6 +56,22 @@ id -g emby
 
 `APP_UID` and `APP_GID` must both be greater than 0. Create application-specific directories before startup and grant that UID/GID read and write access. Existing media libraries should retain their established ownership policy; avoid indiscriminate recursive `chown` or `chmod` operations.
 
+When qBittorrent or Emby runs as a separate account (on the host or in another container), cooperation also requires:
+
+- The download directory must be writable by qBittorrent and allow the application to remove its subdirectories. Prefer a shared group and default ACL, for example the host `emby-auto` group:
+
+```bash
+sudo apt-get install -y acl
+sudo usermod -aG emby-auto qbittorrent
+sudo chgrp -R emby-auto /srv/emby-auto/downloads
+sudo chmod -R g+rwX /srv/emby-auto/downloads
+sudo find /srv/emby-auto/downloads -type d -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+```
+
+  A qBittorrent container must run with the same GID or preserve group permissions through its mount; a host service picks up the new group after a restart.
+
+- The library root must let the Emby account traverse and read. For stricter existing libraries, grant the Emby account a read-only ACL instead of changing everything to `0777`.
+
 Every media directory must use an absolute path. Compose preserves the same path on the host and inside the API and Worker containers. When qBittorrent runs in another container, mount its download directory at that same container path.
 
 The Web service uses host port `8080` by default. Set `APP_PORT` to an available port in `deploy/.env` when qBittorrent or another service already uses it.

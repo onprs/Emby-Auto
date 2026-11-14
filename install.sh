@@ -12,6 +12,8 @@ unit_dir="/etc/systemd/system"
 lock_dir="/run/emby-auto-install"
 version="latest"
 service_user=""
+share_group=""
+share_group_requested=0
 web_port=""
 release_archive=""
 release_checksums=""
@@ -20,6 +22,7 @@ finalize_only=0
 temporary=""
 services_started=0
 installation_completed=0
+worker_paused=0
 
 log() { printf '%s\n' "$*"; }
 fail() { printf '安装失败：%s\n' "$*" >&2; exit 1; }
@@ -32,6 +35,7 @@ usage() {
     '用法：sudo bash install.sh [选项]' \
     '  --version <v版本号>       安装指定 Release，默认最新正式版本' \
     '  --user <现有账户>         使用媒体文件所有者；默认创建 emby-auto' \
+    '  --share-group <共享组>    与 qBittorrent 等账户共享下载目录的现有用户组' \
     '  --port <端口>             网页与 API 回环端口，默认 18080' \
     '  --archive <发布包>        使用已下载的对应架构发布包' \
     '  --checksums <校验文件>    本地发布包对应的 SHA256SUMS' \
@@ -51,11 +55,12 @@ parse_arguments() {
       --help|-h) usage; exit 0 ;;
       --no-start) prepare_only=1; shift ;;
       --finalize) finalize_only=1; shift ;;
-      --version|--user|--port|--archive|--checksums)
+      --version|--user|--share-group|--port|--archive|--checksums)
         [[ $# -ge 2 && -n "$2" ]] || fail "$1 缺少参数。"
         case "$1" in
           --version) version="$2" ;;
           --user) service_user="$2" ;;
+          --share-group) share_group="$2"; share_group_requested=1 ;;
           --port) web_port="$2" ;;
           --archive) release_archive="$2" ;;
           --checksums) release_checksums="$2" ;;
@@ -69,6 +74,7 @@ parse_arguments() {
   (( finalize_only == 0 )) || [[ -z "$release_archive" && -z "$release_checksums" ]] || fail '--finalize 不接受发布包参数。'
   [[ "$version" == latest || "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9.-]+)?$ ]] || fail 'Release 版本格式无效。'
   [[ -z "$service_user" || "$service_user" =~ ^[a-z_][a-z0-9_-]*\$?$ ]] || fail '服务账户名称无效。'
+  [[ -z "$share_group" || "$share_group" =~ ^[a-z_][a-z0-9_-]*\$?$ ]] || fail '共享组名称无效。'
   if [[ -n "$release_archive" || -n "$release_checksums" ]]; then
     [[ -f "$release_archive" && -f "$release_checksums" ]] || fail '--archive 与 --checksums 必须同时指定可读取的文件。'
   fi
@@ -130,12 +136,16 @@ load_settings() {
       [[ -z "$requested" || "$requested" == "$saved" ]] || fail '已有安装使用不同的账户或端口，请保留原参数。'
       printf -v "$key" '%s' "$saved"
     done
-    local saved_version
+    local saved_version saved_group
     saved_version="$(read_setting version)"
     [[ "$saved_version" == latest || "$saved_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9.-]+)?$ ]] || fail '安装记录中的版本无效。'
     [[ "$version" == latest || "$version" == "$saved_version" ]] || fail '已有其它版本，请按部署文档升级。'
     version="$saved_version"
     [[ "$service_user" =~ ^[a-z_][a-z0-9_-]*\$?$ ]] || fail '安装记录中的账户名称无效。'
+    saved_group="$(read_setting share_group)"
+    [[ -z "$saved_group" || "$saved_group" =~ ^[a-z_][a-z0-9_-]*\$?$ ]] || fail '安装记录中的共享组名称无效。'
+    [[ -z "$share_group" || -z "$saved_group" || "$share_group" == "$saved_group" ]] || fail '已有安装使用不同的共享组，请保留原参数或按部署文档调整目录权限。'
+    share_group="${saved_group:-$share_group}"
   else
     local existing
     for existing in "$config_dir/runtime.env" "$install_dir/current" "$state_dir/bootstrap.json" "$state_dir/bootstrap.json.complete" \
@@ -157,6 +167,89 @@ check_account() {
   else
     [[ "$service_user" == emby-auto ]] || fail '请先创建指定的媒体账户，再执行安装。'
   fi
+}
+
+resolve_share_group() {
+  [[ -n "$share_group" ]] || return 0
+  command -v getent >/dev/null 2>&1 || fail '缺少 getent，无法校验共享组。'
+  getent group "$share_group" >/dev/null 2>&1 || fail "共享组 $share_group 不存在。"
+  share_gid="$(getent group "$share_group" | cut -d: -f3)"
+  [[ "$share_gid" =~ ^[0-9]+$ ]] && (( share_gid > 0 )) || fail "共享组 $share_group 的 GID 无效。"
+}
+
+write_share_group_setting() {
+  [[ -n "$share_group" ]] || return 0
+  local record="$config_dir/installer.env" next="$config_dir/installer.env.next" saved program
+  [[ -f "$record" ]] || fail '安装记录缺失，无法写入共享组；请按部署文档恢复安装记录。'
+  saved="$(read_setting share_group)"
+  [[ "$saved" != "$share_group" ]] || return 0
+  # 不同共享组已在 load_settings 拒绝；这里保留同一保护，写入前不修改成员与目录权限。
+  [[ -z "$saved" ]] || fail '已有安装使用不同的共享组，请保留原参数或按部署文档调整目录权限。'
+  # 幂等 upsert：已有行（含空值或重复行）统一替换为一条，缺失行插在 service_user 之后；
+  # 其它字段原样保留，经同目录临时文件以 0600 原子替换后再回读校验。
+  if grep -q '^share_group=' "$record"; then
+    program='/^share_group=/ { if (!written) { printf "share_group=%s\n", group; written = 1 } next } { print }'
+  else
+    program='{ print } /^service_user=/ && !written { printf "share_group=%s\n", group; written = 1 } END { if (!written) printf "share_group=%s\n", group }'
+  fi
+  (umask 077; awk -v group="$share_group" "$program" "$record" >"$next") || {
+    rm -f "$next"
+    fail '无法写入安装记录中的共享组，共享组目录权限可能已应用；修复原因后用相同命令重试。'
+  }
+  chmod 0600 "$next" || {
+    rm -f "$next"
+    fail '无法设置安装记录的权限；共享组目录权限可能已应用，修复原因后重试。'
+  }
+  mv -f "$next" "$record" || {
+    rm -f "$next"
+    fail '无法更新安装记录中的共享组，共享组目录权限可能已应用；修复原因后用相同命令重试。'
+  }
+  [[ "$(read_setting share_group)" == "$share_group" ]] || fail '安装记录中的共享组未通过回读校验，请检查 /etc/emby-auto/installer.env。'
+}
+
+apply_share_group_request() {
+  [[ -n "$share_group" ]] || return 0
+  # 先确认能力，再修改成员与目录权限，避免缺少 setfacl 时留下不完整的成员变更。
+  command -v setfacl >/dev/null 2>&1 || fail '缺少 setfacl，无法配置共享组目录权限；请先安装 acl 软件包。'
+  ensure_share_group_membership
+  apply_share_group_access
+}
+
+apply_share_group_access() {
+  command -v setfacl >/dev/null 2>&1 || fail '缺少 setfacl，无法配置共享组目录权限；请先安装 acl 软件包。'
+  local directory
+  for directory in "$storage_dir/downloads" "$storage_dir/work" "$storage_dir/staging"; do
+    apply_share_group_directory "$directory"
+  done
+  # 目录权限实际应用并校验后才写安装记录；写入失败以非零退出，不输出共享成功文案。
+  write_share_group_setting
+}
+
+apply_share_group_directory() {
+  local directory="${1:?用法: apply_share_group_directory <目录>}"
+  [[ -d "$directory" ]] || fail "目录 $directory 不存在，无法应用共享组。"
+  runuser -u "$service_user" -- test -w "$directory" || fail "账户 $service_user 无法写入 $directory。"
+  chgrp "$share_group" "$directory" || fail "无法将 $directory 的属组改为共享组 $share_group。"
+  chmod 2770 "$directory" || fail "无法设置 $directory 的 setgid 与组写权限。"
+  setfacl -m "g:${share_group}:rwx" -m "m::rwx" "$directory" || fail "无法为 $directory 设置共享组 $share_group 的访问 ACL。"
+  setfacl -d -m "g:${share_group}:rwx" -m "m::rwx" "$directory" || fail "无法为 $directory 设置共享组 $share_group 的默认 ACL。"
+}
+
+share_group_primary_group() {
+  [[ "$(id -gn "$service_user" 2>/dev/null)" == "$share_group" ]]
+}
+
+share_group_member() {
+  share_group_primary_group || id -nG "$service_user" 2>/dev/null | tr ' ' '\n' | grep -qxF "$share_group"
+}
+
+ensure_share_group_membership() {
+  [[ -n "$share_group" ]] || return 0
+  share_group_member && return 0
+  command -v usermod >/dev/null 2>&1 || fail '缺少 usermod，无法将服务账户加入共享组。'
+  usermod -aG "$share_group" "$service_user" || fail "无法将账户 $service_user 加入共享组 $share_group。"
+  # 组成员关系对新进程生效后才能写入共享组目录；未生效说明需要重启相关服务。
+  share_group_member || fail "账户 $service_user 加入共享组 $share_group 后未生效，请检查账户后重试。"
 }
 
 fetch() {
@@ -221,15 +314,26 @@ check_port() {
 }
 
 install_dependencies() {
-  if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+  local need_media_tools=0 need_acl=0 packages=()
+  command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null || need_media_tools=1
+  if [[ -n "$share_group" ]] && ! command -v setfacl >/dev/null 2>&1; then
+    need_acl=1
+  fi
+  if (( need_media_tools == 0 && need_acl == 0 )); then
     log '复用已安装的 FFmpeg 与 ffprobe。'
     check_port
     return
   fi
-  log '安装 FFmpeg 与 ffprobe……'
+  if (( need_media_tools == 1 )); then
+    packages=(ca-certificates ffmpeg)
+    log '安装 FFmpeg 与 ffprobe……'
+  else
+    log '安装目录 ACL 工具……'
+  fi
+  (( need_acl == 0 )) || packages+=(acl)
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y --no-install-recommends ca-certificates ffmpeg
+  apt-get install -y --no-install-recommends "${packages[@]}"
   check_port
 }
 
@@ -238,7 +342,8 @@ prepare_account_and_storage() {
     useradd --system --user-group --home-dir "$state_dir" --no-create-home --shell /usr/sbin/nologin "$service_user"
   fi
   check_account
-  local directory
+  ensure_share_group_membership
+  local directory group_id
   local directories=("$state_dir" "$storage_dir/downloads" "$storage_dir/work" "$storage_dir/staging"
     "$storage_dir/media/anime" "$storage_dir/media/movies")
   # 先检查已有目录，避免权限失败后留下属于错误账户的新目录。
@@ -251,16 +356,38 @@ prepare_account_and_storage() {
       fail "账户 $service_user 无法读写 $directory，请调整目录权限或使用 --user 指定媒体所有者。"
     fi
   done
-  for directory in "${directories[@]}"; do
-    if [[ ! -e "$directory" && ! -L "$directory" ]]; then
-      install -d -o "$service_uid" -g "$service_gid" -m 0770 "$directory"
+  group_id="${share_gid:-$service_gid}"
+  for directory in "$storage_dir/downloads" "$storage_dir/work" "$storage_dir/staging"; do
+    if [[ -e "$directory" || -L "$directory" ]]; then
+      if [[ -n "$share_group" ]]; then
+        # 已有目录补充共享组与 setgid，仅修改目录本身，不动递归内容；
+        # 缺省 ACL 让 qBittorrent 的 umask 不影响新建子目录的组写权限。
+        apply_share_group_directory "$directory"
+      fi
+      continue
+    fi
+    # setgid 让后续子目录继承共享组；默认 ACL 让 qBittorrent 的 umask 不影响组写权限。
+    install -d -o "$service_uid" -g "$group_id" -m 2770 "$directory"
+    if [[ -n "$share_group" ]]; then
+      setfacl -m "g:${share_group}:rwx" -m "m::rwx" "$directory"
+      setfacl -d -m "g:${share_group}:rwx" -m "m::rwx" "$directory"
     fi
   done
+  for directory in "$storage_dir/media/anime" "$storage_dir/media/movies"; do
+    if [[ -e "$directory" || -L "$directory" ]]; then
+      continue
+    fi
+    # 媒体库根保留 other 的读与遍历权限，让独立运行的 Emby 账户能扫描。
+    install -d -o "$service_uid" -g "$group_id" -m 2775 "$directory"
+  done
+  install -d -o "$service_uid" -g "$service_gid" -m 0770 "$state_dir"
   install -d -m 0755 "$config_dir"
   if [[ ! -f "$config_dir/installer.env" ]]; then
-    (umask 077; printf 'installer_format=%s\nservice_user=%s\nweb_port=%s\nversion=%s\n' \
-      "$installer_format" "$service_user" "$web_port" "$version" >"$config_dir/installer.env.next")
+    (umask 077; printf 'installer_format=%s\nservice_user=%s\nshare_group=%s\nweb_port=%s\nversion=%s\n' \
+      "$installer_format" "$service_user" "$share_group" "$web_port" "$version" >"$config_dir/installer.env.next")
     mv -f "$config_dir/installer.env.next" "$config_dir/installer.env"
+  else
+    write_share_group_setting
   fi
 }
 
@@ -314,14 +441,29 @@ start_services() {
 }
 
 check_health() {
-  local attempt
+  local requirement="${1:-running}" attempt worker_state
   for ((attempt = 0; attempt < 30; attempt++)); do
     if curl --fail --silent --noproxy '*' --max-time 2 "http://127.0.0.1:$web_port/api/v1/setup/status" -o "$temporary/setup-status.json" && \
       curl --fail --silent --noproxy '*' --max-time 2 "http://127.0.0.1:$web_port/" -o "$temporary/index.html" && \
-      systemctl is-active --quiet emby-auto-api.service && systemctl is-active --quiet emby-auto-worker.service && \
-      systemctl is-active --quiet emby-auto-systemd-control.service && \
-      [[ "$(runuser -u "$service_user" -- env EMBY_AUTO_HOST_CONTROL_SOCKET=/run/emby-auto-systemd/control.sock "$install_dir/current/bin/emby-auto-host-control" worker-status)" == running ]]; then
-      return 0
+      systemctl is-active --quiet emby-auto-api.service && \
+      systemctl is-active --quiet emby-auto-systemd-control.service; then
+      worker_state="$(runuser -u "$service_user" -- env EMBY_AUTO_HOST_CONTROL_SOCKET=/run/emby-auto-systemd/control.sock "$install_dir/current/bin/emby-auto-host-control" worker-status 2>/dev/null || true)"
+      case "$worker_state" in
+        running)
+          if systemctl is-active --quiet emby-auto-worker.service; then
+            return 0
+          fi
+          ;;
+        stopped)
+          # Worker 正常停止后单元为 inactive；崩溃后为 failed。只有 inactive 才视为
+          # 用户主动暂停：保留暂停意图，不自动启动 Worker，也不掩盖真实故障。
+          if [[ "$requirement" == any ]] && ! systemctl is-active --quiet emby-auto-worker.service && \
+            [[ "$(systemctl show emby-auto-worker.service --property=ActiveState --value)" == inactive ]]; then
+            worker_paused=1
+            return 0
+          fi
+          ;;
+      esac
     fi
     sleep 2
   done
@@ -331,10 +473,18 @@ check_health() {
 show_access() {
   log ''
   log "Emby Auto 已安装。浏览器打开：http://127.0.0.1:$web_port"
+  if (( worker_paused == 1 )); then
+    log '后台当前处于暂停状态，现有安装保持原样；需要后台处理时在 Dashboard 恢复后台。'
+  fi
   log '远程设备可先在自己的电脑建立 SSH 隧道：'
   log "  ssh -L $web_port:127.0.0.1:$web_port 用户@设备地址"
   log '首次使用时，在初始化向导中填写 PostgreSQL、管理员和外部服务信息。'
   log 'qBittorrent 的下载路径需要与初始化向导中的下载目录一致。'
+  if [[ -n "$share_group" ]]; then
+    log "下载目录使用共享组 $share_group；请将 qBittorrent 账户加入该组并重启其服务。"
+  else
+    log 'qBittorrent 使用独立账户时，请按部署文档配置共享组或目录 ACL，使其能写入下载目录。'
+  fi
   log "部署、HTTPS、备份与升级：https://github.com/$repository/blob/main/docs/direct-deployment.md"
 }
 
@@ -366,6 +516,7 @@ main() {
   flock -n 9 || fail '另一项安装正在执行。'
   validate_application_paths
   load_settings
+  resolve_share_group
   check_account
   check_port
   temporary="$(mktemp -d)"
@@ -374,10 +525,20 @@ main() {
   trap 'exit 143' TERM
   if [[ -f "$config_dir/installed" ]]; then
     if (( prepare_only == 0 )); then
-      check_health
+      # 已有安装请求共享组时实际应用成员与目录 ACL，并持久化到安装记录；
+      # 失败即整体失败，不能只输出文案假装已生效。
+      apply_share_group_request
+      check_health any
       show_access
     else
-      log '应用已经安装，现有服务状态保持原样。'
+      # 已安装系统带 --no-start 时也落实显式共享组请求：只应用成员、目录 ACL 与安装
+      # 记录，不启动、停止、启用或重载服务，也不执行健康探测。
+      if (( share_group_requested == 1 )); then
+        apply_share_group_request
+        log "共享组 $share_group 的成员与目录权限已应用，并写入安装记录；现有服务状态保持原样。"
+      else
+        log '应用已经安装，现有服务状态保持原样。'
+      fi
     fi
     installation_completed=1
     return
@@ -385,27 +546,39 @@ main() {
   if (( finalize_only == 1 )); then
     [[ -f "$config_dir/prepared" ]] || fail '尚未准备应用，无法完成安装登记。'
     verify_prepared_release
-    check_health
+    if [[ -n "$share_group" ]]; then
+      # --finalize 只补齐共享组成员、目录 ACL 与安装记录；不启动、停止或重启现有服务。
+      apply_share_group_request
+    fi
+    check_health running
     touch "$config_dir/installed"
     installation_completed=1
     show_access
     return
   fi
+  local prepared_now=0
   if [[ ! -f "$config_dir/prepared" ]]; then
     download_release
     install_dependencies
     prepare_account_and_storage
     install_application
     touch "$config_dir/prepared"
+    prepared_now=1
   fi
   verify_prepared_release
+  if (( prepared_now == 0 )) && [[ -n "$share_group" ]]; then
+    # 首次安装因启动检查失败留下 prepared 后重跑：补齐依赖、成员、目录 ACL 与安装记录，
+    # 再启动与核验；新安装已在 prepare 阶段应用，避免重复。
+    command -v setfacl >/dev/null 2>&1 || install_dependencies
+    apply_share_group_request
+  fi
   if (( prepare_only == 1 )); then
     installation_completed=1
     log '应用与服务已准备。迁移旧配置后先启动控制服务和 API，再通过正式后台恢复命令启动 Worker。'
     return
   fi
   start_services
-  check_health
+  check_health running
   touch "$config_dir/installed"
   installation_completed=1
   show_access
