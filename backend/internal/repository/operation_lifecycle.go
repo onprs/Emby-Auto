@@ -386,6 +386,37 @@ func failSearchRunResource(
 	})
 }
 
+func subtitleVideoMatchScopeAllowsTaskTerminal(ctx context.Context, queries *db.Queries, taskID pgtype.UUID) (bool, error) {
+	state, err := queries.GetSubtitleVideoMatchSchedulingState(ctx, taskID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	scope, err := queries.LockSubtitleVideoMatchScopeTask(ctx, state.ScopeID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	switch scope.Status {
+	case "pending", "applied":
+		// A new generation is waiting/applied; the old operation cannot terminalize
+		// the task. The new owner's paths converge it.
+		return false, nil
+	case "expired":
+		owners, err := queries.ListSubtitleVideoMatchActiveOwners(ctx, state.ScopeID)
+		if err != nil {
+			return false, err
+		}
+		return len(owners) == 0, nil
+	default:
+		return false, nil
+	}
+}
+
 func failTaskMediaResource(
 	ctx context.Context,
 	queries *db.Queries,
@@ -400,6 +431,15 @@ func failTaskMediaResource(
 	case "transcode.run":
 		task, err = queries.MarkTaskVideoTerminalFailure(ctx, params)
 	case "subtitle.prepare":
+		allowed, authorizeErr := subtitleVideoMatchScopeAllowsTaskTerminal(ctx, queries, operation.ResourceID)
+		if authorizeErr != nil {
+			return fmt.Errorf("authorize subtitle task terminal: %w", authorizeErr)
+		}
+		if !allowed {
+			// A newer subtitle scope generation/owner/applied selection exists;
+			// the old operation's failure must not fail the task or kill new work.
+			return nil
+		}
 		task, err = queries.MarkTaskSubtitleTerminalFailure(ctx, db.MarkTaskSubtitleTerminalFailureParams(params))
 	case "media.finalize":
 		task, err = queries.MarkTaskFinalizeTerminalFailure(ctx, db.MarkTaskFinalizeTerminalFailureParams(params))
@@ -519,6 +559,15 @@ func cancelOperationResource(ctx context.Context, queries *db.Queries, operation
 	case "transcode.run":
 		task, err = queries.MarkTaskVideoCancelled(ctx, operation.ResourceID)
 	case "subtitle.prepare":
+		allowed, authorizeErr := subtitleVideoMatchScopeAllowsTaskTerminal(ctx, queries, operation.ResourceID)
+		if authorizeErr != nil {
+			return fmt.Errorf("authorize subtitle task cancellation: %w", authorizeErr)
+		}
+		if !allowed {
+			// A newer subtitle generation/owner/applied selection exists; do not
+			// cancel the task on behalf of the old operation.
+			return nil
+		}
 		task, err = queries.MarkTaskSubtitleCancelled(ctx, operation.ResourceID)
 	case "media.finalize":
 		task, err = queries.MarkTaskFinalizeCancelled(ctx, operation.ResourceID)

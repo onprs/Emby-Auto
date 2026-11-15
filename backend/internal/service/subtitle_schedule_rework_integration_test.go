@@ -118,9 +118,7 @@ VALUES ($9, 'embedded-2', 'embedded', 2, 'ass', 'chi', '简日双语'),
 	}
 
 	// 模拟第一次调度失败后用户重试：作废范围并复活（换候选集），随后调度成功。
-	if err := workflow.ExpireSubtitleVideoMatchScope(ctx, scopeID); err != nil {
-		t.Fatalf("ExpireSubtitleVideoMatchScope() error = %v", err)
-	}
+	expireSubtitleVideoMatchScopeForTest(t, ctx, queries, scopeID)
 	revived, err := workflow.CreateSubtitleVideoMatchScope(ctx, taskID, []domain.SubtitleMatchCandidate{
 		{CandidateID: "embedded-4", Source: domain.SubtitleSourceEmbedded, StreamIndex: 4, Format: domain.SubtitleASS, Language: "chi", Title: "另一轨"},
 		{CandidateID: "embedded-5", Source: domain.SubtitleSourceEmbedded, StreamIndex: 5, Format: domain.SubtitleASS, Language: "chi", Title: "第三轨"},
@@ -172,9 +170,7 @@ VALUES ($9, 'embedded-2', 'embedded', 2, 'ass', 'chi', '简日双语'),
 
 	// 真正换代：scope 复用替换候选并 supersede 旧 owner；新 CreateAutomatic 之前
 	// 存在无 owner 窗口，旧 operation 晚到终态不得回收新 scope/任务。
-	if err := workflow.ExpireSubtitleVideoMatchScope(ctx, scopeID); err != nil {
-		t.Fatalf("ExpireSubtitleVideoMatchScope() error = %v", err)
-	}
+	expireSubtitleVideoMatchScopeForTest(t, ctx, queries, scopeID)
 	if _, err := workflow.CreateSubtitleVideoMatchScope(ctx, taskID, []domain.SubtitleMatchCandidate{
 		{CandidateID: "embedded-6", Source: domain.SubtitleSourceEmbedded, StreamIndex: 6, Format: domain.SubtitleASS, Language: "chi", Title: "新代轨道"},
 		{CandidateID: "embedded-7", Source: domain.SubtitleSourceEmbedded, StreamIndex: 7, Format: domain.SubtitleASS, Language: "chi", Title: "新代第二轨"},

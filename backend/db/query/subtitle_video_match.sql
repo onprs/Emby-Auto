@@ -44,7 +44,9 @@ SELECT
     season.season_number AS target_season_number,
     video.relative_path AS source_video_relative_path,
     download.save_path,
-    task.version AS task_version
+    task.version AS task_version,
+    task.state AS task_state,
+    task.subtitle_state AS subtitle_state
 FROM subtitle_video_match_scopes AS scope
 JOIN episode_tasks AS task ON task.id = scope.task_id
 JOIN download_files AS video ON video.id = task.source_video_file_id
@@ -56,6 +58,11 @@ LEFT JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
 LEFT JOIN tmdb_seasons AS season ON season.id = episode.season_id
 WHERE scope.id = sqlc.arg(scope_id)
 FOR UPDATE OF scope, task;
+
+-- name: GetSubtitleVideoMatchScopeID :one
+SELECT id
+FROM subtitle_video_match_scopes
+WHERE task_id = sqlc.arg(task_id);
 
 -- name: ListSubtitleVideoMatchCandidates :many
 SELECT

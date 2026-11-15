@@ -300,7 +300,7 @@ func TestSubtitleAgentSameContentRetryRejectsOldProviderIntegration(t *testing.T
 		t.Fatal("old provider did not start")
 	}
 
-	if err := fixture.workflow.ExpireSubtitleVideoMatchScope(fixture.ctx, fixture.scopeID); err != nil {
+	if err := expireSubtitleVideoMatchScopeForTestErr(fixture.ctx, db.New(fixture.pool), fixture.scopeID); err != nil {
 		t.Fatalf("ExpireSubtitleVideoMatchScope() error = %v", err)
 	}
 	if err := fixture.lifecycle.CancelAttempt(fixture.ctx, created.Operation.ID, 1); err != nil {
@@ -371,7 +371,7 @@ func TestSubtitleAgentNoOwnerWindowOldTerminalCannotReclaimIntegration(t *testin
 	if _, err := fixture.lifecycle.StartAttempt(fixture.ctx, created.Operation.ID, 1, "subtitle-no-owner"); err != nil {
 		t.Fatalf("StartAttempt() error = %v", err)
 	}
-	if err := fixture.workflow.ExpireSubtitleVideoMatchScope(fixture.ctx, fixture.scopeID); err != nil {
+	if err := expireSubtitleVideoMatchScopeForTestErr(fixture.ctx, db.New(fixture.pool), fixture.scopeID); err != nil {
 		t.Fatalf("ExpireSubtitleVideoMatchScope() error = %v", err)
 	}
 	if _, err := fixture.workflow.CreateSubtitleVideoMatchScope(fixture.ctx, fixture.taskID, []domain.SubtitleMatchCandidate{
@@ -526,7 +526,7 @@ func TestSubtitleAgentDelayedSnapshotRejectedIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build stale snapshot error = %v", err)
 	}
-	if err := fixture.workflow.ExpireSubtitleVideoMatchScope(fixture.ctx, fixture.scopeID); err != nil {
+	if err := expireSubtitleVideoMatchScopeForTestErr(fixture.ctx, db.New(fixture.pool), fixture.scopeID); err != nil {
 		t.Fatalf("ExpireSubtitleVideoMatchScope() error = %v", err)
 	}
 	if _, err := fixture.workflow.CreateSubtitleVideoMatchScope(fixture.ctx, fixture.taskID, []domain.SubtitleMatchCandidate{

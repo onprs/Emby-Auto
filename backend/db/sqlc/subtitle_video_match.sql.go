@@ -116,7 +116,9 @@ SELECT
     season.season_number AS target_season_number,
     video.relative_path AS source_video_relative_path,
     download.save_path,
-    task.version AS task_version
+    task.version AS task_version,
+    task.state AS task_state,
+    task.subtitle_state AS subtitle_state
 FROM subtitle_video_match_scopes AS scope
 JOIN episode_tasks AS task ON task.id = scope.task_id
 JOIN download_files AS video ON video.id = task.source_video_file_id
@@ -145,6 +147,8 @@ type GetSubtitleVideoMatchContextRow struct {
 	SourceVideoRelativePath string      `db:"source_video_relative_path" json:"source_video_relative_path"`
 	SavePath                *string     `db:"save_path" json:"save_path"`
 	TaskVersion             int32       `db:"task_version" json:"task_version"`
+	TaskState               string      `db:"task_state" json:"task_state"`
+	SubtitleState           string      `db:"subtitle_state" json:"subtitle_state"`
 }
 
 func (q *Queries) GetSubtitleVideoMatchContext(ctx context.Context, scopeID pgtype.UUID) (GetSubtitleVideoMatchContextRow, error) {
@@ -165,6 +169,8 @@ func (q *Queries) GetSubtitleVideoMatchContext(ctx context.Context, scopeID pgty
 		&i.SourceVideoRelativePath,
 		&i.SavePath,
 		&i.TaskVersion,
+		&i.TaskState,
+		&i.SubtitleState,
 	)
 	return i, err
 }
@@ -241,6 +247,19 @@ func (q *Queries) GetSubtitleVideoMatchSchedulingState(ctx context.Context, task
 		&i.ActiveOwnerCount,
 	)
 	return i, err
+}
+
+const getSubtitleVideoMatchScopeID = `-- name: GetSubtitleVideoMatchScopeID :one
+SELECT id
+FROM subtitle_video_match_scopes
+WHERE task_id = $1
+`
+
+func (q *Queries) GetSubtitleVideoMatchScopeID(ctx context.Context, taskID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getSubtitleVideoMatchScopeID, taskID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getSubtitleVideoMatchSelection = `-- name: GetSubtitleVideoMatchSelection :one

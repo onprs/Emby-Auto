@@ -71,6 +71,7 @@ type subtitleStoreStub struct {
 	scopeCandidates []domain.SubtitleMatchCandidate
 	expiredScopes   []uuid.UUID
 	expireErr       error
+	expiryResult    domain.SubtitleScopeExpiry
 	schedulingState domain.SubtitleVideoMatchSchedulingState
 	schedulingErr   error
 	stateCalls      int
@@ -95,9 +96,15 @@ func (stub *subtitleStoreStub) CreateSubtitleVideoMatchScope(_ context.Context, 
 func (stub *subtitleStoreStub) GetSubtitleVideoMatchSelection(context.Context, uuid.UUID) (domain.SubtitleMatchSelection, error) {
 	return stub.selection, stub.selErr
 }
-func (stub *subtitleStoreStub) ExpireSubtitleVideoMatchScope(_ context.Context, scopeID uuid.UUID) error {
+func (stub *subtitleStoreStub) ExpireOwnerlessSubtitleVideoMatchScope(_ context.Context, scopeID uuid.UUID, _ domain.SubtitleScopeObservation) (domain.SubtitleScopeExpiry, error) {
 	stub.expiredScopes = append(stub.expiredScopes, scopeID)
-	return stub.expireErr
+	if stub.expireErr != nil {
+		return domain.SubtitleScopeExpiry{}, stub.expireErr
+	}
+	if stub.expiryResult.Outcome != "" {
+		return stub.expiryResult, nil
+	}
+	return domain.SubtitleScopeExpiry{ScopeID: scopeID, Outcome: domain.SubtitleScopeExpired, ScopeStatus: "expired"}, nil
 }
 func (stub *subtitleStoreStub) GetSubtitleVideoMatchSchedulingState(context.Context, uuid.UUID) (domain.SubtitleVideoMatchSchedulingState, error) {
 	stub.stateCalls++

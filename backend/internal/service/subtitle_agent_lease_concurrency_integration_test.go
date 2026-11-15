@@ -133,7 +133,7 @@ func TestSubtitleAgentScopeReuseVersusLateTerminalConcurrencyIntegration(t *test
 		go func() {
 			defer wait.Done()
 			<-start
-			if expireErr := fixture.workflow.ExpireSubtitleVideoMatchScope(fixture.ctx, fixture.scopeID); expireErr != nil {
+			if expireErr := expireSubtitleVideoMatchScopeForTestErr(fixture.ctx, db.New(fixture.pool), fixture.scopeID); expireErr != nil {
 				reuseErr = expireErr
 				return
 			}

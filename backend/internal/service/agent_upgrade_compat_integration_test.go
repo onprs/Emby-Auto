@@ -462,9 +462,7 @@ func TestSubtitleAgentLegacyTimeoutExpiredRequeuesIntegration(t *testing.T) {
 		t.Fatalf("subtitle resolution resource_version = %v, want non-nil task version", created.Resolution.ResourceVersion)
 	}
 	workflow := NewMediaWorkflow(db.New(pool), transactor, scheduler)
-	if err := workflow.ExpireSubtitleVideoMatchScope(ctx, scopeID); err != nil {
-		t.Fatalf("ExpireSubtitleVideoMatchScope() error = %v", err)
-	}
+	expireSubtitleVideoMatchScopeForTest(t, ctx, db.New(pool), scopeID)
 	lifecycle := repository.NewOperationLifecycle(db.New(pool), transactor)
 	if _, err := lifecycle.StartAttempt(ctx, created.Operation.ID, 1, "legacy-subtitle-worker"); err != nil {
 		t.Fatalf("StartAttempt() error = %v", err)
