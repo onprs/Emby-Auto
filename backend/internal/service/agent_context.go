@@ -957,18 +957,6 @@ func subtitleVideoMatchFingerprintMatches(resourceJSON json.RawMessage, storedVe
 	return bytes.Equal(sum[:], fingerprint)
 }
 
-func subtitleVideoMatchSnapshotMatches(
-	snapshot agentContextSnapshot,
-	row db.GetSubtitleVideoMatchContextRow,
-	candidateRows []db.ListSubtitleVideoMatchCandidatesRow,
-) bool {
-	_, _, resourceJSON, err := subtitleVideoMatchContent(row, candidateRows)
-	if err != nil {
-		return false
-	}
-	return subtitleVideoMatchFingerprintMatches(resourceJSON, snapshot.ResourceVersion, snapshot.Fingerprint[:])
-}
-
 func (service *AgentResolutionService) inspectSubtitleCandidateTool(match *scopedSubtitleVideoMatch) agentharness.Tool {
 	return agentharness.Tool{
 		Definition: agentapi.ToolDefinition{
