@@ -46,6 +46,21 @@ const terminalSettlementPredicate = `
       OR (operation.kind = 'rss.subscription.delete' AND operation.resource_type = 'rss_subscription')
   )`
 
+// runningRecoveryPredicate 只用于 running-stale 中断重排（通用业务 kind）：要求 River job
+// 仍在执行、job/operation/当前 attempt 的身份与预算完全对齐、三者时效均陈旧，且没有
+// River 侧取消意图。该谓词不参与 discarded 终态结算。
+const runningRecoveryPredicate = `
+  AND job.state = 'running'
+  AND job.kind = operation.kind
+  AND job.args->>'operationId' = operation.id::text
+  AND job.attempt = operation.attempt_count
+  AND job.max_attempts = operation.max_attempts
+  AND attempt.attempt = operation.attempt_count
+  AND operation.attempt_count BETWEEN 1 AND operation.max_attempts
+  AND job.attempted_at IS NOT NULL
+  AND job.attempted_at < now() - $1::interval
+  AND NOT (job.metadata ? 'cancel_attempted_at')`
+
 const candidateSelect = `
 SELECT operation.id, operation.river_job_id, attempt.attempt, operation.kind,
        operation.resource_type, operation.resource_id
@@ -163,43 +178,8 @@ func main() {
 			if err != nil || !found {
 				return err
 			}
-			now := time.Now().UTC()
-			errorData, err := json.Marshal(rivertype.AttemptError{
-				At: now, Attempt: int(candidate.attempt), Error: "Interrupted operation recovered by release preflight", Trace: "",
-			})
-			if err != nil {
-				return fmt.Errorf("encode River recovery error: %w", err)
-			}
-			if _, err := riverDriver.UnwrapExecutor(scope.Tx).JobRescueMany(ctx, &riverdriver.JobRescueManyParams{
-				ID: []int64{candidate.riverJobID}, Error: [][]byte{errorData}, FinalizedAt: []*time.Time{nil},
-				ScheduledAt: []time.Time{now}, State: []string{string(rivertype.JobStateRetryable)},
-			}); err != nil {
-				return fmt.Errorf("rescue River job: %w", err)
-			}
-			deleted, err := scope.Queries.DeleteSnoozedOperationAttempt(ctx, db.DeleteSnoozedOperationAttemptParams{
-				OperationID: candidate.id, Attempt: candidate.attempt,
-			})
-			if err != nil {
-				return fmt.Errorf("delete interrupted operation attempt: %w", err)
-			}
-			if deleted != 1 {
-				return fmt.Errorf("delete interrupted operation attempt: expected one row, got %d", deleted)
-			}
-			if _, err := scope.Queries.SnoozeOperation(ctx, candidate.id); err != nil {
-				return fmt.Errorf("snooze interrupted operation: %w", err)
-			}
-			eventData, err := json.Marshal(map[string]any{
-				"kind": candidate.kind, "status": "queued", "reason": "stale_heartbeat_recovery",
-			})
-			if err != nil {
-				return fmt.Errorf("encode recovery event: %w", err)
-			}
-			if _, err := scope.Queries.AppendEvent(ctx, db.AppendEventParams{
-				ID: repository.UUIDToPG(uuid.New()), Topic: "operation.recovered",
-				ResourceType: candidate.resourceType, ResourceID: candidate.resourceID,
-				OperationID: candidate.id, Data: eventData,
-			}); err != nil {
-				return fmt.Errorf("append recovery event: %w", err)
+			if err := rescueStaleCandidate(ctx, scope, riverDriver, candidate, time.Now().UTC()); err != nil {
+				return err
 			}
 			progressed = true
 			rescuedThisRun = true
@@ -233,7 +213,7 @@ JOIN river_job AS job ON job.id = operation.river_job_id
 JOIN operation_attempts AS attempt
   ON attempt.operation_id = operation.id
  AND attempt.status = 'running'
-`+staleCandidatePredicate+"\n  AND job.state = 'running'", staleAfter.String(), kind).Scan(&counts.staleRecovery); err != nil {
+`+staleCandidatePredicate+runningRecoveryPredicate, staleAfter.String(), kind).Scan(&counts.staleRecovery); err != nil {
 		return counts, err
 	}
 	if err := pool.QueryRow(ctx, `
@@ -249,11 +229,11 @@ JOIN operation_attempts AS attempt
 	return counts, nil
 }
 
-// lockCandidate 只选取既有 running-stale 中断重排候选；job 已进入其它状态时
-// 不在此路径处理，避免把终态丢弃记录误判为可重排。
+// lockCandidate 只选取 running-stale 中断重排候选；job 已进入其它状态或存在 River 侧
+// 取消意图时不在此路径处理，避免把终态丢弃或取消中的记录误判为可重排。
 func lockCandidate(ctx context.Context, tx pgx.Tx, staleAfter time.Duration, kind string) (recoveryCandidate, bool, error) {
 	var candidate recoveryCandidate
-	err := tx.QueryRow(ctx, candidateSelect+staleCandidatePredicate+"\n  AND job.state = 'running'\nORDER BY operation.heartbeat_at, operation.id, attempt.attempt DESC\nLIMIT 1\nFOR UPDATE OF operation, job, attempt SKIP LOCKED", staleAfter.String(), kind).Scan(
+	err := tx.QueryRow(ctx, candidateSelect+staleCandidatePredicate+runningRecoveryPredicate+"\nORDER BY operation.heartbeat_at, operation.id, attempt.attempt DESC\nLIMIT 1\nFOR UPDATE OF operation, job, attempt SKIP LOCKED", staleAfter.String(), kind).Scan(
 		&candidate.id, &candidate.riverJobID, &candidate.attempt, &candidate.kind,
 		&candidate.resourceType, &candidate.resourceID,
 	)
@@ -281,4 +261,88 @@ func lockTerminalSettlementCandidate(ctx context.Context, tx pgx.Tx, staleAfter 
 		return recoveryCandidate{}, false, err
 	}
 	return candidate, true, nil
+}
+
+// rescueStaleCandidate 在调用方事务内把已陈旧的 running River job 按 River 原生中断
+// 语义重新变为可执行，并同步 operation/attempt 与事件。River v0.49 的 soft stop 使用
+// JobSetStateInterrupted(id, now, max(attempt-1,0))：状态回到 available、attempt 回退
+// 一格，使作业再次执行时复用同一 attempt 编号。业务侧删除中断 attempt 行并把
+// attempt_count 回退一格，与 River 对齐，不消耗中断预算、不改动 max_attempts。
+func rescueStaleCandidate(
+	ctx context.Context,
+	scope database.TxScope,
+	driver *riverpgxv5.Driver,
+	candidate recoveryCandidate,
+	now time.Time,
+) error {
+	operation, err := scope.Queries.GetOperation(ctx, candidate.id)
+	if err != nil {
+		return fmt.Errorf("load stale recovery candidate: %w", err)
+	}
+	if operation.RiverJobID == nil || *operation.RiverJobID != candidate.riverJobID {
+		return fmt.Errorf("stale recovery candidate River job no longer matches the operation")
+	}
+	rewoundAttempt := int(candidate.attempt) - 1
+	if rewoundAttempt < 0 {
+		rewoundAttempt = 0
+	}
+	interrupted := riverdriver.JobSetStateInterrupted(candidate.riverJobID, now, rewoundAttempt, nil)
+	updated, err := driver.UnwrapExecutor(scope.Tx).JobSetStateIfRunningMany(ctx, &riverdriver.JobSetStateIfRunningManyParams{
+		ID:              []int64{interrupted.ID},
+		Attempt:         []*int{interrupted.Attempt},
+		ErrData:         [][]byte{interrupted.ErrData},
+		FinalizedAt:     []*time.Time{interrupted.FinalizedAt},
+		MetadataDoMerge: []bool{interrupted.MetadataDoMerge},
+		MetadataUpdates: [][]byte{interrupted.MetadataUpdates},
+		ScheduledAt:     []*time.Time{interrupted.ScheduledAt},
+		State:           []rivertype.JobState{interrupted.State},
+	})
+	if err != nil {
+		return fmt.Errorf("interrupt stale River job: %w", err)
+	}
+	// Many 会对未命中的行回退当前行，因此必须逐项核对身份、状态与预算，
+	// 不能用“无错误”或 len==1 推断更新成功。
+	if len(updated) != 1 {
+		return fmt.Errorf("interrupt stale River job: expected one row, got %d", len(updated))
+	}
+	row := updated[0]
+	if int64(row.ID) != candidate.riverJobID || row.Kind != operation.Kind {
+		return fmt.Errorf("interrupt stale River job: returned job identity does not match the candidate")
+	}
+	if row.State != rivertype.JobStateAvailable || row.Attempt != rewoundAttempt || int32(row.Attempt) != operation.AttemptCount-1 {
+		return fmt.Errorf("interrupt stale River job: expected available attempt %d, got %s attempt %d", rewoundAttempt, row.State, row.Attempt)
+	}
+	if row.MaxAttempts != int(operation.MaxAttempts) {
+		return fmt.Errorf("interrupt stale River job: River budget %d does not match operation budget %d", row.MaxAttempts, operation.MaxAttempts)
+	}
+	deleted, err := scope.Queries.DeleteSnoozedOperationAttempt(ctx, db.DeleteSnoozedOperationAttemptParams{
+		OperationID: candidate.id, Attempt: candidate.attempt,
+	})
+	if err != nil {
+		return fmt.Errorf("delete interrupted operation attempt: %w", err)
+	}
+	if deleted != 1 {
+		return fmt.Errorf("delete interrupted operation attempt: expected one row, got %d", deleted)
+	}
+	dequeued, err := scope.Queries.SnoozeOperation(ctx, candidate.id)
+	if err != nil {
+		return fmt.Errorf("snooze interrupted operation: %w", err)
+	}
+	if dequeued.AttemptCount != operation.AttemptCount-1 || dequeued.Status != "queued" {
+		return fmt.Errorf("snooze interrupted operation: expected queued attempt %d, got %s attempt %d", operation.AttemptCount-1, dequeued.Status, dequeued.AttemptCount)
+	}
+	eventData, err := json.Marshal(map[string]any{
+		"kind": candidate.kind, "status": "queued", "reason": "stale_heartbeat_recovery",
+	})
+	if err != nil {
+		return fmt.Errorf("encode recovery event: %w", err)
+	}
+	if _, err := scope.Queries.AppendEvent(ctx, db.AppendEventParams{
+		ID: repository.UUIDToPG(uuid.New()), Topic: "operation.recovered",
+		ResourceType: candidate.resourceType, ResourceID: candidate.resourceID,
+		OperationID: candidate.id, Data: eventData,
+	}); err != nil {
+		return fmt.Errorf("append recovery event: %w", err)
+	}
+	return nil
 }
