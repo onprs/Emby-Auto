@@ -36,6 +36,8 @@ export function AppLayout({ session, events }: { session: Session; events: Event
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const mobileDrawerRef = useRef<HTMLElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const wasMobileOpen = useRef(false);
   const location = useLocation();
   const activeModule = moduleForPathname(location.pathname);
@@ -90,6 +92,22 @@ export function AppLayout({ session, events }: { session: Session; events: Event
       document.removeEventListener('keydown', onKeyDown);
     };
   }, [mobileOpen]);
+
+  // 提示区与分区导航都以实际顶栏高度为吸顶基准，避免写死偏移。
+  useLayoutEffect(() => {
+    const header = headerRef.current;
+    const host = contentRef.current;
+    if (!header || !host) return;
+    const update = () => host.style.setProperty('--app-header-height', `${header.offsetHeight}px`);
+    update();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(update);
+    observer.observe(header);
+    return () => {
+      observer.disconnect();
+      host.style.removeProperty('--app-header-height');
+    };
+  }, []);
 
   const logout = useMutation({
     mutationFn: endSession,
@@ -163,8 +181,8 @@ export function AppLayout({ session, events }: { session: Session; events: Event
         </div>
       ) : null}
 
-      <div className={cn('min-w-0 transition-[padding] duration-300 ease-out', sidebarCollapsed ? 'lg:pl-[72px]' : 'lg:pl-[228px]')}>
-        <header className="sticky top-0 z-30 flex h-14 items-center justify-between gap-3 border-b border-zinc-200/80 bg-white/85 px-4 shadow-[0_1px_2px_rgb(9_9_11/0.04)] backdrop-blur-md sm:px-6 lg:h-16">
+      <div ref={contentRef} className={cn('min-w-0 transition-[padding] duration-300 ease-out', sidebarCollapsed ? 'lg:pl-[72px]' : 'lg:pl-[228px]')}>
+        <header ref={headerRef} className="sticky top-0 z-30 flex h-14 items-center justify-between gap-3 border-b border-zinc-200/80 bg-white/85 px-4 shadow-[0_1px_2px_rgb(9_9_11/0.04)] backdrop-blur-md sm:px-6 lg:h-16">
           <div className="flex min-w-0 items-center gap-3">
             <Button
               ref={menuButtonRef}
@@ -200,11 +218,11 @@ export function AppLayout({ session, events }: { session: Session; events: Event
             </Button>
           </div>
         </header>
+        <ActionFeedbackAlerts />
         <main id="main-content" className="min-w-0">
           <Outlet />
         </main>
       </div>
-      <ActionFeedbackAlerts />
     </div>
     </ActionFeedbackProvider>
   );
