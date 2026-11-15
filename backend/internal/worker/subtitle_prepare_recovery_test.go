@@ -88,7 +88,7 @@ func TestQASubtitlePrepareScopeConflictWithActiveResolutionSucceeds(t *testing.T
 	store.schedulingState = domain.SubtitleVideoMatchSchedulingState{
 		ScopeID: scopeID, ScopeStatus: "pending", TaskVersion: taskVersion,
 		ResolutionID: &resolutionID, ResolutionStatus: "queued", ResolutionVersion: 1,
-		ResolutionTaskVersion: &taskVersion, OperationID: &operationID, OperationStatus: "queued",
+		OperationID: &operationID, OperationStatus: "queued", ActiveOwnerCount: 1,
 	}
 	agent := &subtitleMatchAgentStub{enabled: true}
 	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(
@@ -105,18 +105,18 @@ func TestQASubtitlePrepareScopeConflictWithActiveResolutionSucceeds(t *testing.T
 	}
 }
 
-// 旧 generation（任务版本已推进）的活动决议不承接新范围：作废后重新调度。
+// 没有唯一活动 owner（旧 generation 被 supersede 或出现多 active 歧义）时
+// 不承接新范围：作废后重新调度。
 func TestQASubtitlePrepareScopeConflictWithStaleGenerationReschedules(t *testing.T) {
 	scopeID := uuid.New()
 	tools, store, taskID, stagingRoot := ambiguousSubtitlePrepareFixture(t, scopeID)
 	resolutionID := uuid.New()
 	operationID := uuid.New()
 	store.scopeErr = &domain.MediaWorkflowError{Code: "subtitle_scope_conflict", Message: "scope already exists"}
-	staleVersion := 0
 	store.schedulingState = domain.SubtitleVideoMatchSchedulingState{
 		ScopeID: scopeID, ScopeStatus: "pending", TaskVersion: 1,
 		ResolutionID: &resolutionID, ResolutionStatus: "queued", ResolutionVersion: 2,
-		ResolutionTaskVersion: &staleVersion, OperationID: &operationID, OperationStatus: "queued",
+		OperationID: &operationID, OperationStatus: "queued", ActiveOwnerCount: 0,
 	}
 	agent := &subtitleMatchAgentStub{enabled: true}
 	// 作废后重新创建会成功；stub 的 scopeErr 只模拟第一次冲突。

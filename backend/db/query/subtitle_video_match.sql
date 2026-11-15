@@ -98,35 +98,66 @@ SELECT
     scope.id AS scope_id,
     scope.status AS scope_status,
     task.version AS task_version,
-    resolution.id AS resolution_id,
-    COALESCE(resolution.status, '')::text AS resolution_status,
-    COALESCE(resolution.error_code, '')::text AS resolution_error_code,
-    COALESCE(resolution.version, 0)::integer AS resolution_version,
-    resolution.resource_version AS resolution_task_version,
-    operation.id AS operation_id,
+    owner.id AS resolution_id,
+    COALESCE(owner.status, '')::text AS resolution_status,
+    COALESCE(owner.error_code, '')::text AS resolution_error_code,
+    COALESCE(owner.version, 0)::integer AS resolution_version,
+    owner.operation_id AS operation_id,
     COALESCE(operation.status, '')::text AS operation_status,
-    COALESCE(operation.cancel_requested_at IS NOT NULL, false)::boolean AS cancellation_requested
+    COALESCE(operation.cancel_requested_at IS NOT NULL, false)::boolean AS cancellation_requested,
+    owner_counts.active_count AS active_owner_count
 FROM subtitle_video_match_scopes AS scope
 JOIN episode_tasks AS task ON task.id = scope.task_id
 LEFT JOIN LATERAL (
-    SELECT candidate.*
-    FROM agent_resolutions AS candidate
-    WHERE candidate.resource_type = 'episode_task'
-      AND candidate.resource_id = scope.id
-      AND candidate.capability = 'subtitle_video_match'
-    ORDER BY candidate.created_at DESC, candidate.id DESC
+    SELECT count(*)::integer AS active_count
+    FROM agent_resolutions AS active
+    JOIN operations AS active_operation ON active_operation.id = active.operation_id
+    WHERE active.resource_type = 'episode_task'
+      AND active.resource_id = scope.id
+      AND active.capability = 'subtitle_video_match'
+      AND active.status IN ('queued', 'running', 'proposed', 'review_required')
+      AND active_operation.status IN ('queued', 'running')
+) AS owner_counts ON true
+LEFT JOIN LATERAL (
+    SELECT single.*
+    FROM agent_resolutions AS single
+    JOIN operations AS single_operation ON single_operation.id = single.operation_id
+    WHERE single.resource_type = 'episode_task'
+      AND single.resource_id = scope.id
+      AND single.capability = 'subtitle_video_match'
+      AND single.status IN ('queued', 'running', 'proposed', 'review_required')
+      AND single_operation.status IN ('queued', 'running')
+      AND owner_counts.active_count = 1
     LIMIT 1
-) AS resolution ON true
-LEFT JOIN operations AS operation ON operation.id = resolution.operation_id
+) AS owner ON true
+LEFT JOIN operations AS operation ON operation.id = owner.operation_id
 WHERE scope.task_id = sqlc.arg(task_id);
 
--- name: GetSubtitleVideoMatchTaskVersion :one
-SELECT task.version
+-- 活动 owner 列表只由 scope 锁与 operation 归属判定，调用方以行数区分
+-- 0/1/多 active；不按 created_at 或 UUID 排序证明当前性。
+-- name: ListSubtitleVideoMatchActiveOwners :many
+SELECT
+    resolution.*,
+    operation.status AS operation_status
+FROM agent_resolutions AS resolution
+JOIN operations AS operation ON operation.id = resolution.operation_id
+WHERE resolution.resource_type = 'episode_task'
+  AND resolution.resource_id = sqlc.arg(scope_id)
+  AND resolution.capability = 'subtitle_video_match'
+  AND resolution.status IN ('queued', 'running', 'proposed', 'review_required')
+  AND operation.status IN ('queued', 'running');
+
+-- name: LockSubtitleVideoMatchScopeTask :one
+SELECT
+    scope.id,
+    scope.status,
+    task.id AS task_id
 FROM subtitle_video_match_scopes AS scope
 JOIN episode_tasks AS task ON task.id = scope.task_id
-WHERE scope.id = sqlc.arg(scope_id);
+WHERE scope.id = sqlc.arg(id)
+FOR UPDATE OF scope, task;
 
--- 作废已被新候选集或新任务版本取代的活动决议，避免旧操作在后续失败时
+-- 作废已被新候选集或新 scope 代次取代的活动决议，避免旧操作在后续失败时
 -- 回收新 generation 的范围与任务。
 -- name: SupersedeSubtitleVideoMatchResolutions :execrows
 UPDATE agent_resolutions
@@ -140,4 +171,5 @@ WHERE resource_type = 'episode_task'
   AND resource_id = sqlc.arg(scope_id)
   AND capability = 'subtitle_video_match'
   AND status IN ('queued', 'running', 'proposed', 'review_required')
+  AND (sqlc.narg(except_resolution_id)::uuid IS NULL OR id <> sqlc.narg(except_resolution_id))
   AND (sqlc.narg(task_version)::integer IS NULL OR resource_version IS NULL OR resource_version <> sqlc.narg(task_version));

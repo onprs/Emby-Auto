@@ -253,6 +253,76 @@ func (q *Queries) CompleteRSSAdjudicationBatch(ctx context.Context, id pgtype.UU
 	return i, err
 }
 
+const completeSubtitleAgentResolution = `-- name: CompleteSubtitleAgentResolution :one
+UPDATE agent_resolutions
+SET status = $1,
+    validation = $2,
+    completed_at = now(),
+    applied_at = CASE WHEN $1::text = 'applied' THEN now() ELSE NULL END,
+    version = version + 1,
+    updated_at = now()
+WHERE id = $3
+  AND operation_id = $4
+  AND version = $5
+  AND status IN ('proposed', 'review_required')
+RETURNING id, operation_id, version, capability, resource_type, resource_id, resource_version, trigger, status, input_fingerprint, configuration_version, protocol, provider_origin, model, prompt_version, toolset_version, proposal, validation, error_code, error_message, input_tokens, output_tokens, tool_call_count, latency_milliseconds, created_by, reviewed_by, review_decision, created_at, started_at, completed_at, reviewed_at, applied_at, updated_at
+`
+
+type CompleteSubtitleAgentResolutionParams struct {
+	Status          string      `db:"status" json:"status"`
+	Validation      []byte      `db:"validation" json:"validation"`
+	ID              pgtype.UUID `db:"id" json:"id"`
+	OperationID     pgtype.UUID `db:"operation_id" json:"operation_id"`
+	ExpectedVersion int32       `db:"expected_version" json:"expected_version"`
+}
+
+func (q *Queries) CompleteSubtitleAgentResolution(ctx context.Context, arg CompleteSubtitleAgentResolutionParams) (AgentResolution, error) {
+	row := q.db.QueryRow(ctx, completeSubtitleAgentResolution,
+		arg.Status,
+		arg.Validation,
+		arg.ID,
+		arg.OperationID,
+		arg.ExpectedVersion,
+	)
+	var i AgentResolution
+	err := row.Scan(
+		&i.ID,
+		&i.OperationID,
+		&i.Version,
+		&i.Capability,
+		&i.ResourceType,
+		&i.ResourceID,
+		&i.ResourceVersion,
+		&i.Trigger,
+		&i.Status,
+		&i.InputFingerprint,
+		&i.ConfigurationVersion,
+		&i.Protocol,
+		&i.ProviderOrigin,
+		&i.Model,
+		&i.PromptVersion,
+		&i.ToolsetVersion,
+		&i.Proposal,
+		&i.Validation,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.ToolCallCount,
+		&i.LatencyMilliseconds,
+		&i.CreatedBy,
+		&i.ReviewedBy,
+		&i.ReviewDecision,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.ReviewedAt,
+		&i.AppliedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createAgentResolution = `-- name: CreateAgentResolution :one
 INSERT INTO agent_resolutions (
     id,
@@ -464,16 +534,18 @@ SET status = $1,
     updated_at = now()
 WHERE id = $4
   AND operation_id = $5
+  AND version = $6
   AND status IN ('queued', 'running', 'proposed')
 RETURNING id, operation_id, version, capability, resource_type, resource_id, resource_version, trigger, status, input_fingerprint, configuration_version, protocol, provider_origin, model, prompt_version, toolset_version, proposal, validation, error_code, error_message, input_tokens, output_tokens, tool_call_count, latency_milliseconds, created_by, reviewed_by, review_decision, created_at, started_at, completed_at, reviewed_at, applied_at, updated_at
 `
 
 type FailAgentResolutionParams struct {
-	Status       string      `db:"status" json:"status"`
-	ErrorCode    *string     `db:"error_code" json:"error_code"`
-	ErrorMessage *string     `db:"error_message" json:"error_message"`
-	ID           pgtype.UUID `db:"id" json:"id"`
-	OperationID  pgtype.UUID `db:"operation_id" json:"operation_id"`
+	Status          string      `db:"status" json:"status"`
+	ErrorCode       *string     `db:"error_code" json:"error_code"`
+	ErrorMessage    *string     `db:"error_message" json:"error_message"`
+	ID              pgtype.UUID `db:"id" json:"id"`
+	OperationID     pgtype.UUID `db:"operation_id" json:"operation_id"`
+	ExpectedVersion int32       `db:"expected_version" json:"expected_version"`
 }
 
 func (q *Queries) FailAgentResolution(ctx context.Context, arg FailAgentResolutionParams) (AgentResolution, error) {
@@ -483,6 +555,7 @@ func (q *Queries) FailAgentResolution(ctx context.Context, arg FailAgentResoluti
 		arg.ErrorMessage,
 		arg.ID,
 		arg.OperationID,
+		arg.ExpectedVersion,
 	)
 	var i AgentResolution
 	err := row.Scan(
@@ -534,16 +607,18 @@ SET status = 'failed',
     updated_at = now()
 WHERE id = $4
   AND operation_id = $5
+  AND version = $6
   AND status IN ('running', 'proposed')
 RETURNING id, operation_id, version, capability, resource_type, resource_id, resource_version, trigger, status, input_fingerprint, configuration_version, protocol, provider_origin, model, prompt_version, toolset_version, proposal, validation, error_code, error_message, input_tokens, output_tokens, tool_call_count, latency_milliseconds, created_by, reviewed_by, review_decision, created_at, started_at, completed_at, reviewed_at, applied_at, updated_at
 `
 
 type FailValidatedAgentResolutionParams struct {
-	Validation   []byte      `db:"validation" json:"validation"`
-	ErrorCode    *string     `db:"error_code" json:"error_code"`
-	ErrorMessage *string     `db:"error_message" json:"error_message"`
-	ID           pgtype.UUID `db:"id" json:"id"`
-	OperationID  pgtype.UUID `db:"operation_id" json:"operation_id"`
+	Validation      []byte      `db:"validation" json:"validation"`
+	ErrorCode       *string     `db:"error_code" json:"error_code"`
+	ErrorMessage    *string     `db:"error_message" json:"error_message"`
+	ID              pgtype.UUID `db:"id" json:"id"`
+	OperationID     pgtype.UUID `db:"operation_id" json:"operation_id"`
+	ExpectedVersion int32       `db:"expected_version" json:"expected_version"`
 }
 
 func (q *Queries) FailValidatedAgentResolution(ctx context.Context, arg FailValidatedAgentResolutionParams) (AgentResolution, error) {
@@ -553,6 +628,7 @@ func (q *Queries) FailValidatedAgentResolution(ctx context.Context, arg FailVali
 		arg.ErrorMessage,
 		arg.ID,
 		arg.OperationID,
+		arg.ExpectedVersion,
 	)
 	var i AgentResolution
 	err := row.Scan(
@@ -2276,17 +2352,99 @@ SET status = 'queued',
     updated_at = now()
 WHERE id = $2
   AND status IN ('cancelled', 'expired')
+  AND version = $3
   AND version < 10
 RETURNING id, operation_id, version, capability, resource_type, resource_id, resource_version, trigger, status, input_fingerprint, configuration_version, protocol, provider_origin, model, prompt_version, toolset_version, proposal, validation, error_code, error_message, input_tokens, output_tokens, tool_call_count, latency_milliseconds, created_by, reviewed_by, review_decision, created_at, started_at, completed_at, reviewed_at, applied_at, updated_at
 `
 
 type RequeueInactiveAgentResolutionParams struct {
-	OperationID pgtype.UUID `db:"operation_id" json:"operation_id"`
-	ID          pgtype.UUID `db:"id" json:"id"`
+	OperationID     pgtype.UUID `db:"operation_id" json:"operation_id"`
+	ID              pgtype.UUID `db:"id" json:"id"`
+	ExpectedVersion int32       `db:"expected_version" json:"expected_version"`
 }
 
 func (q *Queries) RequeueInactiveAgentResolution(ctx context.Context, arg RequeueInactiveAgentResolutionParams) (AgentResolution, error) {
-	row := q.db.QueryRow(ctx, requeueInactiveAgentResolution, arg.OperationID, arg.ID)
+	row := q.db.QueryRow(ctx, requeueInactiveAgentResolution, arg.OperationID, arg.ID, arg.ExpectedVersion)
+	var i AgentResolution
+	err := row.Scan(
+		&i.ID,
+		&i.OperationID,
+		&i.Version,
+		&i.Capability,
+		&i.ResourceType,
+		&i.ResourceID,
+		&i.ResourceVersion,
+		&i.Trigger,
+		&i.Status,
+		&i.InputFingerprint,
+		&i.ConfigurationVersion,
+		&i.Protocol,
+		&i.ProviderOrigin,
+		&i.Model,
+		&i.PromptVersion,
+		&i.ToolsetVersion,
+		&i.Proposal,
+		&i.Validation,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.ToolCallCount,
+		&i.LatencyMilliseconds,
+		&i.CreatedBy,
+		&i.ReviewedBy,
+		&i.ReviewDecision,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.ReviewedAt,
+		&i.AppliedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const requeueSubtitleAgentResolution = `-- name: RequeueSubtitleAgentResolution :one
+UPDATE agent_resolutions
+SET status = 'queued',
+    operation_id = $1,
+    proposal = '{}'::jsonb,
+    validation = '{}'::jsonb,
+    error_code = NULL,
+    error_message = NULL,
+    input_tokens = NULL,
+    output_tokens = NULL,
+    tool_call_count = 0,
+    latency_milliseconds = NULL,
+    reviewed_by = NULL,
+    review_decision = NULL,
+    reviewed_at = NULL,
+    completed_at = NULL,
+    applied_at = NULL,
+    started_at = NULL,
+    version = version + 1,
+    updated_at = now()
+WHERE id = $2
+  AND operation_id = $3
+  AND version = $4
+  AND status IN ('failed', 'rejected')
+RETURNING id, operation_id, version, capability, resource_type, resource_id, resource_version, trigger, status, input_fingerprint, configuration_version, protocol, provider_origin, model, prompt_version, toolset_version, proposal, validation, error_code, error_message, input_tokens, output_tokens, tool_call_count, latency_milliseconds, created_by, reviewed_by, review_decision, created_at, started_at, completed_at, reviewed_at, applied_at, updated_at
+`
+
+type RequeueSubtitleAgentResolutionParams struct {
+	OperationID         pgtype.UUID `db:"operation_id" json:"operation_id"`
+	ID                  pgtype.UUID `db:"id" json:"id"`
+	PreviousOperationID pgtype.UUID `db:"previous_operation_id" json:"previous_operation_id"`
+	ExpectedVersion     int32       `db:"expected_version" json:"expected_version"`
+}
+
+func (q *Queries) RequeueSubtitleAgentResolution(ctx context.Context, arg RequeueSubtitleAgentResolutionParams) (AgentResolution, error) {
+	row := q.db.QueryRow(ctx, requeueSubtitleAgentResolution,
+		arg.OperationID,
+		arg.ID,
+		arg.PreviousOperationID,
+		arg.ExpectedVersion,
+	)
 	var i AgentResolution
 	err := row.Scan(
 		&i.ID,
@@ -2339,6 +2497,8 @@ SET status = 'proposed',
     version = version + 1,
     updated_at = now()
 WHERE id = $6
+  AND operation_id = $7
+  AND version = $8
   AND status = 'running'
 RETURNING id, operation_id, version, capability, resource_type, resource_id, resource_version, trigger, status, input_fingerprint, configuration_version, protocol, provider_origin, model, prompt_version, toolset_version, proposal, validation, error_code, error_message, input_tokens, output_tokens, tool_call_count, latency_milliseconds, created_by, reviewed_by, review_decision, created_at, started_at, completed_at, reviewed_at, applied_at, updated_at
 `
@@ -2350,6 +2510,8 @@ type SaveAgentResolutionProposalParams struct {
 	ToolCallCount       int32       `db:"tool_call_count" json:"tool_call_count"`
 	LatencyMilliseconds *int64      `db:"latency_milliseconds" json:"latency_milliseconds"`
 	ID                  pgtype.UUID `db:"id" json:"id"`
+	OperationID         pgtype.UUID `db:"operation_id" json:"operation_id"`
+	ExpectedVersion     int32       `db:"expected_version" json:"expected_version"`
 }
 
 func (q *Queries) SaveAgentResolutionProposal(ctx context.Context, arg SaveAgentResolutionProposalParams) (AgentResolution, error) {
@@ -2360,6 +2522,8 @@ func (q *Queries) SaveAgentResolutionProposal(ctx context.Context, arg SaveAgent
 		arg.ToolCallCount,
 		arg.LatencyMilliseconds,
 		arg.ID,
+		arg.OperationID,
+		arg.ExpectedVersion,
 	)
 	var i AgentResolution
 	err := row.Scan(
@@ -2409,12 +2573,20 @@ SET status = 'running',
     version = version + 1,
     updated_at = now()
 WHERE id = $1
+  AND operation_id = $2
+  AND version = $3
   AND status IN ('queued', 'running')
 RETURNING id, operation_id, version, capability, resource_type, resource_id, resource_version, trigger, status, input_fingerprint, configuration_version, protocol, provider_origin, model, prompt_version, toolset_version, proposal, validation, error_code, error_message, input_tokens, output_tokens, tool_call_count, latency_milliseconds, created_by, reviewed_by, review_decision, created_at, started_at, completed_at, reviewed_at, applied_at, updated_at
 `
 
-func (q *Queries) StartAgentResolution(ctx context.Context, id pgtype.UUID) (AgentResolution, error) {
-	row := q.db.QueryRow(ctx, startAgentResolution, id)
+type StartAgentResolutionParams struct {
+	ID              pgtype.UUID `db:"id" json:"id"`
+	OperationID     pgtype.UUID `db:"operation_id" json:"operation_id"`
+	ExpectedVersion int32       `db:"expected_version" json:"expected_version"`
+}
+
+func (q *Queries) StartAgentResolution(ctx context.Context, arg StartAgentResolutionParams) (AgentResolution, error) {
+	row := q.db.QueryRow(ctx, startAgentResolution, arg.ID, arg.OperationID, arg.ExpectedVersion)
 	var i AgentResolution
 	err := row.Scan(
 		&i.ID,

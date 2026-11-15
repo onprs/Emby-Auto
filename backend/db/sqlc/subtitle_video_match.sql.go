@@ -174,26 +174,39 @@ SELECT
     scope.id AS scope_id,
     scope.status AS scope_status,
     task.version AS task_version,
-    resolution.id AS resolution_id,
-    COALESCE(resolution.status, '')::text AS resolution_status,
-    COALESCE(resolution.error_code, '')::text AS resolution_error_code,
-    COALESCE(resolution.version, 0)::integer AS resolution_version,
-    resolution.resource_version AS resolution_task_version,
-    operation.id AS operation_id,
+    owner.id AS resolution_id,
+    COALESCE(owner.status, '')::text AS resolution_status,
+    COALESCE(owner.error_code, '')::text AS resolution_error_code,
+    COALESCE(owner.version, 0)::integer AS resolution_version,
+    owner.operation_id AS operation_id,
     COALESCE(operation.status, '')::text AS operation_status,
-    COALESCE(operation.cancel_requested_at IS NOT NULL, false)::boolean AS cancellation_requested
+    COALESCE(operation.cancel_requested_at IS NOT NULL, false)::boolean AS cancellation_requested,
+    owner_counts.active_count AS active_owner_count
 FROM subtitle_video_match_scopes AS scope
 JOIN episode_tasks AS task ON task.id = scope.task_id
 LEFT JOIN LATERAL (
-    SELECT candidate.id, candidate.operation_id, candidate.version, candidate.capability, candidate.resource_type, candidate.resource_id, candidate.resource_version, candidate.trigger, candidate.status, candidate.input_fingerprint, candidate.configuration_version, candidate.protocol, candidate.provider_origin, candidate.model, candidate.prompt_version, candidate.toolset_version, candidate.proposal, candidate.validation, candidate.error_code, candidate.error_message, candidate.input_tokens, candidate.output_tokens, candidate.tool_call_count, candidate.latency_milliseconds, candidate.created_by, candidate.reviewed_by, candidate.review_decision, candidate.created_at, candidate.started_at, candidate.completed_at, candidate.reviewed_at, candidate.applied_at, candidate.updated_at
-    FROM agent_resolutions AS candidate
-    WHERE candidate.resource_type = 'episode_task'
-      AND candidate.resource_id = scope.id
-      AND candidate.capability = 'subtitle_video_match'
-    ORDER BY candidate.created_at DESC, candidate.id DESC
+    SELECT count(*)::integer AS active_count
+    FROM agent_resolutions AS active
+    JOIN operations AS active_operation ON active_operation.id = active.operation_id
+    WHERE active.resource_type = 'episode_task'
+      AND active.resource_id = scope.id
+      AND active.capability = 'subtitle_video_match'
+      AND active.status IN ('queued', 'running', 'proposed', 'review_required')
+      AND active_operation.status IN ('queued', 'running')
+) AS owner_counts ON true
+LEFT JOIN LATERAL (
+    SELECT single.id, single.operation_id, single.version, single.capability, single.resource_type, single.resource_id, single.resource_version, single.trigger, single.status, single.input_fingerprint, single.configuration_version, single.protocol, single.provider_origin, single.model, single.prompt_version, single.toolset_version, single.proposal, single.validation, single.error_code, single.error_message, single.input_tokens, single.output_tokens, single.tool_call_count, single.latency_milliseconds, single.created_by, single.reviewed_by, single.review_decision, single.created_at, single.started_at, single.completed_at, single.reviewed_at, single.applied_at, single.updated_at
+    FROM agent_resolutions AS single
+    JOIN operations AS single_operation ON single_operation.id = single.operation_id
+    WHERE single.resource_type = 'episode_task'
+      AND single.resource_id = scope.id
+      AND single.capability = 'subtitle_video_match'
+      AND single.status IN ('queued', 'running', 'proposed', 'review_required')
+      AND single_operation.status IN ('queued', 'running')
+      AND owner_counts.active_count = 1
     LIMIT 1
-) AS resolution ON true
-LEFT JOIN operations AS operation ON operation.id = resolution.operation_id
+) AS owner ON true
+LEFT JOIN operations AS operation ON operation.id = owner.operation_id
 WHERE scope.task_id = $1
 `
 
@@ -205,10 +218,10 @@ type GetSubtitleVideoMatchSchedulingStateRow struct {
 	ResolutionStatus      string      `db:"resolution_status" json:"resolution_status"`
 	ResolutionErrorCode   string      `db:"resolution_error_code" json:"resolution_error_code"`
 	ResolutionVersion     int32       `db:"resolution_version" json:"resolution_version"`
-	ResolutionTaskVersion *int32      `db:"resolution_task_version" json:"resolution_task_version"`
 	OperationID           pgtype.UUID `db:"operation_id" json:"operation_id"`
 	OperationStatus       string      `db:"operation_status" json:"operation_status"`
 	CancellationRequested bool        `db:"cancellation_requested" json:"cancellation_requested"`
+	ActiveOwnerCount      int32       `db:"active_owner_count" json:"active_owner_count"`
 }
 
 func (q *Queries) GetSubtitleVideoMatchSchedulingState(ctx context.Context, taskID pgtype.UUID) (GetSubtitleVideoMatchSchedulingStateRow, error) {
@@ -222,10 +235,10 @@ func (q *Queries) GetSubtitleVideoMatchSchedulingState(ctx context.Context, task
 		&i.ResolutionStatus,
 		&i.ResolutionErrorCode,
 		&i.ResolutionVersion,
-		&i.ResolutionTaskVersion,
 		&i.OperationID,
 		&i.OperationStatus,
 		&i.CancellationRequested,
+		&i.ActiveOwnerCount,
 	)
 	return i, err
 }
@@ -263,20 +276,6 @@ func (q *Queries) GetSubtitleVideoMatchSelection(ctx context.Context, taskID pgt
 	return i, err
 }
 
-const getSubtitleVideoMatchTaskVersion = `-- name: GetSubtitleVideoMatchTaskVersion :one
-SELECT task.version
-FROM subtitle_video_match_scopes AS scope
-JOIN episode_tasks AS task ON task.id = scope.task_id
-WHERE scope.id = $1
-`
-
-func (q *Queries) GetSubtitleVideoMatchTaskVersion(ctx context.Context, scopeID pgtype.UUID) (int32, error) {
-	row := q.db.QueryRow(ctx, getSubtitleVideoMatchTaskVersion, scopeID)
-	var version int32
-	err := row.Scan(&version)
-	return version, err
-}
-
 const insertSubtitleVideoMatchCandidate = `-- name: InsertSubtitleVideoMatchCandidate :exec
 INSERT INTO subtitle_video_match_candidates (
     scope_id, candidate_id, source, stream_index, format, language, title, path
@@ -309,6 +308,113 @@ func (q *Queries) InsertSubtitleVideoMatchCandidate(ctx context.Context, arg Ins
 		arg.Path,
 	)
 	return err
+}
+
+const listSubtitleVideoMatchActiveOwners = `-- name: ListSubtitleVideoMatchActiveOwners :many
+SELECT
+    resolution.id, resolution.operation_id, resolution.version, resolution.capability, resolution.resource_type, resolution.resource_id, resolution.resource_version, resolution.trigger, resolution.status, resolution.input_fingerprint, resolution.configuration_version, resolution.protocol, resolution.provider_origin, resolution.model, resolution.prompt_version, resolution.toolset_version, resolution.proposal, resolution.validation, resolution.error_code, resolution.error_message, resolution.input_tokens, resolution.output_tokens, resolution.tool_call_count, resolution.latency_milliseconds, resolution.created_by, resolution.reviewed_by, resolution.review_decision, resolution.created_at, resolution.started_at, resolution.completed_at, resolution.reviewed_at, resolution.applied_at, resolution.updated_at,
+    operation.status AS operation_status
+FROM agent_resolutions AS resolution
+JOIN operations AS operation ON operation.id = resolution.operation_id
+WHERE resolution.resource_type = 'episode_task'
+  AND resolution.resource_id = $1
+  AND resolution.capability = 'subtitle_video_match'
+  AND resolution.status IN ('queued', 'running', 'proposed', 'review_required')
+  AND operation.status IN ('queued', 'running')
+`
+
+type ListSubtitleVideoMatchActiveOwnersRow struct {
+	ID                   pgtype.UUID        `db:"id" json:"id"`
+	OperationID          pgtype.UUID        `db:"operation_id" json:"operation_id"`
+	Version              int32              `db:"version" json:"version"`
+	Capability           string             `db:"capability" json:"capability"`
+	ResourceType         string             `db:"resource_type" json:"resource_type"`
+	ResourceID           pgtype.UUID        `db:"resource_id" json:"resource_id"`
+	ResourceVersion      *int32             `db:"resource_version" json:"resource_version"`
+	Trigger              string             `db:"trigger" json:"trigger"`
+	Status               string             `db:"status" json:"status"`
+	InputFingerprint     []byte             `db:"input_fingerprint" json:"input_fingerprint"`
+	ConfigurationVersion int32              `db:"configuration_version" json:"configuration_version"`
+	Protocol             string             `db:"protocol" json:"protocol"`
+	ProviderOrigin       string             `db:"provider_origin" json:"provider_origin"`
+	Model                string             `db:"model" json:"model"`
+	PromptVersion        string             `db:"prompt_version" json:"prompt_version"`
+	ToolsetVersion       string             `db:"toolset_version" json:"toolset_version"`
+	Proposal             []byte             `db:"proposal" json:"proposal"`
+	Validation           []byte             `db:"validation" json:"validation"`
+	ErrorCode            *string            `db:"error_code" json:"error_code"`
+	ErrorMessage         *string            `db:"error_message" json:"error_message"`
+	InputTokens          *int64             `db:"input_tokens" json:"input_tokens"`
+	OutputTokens         *int64             `db:"output_tokens" json:"output_tokens"`
+	ToolCallCount        int32              `db:"tool_call_count" json:"tool_call_count"`
+	LatencyMilliseconds  *int64             `db:"latency_milliseconds" json:"latency_milliseconds"`
+	CreatedBy            pgtype.UUID        `db:"created_by" json:"created_by"`
+	ReviewedBy           pgtype.UUID        `db:"reviewed_by" json:"reviewed_by"`
+	ReviewDecision       *string            `db:"review_decision" json:"review_decision"`
+	CreatedAt            pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	StartedAt            pgtype.Timestamptz `db:"started_at" json:"started_at"`
+	CompletedAt          pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
+	ReviewedAt           pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
+	AppliedAt            pgtype.Timestamptz `db:"applied_at" json:"applied_at"`
+	UpdatedAt            pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	OperationStatus      string             `db:"operation_status" json:"operation_status"`
+}
+
+// 活动 owner 列表只由 scope 锁与 operation 归属判定，调用方以行数区分
+// 0/1/多 active；不按 created_at 或 UUID 排序证明当前性。
+func (q *Queries) ListSubtitleVideoMatchActiveOwners(ctx context.Context, scopeID pgtype.UUID) ([]ListSubtitleVideoMatchActiveOwnersRow, error) {
+	rows, err := q.db.Query(ctx, listSubtitleVideoMatchActiveOwners, scopeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSubtitleVideoMatchActiveOwnersRow{}
+	for rows.Next() {
+		var i ListSubtitleVideoMatchActiveOwnersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.OperationID,
+			&i.Version,
+			&i.Capability,
+			&i.ResourceType,
+			&i.ResourceID,
+			&i.ResourceVersion,
+			&i.Trigger,
+			&i.Status,
+			&i.InputFingerprint,
+			&i.ConfigurationVersion,
+			&i.Protocol,
+			&i.ProviderOrigin,
+			&i.Model,
+			&i.PromptVersion,
+			&i.ToolsetVersion,
+			&i.Proposal,
+			&i.Validation,
+			&i.ErrorCode,
+			&i.ErrorMessage,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.ToolCallCount,
+			&i.LatencyMilliseconds,
+			&i.CreatedBy,
+			&i.ReviewedBy,
+			&i.ReviewDecision,
+			&i.CreatedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.ReviewedAt,
+			&i.AppliedAt,
+			&i.UpdatedAt,
+			&i.OperationStatus,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listSubtitleVideoMatchCandidates = `-- name: ListSubtitleVideoMatchCandidates :many
@@ -363,6 +469,30 @@ func (q *Queries) ListSubtitleVideoMatchCandidates(ctx context.Context, scopeID 
 	return items, nil
 }
 
+const lockSubtitleVideoMatchScopeTask = `-- name: LockSubtitleVideoMatchScopeTask :one
+SELECT
+    scope.id,
+    scope.status,
+    task.id AS task_id
+FROM subtitle_video_match_scopes AS scope
+JOIN episode_tasks AS task ON task.id = scope.task_id
+WHERE scope.id = $1
+FOR UPDATE OF scope, task
+`
+
+type LockSubtitleVideoMatchScopeTaskRow struct {
+	ID     pgtype.UUID `db:"id" json:"id"`
+	Status string      `db:"status" json:"status"`
+	TaskID pgtype.UUID `db:"task_id" json:"task_id"`
+}
+
+func (q *Queries) LockSubtitleVideoMatchScopeTask(ctx context.Context, id pgtype.UUID) (LockSubtitleVideoMatchScopeTaskRow, error) {
+	row := q.db.QueryRow(ctx, lockSubtitleVideoMatchScopeTask, id)
+	var i LockSubtitleVideoMatchScopeTaskRow
+	err := row.Scan(&i.ID, &i.Status, &i.TaskID)
+	return i, err
+}
+
 const supersedeSubtitleVideoMatchResolutions = `-- name: SupersedeSubtitleVideoMatchResolutions :execrows
 UPDATE agent_resolutions
 SET status = 'cancelled',
@@ -375,18 +505,20 @@ WHERE resource_type = 'episode_task'
   AND resource_id = $1
   AND capability = 'subtitle_video_match'
   AND status IN ('queued', 'running', 'proposed', 'review_required')
-  AND ($2::integer IS NULL OR resource_version IS NULL OR resource_version <> $2)
+  AND ($2::uuid IS NULL OR id <> $2)
+  AND ($3::integer IS NULL OR resource_version IS NULL OR resource_version <> $3)
 `
 
 type SupersedeSubtitleVideoMatchResolutionsParams struct {
-	ScopeID     pgtype.UUID `db:"scope_id" json:"scope_id"`
-	TaskVersion *int32      `db:"task_version" json:"task_version"`
+	ScopeID            pgtype.UUID `db:"scope_id" json:"scope_id"`
+	ExceptResolutionID pgtype.UUID `db:"except_resolution_id" json:"except_resolution_id"`
+	TaskVersion        *int32      `db:"task_version" json:"task_version"`
 }
 
-// 作废已被新候选集或新任务版本取代的活动决议，避免旧操作在后续失败时
+// 作废已被新候选集或新 scope 代次取代的活动决议，避免旧操作在后续失败时
 // 回收新 generation 的范围与任务。
 func (q *Queries) SupersedeSubtitleVideoMatchResolutions(ctx context.Context, arg SupersedeSubtitleVideoMatchResolutionsParams) (int64, error) {
-	result, err := q.db.Exec(ctx, supersedeSubtitleVideoMatchResolutions, arg.ScopeID, arg.TaskVersion)
+	result, err := q.db.Exec(ctx, supersedeSubtitleVideoMatchResolutions, arg.ScopeID, arg.ExceptResolutionID, arg.TaskVersion)
 	if err != nil {
 		return 0, err
 	}

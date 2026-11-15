@@ -532,6 +532,7 @@ SET status = 'queued',
     updated_at = now()
 WHERE id = sqlc.arg(id)
   AND status IN ('cancelled', 'expired')
+  AND version = sqlc.arg(expected_version)
   AND version < 10
 RETURNING *;
 
@@ -587,6 +588,8 @@ SET status = 'running',
     version = version + 1,
     updated_at = now()
 WHERE id = sqlc.arg(id)
+  AND operation_id = sqlc.arg(operation_id)
+  AND version = sqlc.arg(expected_version)
   AND status IN ('queued', 'running')
 RETURNING *;
 
@@ -603,6 +606,8 @@ SET status = 'proposed',
     version = version + 1,
     updated_at = now()
 WHERE id = sqlc.arg(id)
+  AND operation_id = sqlc.arg(operation_id)
+  AND version = sqlc.arg(expected_version)
   AND status = 'running'
 RETURNING *;
 
@@ -618,6 +623,20 @@ WHERE id = sqlc.arg(id)
   AND status IN ('running', 'proposed', 'review_required')
 RETURNING *;
 
+-- name: CompleteSubtitleAgentResolution :one
+UPDATE agent_resolutions
+SET status = sqlc.arg(status),
+    validation = sqlc.arg(validation),
+    completed_at = now(),
+    applied_at = CASE WHEN sqlc.arg(status)::text = 'applied' THEN now() ELSE NULL END,
+    version = version + 1,
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND operation_id = sqlc.arg(operation_id)
+  AND version = sqlc.arg(expected_version)
+  AND status IN ('proposed', 'review_required')
+RETURNING *;
+
 -- name: FailAgentResolution :one
 UPDATE agent_resolutions
 SET status = sqlc.arg(status),
@@ -628,6 +647,7 @@ SET status = sqlc.arg(status),
     updated_at = now()
 WHERE id = sqlc.arg(id)
   AND operation_id = sqlc.arg(operation_id)
+  AND version = sqlc.arg(expected_version)
   AND status IN ('queued', 'running', 'proposed')
 RETURNING *;
 
@@ -642,6 +662,7 @@ SET status = 'failed',
     updated_at = now()
 WHERE id = sqlc.arg(id)
   AND operation_id = sqlc.arg(operation_id)
+  AND version = sqlc.arg(expected_version)
   AND status IN ('running', 'proposed')
 RETURNING *;
 
@@ -668,6 +689,32 @@ SET status = CASE
     version = version + 1,
     updated_at = now()
 WHERE id = sqlc.arg(id)
+  AND version = sqlc.arg(expected_version)
+  AND status IN ('failed', 'rejected')
+RETURNING *;
+
+-- name: RequeueSubtitleAgentResolution :one
+UPDATE agent_resolutions
+SET status = 'queued',
+    operation_id = sqlc.arg(operation_id),
+    proposal = '{}'::jsonb,
+    validation = '{}'::jsonb,
+    error_code = NULL,
+    error_message = NULL,
+    input_tokens = NULL,
+    output_tokens = NULL,
+    tool_call_count = 0,
+    latency_milliseconds = NULL,
+    reviewed_by = NULL,
+    review_decision = NULL,
+    reviewed_at = NULL,
+    completed_at = NULL,
+    applied_at = NULL,
+    started_at = NULL,
+    version = version + 1,
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND operation_id = sqlc.arg(previous_operation_id)
   AND version = sqlc.arg(expected_version)
   AND status IN ('failed', 'rejected')
 RETURNING *;

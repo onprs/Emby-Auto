@@ -145,36 +145,38 @@ type SubtitleVideoMatchSchedulingState struct {
 	ResolutionStatus      string
 	ResolutionErrorCode   string
 	ResolutionVersion     int
-	ResolutionTaskVersion *int
 	OperationID           *uuid.UUID
 	OperationStatus       string
 	CancellationRequested bool
+	ActiveOwnerCount      int
 }
 
-// ActiveResolution 表示当前范围内存在仍在推进的决议与操作。终态失败、取消或
-// 过期不由这里判定；调用方需结合 AutomaticAgentResolutionRetryable 决定恢复。
+// ActiveResolution 表示当前范围内恰好存在唯一活动 owner（决议与 operation）。
+// 0 个或多于 1 个活动 owner 都不能授权调度；历史 created_at 排序不参与判定。
+// 终态失败、取消或过期不由这里判定；调用方需结合
+// AutomaticAgentResolutionRetryable 决定恢复。
 func (state SubtitleVideoMatchSchedulingState) ActiveResolution() bool {
-	if state.ResolutionID == nil {
+	if state.ActiveOwnerCount != 1 || state.ResolutionID == nil {
 		return false
 	}
 	switch state.ResolutionStatus {
 	case string(AgentResolutionQueued), string(AgentResolutionRunning), string(AgentResolutionProposed),
-		string(AgentResolutionReviewRequired), string(AgentResolutionApplied):
+		string(AgentResolutionReviewRequired):
 	default:
 		return false
 	}
 	switch state.OperationStatus {
-	case "", "queued", "running", "succeeded":
+	case "queued", "running":
 		return true
 	default:
 		return false
 	}
 }
 
-// CoversTaskVersion 判断活动决议是否属于当前任务版本。字幕候选集在范围
-// 复活时更换，旧 generation 的决议不得回收新范围。
-func (state SubtitleVideoMatchSchedulingState) CoversTaskVersion() bool {
-	return state.ResolutionTaskVersion != nil && *state.ResolutionTaskVersion == state.TaskVersion
+// CoversGeneration 表示唯一活动 owner 仍在承接当前 scope；正常 VideoReady
+// 引起的 task.version 推进不改变该判定。
+func (state SubtitleVideoMatchSchedulingState) CoversGeneration() bool {
+	return state.ActiveResolution()
 }
 
 // CandidateID returns the stable identifier used to reference a subtitle

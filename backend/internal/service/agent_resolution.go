@@ -423,8 +423,102 @@ func (service *AgentResolutionService) CreateAutomatic(ctx context.Context, inpu
 	idempotencyKey := "agent.resolve:" + hex.EncodeToString(identityDigest[:])
 	requestTimeout := time.Duration(settings.RequestTimeoutSeconds) * time.Second
 	jobTimeout := agentJobTimeout(agentToolStepBudget(input.Capability, snapshot), requestTimeout)
+	return service.createAutomaticWithSnapshot(ctx, input, configuration, settings, origin, promptVersion, snapshot, resolutionID, idempotencyKey, jobTimeout)
+}
+
+// createAutomaticWithSnapshot 在事务内用同一 Tx queries 重验字幕内容、唯一 owner
+// 与配置，再复用/撤销/新建租约。CreateAutomatic 只负责快照采集；测试可注入
+// 旧快照验证“采集后 scope 复用、事务内重读”的窗口。
+func (service *AgentResolutionService) createAutomaticWithSnapshot(
+	ctx context.Context,
+	input AutomaticAgentResolutionRequest,
+	configuration domain.Configuration,
+	settings domain.AgentSettings,
+	origin string,
+	promptVersion string,
+	snapshot agentContextSnapshot,
+	resolutionID uuid.UUID,
+	idempotencyKey string,
+	jobTimeout time.Duration,
+) (AgentResolutionCommandResult, error) {
 	result := AgentResolutionCommandResult{}
-	err = service.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+	err := service.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+		if input.Capability == domain.AgentCapabilitySubtitleVideoMatch {
+			// 字幕租约：S/T 锁内重验当前内容、唯一活动 owner 与配置，再决定
+			// 复用当前 owner、撤销旧 owner 或建立新身份。
+			contextRow, contextErr := scope.Queries.GetSubtitleVideoMatchContext(ctx, repository.UUIDToPG(input.ResourceID))
+			if errors.Is(contextErr, pgx.ErrNoRows) {
+				return NewError("state_conflict", "the subtitle video match scope is no longer available", ErrStateConflict, nil)
+			}
+			if contextErr != nil {
+				return contextErr
+			}
+			if contextRow.ScopeStatus != "pending" {
+				return NewError("state_conflict", "the subtitle video match scope is not pending", ErrStateConflict, nil)
+			}
+			candidateRows, candidateErr := scope.Queries.ListSubtitleVideoMatchCandidates(ctx, repository.UUIDToPG(input.ResourceID))
+			if candidateErr != nil {
+				return candidateErr
+			}
+			_, _, currentResourceJSON, contentErr := subtitleVideoMatchContent(contextRow, candidateRows)
+			if contentErr != nil {
+				return NewError("state_conflict", "the subtitle video match content is unavailable", ErrStateConflict, nil)
+			}
+			if !subtitleVideoMatchFingerprintMatches(currentResourceJSON, snapshot.ResourceVersion, snapshot.Fingerprint[:]) {
+				return NewError("state_conflict", "the subtitle video match content changed before scheduling", ErrStateConflict, nil)
+			}
+			owners, ownerErr := scope.Queries.ListSubtitleVideoMatchActiveOwners(ctx, repository.UUIDToPG(input.ResourceID))
+			if ownerErr != nil {
+				return ownerErr
+			}
+			if len(owners) > 1 {
+				return NewError("state_conflict", "the subtitle video match scope has multiple active owners", ErrStateConflict, nil)
+			}
+			if len(owners) == 1 {
+				owner, lockErr := scope.Queries.LockAgentResolution(ctx, owners[0].ID)
+				if lockErr != nil {
+					return fmt.Errorf("lock subtitle video match owner: %w", lockErr)
+				}
+				relation := subtitleOwnerConfigurationRelation(owner, configuration, settings, origin, promptVersion)
+				if relation == subtitleOwnerConfigStale {
+					return NewError("state_conflict", "the current subtitle Agent configuration is newer than this request", ErrStateConflict, nil)
+				}
+				ownerContentMatches := false
+				if owner.ResourceVersion == nil {
+					// legacy NULL 不能当通配符：仅当旧格式 fingerprint（含当时的
+					// task.version）完全相等时视为同一 owner；否则保守换代。
+					ownerContentMatches = bytes.Equal(owner.InputFingerprint, snapshot.Fingerprint[:])
+				} else {
+					ownerContentMatches = subtitleVideoMatchFingerprintMatches(currentResourceJSON, int32PointerToInt(owner.ResourceVersion), owner.InputFingerprint)
+				}
+				if ownerContentMatches && relation == subtitleOwnerConfigCurrent {
+					storedOperation, operationErr := scope.Queries.GetOperation(ctx, owner.OperationID)
+					if operationErr != nil {
+						return fmt.Errorf("load subtitle video match owner operation: %w", operationErr)
+					}
+					if !agentResolutionOperationMatches(storedOperation, repository.UUIDFromPG(owner.ID)) {
+						return NewError("idempotency_conflict", "the subtitle video match owner operation conflicts with its identity", ErrStateConflict, nil)
+					}
+					// 同内容、同配置的当前 owner：重复请求或 VideoReady 不得替换它。
+					result = AgentResolutionCommandResult{Resolution: agentResolutionFromDB(owner), Operation: operationFromDB(storedOperation)}
+					return nil
+				}
+				// 请求内容或配置已更新：撤销旧 owner，随后按当前身份新建/重排。
+				if _, supersedeErr := scope.Queries.SupersedeSubtitleVideoMatchResolutions(ctx, db.SupersedeSubtitleVideoMatchResolutionsParams{
+					ScopeID: repository.UUIDToPG(input.ResourceID),
+				}); supersedeErr != nil {
+					return fmt.Errorf("supersede subtitle video match owner: %w", supersedeErr)
+				}
+			} else {
+				// 没有活动 owner 时仍可能有 operation 已终态的遗留 active 行，
+				// 先清掉，避免 F1 预读把一个死租约当成可复用状态。
+				if _, supersedeErr := scope.Queries.SupersedeSubtitleVideoMatchResolutions(ctx, db.SupersedeSubtitleVideoMatchResolutionsParams{
+					ScopeID: repository.UUIDToPG(input.ResourceID),
+				}); supersedeErr != nil {
+					return fmt.Errorf("supersede stale subtitle video match owner: %w", supersedeErr)
+				}
+			}
+		}
 		// 先按身份读取既有决议：历史行（例如 base 写入的 60 秒 operation）
 		// 的真实命令与当前预算不同，不能再用新命令去撞它的幂等键。
 		loaded, loadErr := scope.Queries.GetAgentResolution(ctx, repository.UUIDToPG(resolutionID))
@@ -496,7 +590,7 @@ func (service *AgentResolutionService) CreateAutomatic(ctx context.Context, inpu
 				return requeueErr
 			}
 			requeued, updateErr := scope.Queries.RequeueInactiveAgentResolution(ctx, db.RequeueInactiveAgentResolutionParams{
-				OperationID: repository.UUIDToPG(requeue.Operation.ID), ID: repository.UUIDToPG(resolutionID),
+				OperationID: repository.UUIDToPG(requeue.Operation.ID), ID: repository.UUIDToPG(resolutionID), ExpectedVersion: row.Version,
 			})
 			if errors.Is(updateErr, pgx.ErrNoRows) {
 				// 行锁内状态/版本已被并发改写：回滚本次事务，避免遗留无人接管的 operation。
@@ -541,6 +635,11 @@ func (service *AgentResolutionService) Run(ctx context.Context, operation domain
 		return err
 	}
 	resolution := agentResolutionFromDB(row)
+	if resolution.OperationID != operation.ID {
+		// 旧 operation 不能领走重排后新 operation 的工作；无副作用退出。
+		return &AgentRunError{Code: "agent_resolution_ownership_lost", Message: "the Agent resolution is owned by another operation", Retryable: false}
+	}
+	stageVersion := resolution.Version
 	if resolution.Status == domain.AgentResolutionApplied || resolution.Status == domain.AgentResolutionReviewRequired || resolution.Status == domain.AgentResolutionRejected || resolution.Status == domain.AgentResolutionCancelled || resolution.Status == domain.AgentResolutionExpired {
 		return nil
 	}
@@ -550,49 +649,55 @@ func (service *AgentResolutionService) Run(ctx context.Context, operation domain
 	}
 	settings := configuration.Settings.Agent.WithDefaults()
 	if !settings.Enabled || !agentCapabilityEnabled(settings, resolution.Capability) {
-		return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionCancelled, "agent_disabled", "Agent assistance was disabled before execution")
+		return service.finishInactive(ctx, resolution, operation.ID, stageVersion, domain.AgentResolutionCancelled, "agent_disabled", "Agent assistance was disabled before execution")
 	}
 	if resolution.Capability == domain.AgentCapabilityRSSPreacquisitionMapping {
 		current, err := service.queries.IsCurrentRSSPreacquisitionMappingScope(ctx, repository.UUIDToPG(resolution.ResourceID))
 		if errors.Is(err, pgx.ErrNoRows) {
-			return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "RSS pre-acquisition Mapping scope is no longer available")
+			return service.finishInactive(ctx, resolution, operation.ID, stageVersion, domain.AgentResolutionExpired, "agent_resolution_stale", "RSS pre-acquisition Mapping scope is no longer available")
 		}
 		if err != nil {
 			return fmt.Errorf("select current RSS pre-acquisition Mapping scope: %w", err)
 		}
 		if current == nil || !*current {
-			return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "RSS pre-acquisition Mapping scope was superseded")
+			return service.finishInactive(ctx, resolution, operation.ID, stageVersion, domain.AgentResolutionExpired, "agent_resolution_stale", "RSS pre-acquisition Mapping scope was superseded")
 		}
 	}
 	if resolution.Capability == domain.AgentCapabilityEpisodeMapping {
 		canonical, err := service.queries.IsCanonicalRSSAgentMappingAcquisition(ctx, repository.UUIDToPG(resolution.ResourceID))
 		if errors.Is(err, pgx.ErrNoRows) {
-			return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent Mapping resource is no longer available")
+			return service.finishInactive(ctx, resolution, operation.ID, stageVersion, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent Mapping resource is no longer available")
 		}
 		if err != nil {
 			return fmt.Errorf("select canonical Agent Mapping acquisition: %w", err)
 		}
 		if !canonical {
-			return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionCancelled, "agent_mapping_superseded", "another acquisition is the RSS Mapping anchor")
+			return service.finishInactive(ctx, resolution, operation.ID, stageVersion, domain.AgentResolutionCancelled, "agent_mapping_superseded", "another acquisition is the RSS Mapping anchor")
 		}
 	}
 	if !agentResolutionConfigurationMatches(configuration, resolution) {
-		return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent configuration changed before execution")
+		return service.finishInactive(ctx, resolution, operation.ID, stageVersion, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent configuration changed before execution")
 	}
 	snapshot, err := service.buildAgentContext(ctx, resolution.Capability, resolution.ResourceID)
 	if err != nil {
-		return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent resource context is no longer available")
+		return service.finishInactive(ctx, resolution, operation.ID, stageVersion, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent resource context is no longer available")
 	}
-	if !bytes.Equal(snapshot.Fingerprint[:], resolution.InputFingerprint) || !sameOptionalInt(snapshot.ResourceVersion, resolution.ResourceVersion) {
-		return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent resource context changed before execution")
+	if !agentContextMatchesResolution(snapshot, resolution) {
+		return service.finishInactive(ctx, resolution, operation.ID, stageVersion, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent resource context changed before execution")
 	}
 
 	if resolution.Status != domain.AgentResolutionProposed {
-		started, err := service.queries.StartAgentResolution(ctx, repository.UUIDToPG(resolution.ID))
+		started, err := service.queries.StartAgentResolution(ctx, db.StartAgentResolutionParams{
+			ID: repository.UUIDToPG(resolution.ID), OperationID: repository.UUIDToPG(operation.ID), ExpectedVersion: int32(stageVersion),
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return service.agentResolutionStageConflict(ctx, operation, resolution.ID)
+		}
 		if err != nil {
 			return err
 		}
 		resolution = agentResolutionFromDB(started)
+		stageVersion = resolution.Version
 		apiKey, err := service.configuration.ResolveSecret(ctx, domain.SecretAgentAPIKey)
 		if err != nil {
 			return &AgentRunError{Code: "agent_not_configured", Message: "Agent API key is unavailable", Cause: err}
@@ -619,8 +724,10 @@ func (service *AgentResolutionService) Run(ctx context.Context, operation domain
 			Capability: resolution.Capability, Resource: snapshot.Resource, Tools: snapshot.Tools,
 			MaxSteps: agentToolStepBudget(resolution.Capability, snapshot), ValidateSubmission: validateSubmission,
 		})
-		if err := service.persistAgentResolutionSteps(ctx, resolution.ID, resolution.Version, harnessResult.Steps); err != nil {
+		if persisted, err := service.persistAgentResolutionSteps(ctx, operation.ID, resolution.ID, stageVersion, harnessResult.Steps); err != nil {
 			return err
+		} else if !persisted {
+			return &AgentRunError{Code: "agent_resolution_ownership_lost", Message: "the Agent resolution is no longer owned by this operation", Retryable: false}
 		}
 		if runErr != nil {
 			return agentRunError(runErr)
@@ -629,18 +736,23 @@ func (service *AgentResolutionService) Run(ctx context.Context, operation domain
 		latency := service.now().Sub(startedAt).Milliseconds()
 		proposed, err := service.queries.SaveAgentResolutionProposal(ctx, db.SaveAgentResolutionProposalParams{
 			Proposal: harnessResult.Proposal, InputTokens: &inputTokens, OutputTokens: &outputTokens,
-			ToolCallCount: int32(len(harnessResult.Steps)), LatencyMilliseconds: &latency, ID: repository.UUIDToPG(resolution.ID),
+			ToolCallCount: int32(len(harnessResult.Steps)), LatencyMilliseconds: &latency,
+			ID: repository.UUIDToPG(resolution.ID), OperationID: repository.UUIDToPG(operation.ID), ExpectedVersion: int32(stageVersion),
 		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return service.agentResolutionStageConflict(ctx, operation, resolution.ID)
+		}
 		if err != nil {
 			return fmt.Errorf("persist Agent proposal: %w", err)
 		}
 		resolution = agentResolutionFromDB(proposed)
+		stageVersion = resolution.Version
 	}
 	currentSnapshot, err := service.buildAgentContext(ctx, resolution.Capability, resolution.ResourceID)
-	if err != nil || !bytes.Equal(currentSnapshot.Fingerprint[:], resolution.InputFingerprint) || !sameOptionalInt(currentSnapshot.ResourceVersion, resolution.ResourceVersion) {
-		return service.finishInactive(ctx, resolution, operation.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent resource context changed during execution")
+	if err != nil || !agentContextMatchesResolution(currentSnapshot, resolution) {
+		return service.finishInactive(ctx, resolution, operation.ID, stageVersion, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent resource context changed during execution")
 	}
-	return service.validateAndApply(ctx, operation.ID, resolution, snapshot)
+	return service.validateAndApply(ctx, operation.ID, stageVersion, resolution, snapshot)
 }
 
 func (service *AgentResolutionService) Get(ctx context.Context, id uuid.UUID) (domain.AgentResolution, error) {
@@ -703,6 +815,32 @@ func (service *AgentResolutionService) RetryAutomatic(
 	}
 	result := AgentResolutionCommandResult{}
 	err = service.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+		existing, readErr := scope.Queries.GetAgentResolution(ctx, repository.UUIDToPG(id))
+		if errors.Is(readErr, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		if readErr != nil {
+			return readErr
+		}
+		subtitle := existing.Capability == string(domain.AgentCapabilitySubtitleVideoMatch)
+		var contextRow db.GetSubtitleVideoMatchContextRow
+		var candidates []db.ListSubtitleVideoMatchCandidatesRow
+		if subtitle {
+			contextRow, err = scope.Queries.GetSubtitleVideoMatchContext(ctx, existing.ResourceID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return NewError("state_conflict", "the subtitle video match scope is no longer available", ErrStateConflict, nil)
+			}
+			if err != nil {
+				return err
+			}
+			if contextRow.ScopeStatus != "pending" {
+				return NewError("state_conflict", "the subtitle video match scope is not pending", ErrStateConflict, nil)
+			}
+			candidates, err = scope.Queries.ListSubtitleVideoMatchCandidates(ctx, existing.ResourceID)
+			if err != nil {
+				return err
+			}
+		}
 		current, err := scope.Queries.LockAgentResolution(ctx, repository.UUIDToPG(id))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrNotFound
@@ -714,6 +852,30 @@ func (service *AgentResolutionService) RetryAutomatic(
 		if current.Version != int32(expectedVersion) || !AutomaticAgentResolutionRetryable(currentResolution) {
 			return NewError("state_conflict", "the automatic Agent resolution cannot be resumed", ErrStateConflict, nil)
 		}
+		if subtitle {
+			owners, ownerErr := scope.Queries.ListSubtitleVideoMatchActiveOwners(ctx, existing.ResourceID)
+			if ownerErr != nil {
+				return ownerErr
+			}
+			if len(owners) != 0 {
+				return NewError("state_conflict", "a newer subtitle video match owner already holds the scope", ErrStateConflict, nil)
+			}
+			if !agentCapabilityEnabled(settings, currentResolution.Capability) || !agentResolutionConfigurationMatches(configuration, currentResolution) {
+				return NewError("state_conflict", "the subtitle Agent configuration changed before retry", ErrStateConflict, nil)
+			}
+			_, _, resourceJSON, contentErr := subtitleVideoMatchContent(contextRow, candidates)
+			if contentErr != nil {
+				return NewError("state_conflict", "the subtitle video match content is unavailable", ErrStateConflict, nil)
+			}
+			if int32PointerToInt(current.ResourceVersion) == nil {
+				expected := sha256.Sum256(subtitleVideoMatchFingerprintInput(resourceJSON, contextRow.TaskVersion))
+				if !bytes.Equal(expected[:], current.InputFingerprint) {
+					return NewError("state_conflict", "the subtitle video match content changed before retry", ErrStateConflict, nil)
+				}
+			} else if !subtitleVideoMatchFingerprintMatches(resourceJSON, int32PointerToInt(current.ResourceVersion), current.InputFingerprint) {
+				return NewError("state_conflict", "the subtitle video match content changed before retry", ErrStateConflict, nil)
+			}
+		}
 		scheduled, err := service.operations.ScheduleInTx(ctx, scope, ScheduleOperationRequest{
 			Kind: appqueue.KindAgentResolve, ResourceType: "agent_resolution", ResourceID: id,
 			IdempotencyKey: fmt.Sprintf("agent.resolve.auto-retry:%s:%d", id, expectedVersion),
@@ -723,9 +885,17 @@ func (service *AgentResolutionService) RetryAutomatic(
 		if err != nil {
 			return err
 		}
-		requeued, err := scope.Queries.RequeueAgentResolution(ctx, db.RequeueAgentResolutionParams{
-			OperationID: repository.UUIDToPG(scheduled.Operation.ID), ID: repository.UUIDToPG(id), ExpectedVersion: int32(expectedVersion),
-		})
+		var requeued db.AgentResolution
+		if subtitle {
+			requeued, err = scope.Queries.RequeueSubtitleAgentResolution(ctx, db.RequeueSubtitleAgentResolutionParams{
+				OperationID: repository.UUIDToPG(scheduled.Operation.ID), ID: repository.UUIDToPG(id),
+				PreviousOperationID: current.OperationID, ExpectedVersion: int32(expectedVersion),
+			})
+		} else {
+			requeued, err = scope.Queries.RequeueAgentResolution(ctx, db.RequeueAgentResolutionParams{
+				OperationID: repository.UUIDToPG(scheduled.Operation.ID), ID: repository.UUIDToPG(id), ExpectedVersion: int32(expectedVersion),
+			})
+		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			return NewError("state_conflict", "the automatic Agent resolution changed before retry", ErrStateConflict, nil)
 		}
@@ -763,6 +933,7 @@ func AutomaticAgentResolutionRetryable(resolution domain.AgentResolution) bool {
 func (service *AgentResolutionService) validateAndApply(
 	ctx context.Context,
 	operationID uuid.UUID,
+	stageVersion int,
 	resolution domain.AgentResolution,
 	snapshot agentContextSnapshot,
 ) error {
@@ -770,7 +941,7 @@ func (service *AgentResolutionService) validateAndApply(
 	if err != nil {
 		return err
 	}
-	configuration, current, err := service.loadAgentApplicationConfiguration(ctx, operationID, resolution)
+	configuration, current, err := service.loadAgentApplicationConfiguration(ctx, operationID, stageVersion, resolution)
 	if err != nil || !current {
 		return err
 	}
@@ -782,10 +953,10 @@ func (service *AgentResolutionService) validateAndApply(
 		return err
 	}
 	if validation.Verdict != domain.AgentValidationAutoApplicable {
-		return service.failAutomaticProposal(ctx, operationID, resolution, validation)
+		return service.failAutomaticProposal(ctx, operationID, stageVersion, resolution, validation)
 	}
 	if !agentCapabilityAutomatic(configuration.Settings.Agent, resolution.Capability) {
-		return service.failAutomaticProposal(ctx, operationID, resolution, domain.AgentProposalValidation{
+		return service.failAutomaticProposal(ctx, operationID, stageVersion, resolution, domain.AgentProposalValidation{
 			Verdict: domain.AgentValidationInvalid, ReasonCodes: []string{"agent_capability_not_automatic"},
 		})
 	}
@@ -795,7 +966,7 @@ func (service *AgentResolutionService) validateAndApply(
 		return err
 	}
 	if service.rssRealtime != nil {
-		if _, current, err := service.loadAgentApplicationConfiguration(ctx, operationID, resolution); err != nil || !current {
+		if _, current, err := service.loadAgentApplicationConfiguration(ctx, operationID, stageVersion, resolution); err != nil || !current {
 			return err
 		}
 	}
@@ -815,7 +986,7 @@ func (service *AgentResolutionService) validateAndApply(
 	case domain.AgentCapabilitySubtitleVideoMatch:
 		return service.applySubtitleVideoMatch(ctx, resolution, proposal.(domain.AgentSubtitleVideoMatchProposal), validation)
 	default:
-		return service.failAutomaticProposal(ctx, operationID, resolution, domain.AgentProposalValidation{
+		return service.failAutomaticProposal(ctx, operationID, stageVersion, resolution, domain.AgentProposalValidation{
 			Verdict: domain.AgentValidationInvalid, ReasonCodes: []string{"agent_capability_unsupported"},
 		})
 	}
@@ -827,17 +998,17 @@ func agentResolutionConfigurationMatches(configuration domain.Configuration, res
 		settings.Model == resolution.Model && providerOrigin(settings.BaseURL) == resolution.ProviderOrigin
 }
 
-func (service *AgentResolutionService) loadAgentApplicationConfiguration(ctx context.Context, operationID uuid.UUID, resolution domain.AgentResolution) (domain.Configuration, bool, error) {
+func (service *AgentResolutionService) loadAgentApplicationConfiguration(ctx context.Context, operationID uuid.UUID, stageVersion int, resolution domain.AgentResolution) (domain.Configuration, bool, error) {
 	configuration, err := service.configuration.Load(ctx)
 	if err != nil {
 		return domain.Configuration{}, false, err
 	}
 	settings := configuration.Settings.Agent.WithDefaults()
 	if !settings.Enabled || !agentCapabilityEnabled(settings, resolution.Capability) {
-		return configuration, false, service.finishInactive(ctx, resolution, operationID, domain.AgentResolutionCancelled, "agent_disabled", "Agent assistance was disabled before application")
+		return configuration, false, service.finishInactive(ctx, resolution, operationID, stageVersion, domain.AgentResolutionCancelled, "agent_disabled", "Agent assistance was disabled before application")
 	}
 	if !agentResolutionConfigurationMatches(configuration, resolution) {
-		return configuration, false, service.finishInactive(ctx, resolution, operationID, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent configuration changed before application")
+		return configuration, false, service.finishInactive(ctx, resolution, operationID, stageVersion, domain.AgentResolutionExpired, "agent_resolution_stale", "Agent configuration changed before application")
 	}
 	return configuration, true, nil
 }
@@ -845,6 +1016,7 @@ func (service *AgentResolutionService) loadAgentApplicationConfiguration(ctx con
 func (service *AgentResolutionService) failAutomaticProposal(
 	ctx context.Context,
 	operationID uuid.UUID,
+	stageVersion int,
 	resolution domain.AgentResolution,
 	validation domain.AgentProposalValidation,
 ) error {
@@ -856,9 +1028,14 @@ func (service *AgentResolutionService) failAutomaticProposal(
 		message = "Agent proposal could not be resolved automatically"
 	}
 	err := service.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+		if resolution.Capability == domain.AgentCapabilitySubtitleVideoMatch {
+			if _, lockErr := scope.Queries.LockSubtitleVideoMatchScopeTask(ctx, repository.UUIDToPG(resolution.ResourceID)); lockErr != nil && !errors.Is(lockErr, pgx.ErrNoRows) {
+				return fmt.Errorf("lock subtitle video match scope: %w", lockErr)
+			}
+		}
 		updated, err := scope.Queries.FailValidatedAgentResolution(ctx, db.FailValidatedAgentResolutionParams{
 			Validation: validationJSON, ErrorCode: &code, ErrorMessage: &message, ID: repository.UUIDToPG(resolution.ID),
-			OperationID: repository.UUIDToPG(operationID),
+			OperationID: repository.UUIDToPG(operationID), ExpectedVersion: int32(stageVersion),
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
@@ -866,7 +1043,7 @@ func (service *AgentResolutionService) failAutomaticProposal(
 		if err != nil {
 			return err
 		}
-		return reconcileSubtitleVideoMatchInScope(ctx, scope.Queries, resolution, updated.Status, code, message)
+		return reconcileSubtitleVideoMatchInScope(ctx, scope.Queries, resolution, updated, operationID, code, message)
 	})
 	return err
 }
@@ -1792,16 +1969,7 @@ func (service *AgentResolutionService) applySubtitleVideoMatch(
 ) error {
 	validationJSON, _ := json.Marshal(validation)
 	return service.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
-		lockedResolution, err := scope.Queries.LockAgentResolution(ctx, repository.UUIDToPG(resolution.ID))
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.ErrNotFound
-		}
-		if err != nil {
-			return fmt.Errorf("lock Agent subtitle video match resolution: %w", err)
-		}
-		if lockedResolution.Version != int32(resolution.Version) || (lockedResolution.Status != string(domain.AgentResolutionProposed) && lockedResolution.Status != string(domain.AgentResolutionReviewRequired)) {
-			return NewError("state_conflict", "the Agent resolution changed before subtitle video match was applied", ErrStateConflict, nil)
-		}
+		// S/T → R：先锁 scope/task 并重读当前内容，再锁/重读决议状态。
 		contextRow, err := scope.Queries.GetSubtitleVideoMatchContext(ctx, repository.UUIDToPG(resolution.ResourceID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrNotFound
@@ -1815,6 +1983,39 @@ func (service *AgentResolutionService) applySubtitleVideoMatch(
 		candidates, err := scope.Queries.ListSubtitleVideoMatchCandidates(ctx, repository.UUIDToPG(resolution.ResourceID))
 		if err != nil {
 			return fmt.Errorf("list Agent subtitle video match scope candidates: %w", err)
+		}
+		lockedResolution, err := scope.Queries.LockAgentResolution(ctx, repository.UUIDToPG(resolution.ID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock Agent subtitle video match resolution: %w", err)
+		}
+		if repository.UUIDFromPG(lockedResolution.OperationID) != resolution.OperationID || lockedResolution.Version != int32(resolution.Version) ||
+			(lockedResolution.Status != string(domain.AgentResolutionProposed) && lockedResolution.Status != string(domain.AgentResolutionReviewRequired)) {
+			return NewError("state_conflict", "the Agent resolution changed before subtitle video match was applied", ErrStateConflict, nil)
+		}
+		_, _, currentResourceJSON, contentErr := subtitleVideoMatchContent(contextRow, candidates)
+		if contentErr != nil {
+			return NewError("state_conflict", "the subtitle video match content is unavailable", ErrStateConflict, nil)
+		}
+		if int32PointerToInt(lockedResolution.ResourceVersion) != nil {
+			if !subtitleVideoMatchFingerprintMatches(currentResourceJSON, int32PointerToInt(lockedResolution.ResourceVersion), lockedResolution.InputFingerprint) {
+				return NewError("state_conflict", "the subtitle video match content changed before application", ErrStateConflict, nil)
+			}
+		} else {
+			fingerprintInput := subtitleVideoMatchFingerprintInput(currentResourceJSON, contextRow.TaskVersion)
+			expected := sha256.Sum256(fingerprintInput)
+			if !bytes.Equal(expected[:], lockedResolution.InputFingerprint) {
+				return NewError("state_conflict", "the subtitle video match content changed before application", ErrStateConflict, nil)
+			}
+		}
+		owners, ownerErr := scope.Queries.ListSubtitleVideoMatchActiveOwners(ctx, repository.UUIDToPG(resolution.ResourceID))
+		if ownerErr != nil {
+			return ownerErr
+		}
+		if len(owners) != 1 || repository.UUIDFromPG(owners[0].ID) != resolution.ID {
+			return NewError("state_conflict", "the subtitle video match resolution is not the unique active owner", ErrStateConflict, nil)
 		}
 		selectedID := strings.TrimSpace(proposal.Selected.CandidateID)
 		found := false
@@ -1842,9 +2043,12 @@ func (service *AgentResolutionService) applySubtitleVideoMatch(
 		if err != nil {
 			return fmt.Errorf("schedule Agent subtitle prepare: %w", err)
 		}
-		if _, err := scope.Queries.CompleteAgentResolution(ctx, db.CompleteAgentResolutionParams{
+		if _, err := scope.Queries.CompleteSubtitleAgentResolution(ctx, db.CompleteSubtitleAgentResolutionParams{
 			Status: string(domain.AgentResolutionApplied), Validation: validationJSON, ID: repository.UUIDToPG(resolution.ID),
-		}); err != nil {
+			OperationID: repository.UUIDToPG(resolution.OperationID), ExpectedVersion: int32(resolution.Version),
+		}); errors.Is(err, pgx.ErrNoRows) {
+			return NewError("state_conflict", "the Agent resolution changed before subtitle video match completion", ErrStateConflict, nil)
+		} else if err != nil {
 			return fmt.Errorf("complete Agent subtitle video match resolution: %w", err)
 		}
 		return appendResourceEvent(ctx, scope.Queries, "episode_task", repository.UUIDFromPG(contextRow.TaskID), scheduled.Operation.ID, uuid.Nil, "subtitle.video_match_saved", map[string]any{
@@ -1886,11 +2090,16 @@ func downloadResolutionItemsFromAgentProposal(files []db.DownloadFile, proposal 
 	return items, nil
 }
 
-func (service *AgentResolutionService) finishInactive(ctx context.Context, resolution domain.AgentResolution, operationID uuid.UUID, status domain.AgentResolutionStatus, code, message string) error {
+func (service *AgentResolutionService) finishInactive(ctx context.Context, resolution domain.AgentResolution, operationID uuid.UUID, stageVersion int, status domain.AgentResolutionStatus, code, message string) error {
 	return service.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+		if resolution.Capability == domain.AgentCapabilitySubtitleVideoMatch {
+			if _, lockErr := scope.Queries.LockSubtitleVideoMatchScopeTask(ctx, repository.UUIDToPG(resolution.ResourceID)); lockErr != nil && !errors.Is(lockErr, pgx.ErrNoRows) {
+				return fmt.Errorf("lock subtitle video match scope: %w", lockErr)
+			}
+		}
 		failed, err := scope.Queries.FailAgentResolution(ctx, db.FailAgentResolutionParams{
 			Status: string(status), ErrorCode: &code, ErrorMessage: &message, ID: repository.UUIDToPG(resolution.ID),
-			OperationID: repository.UUIDToPG(operationID),
+			OperationID: repository.UUIDToPG(operationID), ExpectedVersion: int32(stageVersion),
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
@@ -1898,29 +2107,27 @@ func (service *AgentResolutionService) finishInactive(ctx context.Context, resol
 		if err != nil {
 			return err
 		}
-		return reconcileSubtitleVideoMatchInScope(ctx, scope.Queries, resolution, failed.Status, code, message)
+		return reconcileSubtitleVideoMatchInScope(ctx, scope.Queries, resolution, failed, operationID, code, message)
 	})
 }
 
 // reconcileSubtitleVideoMatchInScope 在字幕匹配决议进入失败或取消终态后收敛
-// 等待中的任务字幕分支，避免任务永久停留在 processing。
+// 等待中的任务字幕分支，避免任务永久停留在 processing。只有 CAS 返回的当前
+// owner 终态行能进入 repository 的锁内复验。
 func reconcileSubtitleVideoMatchInScope(
 	ctx context.Context,
 	queries *db.Queries,
 	resolution domain.AgentResolution,
-	status string,
+	updated db.AgentResolution,
+	operationID uuid.UUID,
 	code string,
 	message string,
 ) error {
 	if resolution.Capability != domain.AgentCapabilitySubtitleVideoMatch {
 		return nil
 	}
-	var expectedTaskVersion *int32
-	if resolution.ResourceVersion != nil {
-		value := int32(*resolution.ResourceVersion)
-		expectedTaskVersion = &value
-	}
-	return repository.ReconcileSubtitleVideoMatchTask(ctx, queries, repository.UUIDToPG(resolution.ResourceID), status, code, message, expectedTaskVersion, pgtype.UUID{})
+	return repository.ReconcileSubtitleVideoMatchTask(ctx, queries, updated.ResourceID, updated.ID, updated.OperationID,
+		updated.Version, updated.Status, code, message, repository.UUIDToPG(operationID))
 }
 
 func agentCapabilityAutomatic(settings domain.AgentSettings, capability domain.AgentCapability) bool {
@@ -1985,28 +2192,82 @@ func agentResolutionFromDB(row db.AgentResolution) domain.AgentResolution {
 
 func (service *AgentResolutionService) persistAgentResolutionSteps(
 	ctx context.Context,
+	operationID uuid.UUID,
 	resolutionID uuid.UUID,
 	resolutionVersion int,
 	steps []agentharness.Step,
-) error {
+) (bool, error) {
 	sequences, err := agentResolutionStepSequences(resolutionVersion, steps)
 	if err != nil {
-		return fmt.Errorf("persist Agent resolution steps: %w", err)
+		return false, fmt.Errorf("persist Agent resolution steps: %w", err)
 	}
-	for index, step := range steps {
-		status := step.Status
-		if status == "" {
-			status = "succeeded"
-		}
-		if _, err := service.queries.CreateAgentResolutionStep(ctx, db.CreateAgentResolutionStepParams{
-			ID: repository.UUIDToPG(uuid.New()), ResolutionID: repository.UUIDToPG(resolutionID), Sequence: sequences[index],
-			ToolName: step.ToolName, Status: status, ArgumentsDigest: step.ArgumentsDigest, ResultDigest: step.ResultDigest,
-			ErrorCode: optionalString(step.ErrorCode),
-		}); err != nil {
-			return fmt.Errorf("persist Agent resolution step: %w", err)
-		}
+	if len(steps) == 0 {
+		return true, nil
 	}
-	return nil
+	persisted := false
+	err = service.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+		locked, lockErr := scope.Queries.LockAgentResolution(ctx, repository.UUIDToPG(resolutionID))
+		if errors.Is(lockErr, pgx.ErrNoRows) {
+			return nil
+		}
+		if lockErr != nil {
+			return fmt.Errorf("lock Agent resolution steps: %w", lockErr)
+		}
+		if repository.UUIDFromPG(locked.OperationID) != operationID {
+			// 旧 operation 的 Provider 结果不得写入已被新 operation 接管的决议。
+			return nil
+		}
+		for index, step := range steps {
+			status := step.Status
+			if status == "" {
+				status = "succeeded"
+			}
+			if _, stepErr := scope.Queries.CreateAgentResolutionStep(ctx, db.CreateAgentResolutionStepParams{
+				ID: repository.UUIDToPG(uuid.New()), ResolutionID: repository.UUIDToPG(resolutionID), Sequence: sequences[index],
+				ToolName: step.ToolName, Status: status, ArgumentsDigest: step.ArgumentsDigest, ResultDigest: step.ResultDigest,
+				ErrorCode: optionalString(step.ErrorCode),
+			}); stepErr != nil {
+				return fmt.Errorf("persist Agent resolution step: %w", stepErr)
+			}
+		}
+		persisted = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return persisted, nil
+}
+
+// agentContextMatchesResolution 用已存 resource_version 重算字幕 fingerprint，
+// 只归一化无害的 task.version 推进；其他能力保持原有精确比较。
+func agentContextMatchesResolution(snapshot agentContextSnapshot, resolution domain.AgentResolution) bool {
+	if resolution.Capability == domain.AgentCapabilitySubtitleVideoMatch && resolution.ResourceVersion != nil {
+		return subtitleVideoMatchFingerprintMatches(snapshot.Resource, resolution.ResourceVersion, resolution.InputFingerprint)
+	}
+	return bytes.Equal(snapshot.Fingerprint[:], resolution.InputFingerprint) && sameOptionalInt(snapshot.ResourceVersion, resolution.ResourceVersion)
+}
+
+// agentResolutionStageConflict 在 Start/Proposal CAS 0 行后区分归属丢失、
+// 已终态与并发同名阶段；0 行调用方绝不能继续应用或收敛 scope。
+func (service *AgentResolutionService) agentResolutionStageConflict(ctx context.Context, operation domain.Operation, resolutionID uuid.UUID) error {
+	current, err := service.queries.GetAgentResolution(ctx, repository.UUIDToPG(resolutionID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &AgentRunError{Code: "agent_resolution_not_found", Message: "Agent resolution was not found", Retryable: false}
+	}
+	if err != nil {
+		return err
+	}
+	if repository.UUIDFromPG(current.OperationID) != operation.ID {
+		return &AgentRunError{Code: "agent_resolution_ownership_lost", Message: "the Agent resolution is owned by another operation", Retryable: false}
+	}
+	switch domain.AgentResolutionStatus(current.Status) {
+	case domain.AgentResolutionApplied, domain.AgentResolutionReviewRequired, domain.AgentResolutionRejected,
+		domain.AgentResolutionCancelled, domain.AgentResolutionExpired, domain.AgentResolutionFailed:
+		return nil
+	default:
+		return &AgentRunError{Code: "agent_resolution_busy", Message: "the Agent resolution changed during this attempt", Retryable: true}
+	}
 }
 
 func agentResolutionStepSequences(resolutionVersion int, steps []agentharness.Step) ([]int32, error) {
@@ -2133,6 +2394,38 @@ func sameOptionalInt32(left, right *int32) bool {
 		return left == nil && right == nil
 	}
 	return *left == *right
+}
+
+// subtitleOwnerConfigurationRelation 在 S/T 锁内比较当前请求配置与活动 owner
+// 的持久配置。owner 版本更高表示本次请求快照过期，必须拒绝而不能 supersede；
+// 同版本但字段不同视为无法排序的冲突；owner 版本更低表示请求更新，可换代。
+type subtitleOwnerConfigRelation int
+
+const (
+	subtitleOwnerConfigStale subtitleOwnerConfigRelation = iota
+	subtitleOwnerConfigCurrent
+	subtitleOwnerConfigOlder
+)
+
+func subtitleOwnerConfigurationRelation(
+	owner db.AgentResolution,
+	configuration domain.Configuration,
+	settings domain.AgentSettings,
+	origin string,
+	promptVersion string,
+) subtitleOwnerConfigRelation {
+	fieldsMatch := owner.Protocol == settings.Protocol && owner.ProviderOrigin == origin && owner.Model == settings.Model &&
+		owner.PromptVersion == promptVersion && owner.ToolsetVersion == agentharness.ToolsetVersion
+	if owner.ConfigurationVersion > configuration.Version {
+		return subtitleOwnerConfigStale
+	}
+	if owner.ConfigurationVersion == configuration.Version {
+		if !fieldsMatch {
+			return subtitleOwnerConfigStale
+		}
+		return subtitleOwnerConfigCurrent
+	}
+	return subtitleOwnerConfigOlder
 }
 
 // agentResolutionIdentityMatches 在同一事务、决议行锁内验证既有行的完整

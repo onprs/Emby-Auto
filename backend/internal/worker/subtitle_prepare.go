@@ -75,10 +75,10 @@ func (handler *SubtitlePrepareHandler) scheduleSubtitleAgentMatch(
 		if stateErr != nil {
 			return mediaStoreFailure("subtitle", stateErr)
 		}
-		if state.ActiveResolution() && state.CoversTaskVersion() && !state.CancellationRequested {
+		if state.ActiveResolution() && state.CoversGeneration() && !state.CancellationRequested {
 			return nil
 		}
-		if state.CancellationRequested && state.ActiveResolution() && state.CoversTaskVersion() {
+		if state.CancellationRequested && state.ActiveResolution() && state.CoversGeneration() {
 			// 取消已请求但尚未收敛：等待取消路径回写任务终态，不重复调度。
 			return nil
 		}
@@ -146,7 +146,7 @@ func (handler *SubtitlePrepareHandler) scheduleSubtitleAgentMatch(
 		if stateErr != nil {
 			return mediaStoreFailure("subtitle", stateErr)
 		}
-		if state.ActiveResolution() && state.CoversTaskVersion() && !state.CancellationRequested {
+		if state.ActiveResolution() && state.CoversGeneration() && !state.CancellationRequested {
 			return nil
 		}
 		if expireErr := handler.store.ExpireSubtitleVideoMatchScope(ctx, scopeID); expireErr != nil {

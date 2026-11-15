@@ -243,7 +243,7 @@ func TestAgentResolutionLegacyTimeoutExpiredRequeuesIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.service.finishInactive(fixture.ctx, resolution, fixture.created.Operation.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "legacy context changed"); err != nil {
+	if err := fixture.service.finishInactive(fixture.ctx, resolution, fixture.created.Operation.ID, resolution.Version, domain.AgentResolutionExpired, "agent_resolution_stale", "legacy context changed"); err != nil {
 		t.Fatalf("finishInactive() error = %v", err)
 	}
 	if err := fixture.lifecycle.SucceedAttempt(fixture.ctx, fixture.created.Operation.ID, 1); err != nil {
@@ -285,11 +285,15 @@ func TestAgentResolutionLegacyTimeoutTerminalIdentityIsStableIntegration(t *test
 				t.Fatalf("StartAttempt() error = %v", err)
 			}
 			if applied {
-				if _, err := db.New(fixture.pool).StartAgentResolution(fixture.ctx, repository.UUIDToPG(fixture.created.Resolution.ID)); err != nil {
+				started, err := db.New(fixture.pool).StartAgentResolution(fixture.ctx, db.StartAgentResolutionParams{
+					ID: repository.UUIDToPG(fixture.created.Resolution.ID), OperationID: repository.UUIDToPG(fixture.created.Operation.ID),
+					ExpectedVersion: int32(fixture.created.Resolution.Version),
+				})
+				if err != nil {
 					t.Fatalf("StartAgentResolution() error = %v", err)
 				}
 				if _, err := db.New(fixture.pool).CompleteAgentResolution(fixture.ctx, db.CompleteAgentResolutionParams{
-					Status: string(domain.AgentResolutionApplied), Validation: []byte(`{}`), ID: repository.UUIDToPG(fixture.created.Resolution.ID),
+					Status: string(domain.AgentResolutionApplied), Validation: []byte(`{}`), ID: started.ID,
 				}); err != nil {
 					t.Fatalf("CompleteAgentResolution() error = %v", err)
 				}
@@ -552,7 +556,7 @@ func TestAgentResolutionLateOldOperationCannotTerminalizeRequeuedResolutionInteg
 		t.Fatalf("late old operation terminal error = %v, want no rows", terminalErr)
 	}
 	// 旧 Run 的 finishInactive 同样不能回收新 operation 接管的决议。
-	if err := fixture.service.finishInactive(fixture.ctx, requeued.Resolution, oldOperationID, domain.AgentResolutionExpired, "agent_resolution_stale", "late old execution"); err != nil {
+	if err := fixture.service.finishInactive(fixture.ctx, requeued.Resolution, oldOperationID, fixture.created.Resolution.Version, domain.AgentResolutionExpired, "agent_resolution_stale", "late old execution"); err != nil {
 		t.Fatalf("late old finishInactive() error = %v", err)
 	}
 	unchanged := fixture.resolution(t, requeued.Resolution.ID)
@@ -563,7 +567,7 @@ func TestAgentResolutionLateOldOperationCannotTerminalizeRequeuedResolutionInteg
 	assertQueuedEventForOperation(t, fixture.ctx, fixture.pool, requeued.Operation.ID, 1)
 
 	// 当前 operation 仍是合法 owner：其终态必须生效。
-	if err := fixture.service.finishInactive(fixture.ctx, requeued.Resolution, requeued.Operation.ID, domain.AgentResolutionExpired, "agent_resolution_stale", "current execution ended"); err != nil {
+	if err := fixture.service.finishInactive(fixture.ctx, requeued.Resolution, requeued.Operation.ID, requeued.Resolution.Version, domain.AgentResolutionExpired, "agent_resolution_stale", "current execution ended"); err != nil {
 		t.Fatalf("current finishInactive() error = %v", err)
 	}
 	terminal := fixture.resolution(t, requeued.Resolution.ID)
@@ -580,11 +584,16 @@ func TestAgentResolutionLegacyTimeoutProposedCommandIsReusedIntegration(t *testi
 	if _, err := fixture.lifecycle.StartAttempt(fixture.ctx, fixture.created.Operation.ID, 1, "legacy-proposed-worker"); err != nil {
 		t.Fatalf("StartAttempt() error = %v", err)
 	}
-	if _, err := db.New(fixture.pool).StartAgentResolution(fixture.ctx, repository.UUIDToPG(fixture.created.Resolution.ID)); err != nil {
+	started, err := db.New(fixture.pool).StartAgentResolution(fixture.ctx, db.StartAgentResolutionParams{
+		ID: repository.UUIDToPG(fixture.created.Resolution.ID), OperationID: repository.UUIDToPG(fixture.created.Operation.ID),
+		ExpectedVersion: int32(fixture.created.Resolution.Version),
+	})
+	if err != nil {
 		t.Fatalf("StartAgentResolution() error = %v", err)
 	}
 	if _, err := db.New(fixture.pool).SaveAgentResolutionProposal(fixture.ctx, db.SaveAgentResolutionProposalParams{
-		Proposal: []byte(`{"decision":"resolved"}`), ToolCallCount: 0, ID: repository.UUIDToPG(fixture.created.Resolution.ID),
+		Proposal: []byte(`{"decision":"resolved"}`), ToolCallCount: 0, ID: started.ID,
+		OperationID: repository.UUIDToPG(fixture.created.Operation.ID), ExpectedVersion: started.Version,
 	}); err != nil {
 		t.Fatalf("SaveAgentResolutionProposal() error = %v", err)
 	}

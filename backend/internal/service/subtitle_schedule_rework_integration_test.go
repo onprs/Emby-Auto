@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/domain"
 	"github.com/onprs/emby-auto/backend/internal/platform/database"
+	"github.com/onprs/emby-auto/backend/internal/repository"
 	"github.com/onprs/emby-auto/backend/internal/testutil"
 )
 
@@ -111,8 +113,8 @@ VALUES ($9, 'embedded-2', 'embedded', 2, 'ass', 'chi', '简日双语'),
 	if state.ActiveResolution() {
 		t.Fatalf("orphan scope reported an active resolution: %#v", state)
 	}
-	if state.CoversTaskVersion() {
-		t.Fatal("orphan scope must not claim coverage without a resolution")
+	if state.CoversGeneration() {
+		t.Fatal("orphan scope must not claim coverage without a unique active owner")
 	}
 
 	// 模拟第一次调度失败后用户重试：作废范围并复活（换候选集），随后调度成功。
@@ -139,7 +141,7 @@ VALUES ($9, 'embedded-2', 'embedded', 2, 'ass', 'chi', '简日双语'),
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !state.ActiveResolution() || !state.CoversTaskVersion() {
+	if !state.CoversGeneration() {
 		t.Fatalf("scheduling state after successful schedule = %#v", state)
 	}
 	if state.ResolutionID == nil || *state.ResolutionID != created.Resolution.ID {
@@ -149,7 +151,7 @@ VALUES ($9, 'embedded-2', 'embedded', 2, 'ass', 'chi', '简日双语'),
 		t.Fatal("fresh schedule must not report a pending cancellation")
 	}
 
-	// 任务版本推进后（旧 generation），调度状态不再承接。
+	// 正常 VideoReady/task.version 推进不改变唯一活动 owner；重复请求不新建代。
 	if _, err := pool.Exec(ctx, `UPDATE episode_tasks SET version = version + 1 WHERE id = $1`, taskID); err != nil {
 		t.Fatal(err)
 	}
@@ -157,24 +159,80 @@ VALUES ($9, 'embedded-2', 'embedded', 2, 'ass', 'chi', '简日双语'),
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.CoversTaskVersion() {
-		t.Fatalf("stale generation must not cover the new task version: %#v", state)
+	if !state.CoversGeneration() || state.ResolutionID == nil || *state.ResolutionID != created.Resolution.ID {
+		t.Fatalf("VideoReady task.version advance must not discard the current owner: %#v", state)
+	}
+	var operationsBefore int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM operations WHERE kind = 'agent.resolve' AND resource_id = $1`, repository.UUIDToPG(created.Resolution.ID)).Scan(&operationsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if operationsBefore != 1 {
+		t.Fatalf("agent operations after VideoReady = %d, want 1", operationsBefore)
 	}
 
-	// 旧 generation 失败不得回收新范围或失败新任务。
-	var newVersion int32
-	if err := pool.QueryRow(ctx, `SELECT version FROM episode_tasks WHERE id = $1`, taskID).Scan(&newVersion); err != nil {
+	// 真正换代：scope 复用替换候选并 supersede 旧 owner；新 CreateAutomatic 之前
+	// 存在无 owner 窗口，旧 operation 晚到终态不得回收新 scope/任务。
+	if err := workflow.ExpireSubtitleVideoMatchScope(ctx, scopeID); err != nil {
+		t.Fatalf("ExpireSubtitleVideoMatchScope() error = %v", err)
+	}
+	if _, err := workflow.CreateSubtitleVideoMatchScope(ctx, taskID, []domain.SubtitleMatchCandidate{
+		{CandidateID: "embedded-6", Source: domain.SubtitleSourceEmbedded, StreamIndex: 6, Format: domain.SubtitleASS, Language: "chi", Title: "新代轨道"},
+		{CandidateID: "embedded-7", Source: domain.SubtitleSourceEmbedded, StreamIndex: 7, Format: domain.SubtitleASS, Language: "chi", Title: "新代第二轨"},
+	}); err != nil {
+		t.Fatalf("new generation CreateSubtitleVideoMatchScope() error = %v", err)
+	}
+	state, err = workflow.GetSubtitleVideoMatchSchedulingState(ctx, taskID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE agent_resolutions SET status = 'failed', error_code = 'agent_request_timeout', error_message = 'fixture', completed_at = now(), version = version + 1 WHERE id = $1`, created.Resolution.ID); err != nil {
+	if state.CoversGeneration() || state.ActiveOwnerCount != 0 {
+		t.Fatalf("no-owner window must not report coverage: %#v", state)
+	}
+	oldCode, oldMessage := "agent_request_timeout", "late old generation terminal"
+	_, lateErr := db.New(pool).MarkAgentResolutionOperationTerminal(ctx, db.MarkAgentResolutionOperationTerminalParams{
+		Status: string(domain.AgentResolutionFailed), ErrorCode: &oldCode, ErrorMessage: &oldMessage,
+		ID: repository.UUIDToPG(created.Resolution.ID), OperationID: repository.UUIDToPG(created.Operation.ID),
+	})
+	if !errors.Is(lateErr, pgx.ErrNoRows) {
+		t.Fatalf("late old terminal error = %v, want no rows", lateErr)
+	}
+	var taskState, subtitleState, scopeStatus string
+	if err := pool.QueryRow(ctx, `
+SELECT task.state, task.subtitle_state, scope.status
+FROM episode_tasks AS task JOIN subtitle_video_match_scopes AS scope ON scope.task_id = task.id
+WHERE task.id = $1`, repository.UUIDToPG(taskID)).Scan(&taskState, &subtitleState, &scopeStatus); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE episode_tasks SET version = version - 1 WHERE id = $1`, taskID); err != nil {
+	if taskState != string(domain.TaskProcessing) || subtitleState != string(domain.SubtitleExtractingConverting) || scopeStatus != "pending" {
+		t.Fatalf("late old terminal changed new generation: task=%s/%s scope=%s", taskState, subtitleState, scopeStatus)
+	}
+
+	// 新请求在当前锁内重新验证内容并取得当前租约。
+	current, err := NewAgentResolutionService(queries, transactor, scheduler, reworkSubtitleResolver(), nil, nil).CreateAutomatic(ctx, AutomaticAgentResolutionRequest{
+		Capability: domain.AgentCapabilitySubtitleVideoMatch, ResourceID: scopeID,
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomatic() for new generation error = %v", err)
+	}
+	state, err = workflow.GetSubtitleVideoMatchSchedulingState(ctx, taskID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	var resolutionResourceVersion *int32
-	if err := pool.QueryRow(ctx, `SELECT resource_version FROM agent_resolutions WHERE id = $1`, created.Resolution.ID).Scan(&resolutionResourceVersion); err != nil {
+	if !state.CoversGeneration() || state.ResolutionID == nil || *state.ResolutionID != current.Resolution.ID {
+		t.Fatalf("new generation owner = %#v, want %s", state, current.Resolution.ID)
+	}
+	_, lateErr = db.New(pool).MarkAgentResolutionOperationTerminal(ctx, db.MarkAgentResolutionOperationTerminalParams{
+		Status: string(domain.AgentResolutionFailed), ErrorCode: &oldCode, ErrorMessage: &oldMessage,
+		ID: repository.UUIDToPG(created.Resolution.ID), OperationID: repository.UUIDToPG(created.Operation.ID),
+	})
+	if !errors.Is(lateErr, pgx.ErrNoRows) {
+		t.Fatalf("late old terminal with new owner error = %v, want no rows", lateErr)
+	}
+	state, err = workflow.GetSubtitleVideoMatchSchedulingState(ctx, taskID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("resolution resource_version = %v, current task version = %d", resolutionResourceVersion, newVersion)
+	if !state.CoversGeneration() || state.ResolutionID == nil || *state.ResolutionID != current.Resolution.ID {
+		t.Fatalf("late old terminal reclaimed new owner: %#v", state)
+	}
 }

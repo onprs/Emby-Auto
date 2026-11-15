@@ -780,6 +780,7 @@ func (workflow *MediaWorkflow) GetSubtitleVideoMatchSchedulingState(ctx context.
 		ResolutionVersion:     int(row.ResolutionVersion),
 		OperationStatus:       row.OperationStatus,
 		CancellationRequested: row.CancellationRequested,
+		ActiveOwnerCount:      int(row.ActiveOwnerCount),
 	}
 	if row.ResolutionID.Valid {
 		resolutionID := repository.UUIDFromPG(row.ResolutionID)
@@ -788,10 +789,6 @@ func (workflow *MediaWorkflow) GetSubtitleVideoMatchSchedulingState(ctx context.
 	if row.OperationID.Valid {
 		operationID := repository.UUIDFromPG(row.OperationID)
 		state.OperationID = &operationID
-	}
-	if row.ResolutionTaskVersion != nil {
-		version := int(*row.ResolutionTaskVersion)
-		state.ResolutionTaskVersion = &version
 	}
 	return state, nil
 }

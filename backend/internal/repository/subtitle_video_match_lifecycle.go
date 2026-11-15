@@ -12,42 +12,64 @@ import (
 
 // ReconcileSubtitleVideoMatchTask 收敛 Agent 字幕匹配决议的终态。
 //
-// 字幕匹配等待期间任务字幕分支停留在 extracting_or_converting，而
-// subtitle.prepare 操作已经成功结束；若 Agent 决议失败或取消而不回写任务，
-// 任务会永久停留在 processing。这里过期仍处于 pending 的匹配范围，并把
-// 任务字幕分支标记为失败或取消。任务重试时
-// MediaWorkflow.CreateSubtitleVideoMatchScope 会复用已过期范围并换用新的候选集，
-// 因此不会重新命中同一个等待中的范围。expectedTaskVersion 非空时，只有任务
-// 版本仍与失败决议一致才收敛；旧 generation 的失败不得回收新范围或新任务。
+// 只有当前租约 owner 在本事务中成功从 active 转为终态（调用方已用
+// operation_id/version/status CAS 更新，并把返回行传进来）才允许过期 scope
+// 和标记任务终态。这里再在 S/T→R 锁序下重读 R，核对 operation/version/status；
+// 任一不匹配或存在其他活动 owner 时无副作用退出，因此旧 terminal、CAS 0 行
+// 或缓存对象都不能回收新 scope/新任务。
 func ReconcileSubtitleVideoMatchTask(
 	ctx context.Context,
 	queries *db.Queries,
 	scopeID pgtype.UUID,
+	resolutionID pgtype.UUID,
+	expectedOperationID pgtype.UUID,
+	expectedVersion int32,
 	status string,
 	code string,
 	message string,
-	expectedTaskVersion *int32,
 	operationID pgtype.UUID,
 ) error {
-	if !scopeID.Valid {
+	if !scopeID.Valid || !resolutionID.Valid || !expectedOperationID.Valid {
 		return nil
 	}
-	if expectedTaskVersion != nil {
-		currentVersion, err := queries.GetSubtitleVideoMatchTaskVersion(ctx, scopeID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("load subtitle video match task version: %w", err)
-		}
-		if currentVersion != *expectedTaskVersion {
-			// 任务版本已经推进，失败的是旧 generation；不能回收新范围或失败新任务。
-			return nil
-		}
+	scope, err := queries.LockSubtitleVideoMatchScopeTask(ctx, scopeID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("lock subtitle video match task: %w", err)
+	}
+	if scope.Status != "pending" {
+		return nil
+	}
+	locked, err := queries.LockAgentResolution(ctx, resolutionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("lock subtitle video match resolution: %w", err)
+	}
+	// 核对本事务中确实完成的 active→terminal 转换；旧行/0 行/缓存 terminal
+	// 不能凭“暂时没有其它 active”回收 scope。
+	if UUIDFromPG(locked.OperationID) != UUIDFromPG(expectedOperationID) ||
+		locked.Version != expectedVersion || locked.Status != status {
+		return nil
+	}
+	switch status {
+	case "failed", "cancelled", "expired", "rejected", "applied", "review_required":
+	default:
+		return nil
+	}
+	owners, err := queries.ListSubtitleVideoMatchActiveOwners(ctx, scopeID)
+	if err != nil {
+		return fmt.Errorf("list subtitle video match active owners: %w", err)
+	}
+	if len(owners) != 0 {
+		// 还有其它活动 owner：当前终态不能回收 scope，让新 owner 继续完成。
+		return nil
 	}
 	taskID, err := queries.ExpireSubtitleVideoMatchScope(ctx, scopeID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// 匹配范围已应用或已过期时没有等待中的任务需要收敛。
 		return nil
 	}
 	if err != nil {

@@ -545,6 +545,16 @@ func failAgentResolutionResource(
 	code string,
 	message string,
 ) error {
+	// 字幕租约写入口统一 S/T→R；operation lifecycle 已持有 O，因此是 O→S/T→R。
+	existing, readErr := queries.GetAgentResolution(ctx, operation.ResourceID)
+	if readErr != nil && !errors.Is(readErr, pgx.ErrNoRows) {
+		return fmt.Errorf("load Agent resolution resource: %w", readErr)
+	}
+	if readErr == nil && existing.Capability == "subtitle_video_match" {
+		if _, lockErr := queries.LockSubtitleVideoMatchScopeTask(ctx, existing.ResourceID); lockErr != nil && !errors.Is(lockErr, pgx.ErrNoRows) {
+			return fmt.Errorf("lock subtitle video match scope: %w", lockErr)
+		}
+	}
 	resolution, err := queries.MarkAgentResolutionOperationTerminal(ctx, db.MarkAgentResolutionOperationTerminalParams{
 		Status: status, ErrorCode: &code, ErrorMessage: &message, ID: operation.ResourceID, OperationID: operation.ID,
 	})
@@ -555,8 +565,9 @@ func failAgentResolutionResource(
 		return fmt.Errorf("finish Agent resolution resource: %w", err)
 	}
 	if resolution.Capability == "subtitle_video_match" {
-		if err := ReconcileSubtitleVideoMatchTask(ctx, queries, resolution.ResourceID, status, code, message, resolution.ResourceVersion, operation.ID); err != nil {
-			return err
+		if reconcileErr := ReconcileSubtitleVideoMatchTask(ctx, queries, resolution.ResourceID, resolution.ID, resolution.OperationID,
+			resolution.Version, status, code, message, operation.ID); reconcileErr != nil {
+			return reconcileErr
 		}
 	}
 	topic := "agent.resolution_failed"

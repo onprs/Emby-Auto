@@ -880,9 +880,36 @@ func (service *AgentResolutionService) buildSubtitleVideoMatchAgentContext(ctx c
 	if len(candidateRows) < 2 {
 		return agentContextSnapshot{}, NewError("agent_resolution_not_allowed", "subtitle video match requires at least two candidates", ErrStateConflict, nil)
 	}
-	videoPath, err := securePreviewPath(row.SavePath, row.SourceVideoRelativePath)
+	videoPath, candidates, resourceJSON, err := subtitleVideoMatchContent(row, candidateRows)
 	if err != nil {
 		return agentContextSnapshot{}, NewError("subtitle_video_path_invalid", "the source video path is unsafe", ErrStateConflict, nil)
+	}
+	match := &scopedSubtitleVideoMatch{
+		TaskID: repository.UUIDFromPG(row.TaskID), SeriesTitle: row.SeriesTitle,
+		TargetSeason:  intFromInt32(row.TargetSeasonNumber),
+		TargetEpisode: intFromInt32(row.TargetEpisodeNumber),
+		TargetTitle:   stringValue(row.TargetEpisodeTitle), VideoPath: videoPath, Candidates: candidates,
+	}
+	fingerprintInput := subtitleVideoMatchFingerprintInput(resourceJSON, row.TaskVersion)
+	tools := []agentharness.Tool{
+		staticAgentTool("list_subtitle_candidates", "Return the bounded subtitle candidates in this scope with their metadata.", map[string]any{}, candidates),
+		service.inspectSubtitleCandidateTool(match),
+	}
+	result := snapshot("episode_task", int32Pointer(row.TaskVersion), resourceJSON, fingerprintInput, tools)
+	result.SubtitleVideoMatch = match
+	return result, nil
+}
+
+// subtitleVideoMatchContent 生成字幕匹配的 canonical resource JSON。
+// buildAgentContext、CreateAutomatic 事务内重验、Run/Apply 内容核验共用同一
+// 结构，避免字段或顺序漂移。
+func subtitleVideoMatchContent(
+	row db.GetSubtitleVideoMatchContextRow,
+	candidateRows []db.ListSubtitleVideoMatchCandidatesRow,
+) (string, []scopedSubtitleCandidate, json.RawMessage, error) {
+	videoPath, err := securePreviewPath(row.SavePath, row.SourceVideoRelativePath)
+	if err != nil {
+		return "", nil, nil, err
 	}
 	candidates := make([]scopedSubtitleCandidate, 0, len(candidateRows))
 	for _, candidate := range candidateRows {
@@ -892,13 +919,7 @@ func (service *AgentResolutionService) buildSubtitleVideoMatchAgentContext(ctx c
 			Title: stringValue(candidate.Title), Path: stringValue(candidate.Path),
 		})
 	}
-	match := &scopedSubtitleVideoMatch{
-		TaskID: repository.UUIDFromPG(row.TaskID), SeriesTitle: row.SeriesTitle,
-		TargetSeason:  intFromInt32(row.TargetSeasonNumber),
-		TargetEpisode: intFromInt32(row.TargetEpisodeNumber),
-		TargetTitle:   stringValue(row.TargetEpisodeTitle), VideoPath: videoPath, Candidates: candidates,
-	}
-	resourceJSON, _ := json.Marshal(struct {
+	resourceJSON, err := json.Marshal(struct {
 		TaskID        uuid.UUID                 `json:"taskId"`
 		SeriesTitle   string                    `json:"seriesTitle"`
 		TargetSeason  int                       `json:"targetSeason"`
@@ -906,18 +927,46 @@ func (service *AgentResolutionService) buildSubtitleVideoMatchAgentContext(ctx c
 		TargetTitle   string                    `json:"targetTitle"`
 		VideoPath     string                    `json:"videoPath"`
 		Candidates    []scopedSubtitleCandidate `json:"candidates"`
-	}{match.TaskID, match.SeriesTitle, match.TargetSeason, match.TargetEpisode, match.TargetTitle, match.VideoPath, candidates})
+	}{
+		repository.UUIDFromPG(row.TaskID), row.SeriesTitle,
+		intFromInt32(row.TargetSeasonNumber), intFromInt32(row.TargetEpisodeNumber),
+		stringValue(row.TargetEpisodeTitle), videoPath, candidates,
+	})
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return videoPath, candidates, resourceJSON, nil
+}
+
+func subtitleVideoMatchFingerprintInput(resourceJSON json.RawMessage, taskVersion int32) json.RawMessage {
 	fingerprintInput, _ := json.Marshal(struct {
 		Resource any `json:"resource"`
 		Updated  any `json:"updatedAt"`
-	}{resourceJSON, row.TaskVersion})
-	tools := []agentharness.Tool{
-		staticAgentTool("list_subtitle_candidates", "Return the bounded subtitle candidates in this scope with their metadata.", map[string]any{}, candidates),
-		service.inspectSubtitleCandidateTool(match),
+	}{resourceJSON, taskVersion})
+	return fingerprintInput
+}
+
+// subtitleVideoMatchFingerprintMatches 用已存 resource_version 重算 fingerprint。
+// 这样只归一化无害的 task.version 推进，resourceJSON 中的候选、源视频、
+// mapping/season/episode 内容仍然逐项参与哈希。
+func subtitleVideoMatchFingerprintMatches(resourceJSON json.RawMessage, storedVersion *int, fingerprint []byte) bool {
+	if storedVersion == nil || len(fingerprint) != sha256.Size {
+		return false
 	}
-	result := snapshot("episode_task", int32Pointer(row.TaskVersion), resourceJSON, fingerprintInput, tools)
-	result.SubtitleVideoMatch = match
-	return result, nil
+	sum := sha256.Sum256(subtitleVideoMatchFingerprintInput(resourceJSON, int32(*storedVersion)))
+	return bytes.Equal(sum[:], fingerprint)
+}
+
+func subtitleVideoMatchSnapshotMatches(
+	snapshot agentContextSnapshot,
+	row db.GetSubtitleVideoMatchContextRow,
+	candidateRows []db.ListSubtitleVideoMatchCandidatesRow,
+) bool {
+	_, _, resourceJSON, err := subtitleVideoMatchContent(row, candidateRows)
+	if err != nil {
+		return false
+	}
+	return subtitleVideoMatchFingerprintMatches(resourceJSON, snapshot.ResourceVersion, snapshot.Fingerprint[:])
 }
 
 func (service *AgentResolutionService) inspectSubtitleCandidateTool(match *scopedSubtitleVideoMatch) agentharness.Tool {
