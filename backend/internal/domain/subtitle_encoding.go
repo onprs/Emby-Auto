@@ -37,16 +37,27 @@ var subtitleUTF16Markers = []string{
 	"-->", "[Script Info]", "[V4+ Styles]", "[V4 Styles]", "[Events]", "Dialogue:", "WEBVTT",
 }
 
+// subtitleCharsetSampleBytes 限制 GB18030/BIG5 与无 BOM UTF-16 启发式评分的检测前缀，
+// 控制大文件的解码开销；UTF-8 与 NUL 判定必须使用完整内容。
+const subtitleCharsetSampleBytes = 256 << 10
+
 // DetectSubtitleCharset 判断外挂文本字幕的编码。
+// content 是调用方按上限读取的完整字幕内容：UTF-8 有效性与 NUL 判定覆盖完整内容，
+// 避免 256 KiB 采样边界切断多字节字符或漏掉文件尾部 NUL 造成误判。
 // label 用于在两个候选都合理时按“简体/繁体/BIG5/GBK”等标记取舍；无法可靠区分时返回
 // subtitle_charset_unsupported，避免把乱码字幕当成可用候选。
-func DetectSubtitleCharset(sample []byte, label string) (SubtitleCharset, error) {
-	if len(sample) == 0 {
+func DetectSubtitleCharset(content []byte, label string) (SubtitleCharset, error) {
+	if len(content) == 0 {
 		return "", subtitleCharsetError("the subtitle file is empty")
+	}
+	truncated := len(content) > subtitleCharsetSampleBytes
+	sample := content
+	if truncated {
+		sample = content[:subtitleCharsetSampleBytes]
 	}
 	if bytes.HasPrefix(sample, []byte{0xEF, 0xBB, 0xBF}) {
 		// UTF-8 BOM 之后仍出现 NUL 时按已损坏文本处理，不能当作正常 UTF-8。
-		if bytes.IndexByte(sample, 0) >= 0 {
+		if bytes.IndexByte(content, 0) >= 0 {
 			return "", subtitleCharsetError("the subtitle contains null bytes; save it as UTF-8 without null bytes")
 		}
 		return SubtitleCharsetUTF8, nil
@@ -59,10 +70,10 @@ func DetectSubtitleCharset(sample []byte, label string) (SubtitleCharset, error)
 	}
 	// 含 NUL 的字节不是正常 UTF-8 文本；按无 BOM UTF-16 尝试，
 	// 不能在 NUL 存在时回退到 GB18030/BIG5 评分或其他猜测。
-	if bytes.IndexByte(sample, 0) >= 0 {
-		return detectBOMLessUTF16(sample)
+	if bytes.IndexByte(content, 0) >= 0 {
+		return detectBOMLessUTF16(sample, truncated)
 	}
-	if utf8.Valid(sample) {
+	if utf8.Valid(content) {
 		return SubtitleCharsetUTF8, nil
 	}
 	gb := scoreSubtitleCharset(sample, simplifiedchinese.GB18030.NewDecoder())
@@ -95,12 +106,12 @@ func DetectSubtitleCharset(sample []byte, label string) (SubtitleCharset, error)
 
 // detectBOMLessUTF16 只能根据 NUL 字节、两种字节序解码后的可打印比例与
 // 字幕结构标记做保守判断：两种字节序都合理时返回不可重试错误，而不是猜测。
-func detectBOMLessUTF16(sample []byte) (SubtitleCharset, error) {
-	if len(sample)%2 != 0 {
+func detectBOMLessUTF16(sample []byte, truncated bool) (SubtitleCharset, error) {
+	if !truncated && len(sample)%2 != 0 {
 		return "", subtitleCharsetError("the subtitle contains null bytes but is not valid UTF-16; save it as UTF-8")
 	}
-	little := plausibleSubtitleUTF16(sample, xunicode.LittleEndian)
-	big := plausibleSubtitleUTF16(sample, xunicode.BigEndian)
+	little := plausibleSubtitleUTF16(sample, xunicode.LittleEndian, truncated)
+	big := plausibleSubtitleUTF16(sample, xunicode.BigEndian, truncated)
 	if little && big {
 		return "", subtitleCharsetError("the subtitle contains null bytes and its UTF-16 byte order is ambiguous")
 	}
@@ -113,7 +124,30 @@ func detectBOMLessUTF16(sample []byte) (SubtitleCharset, error) {
 	return "", subtitleCharsetError("the subtitle contains null bytes but is not valid UTF-16; save it as UTF-8")
 }
 
-func plausibleSubtitleUTF16(sample []byte, endianness xunicode.Endianness) bool {
+// trimTruncatedUTF16Sample 去掉采样截断产生的不完整码元：奇数长度时丢掉尾字节，
+// 末尾为高代理时丢掉该代理。仅当 sample 确实是完整文件的前缀时调用；
+// 真实 EOF 的悬挂代理不会进入该路径，仍会在解码时被拒绝。
+func trimTruncatedUTF16Sample(sample []byte, endianness xunicode.Endianness) []byte {
+	if len(sample)%2 != 0 {
+		sample = sample[:len(sample)-1]
+	}
+	if len(sample) < 2 {
+		return sample
+	}
+	last := uint16(sample[len(sample)-2])<<8 | uint16(sample[len(sample)-1])
+	if endianness == xunicode.LittleEndian {
+		last = last>>8 | last<<8
+	}
+	if last >= 0xD800 && last <= 0xDBFF {
+		sample = sample[:len(sample)-2]
+	}
+	return sample
+}
+
+func plausibleSubtitleUTF16(sample []byte, endianness xunicode.Endianness, truncated bool) bool {
+	if truncated {
+		sample = trimTruncatedUTF16Sample(sample, endianness)
+	}
 	decoded, _, err := transform.Bytes(xunicode.UTF16(endianness, xunicode.IgnoreBOM).NewDecoder(), sample)
 	if err != nil || len(decoded) == 0 || !utf8.Valid(decoded) {
 		return false

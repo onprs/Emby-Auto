@@ -11,10 +11,7 @@ import (
 	"github.com/onprs/emby-auto/backend/internal/domain"
 )
 
-const (
-	maxSubtitleSourceBytes     = 64 << 20
-	subtitleCharsetSampleBytes = 256 << 10
-)
+const maxSubtitleSourceBytes = 64 << 20
 
 // prepareSubtitleSource 把外挂文本字幕统一转换为 UTF-8，供 FFmpeg 与内容检查使用。
 // UTF-8 源直接复用原路径；其它编码写入 stagingDirectory 下的临时文件，
@@ -24,11 +21,7 @@ func prepareSubtitleSource(sourcePath, stagingDirectory string) (string, func(),
 	if err != nil {
 		return "", nil, err
 	}
-	sample := content
-	if len(sample) > subtitleCharsetSampleBytes {
-		sample = sample[:subtitleCharsetSampleBytes]
-	}
-	charset, err := domain.DetectSubtitleCharset(sample, filepath.Base(sourcePath))
+	charset, err := domain.DetectSubtitleCharset(content, filepath.Base(sourcePath))
 	if err != nil {
 		return "", nil, err
 	}

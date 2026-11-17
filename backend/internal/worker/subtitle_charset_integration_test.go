@@ -3,6 +3,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -124,5 +125,163 @@ func TestSubtitlePrepareConvertsLegacyChineseEncodingsWithRealFFmpegIntegration(
 				t.Fatalf("转换临时字幕未清理：%v", matches)
 			}
 		})
+	}
+}
+
+// 验证超过 256 KiB 的 UTF-8 ASS 与跨采样边界的无 BOM/BOM UTF-16 字幕都能
+// 通过真实 SubtitlePrepareHandler + FFmpeg 生成有效简体 ASS，且原始文件不被改写。
+func TestSubtitlePrepareLargeUTF8AndUTF16BoundaryWithRealFFmpegIntegration(t *testing.T) {
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("当前维护环境未安装 FFmpeg")
+	}
+	ffprobePath, err := exec.LookPath("ffprobe")
+	if err != nil {
+		t.Skip("当前维护环境未安装 FFprobe")
+	}
+	root := t.TempDir()
+	tools := mediatools.New(mediatools.OSExecutor{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	utf16Fixture := func(endianness unicode.Endianness, bomPolicy unicode.BOMPolicy) []byte {
+		t.Helper()
+		unitsBefore := subtitleSourceSampleBytesForTest/2 - 1
+		if bomPolicy == unicode.UseBOM {
+			unitsBefore--
+		}
+		text := utf16BoundarySRTTextForTest(t, unitsBefore)
+		encoded, _, encodeErr := transform.Bytes(unicode.UTF16(endianness, bomPolicy).NewEncoder(), []byte(text))
+		if encodeErr != nil {
+			t.Fatalf("编码 UTF-16 字幕失败：%v", encodeErr)
+		}
+		return encoded
+	}
+	tests := []struct {
+		name         string
+		subtitleName string
+		content      []byte
+		format       domain.SubtitleFormat
+		want         string
+	}{
+		{
+			name: "large_utf8_ass", subtitleName: "episode.zh-Hans.ass",
+			content: largeUTF8ASSAtSampleBoundary(t, nil, '中', 2), format: domain.SubtitleASS,
+			want: "简体中文字幕测试",
+		},
+		{
+			name: "large_utf16le_bomless_surrogate", subtitleName: "episode.zh-Hans.srt",
+			content: utf16Fixture(unicode.LittleEndian, unicode.IgnoreBOM), format: domain.SubtitleSRT,
+			want: "这是简体中文字幕测试",
+		},
+		{
+			name: "large_utf16be_bomless_surrogate", subtitleName: "episode.zh-Hans.srt",
+			content: utf16Fixture(unicode.BigEndian, unicode.IgnoreBOM), format: domain.SubtitleSRT,
+			want: "这是简体中文字幕测试",
+		},
+		{
+			name: "large_utf16le_bom_surrogate", subtitleName: "episode.zh-Hans.srt",
+			content: utf16Fixture(unicode.LittleEndian, unicode.UseBOM), format: domain.SubtitleSRT,
+			want: "这是简体中文字幕测试",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			taskRoot := filepath.Join(root, test.name)
+			downloadRoot := filepath.Join(taskRoot, "download")
+			stagingRoot := filepath.Join(taskRoot, "staging")
+			if err := os.MkdirAll(downloadRoot, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := tools.RunFFmpeg(ctx, ffmpegPath, []string{
+				"-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=128x96:rate=10:duration=1",
+				"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-threads", "1",
+				"-f", "matroska", filepath.Join(downloadRoot, "episode.mkv"),
+			}); err != nil {
+				t.Fatalf("生成测试视频失败：%v", err)
+			}
+			sourcePath := filepath.Join(downloadRoot, test.subtitleName)
+			if err := os.WriteFile(sourcePath, test.content, 0o640); err != nil {
+				t.Fatal(err)
+			}
+			taskID := uuid.New()
+			store := &subtitleStoreStub{command: domain.TaskMediaCommand{
+				TaskID: taskID, State: domain.TaskProcessing, SubtitleState: domain.SubtitleExtractingConverting,
+				SavePath: downloadRoot, SourceVideoFileID: uuid.New(), SourceVideoRelativePath: "episode.mkv",
+				Names: domain.EpisodeFileNames{BaseName: "Show - S01E01", SubtitleName: "Show - S01E01.ass"},
+				ExternalSubtitles: []domain.TaskExternalSubtitle{{
+					SourceFileID: uuid.New(), RelativePath: test.subtitleName, Language: "zh-Hans", Format: test.format,
+				}},
+			}}
+			configuration := mediaTestConfiguration(stagingRoot)
+			configuration.configuration.Settings.Paths.FFmpegPath = ffmpegPath
+			configuration.configuration.Settings.Paths.FFprobePath = ffprobePath
+			if err := NewSubtitlePrepareHandler(configuration, tools, store).Handle(
+				ctx, domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+			); err != nil {
+				t.Fatalf("Handle() error = %v", err)
+			}
+			content, readErr := os.ReadFile(store.completion.FilePath)
+			if readErr != nil {
+				t.Fatalf("读取产物失败：%v", readErr)
+			}
+			if !strings.Contains(string(content), test.want) {
+				t.Fatalf("产物缺少预期文本 %q", test.want)
+			}
+			if err := domain.ValidateASS(content); err != nil {
+				t.Fatalf("产物 ASS 校验失败：%v", err)
+			}
+			got, readErr := os.ReadFile(sourcePath)
+			if readErr != nil || !bytes.Equal(got, test.content) {
+				t.Fatalf("原始字幕被改写：error=%v", readErr)
+			}
+			if matches, _ := filepath.Glob(filepath.Join(stagingRoot, taskID.String(), ".subtitle-source.*")); len(matches) != 0 {
+				t.Fatalf("转换临时字幕未清理：%v", matches)
+			}
+		})
+	}
+}
+
+func TestSubtitleInspectorLargeUTF8AtSampleBoundaryWithRealFFmpegIntegration(t *testing.T) {
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("当前维护环境未安装 FFmpeg")
+	}
+	ffprobePath, err := exec.LookPath("ffprobe")
+	if err != nil {
+		t.Skip("当前维护环境未安装 FFprobe")
+	}
+	root := t.TempDir()
+	downloadRoot := filepath.Join(root, "download")
+	subtitleDirectory := filepath.Join(downloadRoot, "Show")
+	if err := os.MkdirAll(subtitleDirectory, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	content := largeUTF8ASSAtSampleBoundary(t, nil, '中', 2)
+	sourcePath := filepath.Join(subtitleDirectory, "episode.zh-Hans.ass")
+	if err := os.WriteFile(sourcePath, content, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	tools := mediatools.New(mediatools.OSExecutor{})
+	configuration := mediaTestConfiguration(filepath.Join(root, "staging"))
+	configuration.configuration.Settings.Paths.FFmpegPath = ffmpegPath
+	configuration.configuration.Settings.Paths.FFprobePath = ffprobePath
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	inspector := NewSubtitleTextInspector(configuration, tools)
+	inspection, err := inspector.InspectSubtitleText(ctx, domain.SubtitleInspectionRequest{
+		VideoPath: filepath.Join(subtitleDirectory, "episode.mkv"), BasePath: downloadRoot,
+		CandidateID: "external:" + uuid.NewString(), Source: domain.SubtitleSourceExternal,
+		Format: domain.SubtitleASS, Path: "Show/episode.zh-Hans.ass",
+	})
+	if err != nil {
+		t.Fatalf("InspectSubtitleText() error = %v", err)
+	}
+	if !inspection.Found || inspection.HanCount == 0 || !strings.Contains(inspection.Sample, "这是") {
+		t.Fatalf("inspection = %#v", inspection)
+	}
+	got, err := os.ReadFile(sourcePath)
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("原始字幕被检查改写：error=%v", err)
 	}
 }
