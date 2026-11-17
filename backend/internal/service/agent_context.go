@@ -11,6 +11,7 @@ import (
 	"math"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -884,19 +885,13 @@ func (service *AgentResolutionService) buildSubtitleVideoMatchAgentContext(ctx c
 	if len(candidateRows) < 2 {
 		return agentContextSnapshot{}, NewError("agent_resolution_not_allowed", "subtitle video match requires at least two candidates", ErrStateConflict, nil)
 	}
-	videoPath, candidates, resourceJSON, err := subtitleVideoMatchContent(row, candidateRows)
+	match, resourceJSON, err := subtitleVideoMatchContent(row, candidateRows)
 	if err != nil {
 		return agentContextSnapshot{}, NewError("subtitle_video_path_invalid", "the source video path is unsafe", ErrStateConflict, nil)
 	}
-	match := &scopedSubtitleVideoMatch{
-		TaskID: repository.UUIDFromPG(row.TaskID), SeriesTitle: row.SeriesTitle,
-		TargetSeason:  intFromInt32(row.TargetSeasonNumber),
-		TargetEpisode: intFromInt32(row.TargetEpisodeNumber),
-		TargetTitle:   stringValue(row.TargetEpisodeTitle), VideoPath: videoPath, Candidates: candidates,
-	}
-	fingerprintInput := subtitleVideoMatchFingerprintInput(resourceJSON, row.TaskVersion)
+	fingerprintInput := subtitleVideoMatchFingerprintInput(match, resourceJSON, row.TaskVersion)
 	tools := []agentharness.Tool{
-		staticAgentTool("list_subtitle_candidates", "Return the bounded subtitle candidates in this scope with their metadata.", map[string]any{}, candidates),
+		staticAgentTool("list_subtitle_candidates", "Return the bounded subtitle candidates in this scope with their metadata.", map[string]any{}, match.Candidates),
 		service.inspectSubtitleCandidateTool(match),
 	}
 	result := snapshot("episode_task", int32Pointer(row.TaskVersion), resourceJSON, fingerprintInput, tools)
@@ -904,16 +899,24 @@ func (service *AgentResolutionService) buildSubtitleVideoMatchAgentContext(ctx c
 	return result, nil
 }
 
-// subtitleVideoMatchContent 生成字幕匹配的 canonical resource JSON。
+// subtitleInspectionPath 是内部指纹使用的候选原始检查路径。
+// 指纹按 CandidateID 排序后哈希，避免 map 迭代顺序造成漂移。
+type subtitleInspectionPath struct {
+	CandidateID string `json:"candidateId"`
+	Path        string `json:"path"`
+}
+
+// subtitleVideoMatchContent 生成字幕匹配的内部内容与脱敏 resource JSON。
 // buildAgentContext、CreateAutomatic 事务内重验、Run/Apply 内容核验共用同一
-// 结构，避免字段或顺序漂移。
+// 结构，避免字段或顺序漂移。Resource 只面向外部 Provider；VideoPath、SavePath
+// 与原始候选路径只用于内部检查与 fingerprint。
 func subtitleVideoMatchContent(
 	row db.GetSubtitleVideoMatchContextRow,
 	candidateRows []db.ListSubtitleVideoMatchCandidatesRow,
-) (string, []scopedSubtitleCandidate, json.RawMessage, error) {
+) (*scopedSubtitleVideoMatch, json.RawMessage, error) {
 	videoPath, err := securePreviewPath(row.SavePath, row.SourceVideoRelativePath)
 	if err != nil {
-		return "", nil, nil, err
+		return nil, nil, err
 	}
 	candidates := make([]scopedSubtitleCandidate, 0, len(candidateRows))
 	inspectionPaths := make(map[string]string, len(candidateRows))
@@ -933,26 +936,37 @@ func subtitleVideoMatchContent(
 		TargetTitle:   stringValue(row.TargetEpisodeTitle), VideoPath: videoPath,
 		SavePath: stringValue(row.SavePath), inspectionPaths: inspectionPaths, Candidates: candidates,
 	}
-	resourceJSON := subtitleVideoMatchResourceJSON(match)
-	return videoPath, candidates, resourceJSON, nil
+	return match, subtitleVideoMatchResourceJSON(match), nil
 }
 
-func subtitleVideoMatchFingerprintInput(resourceJSON json.RawMessage, taskVersion int32) json.RawMessage {
+// subtitleVideoMatchFingerprintInput 生成内部内容 fingerprint 输入。
+// 脱敏 Resource、内部 videoPath、按 CandidateID 排序的原始候选路径与
+// taskVersion 一并参与哈希；内部路径不写入 Resource，也不发往 Provider。
+func subtitleVideoMatchFingerprintInput(match *scopedSubtitleVideoMatch, resourceJSON json.RawMessage, taskVersion int32) json.RawMessage {
+	inspectionPaths := make([]subtitleInspectionPath, 0, len(match.inspectionPaths))
+	for candidateID, inspectionPath := range match.inspectionPaths {
+		inspectionPaths = append(inspectionPaths, subtitleInspectionPath{CandidateID: candidateID, Path: inspectionPath})
+	}
+	sort.Slice(inspectionPaths, func(left, right int) bool {
+		return inspectionPaths[left].CandidateID < inspectionPaths[right].CandidateID
+	})
 	fingerprintInput, _ := json.Marshal(struct {
-		Resource any `json:"resource"`
-		Updated  any `json:"updatedAt"`
-	}{resourceJSON, taskVersion})
+		Resource        any                      `json:"resource"`
+		VideoPath       string                   `json:"videoPath"`
+		InspectionPaths []subtitleInspectionPath `json:"inspectionPaths"`
+		Updated         any                      `json:"updatedAt"`
+	}{resourceJSON, match.VideoPath, inspectionPaths, taskVersion})
 	return fingerprintInput
 }
 
 // subtitleVideoMatchFingerprintMatches 用已存 resource_version 重算 fingerprint。
-// 这样只归一化无害的 task.version 推进，resourceJSON 中的候选、源视频、
+// 这样只归一化无害的 task.version 推进，候选、源视频、原始候选路径与
 // mapping/season/episode 内容仍然逐项参与哈希。
-func subtitleVideoMatchFingerprintMatches(resourceJSON json.RawMessage, storedVersion *int, fingerprint []byte) bool {
-	if storedVersion == nil || len(fingerprint) != sha256.Size {
+func subtitleVideoMatchFingerprintMatches(match *scopedSubtitleVideoMatch, resourceJSON json.RawMessage, storedVersion *int, fingerprint []byte) bool {
+	if match == nil || storedVersion == nil || len(fingerprint) != sha256.Size {
 		return false
 	}
-	sum := sha256.Sum256(subtitleVideoMatchFingerprintInput(resourceJSON, int32(*storedVersion)))
+	sum := sha256.Sum256(subtitleVideoMatchFingerprintInput(match, resourceJSON, int32(*storedVersion)))
 	return bytes.Equal(sum[:], fingerprint)
 }
 

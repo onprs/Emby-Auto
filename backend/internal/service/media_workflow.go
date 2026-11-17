@@ -777,7 +777,7 @@ func (workflow *MediaWorkflow) GetSubtitleVideoMatchSchedulingState(ctx context.
 		if err != nil {
 			return err
 		}
-		_, _, resourceJSON, err := subtitleVideoMatchContent(contextRow, candidates)
+		match, resourceJSON, err := subtitleVideoMatchContent(contextRow, candidates)
 		if err != nil {
 			return err
 		}
@@ -787,7 +787,7 @@ func (workflow *MediaWorkflow) GetSubtitleVideoMatchSchedulingState(ctx context.
 			TaskVersion:           int(contextRow.TaskVersion),
 			TaskState:             contextRow.TaskState,
 			SubtitleState:         contextRow.SubtitleState,
-			ContentObservation:    sha256.Sum256(resourceJSON),
+			ContentObservation:    sha256.Sum256(subtitleVideoMatchFingerprintInput(match, resourceJSON, contextRow.TaskVersion)),
 			ResolutionStatus:      row.ResolutionStatus,
 			ResolutionErrorCode:   row.ResolutionErrorCode,
 			ResolutionVersion:     int(row.ResolutionVersion),
@@ -869,11 +869,11 @@ func expireOwnerlessSubtitleScopeInTx(
 	if err != nil {
 		return domain.SubtitleScopeExpiry{}, err
 	}
-	_, _, resourceJSON, err := subtitleVideoMatchContent(contextRow, candidates)
+	match, resourceJSON, err := subtitleVideoMatchContent(contextRow, candidates)
 	if err != nil {
 		return domain.SubtitleScopeExpiry{}, err
 	}
-	result.ContentHash = sha256.Sum256(resourceJSON)
+	result.ContentHash = sha256.Sum256(subtitleVideoMatchFingerprintInput(match, resourceJSON, contextRow.TaskVersion))
 	owners, err := queries.ListSubtitleVideoMatchActiveOwners(ctx, repository.UUIDToPG(scopeID))
 	if err != nil {
 		return domain.SubtitleScopeExpiry{}, err

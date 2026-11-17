@@ -460,11 +460,11 @@ func (service *AgentResolutionService) createAutomaticWithSnapshot(
 			if candidateErr != nil {
 				return candidateErr
 			}
-			_, _, currentResourceJSON, contentErr := subtitleVideoMatchContent(contextRow, candidateRows)
+			currentMatch, currentResourceJSON, contentErr := subtitleVideoMatchContent(contextRow, candidateRows)
 			if contentErr != nil {
 				return NewError("state_conflict", "the subtitle video match content is unavailable", ErrStateConflict, nil)
 			}
-			if !subtitleVideoMatchFingerprintMatches(currentResourceJSON, snapshot.ResourceVersion, snapshot.Fingerprint[:]) {
+			if !subtitleVideoMatchFingerprintMatches(currentMatch, currentResourceJSON, snapshot.ResourceVersion, snapshot.Fingerprint[:]) {
 				return NewError("state_conflict", "the subtitle video match content changed before scheduling", ErrStateConflict, nil)
 			}
 			owners, ownerErr := scope.Queries.ListSubtitleVideoMatchActiveOwners(ctx, repository.UUIDToPG(input.ResourceID))
@@ -489,7 +489,7 @@ func (service *AgentResolutionService) createAutomaticWithSnapshot(
 					// task.version）完全相等时视为同一 owner；否则保守换代。
 					ownerContentMatches = bytes.Equal(owner.InputFingerprint, snapshot.Fingerprint[:])
 				} else {
-					ownerContentMatches = subtitleVideoMatchFingerprintMatches(currentResourceJSON, int32PointerToInt(owner.ResourceVersion), owner.InputFingerprint)
+					ownerContentMatches = subtitleVideoMatchFingerprintMatches(currentMatch, currentResourceJSON, int32PointerToInt(owner.ResourceVersion), owner.InputFingerprint)
 				}
 				if ownerContentMatches && relation == subtitleOwnerConfigCurrent {
 					storedOperation, operationErr := scope.Queries.GetOperation(ctx, owner.OperationID)
@@ -863,16 +863,16 @@ func (service *AgentResolutionService) RetryAutomatic(
 			if !agentCapabilityEnabled(settings, currentResolution.Capability) || !agentResolutionConfigurationMatches(configuration, currentResolution) {
 				return NewError("state_conflict", "the subtitle Agent configuration changed before retry", ErrStateConflict, nil)
 			}
-			_, _, resourceJSON, contentErr := subtitleVideoMatchContent(contextRow, candidates)
+			retryMatch, resourceJSON, contentErr := subtitleVideoMatchContent(contextRow, candidates)
 			if contentErr != nil {
 				return NewError("state_conflict", "the subtitle video match content is unavailable", ErrStateConflict, nil)
 			}
 			if int32PointerToInt(current.ResourceVersion) == nil {
-				expected := sha256.Sum256(subtitleVideoMatchFingerprintInput(resourceJSON, contextRow.TaskVersion))
+				expected := sha256.Sum256(subtitleVideoMatchFingerprintInput(retryMatch, resourceJSON, contextRow.TaskVersion))
 				if !bytes.Equal(expected[:], current.InputFingerprint) {
 					return NewError("state_conflict", "the subtitle video match content changed before retry", ErrStateConflict, nil)
 				}
-			} else if !subtitleVideoMatchFingerprintMatches(resourceJSON, int32PointerToInt(current.ResourceVersion), current.InputFingerprint) {
+			} else if !subtitleVideoMatchFingerprintMatches(retryMatch, resourceJSON, int32PointerToInt(current.ResourceVersion), current.InputFingerprint) {
 				return NewError("state_conflict", "the subtitle video match content changed before retry", ErrStateConflict, nil)
 			}
 		}
@@ -1995,16 +1995,16 @@ func (service *AgentResolutionService) applySubtitleVideoMatch(
 			(lockedResolution.Status != string(domain.AgentResolutionProposed) && lockedResolution.Status != string(domain.AgentResolutionReviewRequired)) {
 			return NewError("state_conflict", "the Agent resolution changed before subtitle video match was applied", ErrStateConflict, nil)
 		}
-		_, _, currentResourceJSON, contentErr := subtitleVideoMatchContent(contextRow, candidates)
+		currentMatch, currentResourceJSON, contentErr := subtitleVideoMatchContent(contextRow, candidates)
 		if contentErr != nil {
 			return NewError("state_conflict", "the subtitle video match content is unavailable", ErrStateConflict, nil)
 		}
 		if int32PointerToInt(lockedResolution.ResourceVersion) != nil {
-			if !subtitleVideoMatchFingerprintMatches(currentResourceJSON, int32PointerToInt(lockedResolution.ResourceVersion), lockedResolution.InputFingerprint) {
+			if !subtitleVideoMatchFingerprintMatches(currentMatch, currentResourceJSON, int32PointerToInt(lockedResolution.ResourceVersion), lockedResolution.InputFingerprint) {
 				return NewError("state_conflict", "the subtitle video match content changed before application", ErrStateConflict, nil)
 			}
 		} else {
-			fingerprintInput := subtitleVideoMatchFingerprintInput(currentResourceJSON, contextRow.TaskVersion)
+			fingerprintInput := subtitleVideoMatchFingerprintInput(currentMatch, currentResourceJSON, contextRow.TaskVersion)
 			expected := sha256.Sum256(fingerprintInput)
 			if !bytes.Equal(expected[:], lockedResolution.InputFingerprint) {
 				return NewError("state_conflict", "the subtitle video match content changed before application", ErrStateConflict, nil)
@@ -2241,9 +2241,14 @@ func (service *AgentResolutionService) persistAgentResolutionSteps(
 
 // agentContextMatchesResolution 用已存 resource_version 重算字幕 fingerprint，
 // 只归一化无害的 task.version 推进；其他能力保持原有精确比较。
+// 字幕 fingerprint 含内部 videoPath 与原始候选路径；快照缺少内部
+// SubtitleVideoMatch 时不能把脱敏 Resource 当作完整内容命中，保守拒绝。
 func agentContextMatchesResolution(snapshot agentContextSnapshot, resolution domain.AgentResolution) bool {
 	if resolution.Capability == domain.AgentCapabilitySubtitleVideoMatch && resolution.ResourceVersion != nil {
-		return subtitleVideoMatchFingerprintMatches(snapshot.Resource, resolution.ResourceVersion, resolution.InputFingerprint)
+		if snapshot.SubtitleVideoMatch == nil {
+			return false
+		}
+		return subtitleVideoMatchFingerprintMatches(snapshot.SubtitleVideoMatch, snapshot.Resource, resolution.ResourceVersion, resolution.InputFingerprint)
 	}
 	return bytes.Equal(snapshot.Fingerprint[:], resolution.InputFingerprint) && sameOptionalInt(snapshot.ResourceVersion, resolution.ResourceVersion)
 }
