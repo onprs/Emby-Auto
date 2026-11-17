@@ -106,7 +106,7 @@ func TestSubtitlePrepareConvertsLegacyChineseEncodingsWithRealFFmpegIntegration(
 			configuration.configuration.Settings.Paths.FFmpegPath = ffmpegPath
 			configuration.configuration.Settings.Paths.FFprobePath = ffprobePath
 			if err := NewSubtitlePrepareHandler(configuration, tools, store).Handle(
-				ctx, domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+				ctx, subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 			); err != nil {
 				t.Fatalf("Handle() error = %v", err)
 			}
@@ -217,7 +217,7 @@ func TestSubtitlePrepareLargeUTF8AndUTF16BoundaryWithRealFFmpegIntegration(t *te
 			configuration.configuration.Settings.Paths.FFmpegPath = ffmpegPath
 			configuration.configuration.Settings.Paths.FFprobePath = ffprobePath
 			if err := NewSubtitlePrepareHandler(configuration, tools, store).Handle(
-				ctx, domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+				ctx, subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 			); err != nil {
 				t.Fatalf("Handle() error = %v", err)
 			}

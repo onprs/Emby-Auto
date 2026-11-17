@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/onprs/emby-auto/backend/internal/domain"
 	"github.com/onprs/emby-auto/backend/internal/service"
+	"github.com/onprs/emby-auto/backend/internal/subtitlebinding"
 )
 
 const (
@@ -21,15 +22,18 @@ const (
 )
 
 type SubtitleStore interface {
-	BeginSubtitle(context.Context, uuid.UUID) (domain.TaskMediaCommand, error)
+	BeginSubtitleForOperation(context.Context, subtitlebinding.AttemptHandle, uuid.UUID) (domain.TaskMediaCommand, error)
 	CompleteArtifact(context.Context, domain.MediaArtifactCompletion) error
-	CreateSubtitleVideoMatchScope(context.Context, uuid.UUID, []domain.SubtitleMatchCandidate) (uuid.UUID, error)
+	CreateSubtitleVideoMatchScopeForOperation(context.Context, subtitlebinding.AttemptHandle, uuid.UUID, []domain.SubtitleMatchCandidate) (uuid.UUID, error)
 	GetSubtitleVideoMatchSelection(context.Context, uuid.UUID) (domain.SubtitleMatchSelection, error)
+	GetSubtitleVideoMatchSchedulingState(context.Context, uuid.UUID) (domain.SubtitleVideoMatchSchedulingState, error)
+	ExpireOwnerlessSubtitleVideoMatchScopeForOperation(context.Context, subtitlebinding.AttemptHandle, uuid.UUID, domain.SubtitleScopeObservation) (domain.SubtitleScopeExpiry, error)
 }
 
 type SubtitleMatchAgentResolutionCreator interface {
 	CapabilityEnabled(context.Context, domain.AgentCapability) (bool, error)
 	CreateAutomatic(context.Context, service.AutomaticAgentResolutionRequest) (service.AgentResolutionCommandResult, error)
+	RetryAutomatic(context.Context, uuid.UUID, int) (service.AgentResolutionCommandResult, error)
 }
 
 type SubtitlePrepareHandler struct {
@@ -47,6 +51,234 @@ func NewSubtitlePrepareHandler(configuration MediaConfiguration, tools MediaTool
 	return handler
 }
 
+// cleanupSubtitleScope 先取得与 guard 同一观察的 state（若调用方已有则复用），
+// 再交给 store 在 S/T 锁内重读并结构化返回。state 读取失败时用已知 scopeID
+// 让 guard 自行判断 absent；不会把 nil 当已过期。
+func (handler *SubtitlePrepareHandler) cleanupSubtitleScope(
+	ctx context.Context,
+	handle subtitlebinding.AttemptHandle,
+	taskID uuid.UUID,
+	scopeID uuid.UUID,
+	state *domain.SubtitleVideoMatchSchedulingState,
+) (domain.SubtitleScopeExpiry, error) {
+	observedState := state
+	if observedState == nil {
+		loaded, err := handler.store.GetSubtitleVideoMatchSchedulingState(ctx, taskID)
+		if errors.Is(err, domain.ErrNotFound) {
+			return handler.store.ExpireOwnerlessSubtitleVideoMatchScopeForOperation(ctx, handle, scopeID, domain.SubtitleScopeObservation{})
+		}
+		if err != nil {
+			return domain.SubtitleScopeExpiry{}, mediaStoreFailure("subtitle", err)
+		}
+		observedState = &loaded
+	}
+	guardScopeID := scopeID
+	if observedState.ScopeID != uuid.Nil {
+		guardScopeID = observedState.ScopeID
+	}
+	return handler.store.ExpireOwnerlessSubtitleVideoMatchScopeForOperation(ctx, handle, guardScopeID, domain.SubtitleScopeObservation{
+		TaskVersion: observedState.TaskVersion, TaskState: observedState.TaskState,
+		SubtitleState: observedState.SubtitleState, ContentHash: observedState.ContentObservation,
+	})
+}
+
+func subtitleScopeCleanupHandoff(result domain.SubtitleScopeExpiry) bool {
+	switch result.Outcome {
+	case domain.SubtitleScopeOwnerPresent, domain.SubtitleScopeAlreadyApplied:
+		return true
+	default:
+		return false
+	}
+}
+
+func subtitleScopeCleanupExpired(result domain.SubtitleScopeExpiry) bool {
+	switch result.Outcome {
+	case domain.SubtitleScopeExpired, domain.SubtitleScopeAbsent:
+		return true
+	default:
+		return false
+	}
+}
+
+func (handler *SubtitlePrepareHandler) scheduleSubtitleAgentMatch(
+	ctx context.Context,
+	handle subtitlebinding.AttemptHandle,
+	command domain.TaskMediaCommand,
+	plans []domain.SubtitlePlan,
+	probe domain.MediaProbe,
+	external []domain.SubtitleCandidate,
+) error {
+	applied, selectionErr := handler.store.GetSubtitleVideoMatchSelection(ctx, command.TaskID)
+	if selectionErr != nil {
+		return mediaStoreFailure("subtitle", selectionErr)
+	}
+	if applied.CandidateID != "" {
+		return nil
+	}
+	scopeID, scopeErr := handler.store.CreateSubtitleVideoMatchScopeForOperation(ctx, handle, command.TaskID, subtitleMatchCandidates(plans, probe.SubtitleStreams(), external))
+	if scopeErr != nil {
+		var mediaErr *domain.MediaWorkflowError
+		if !errors.As(scopeErr, &mediaErr) || mediaErr.Code != "subtitle_scope_conflict" {
+			return mediaStoreFailure("subtitle", scopeErr)
+		}
+		// scope 冲突只说明范围已存在；必须确认确实有活动决议承接，否则是
+		// 之前调度失败留下的孤儿范围，需要作废后重试。
+		state, stateErr := handler.store.GetSubtitleVideoMatchSchedulingState(ctx, command.TaskID)
+		if stateErr != nil {
+			return mediaStoreFailure("subtitle", stateErr)
+		}
+		if state.ActiveResolution() && state.CoversGeneration() && !state.CancellationRequested {
+			return nil
+		}
+		if state.CancellationRequested && state.ActiveResolution() && state.CoversGeneration() {
+			// 取消已请求但尚未收敛：等待取消路径回写任务终态，不重复调度。
+			return nil
+		}
+		if state.ScopeStatus == "applied" {
+			// 已应用的范围等待 apply 路径处理，不能作废。
+			return nil
+		}
+		cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, handle, command.TaskID, state.ScopeID, &state)
+		if cleanupErr != nil {
+			return cleanupErr
+		}
+		switch cleanup.Outcome {
+		case domain.SubtitleScopeExpired, domain.SubtitleScopeAbsent, domain.SubtitleScopeAlreadyExpired:
+		case domain.SubtitleScopeOwnerPresent, domain.SubtitleScopeAlreadyApplied:
+			return nil
+		default:
+			return retryableFailure("agent_resolution_schedule_conflict", "the Agent subtitle matching scope changed while recovering an orphan", nil)
+		}
+		// 范围已作废：本轮先用当前候选集重新创建并调度，避免只返回可重试失败
+		// 而让任务再等一轮 River 重试才能推进。
+		scopeID, scopeErr = handler.store.CreateSubtitleVideoMatchScopeForOperation(ctx, handle, command.TaskID, subtitleMatchCandidates(plans, probe.SubtitleStreams(), external))
+		if scopeErr != nil {
+			var retryMediaErr *domain.MediaWorkflowError
+			if errors.As(scopeErr, &retryMediaErr) && retryMediaErr.Code == "subtitle_scope_conflict" {
+				// 另一个 worker 同时复活了范围：交给它的调度结果，本轮先退出。
+				return retryableFailure("agent_resolution_schedule_conflict", "the Agent subtitle matching scope is being scheduled by another worker", scopeErr)
+			}
+			return mediaStoreFailure("subtitle", scopeErr)
+		}
+	}
+	if scopeID == uuid.Nil {
+		return permanentFailure("subtitle_scope_invalid", "the subtitle video match scope could not be created", nil)
+	}
+	result, agentErr := handler.agentResolutions.CreateAutomatic(ctx, service.AutomaticAgentResolutionRequest{
+		Capability: domain.AgentCapabilitySubtitleVideoMatch, ResourceID: scopeID,
+	})
+	if agentErr != nil {
+		var serviceErr *service.Error
+		if errors.As(agentErr, &serviceErr) {
+			switch serviceErr.Code {
+			case "agent_disabled", "agent_capability_disabled", "agent_not_configured":
+				// Agent 能力在调度时被关闭或未完成配置：只有本次清理真正确认
+				// ownerless/absent 才永久终止；新 owner/applied/新代次必须 handoff。
+				cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, handle, command.TaskID, scopeID, nil)
+				if cleanupErr != nil {
+					return cleanupErr
+				}
+				if subtitleScopeCleanupHandoff(cleanup) {
+					return nil
+				}
+				if !subtitleScopeCleanupExpired(cleanup) {
+					return retryableFailure("agent_resolution_schedule_conflict", "the Agent subtitle matching scope changed before the disabled cleanup", agentErr)
+				}
+				return permanentFailure(serviceErr.Code, serviceErr.Message, agentErr)
+			case "agent_resolution_requeue_exhausted":
+				// 自动恢复上限已用尽：只有 ownerless/absent 才永久失败。
+				cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, handle, command.TaskID, scopeID, nil)
+				if cleanupErr != nil {
+					return cleanupErr
+				}
+				if subtitleScopeCleanupHandoff(cleanup) {
+					return nil
+				}
+				if !subtitleScopeCleanupExpired(cleanup) {
+					return retryableFailure("agent_resolution_schedule_conflict", "the Agent subtitle matching scope changed before exhausted cleanup", agentErr)
+				}
+				return permanentFailure("agent_subtitle_match_exhausted", "the Agent subtitle matching resolution reached its automatic recovery limit", agentErr)
+			case "agent_resolution_not_required":
+				// 确定性规则已解决该任务，不需要 Agent；清理结果不改变这一结论。
+				if _, cleanupErr := handler.cleanupSubtitleScope(ctx, handle, command.TaskID, scopeID, nil); cleanupErr != nil {
+					return cleanupErr
+				}
+				return nil
+			}
+		}
+		if !errors.Is(agentErr, service.ErrStateConflict) {
+			// 范围已提交但调度失败：只有 ownerless/absent 才按原样返回可重试
+			// 调度失败；新 owner/applied/新代次必须 handoff。
+			cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, handle, command.TaskID, scopeID, nil)
+			if cleanupErr != nil {
+				return cleanupErr
+			}
+			if subtitleScopeCleanupHandoff(cleanup) {
+				return nil
+			}
+			if !subtitleScopeCleanupExpired(cleanup) {
+				return retryableFailure("agent_resolution_schedule_conflict", "the Agent subtitle matching scope changed after schedule failure", agentErr)
+			}
+			return retryableFailure("agent_resolution_schedule_failed", "the Agent subtitle matching resolution could not be scheduled", agentErr)
+		}
+		// 其余 state conflict（并发修改/已被取代）：范围可能已被其它路径承接或
+		// 失效，重新查询调度状态确认。
+		state, stateErr := handler.store.GetSubtitleVideoMatchSchedulingState(ctx, command.TaskID)
+		if stateErr != nil {
+			return mediaStoreFailure("subtitle", stateErr)
+		}
+		if state.ActiveResolution() && state.CoversGeneration() && !state.CancellationRequested {
+			return nil
+		}
+		cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, handle, command.TaskID, scopeID, &state)
+		if cleanupErr != nil {
+			return cleanupErr
+		}
+		if subtitleScopeCleanupHandoff(cleanup) {
+			return nil
+		}
+		return retryableFailure("agent_resolution_schedule_conflict", "the Agent subtitle matching resolution changed before it was scheduled", agentErr)
+	}
+	if service.AutomaticAgentResolutionRetryable(result.Resolution) {
+		if _, retryErr := handler.agentResolutions.RetryAutomatic(ctx, result.Resolution.ID, result.Resolution.Version); retryErr != nil {
+			var serviceErr *service.Error
+			if errors.As(retryErr, &serviceErr) && serviceErr.Code == "agent_resolution_requeue_exhausted" {
+				cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, handle, command.TaskID, scopeID, nil)
+				if cleanupErr != nil {
+					return cleanupErr
+				}
+				if subtitleScopeCleanupHandoff(cleanup) {
+					return nil
+				}
+				if !subtitleScopeCleanupExpired(cleanup) {
+					return retryableFailure("agent_resolution_schedule_conflict", "the Agent subtitle matching scope changed before retry exhausted cleanup", retryErr)
+				}
+				return permanentFailure("agent_subtitle_match_exhausted", "the Agent subtitle matching resolution reached its automatic recovery limit", retryErr)
+			}
+			if !errors.Is(retryErr, service.ErrStateConflict) {
+				return retryableFailure("agent_resolution_schedule_failed", "the Agent subtitle matching resolution could not be resumed", retryErr)
+			}
+		}
+	} else if result.Resolution.Status == domain.AgentResolutionFailed {
+		// 不可自动重试的失败：只有 ownerless/absent 才永久终止；新 owner/applied/
+		// 新代次必须 handoff，不能由旧调度失败误杀。
+		cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, handle, command.TaskID, scopeID, nil)
+		if cleanupErr != nil {
+			return cleanupErr
+		}
+		if subtitleScopeCleanupHandoff(cleanup) {
+			return nil
+		}
+		if !subtitleScopeCleanupExpired(cleanup) {
+			return retryableFailure("agent_resolution_schedule_conflict", "the Agent subtitle matching scope changed before failed resolution cleanup", nil)
+		}
+		return permanentFailure("agent_subtitle_match_failed", "the Agent subtitle matching resolution failed", nil)
+	}
+	// Wait for the Agent to select a candidate; the apply step schedules a
+	// fresh subtitle.prepare that carries the applied selection.
+	return nil
+}
+
 func (handler *SubtitlePrepareHandler) Handle(ctx context.Context, operation domain.Operation) error {
 	if operation.ResourceType != "episode_task" || operation.ResourceID == uuid.Nil {
 		return permanentFailure("invalid_subtitle_operation", "subtitle.prepare requires an episode task resource", nil)
@@ -54,7 +286,10 @@ func (handler *SubtitlePrepareHandler) Handle(ctx context.Context, operation dom
 	if handler.tools == nil || handler.store == nil {
 		return permanentFailure("subtitle_handler_not_configured", "subtitle handler dependencies are unavailable", nil)
 	}
-	command, err := handler.store.BeginSubtitle(ctx, operation.ResourceID)
+	if operation.SubtitleAttempt == nil || !operation.SubtitleAttempt.Valid() {
+		return permanentFailure("subtitle_attempt_missing", "subtitle.prepare requires a captured attempt handle", nil)
+	}
+	command, err := handler.store.BeginSubtitleForOperation(ctx, *operation.SubtitleAttempt, operation.ResourceID)
 	if err != nil {
 		return mediaStoreFailure("subtitle", err)
 	}
@@ -136,27 +371,8 @@ func (handler *SubtitlePrepareHandler) Handle(ctx context.Context, operation dom
 						return permanentFailure("subtitle_agent_selection_invalid", "the Agent-selected subtitle candidate is no longer available", nil)
 					}
 				} else {
-					// No selection yet: persist scope + candidates and ask the Agent.
-					scopeID, scopeErr := handler.store.CreateSubtitleVideoMatchScope(ctx, command.TaskID, subtitleMatchCandidates(plans, probe.SubtitleStreams(), external))
-					if scopeErr != nil {
-						var mediaErr *domain.MediaWorkflowError
-						if errors.As(scopeErr, &mediaErr) && mediaErr.Code == "subtitle_scope_conflict" {
-							// Scope already exists; the Agent resolution is already scheduled.
-							return nil
-						}
-						return mediaStoreFailure("subtitle", scopeErr)
-					}
-					if scopeID == uuid.Nil {
-						return permanentFailure("subtitle_scope_invalid", "the subtitle video match scope could not be created", nil)
-					}
-					if _, agentErr := handler.agentResolutions.CreateAutomatic(ctx, service.AutomaticAgentResolutionRequest{
-						Capability: domain.AgentCapabilitySubtitleVideoMatch, ResourceID: scopeID,
-					}); agentErr != nil && !errors.Is(agentErr, service.ErrStateConflict) {
-						return retryableFailure("agent_resolution_schedule_failed", "the Agent subtitle matching resolution could not be scheduled", agentErr)
-					}
-					// Wait for the Agent to select a candidate; the apply step schedules a
-					// fresh subtitle.prepare that carries the applied selection.
-					return nil
+					// 等待 Agent 选择候选；由本函数决定成功/失败，不再落入确定性转换。
+					return handler.scheduleSubtitleAgentMatch(ctx, *operation.SubtitleAttempt, command, plans, probe, external)
 				}
 			}
 		}

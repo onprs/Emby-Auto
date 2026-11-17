@@ -6,10 +6,70 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
-// MaxToolResultBytes 是单次工具结果的 JSON 字节上限。
-const MaxToolResultBytes = 64 << 10
+const (
+	// MaxToolResultBytes 是单次工具结果的 JSON 字节上限。
+	MaxToolResultBytes = 64 << 10
+	// MaxToolResultTotalBytes 限制一次工具循环累计注入上下文的工具结果字节数，
+	// 与步数上限共同约束上游请求体积和调用成本。
+	MaxToolResultTotalBytes = 2 << 20
+	// minimumToolStepTime 是发起下一次模型请求需要的最小剩余作业时间。
+	// 作业总时限由调度方按步数预算计算，剩余时间不足时提前结束而不是
+	// 等 River 硬截止后从第一轮重跑整个循环。
+	minimumToolStepTime = 2 * time.Second
+)
+
+// ToolErrorKind 描述工具执行失败的可恢复语义。
+type ToolErrorKind uint8
+
+const (
+	toolErrorInvalidArguments ToolErrorKind = iota + 1
+	toolErrorScope
+	toolErrorUnavailable
+)
+
+// ToolExecutionError 让工具执行器显式声明失败类别，避免把参数错误或
+// 瞬态依赖故障一律当作越权终止。未分类的执行器错误按暂时不可用处理。
+type ToolExecutionError struct {
+	Kind  ToolErrorKind
+	Cause error
+}
+
+func (err *ToolExecutionError) Error() string {
+	return "tool execution error"
+}
+
+func (err *ToolExecutionError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.Cause
+}
+
+// InvalidToolArguments 标记模型可自行修正的参数或调用错误。
+func InvalidToolArguments(cause error) error {
+	return &ToolExecutionError{Kind: toolErrorInvalidArguments, Cause: cause}
+}
+
+// ToolScopeViolation 标记调用超出本次决议授权范围的越权错误。
+func ToolScopeViolation(cause error) error {
+	return &ToolExecutionError{Kind: toolErrorScope, Cause: cause}
+}
+
+// ToolTemporarilyUnavailable 标记执行依赖暂时不可用、可在稍后重试的错误。
+func ToolTemporarilyUnavailable(cause error) error {
+	return &ToolExecutionError{Kind: toolErrorUnavailable, Cause: cause}
+}
+
+func toolErrorKind(err error) ToolErrorKind {
+	var executionErr *ToolExecutionError
+	if errors.As(err, &executionErr) {
+		return executionErr.Kind
+	}
+	return toolErrorUnavailable
+}
 
 type ToolDefinition struct {
 	Name        string
@@ -71,10 +131,16 @@ func (client *Client) RunToolLoop(ctx context.Context, request ToolLoopRequest) 
 	sequence := 0
 	invalidSubmissions := 0
 	invalidToolCalls := 0
+	toolResultBytes := 0
 	var lastSubmissionError error
 	for sequence < request.MaxSteps {
 		if err := ctx.Err(); err != nil {
 			return result, requestError(ctx, err)
+		}
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < minimumToolStepTime {
+			// 作业预算不足以完成下一次往返，提前收敛；从第一轮重跑无法
+			// 解决确定性的时间预算不足，因此不标记为可重试。
+			return result, &Error{Code: "agent_budget_exhausted"}
 		}
 		response, err := client.completeWithEncoder(ctx, chatRequest{
 			Model: client.model, Messages: messages, Tools: tools, Temperature: float64Pointer(0),
@@ -164,14 +230,51 @@ func (client *Client) RunToolLoop(ctx context.Context, request ToolLoopRequest) 
 				return result, err
 			}
 			if executeErr != nil {
-				step.ErrorCode = "agent_tool_scope_violation"
-				result.Steps = append(result.Steps, step)
-				return result, &Error{Code: "agent_tool_scope_violation", Cause: executeErr}
+				switch toolErrorKind(executeErr) {
+				case toolErrorInvalidArguments:
+					// 参数/调用错误消耗一步并把修复提示交还模型，与未知工具、
+					// 非法 JSON 参数使用同一修复通道。
+					invalidToolCalls++
+					step.ErrorCode = "agent_tool_arguments_invalid"
+					step.Result = repairResult(step.ErrorCode)
+					result.Steps = append(result.Steps, step)
+					messages = append(messages, chatMessage{Role: "tool", ToolCallID: call.ID, Content: string(step.Result)})
+					continue
+				case toolErrorScope:
+					step.ErrorCode = "agent_tool_scope_violation"
+					result.Steps = append(result.Steps, step)
+					return result, &Error{Code: "agent_tool_scope_violation", Cause: executeErr}
+				default:
+					// 瞬态依赖故障保留可重试语义，由 River 重试而不是让模型
+					// 在依赖不可用时反复调用工具。
+					step.ErrorCode = "agent_tool_execution_failed"
+					result.Steps = append(result.Steps, step)
+					return result, &Error{Code: "agent_tool_execution_failed", Retryable: true, Cause: executeErr}
+				}
 			}
-			if len(toolResult) > MaxToolResultBytes || !json.Valid(toolResult) {
+			if !json.Valid(toolResult) {
 				step.ErrorCode = "agent_tool_result_invalid"
 				result.Steps = append(result.Steps, step)
 				return result, &Error{Code: "agent_tool_call_invalid", Retryable: true, Cause: fmt.Errorf("tool result is invalid")}
+			}
+			if len(toolResult) > MaxToolResultBytes {
+				// 单次结果超限时降级为修复提示；工具层已尽量分页或截断，
+				// 这里保证循环不会因单个条目直接永久失败。
+				invalidToolCalls++
+				step.ErrorCode = "agent_tool_result_too_large"
+				step.Result = repairResult(step.ErrorCode)
+				result.Steps = append(result.Steps, step)
+				messages = append(messages, chatMessage{Role: "tool", ToolCallID: call.ID, Content: string(step.Result)})
+				continue
+			}
+			toolResultBytes += len(toolResult)
+			if toolResultBytes > MaxToolResultTotalBytes {
+				invalidToolCalls++
+				step.ErrorCode = "agent_tool_result_budget_exhausted"
+				step.Result = repairResult(step.ErrorCode)
+				result.Steps = append(result.Steps, step)
+				messages = append(messages, chatMessage{Role: "tool", ToolCallID: call.ID, Content: string(step.Result)})
+				continue
 			}
 			step.Result = toolResult
 			result.Steps = append(result.Steps, step)

@@ -1,7 +1,7 @@
 import { Bot, LoaderCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
-import type { AgentConfiguration, DashboardDependencyStatus, SecretUpdate } from '@/api/generated/types.gen';
+import type { AgentConfiguration, AgentResolutionMode, DashboardDependencyStatus, SecretUpdate } from '@/api/generated/types.gen';
 import { DetailErrorState, DetailLoadingState, PageBody, PageHeader } from '@/components/resource';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -73,10 +73,10 @@ function AgentForm({
     });
   };
   const setRSSFiltering = (enabled: boolean) => {
-    setSettings((current) => ({ ...current, rssCoordinateMode: enabled ? 'validated_auto' : 'off' }));
+    setSettings((current) => ({ ...current, rssCoordinateMode: toggledMode(current.rssCoordinateMode, enabled) }));
   };
   const setDownloadFileResolution = (enabled: boolean) => {
-    setSettings((current) => ({ ...current, downloadFileSelectionMode: enabled ? 'validated_auto' : 'off' }));
+    setSettings((current) => ({ ...current, downloadFileSelectionMode: toggledMode(current.downloadFileSelectionMode, enabled) }));
   };
   const setMappingEnabled = (enabled: boolean) => {
     setSettings((current) => ({
@@ -86,7 +86,7 @@ function AgentForm({
     }));
   };
   const setSubtitleVideoMatch = (enabled: boolean) => {
-    setSettings((current) => ({ ...current, subtitleVideoMatchMode: enabled ? 'validated_auto' : 'off' }));
+    setSettings((current) => ({ ...current, subtitleVideoMatchMode: toggledMode(current.subtitleVideoMatchMode, enabled) }));
   };
 
   return (
@@ -283,12 +283,19 @@ function normalizeCapabilitySettings(settings: AgentConfiguration): AgentConfigu
     };
   }
   const episodeMappingEnabled = settings.episodeMappingEnabled || settings.allowAutomaticEpisodeMapping;
+  // 保留加载到的三态值，避免保存时把未触碰的 suggest 静默改写为 validated_auto。
   return {
     ...settings,
-    rssCoordinateMode: settings.rssCoordinateMode === 'off' ? 'off' : 'validated_auto',
-    downloadFileSelectionMode: settings.downloadFileSelectionMode === 'off' ? 'off' : 'validated_auto',
-    subtitleVideoMatchMode: settings.subtitleVideoMatchMode === 'off' ? 'off' : 'validated_auto',
     episodeMappingEnabled,
     allowAutomaticEpisodeMapping: episodeMappingEnabled,
   };
+}
+
+// 开关只表达启用与停用；启用时保留已有的非 off 模式，只有从 off 开启时
+// 才使用 validated_auto。
+function toggledMode(mode: AgentResolutionMode, enabled: boolean): AgentResolutionMode {
+  if (!enabled) {
+    return 'off';
+  }
+  return mode === 'off' ? 'validated_auto' : mode;
 }

@@ -136,7 +136,7 @@ func TestSubtitlePrepareConvertsGBKExternalCandidate(t *testing.T) {
 	}
 	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(
 		context.Background(),
-		domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+		subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 	); err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
@@ -181,7 +181,7 @@ func TestSubtitlePrepareReportsCharsetFailureWithoutFFmpeg(t *testing.T) {
 	tools := &mediaToolsStub{probe: func(string) (domain.MediaProbe, error) { return domain.MediaProbe{}, nil }}
 	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(
 		context.Background(),
-		domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+		subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 	)
 	var failure *Failure
 	if !errors.As(err, &failure) || failure.Code != "subtitle_charset_unsupported" || failure.Retryable {
@@ -407,7 +407,7 @@ func TestSubtitlePrepareReusesLargeUTF8ExternalCandidateAtSampleBoundary(t *test
 	}
 	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(
 		context.Background(),
-		domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+		subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 	); err != nil {
 		t.Fatalf("Handle(valid large UTF-8 external candidate) error = %v", err)
 	}

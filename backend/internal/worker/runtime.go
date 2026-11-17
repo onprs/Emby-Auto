@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/onprs/emby-auto/backend/internal/domain"
 	appqueue "github.com/onprs/emby-auto/backend/internal/platform/riverqueue"
+	"github.com/onprs/emby-auto/backend/internal/subtitlebinding"
 	"github.com/riverqueue/river"
 )
 
@@ -24,6 +25,14 @@ type OperationLifecycle interface {
 	FailAttempt(context.Context, uuid.UUID, int, string, string, bool) error
 	CancelAttempt(context.Context, uuid.UUID, int) error
 	SnoozeAttempt(context.Context, uuid.UUID, int) error
+}
+
+type SubtitleOperationLifecycle interface {
+	HeartbeatSubtitleAttempt(context.Context, subtitlebinding.AttemptHandle) (bool, error)
+	SucceedSubtitleAttempt(context.Context, subtitlebinding.AttemptHandle) error
+	FailSubtitleAttempt(context.Context, subtitlebinding.AttemptHandle, string, string, bool) error
+	CancelSubtitleAttempt(context.Context, subtitlebinding.AttemptHandle) error
+	SnoozeSubtitleAttempt(context.Context, subtitlebinding.AttemptHandle) error
 }
 
 type Handler interface {
@@ -79,9 +88,22 @@ func (worker *operationWorker[T]) Work(ctx context.Context, job *river.Job[T]) e
 		return river.JobCancel(ErrCancellationRequested)
 	}
 
+	var subtitleLifecycle SubtitleOperationLifecycle
+	handle := operation.SubtitleAttempt
+	if handle != nil {
+		subtitleLifecycle, _ = worker.lifecycle.(SubtitleOperationLifecycle)
+		if subtitleLifecycle == nil {
+			return fmt.Errorf("subtitle lifecycle is not configured")
+		}
+	}
+
 	workCtx, cancel := context.WithCancelCause(ctx)
 	heartbeatDone := make(chan struct{})
-	go worker.heartbeat(workCtx, cancel, args.OperationID, job.Attempt, heartbeatDone)
+	if handle != nil {
+		go worker.heartbeatSubtitle(workCtx, cancel, *handle, subtitleLifecycle, heartbeatDone)
+	} else {
+		go worker.heartbeat(workCtx, cancel, args.OperationID, job.Attempt, heartbeatDone)
+	}
 
 	handlerErr := worker.handler.Handle(workCtx, operation)
 	cancel(errWorkerFinished)
@@ -95,33 +117,53 @@ func (worker *operationWorker[T]) Work(ctx context.Context, job *river.Job[T]) e
 	defer finalizeCancel()
 
 	if errors.Is(cause, ErrCancellationRequested) {
-		if err := worker.lifecycle.CancelAttempt(finalizeCtx, args.OperationID, job.Attempt); err != nil {
+		if handle != nil {
+			if err := subtitleLifecycle.CancelSubtitleAttempt(finalizeCtx, *handle); err != nil {
+				return fmt.Errorf("record subtitle cancellation: %w", err)
+			}
+		} else if err := worker.lifecycle.CancelAttempt(finalizeCtx, args.OperationID, job.Attempt); err != nil {
 			return fmt.Errorf("record operation cancellation: %w", err)
 		}
 		return river.JobCancel(ErrCancellationRequested)
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
-		if err := worker.lifecycle.SnoozeAttempt(finalizeCtx, args.OperationID, job.Attempt); err != nil {
+		if handle != nil {
+			if err := subtitleLifecycle.SnoozeSubtitleAttempt(finalizeCtx, *handle); err != nil {
+				return fmt.Errorf("record interrupted subtitle snooze: %w", err)
+			}
+		} else if err := worker.lifecycle.SnoozeAttempt(finalizeCtx, args.OperationID, job.Attempt); err != nil {
 			return fmt.Errorf("record interrupted operation snooze: %w", err)
 		}
 		return river.JobSnooze(time.Second)
 	}
 	var snoozeErr *river.JobSnoozeError
 	if cause == nil && errors.As(handlerErr, &snoozeErr) {
-		if err := worker.lifecycle.SnoozeAttempt(finalizeCtx, args.OperationID, job.Attempt); err != nil {
+		if handle != nil {
+			if err := subtitleLifecycle.SnoozeSubtitleAttempt(finalizeCtx, *handle); err != nil {
+				return fmt.Errorf("record subtitle snooze: %w", err)
+			}
+		} else if err := worker.lifecycle.SnoozeAttempt(finalizeCtx, args.OperationID, job.Attempt); err != nil {
 			return fmt.Errorf("record operation snooze: %w", err)
 		}
 		return handlerErr
 	}
 	if handlerErr == nil && cause == nil {
-		if err := worker.lifecycle.SucceedAttempt(finalizeCtx, args.OperationID, job.Attempt); err != nil {
+		if handle != nil {
+			if err := subtitleLifecycle.SucceedSubtitleAttempt(finalizeCtx, *handle); err != nil {
+				return fmt.Errorf("record successful subtitle operation: %w", err)
+			}
+		} else if err := worker.lifecycle.SucceedAttempt(finalizeCtx, args.OperationID, job.Attempt); err != nil {
 			return fmt.Errorf("record successful operation: %w", err)
 		}
 		return nil
 	}
 
 	failure := classifyFailure(handlerErr, cause)
-	if err := worker.lifecycle.FailAttempt(
+	if handle != nil {
+		if err := subtitleLifecycle.FailSubtitleAttempt(finalizeCtx, *handle, failure.Code, failure.Message, failure.Retryable); err != nil {
+			return fmt.Errorf("record failed subtitle operation: %w", errors.Join(failure, err))
+		}
+	} else if err := worker.lifecycle.FailAttempt(
 		finalizeCtx,
 		args.OperationID,
 		job.Attempt,
@@ -135,6 +177,38 @@ func (worker *operationWorker[T]) Work(ctx context.Context, job *river.Job[T]) e
 		return river.JobCancel(failure)
 	}
 	return failure
+}
+
+func (worker *operationWorker[T]) heartbeatSubtitle(
+	ctx context.Context,
+	cancel context.CancelCauseFunc,
+	handle subtitlebinding.AttemptHandle,
+	lifecycle SubtitleOperationLifecycle,
+	done chan<- struct{},
+) {
+	defer close(done)
+	interval := worker.heartbeatInterval
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			ok, err := lifecycle.HeartbeatSubtitleAttempt(ctx, handle)
+			if err != nil {
+				cancel(fmt.Errorf("subtitle heartbeat failed: %w", err))
+				return
+			}
+			if !ok {
+				cancel(ErrCancellationRequested)
+				return
+			}
+		}
+	}
 }
 
 func (worker *operationWorker[T]) heartbeat(
