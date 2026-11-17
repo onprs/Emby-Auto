@@ -28,7 +28,7 @@ API 与 Worker 是独立进程，共用 PostgreSQL、安装配置和媒体目录
 - 可访问的 qBittorrent Web API 与 Emby Server。
 - TMDb API Read Access Token。
 - 五个可由应用读写的绝对目录。
-- 首次构建需要访问 Docker Hub 及 npm、Go 模块来源。
+- 首次构建需要访问 Docker Hub、Debian 软件源（apt）及 npm、Go 模块来源。
 
 ## 1. 配置环境
 
@@ -51,6 +51,7 @@ chmod 600 deploy/.env
 | `ANIME_LIBRARY_ROOT` | Emby 动漫媒体库目录 |
 | `MOVIE_LIBRARY_ROOT` | Emby 电影媒体库目录 |
 | `APP_BIND_ADDRESS` / `APP_PORT` | Web 在宿主机上的监听地址与端口 |
+| `EMBY_AUTO_IMAGE_TAG` | 镜像标签，默认 `local`；同一主机多套部署时各套使用不同值 |
 | `SESSION_COOKIE_SECURE` | HTTPS 启用后设置为 `true` |
 
 可使用以下命令查询 Emby 服务账户：
@@ -163,15 +164,27 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml start worker
 
 ### 升级
 
-在应用处于空闲状态且备份完成后执行。先获取新版本文件，再重新构建并启动：
+在应用处于空闲状态且备份完成后执行。源码仓库与发布包二选一获取新版本，然后按下方顺序重新构建并启动。
+
+源码仓库升级：
 
 ```bash
-# 源码仓库
+# 在仓库根目录执行
 git pull --ff-only
-
-# 发布包：在包根目录解压新版本，保留已有的 deploy/.env
-tar -xzf emby-auto-compose-v新版本.tar.gz -C .
 ```
+
+发布包升级：把新版本解压到与当前包根同级的新目录，保留当前目录、原 `deploy/.env` 与备份。不要把新版本覆盖解压到正在使用的包根：`tar` 只写入包内文件，不会删除新版本已移除的旧文件，残留的旧源码仍会留在构建上下文中。命令以 `&&` 串联，任一步失败即停止，不要继续执行后续命令。
+
+```bash
+# 在旧包根目录执行；v新版本 换成实际版本号
+bundle_dir="../emby-auto-compose-v新版本" &&
+mkdir "${bundle_dir}" &&
+tar -xzf emby-auto-compose-v新版本.tar.gz -C "${bundle_dir}" &&
+cp -a deploy/.env "${bundle_dir}/deploy/.env" &&
+cd "${bundle_dir}"
+```
+
+`mkdir` 不带 `-p`：目标目录已存在时命令失败，不会把新版本文件混入既有目录。完成上述步骤后，在新目录（源码仓库则为仓库根）依次执行：
 
 ```bash
 docker compose --env-file deploy/.env -f deploy/compose.yaml build
@@ -183,9 +196,29 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d worker
 docker compose --env-file deploy/.env -f deploy/compose.yaml ps
 ```
 
-发布包在原目录解压。Compose 文件固定项目名为 `emby-auto`，卷名为 `emby-auto_postgres-data`、`emby-auto_app-data`；项目名与所在目录无关，从其它目录启动同一 Compose 文件仍会复用同一组命名卷，不会创建新卷或隔离数据。升级时应保留原目录与 `deploy/.env`，不要把两个部署指向同一组卷。
+新目录沿用原项目名 `emby-auto` 与原命名卷 `emby-auto_postgres-data`、`emby-auto_app-data`：Compose 项目名与所在目录无关，换目录不会创建新卷，也不构成数据隔离。原部署使用了自定义项目名时，新目录的后续命令必须带上相同的 `-p` 或 `COMPOSE_PROJECT_NAME`。旧目录、旧 `deploy/.env` 与升级前数据库备份是回滚来源；默认镜像标签 `local` 会在重新构建时被覆盖，不能依赖旧镜像仍在。升级失败时保持 Worker 停止，确认数据库 schema 与旧版本兼容后，再从旧目录重新构建并启动。
 
 API 启动时会依次执行应用迁移与 River 迁移。就绪检查失败时，应保持 Worker 停止并检查 API 日志；不得让旧 Worker 连接迁移失败或不兼容的数据库。
+
+### 同一主机上的多套部署
+
+同一主机运行第二套部署时，需要独立的项目名与镜像标签，并分别使用独立的端口、目录与 `deploy/.env`。只换目录或只改端口会与原部署共享命名卷或镜像。
+
+```bash
+# 在第二套部署目录中执行；deploy/.env 需设置：
+#   EMBY_AUTO_IMAGE_TAG=staging
+#   APP_PORT=8081
+#   五个媒体相关目录均使用与原部署不同的路径
+cp deploy/.env.example deploy/.env
+
+docker compose -p emby-auto-staging --env-file deploy/.env -f deploy/compose.yaml up -d --build
+```
+
+`-p emby-auto-staging` 把项目名与命名卷改为 `emby-auto-staging_postgres-data`、`emby-auto-staging_app-data`；`EMBY_AUTO_IMAGE_TAG=staging` 生成 `emby-auto-backend:staging` 与 `emby-auto-web:staging`。第二套部署的后续命令必须沿用同一 `-p emby-auto-staging`（或在该 shell 中导出 `COMPOSE_PROJECT_NAME=emby-auto-staging`），否则 Compose 会回到默认项目 `emby-auto`：
+
+```bash
+docker compose -p emby-auto-staging --env-file deploy/.env -f deploy/compose.yaml ps
+```
 
 ### 停止与删除容器
 

@@ -28,7 +28,7 @@ The API and Worker are separate processes that share PostgreSQL, installation co
 - Reachable qBittorrent Web API and Emby Server instances.
 - A TMDb API Read Access Token.
 - Five absolute directories writable by the application.
-- Network access to Docker Hub and the npm and Go module sources for the first build.
+- Network access to Docker Hub, Debian package sources (apt), and the npm and Go module sources for the first build.
 
 ## 1. Configure the Environment
 
@@ -51,6 +51,7 @@ Review at least the following settings:
 | `ANIME_LIBRARY_ROOT` | Emby anime library directory |
 | `MOVIE_LIBRARY_ROOT` | Emby movie library directory |
 | `APP_BIND_ADDRESS` / `APP_PORT` | Host address and port for the Web service |
+| `EMBY_AUTO_IMAGE_TAG` | Image tag, `local` by default; use a distinct value per deployment on the same host |
 | `SESSION_COOKIE_SECURE` | Set to `true` after HTTPS is enabled |
 
 A common way to inspect the Emby service account is:
@@ -163,15 +164,27 @@ Encrypt backups and restrict access whenever they contain database connections o
 
 ### Upgrade
 
-After confirming that the application is idle and backups are complete, obtain the new version and rebuild:
+Run the upgrade while the application is idle and after backups are complete. Obtain the new version from either the repository or a release bundle, then rebuild and restart in the order below.
+
+Repository upgrade:
 
 ```bash
-# Repository clone
+# Run in the repository root
 git pull --ff-only
-
-# Release bundle: extract the new version in the bundle root and keep the existing deploy/.env
-tar -xzf emby-auto-compose-vNEW_VERSION.tar.gz -C .
 ```
+
+Release bundle upgrade: extract the new version into a new directory next to the current bundle root, keeping the current directory, its `deploy/.env`, and the backups. Do not extract the new version over the bundle root in use: `tar` only writes the files in the archive and does not remove files the new version deleted, so stale sources remain in the build context. The commands are chained with `&&`, so any failing step stops the sequence; do not continue with the later commands.
+
+```bash
+# Run in the old bundle root; vNEW_VERSION is the actual version
+bundle_dir="../emby-auto-compose-vNEW_VERSION" &&
+mkdir "${bundle_dir}" &&
+tar -xzf emby-auto-compose-vNEW_VERSION.tar.gz -C "${bundle_dir}" &&
+cp -a deploy/.env "${bundle_dir}/deploy/.env" &&
+cd "${bundle_dir}"
+```
+
+`mkdir` runs without `-p`, so an existing target directory fails the command instead of mixing new files into it. Then run the following in the new directory (or in the repository root for a repository upgrade):
 
 ```bash
 docker compose --env-file deploy/.env -f deploy/compose.yaml build
@@ -183,9 +196,29 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d worker
 docker compose --env-file deploy/.env -f deploy/compose.yaml ps
 ```
 
-Extract release bundles in the original directory. The Compose file fixes the project name to `emby-auto`, producing volumes named `emby-auto_postgres-data` and `emby-auto_app-data`; the project name does not depend on the directory, so starting the same Compose file from another directory reuses the same named volumes instead of creating new ones or isolating data. Keep the original directory and `deploy/.env` when upgrading, and never point two deployments at the same volume set.
+The new directory keeps the original project name `emby-auto` and the original named volumes `emby-auto_postgres-data` and `emby-auto_app-data`: the Compose project name does not depend on the directory, so a new directory creates no new volumes and provides no data isolation. When the current deployment uses a custom project name, later commands in the new directory must pass the same `-p` or `COMPOSE_PROJECT_NAME`. The old directory, its `deploy/.env`, and the pre-upgrade database backup form the rollback source; the default image tag `local` is overwritten by the rebuild, so do not rely on the old images still being present. If the upgrade fails, keep the Worker stopped, confirm the database schema is compatible with the old version, and then rebuild and start from the old directory.
 
 The API applies application migrations and River migrations in sequence during startup. If readiness fails, leave the Worker stopped and inspect the API logs. Never run an old Worker against a failed or incompatible database migration.
+
+### Multiple Deployments on One Host
+
+A second deployment on the same host needs its own project name and image tag, plus separate ports, directories, and `deploy/.env`. Changing only the directory or only the port shares named volumes or images with the first deployment.
+
+```bash
+# Run in the second deployment directory; deploy/.env must set:
+#   EMBY_AUTO_IMAGE_TAG=staging
+#   APP_PORT=8081
+#   five media-related directories different from the first deployment
+cp deploy/.env.example deploy/.env
+
+docker compose -p emby-auto-staging --env-file deploy/.env -f deploy/compose.yaml up -d --build
+```
+
+`-p emby-auto-staging` changes the project name and the named volumes to `emby-auto-staging_postgres-data` and `emby-auto-staging_app-data`; `EMBY_AUTO_IMAGE_TAG=staging` produces `emby-auto-backend:staging` and `emby-auto-web:staging`. Later commands for the second deployment must keep the same `-p emby-auto-staging` (or export `COMPOSE_PROJECT_NAME=emby-auto-staging` in that shell), otherwise Compose falls back to the default project `emby-auto`:
+
+```bash
+docker compose -p emby-auto-staging --env-file deploy/.env -f deploy/compose.yaml ps
+```
 
 ### Stop and Remove Containers
 

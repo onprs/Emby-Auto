@@ -74,6 +74,52 @@ grep -Fq 'dockerfile: deploy/docker/web.Dockerfile' "${bundle}/deploy/compose.ya
 grep -Fq 'COPY scripts/web/ scripts/web/' "${bundle}/deploy/docker/web.Dockerfile"
 grep -Fq 'COPY deploy/nginx/locations.conf /etc/nginx/emby-auto-locations.conf' "${bundle}/deploy/docker/web.Dockerfile"
 
+# 包根文档已在组装时把语言互链改为 DEPLOYMENT*.md，所有相对链接必须仍能解析；
+# 仓库 docs 的源文档链接同样必须有效，两个方向共同防漂移。
+check_relative_links() {
+  node -e '
+const fs = require("node:fs");
+const path = require("node:path");
+let failed = 0;
+for (const file of process.argv.slice(1)) {
+  const text = fs.readFileSync(file, "utf8");
+  const linkPattern = /\]\(([^)]*)\)/g;
+  let match;
+  while ((match = linkPattern.exec(text)) !== null) {
+    let target = match[1].trim();
+    if (target.startsWith("<")) {
+      const end = target.indexOf(">");
+      target = end === -1 ? target.slice(1) : target.slice(1, end);
+    } else {
+      target = target.split(/\s+/)[0];
+    }
+    if (target === "" || target.startsWith("#") || target.startsWith("/")) continue;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
+    const rawPath = target.split("#")[0];
+    if (rawPath === "") continue;
+    let decoded;
+    try {
+      decoded = decodeURIComponent(rawPath);
+    } catch {
+      console.error(`链接编码无效：${target}（${file}）`);
+      failed += 1;
+      continue;
+    }
+    if (!fs.existsSync(path.resolve(path.dirname(file), decoded))) {
+      console.error(`链接目标不存在：${target}（${file}）`);
+      failed += 1;
+    }
+  }
+}
+if (failed > 0) {
+  console.error(`相对链接检查失败：${failed} 个目标缺失`);
+  process.exit(1);
+}
+' "$@"
+}
+check_relative_links "${bundle}/DEPLOYMENT.md" "${bundle}/DEPLOYMENT.en.md"
+check_relative_links "${root_dir}/docs/deployment.md" "${root_dir}/docs/deployment.en.md"
+
 if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
   if [[ "${mode}" == build ]]; then
     printf '%s\n' 'build 模式需要 Docker Compose。' >&2
@@ -84,19 +130,43 @@ if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>
 fi
 
 compose=(docker compose --env-file "${bundle}/deploy/.env.example" -f "${bundle}/deploy/compose.yaml")
-"${compose[@]}" config --quiet
+
+# 项目名与镜像引用都取自 Compose 的实际解析结果：默认标签 local、shell 覆盖或
+# env-file 覆盖都按同一次解析生效，避免断言名与构建产物脱钩。
+parsed="$("${compose[@]}" config --format json | node -e '
+let input = "";
+process.stdin.on("data", (chunk) => (input += chunk)).on("end", () => {
+  const config = JSON.parse(input);
+  const image = (service) => (config.services?.[service]?.image ?? "");
+  process.stdout.write([config.name, image("api"), image("worker"), image("web")].join("\t") + "\n");
+});
+')"
+IFS=$'\t' read -r project_name api_image worker_image web_image <<< "${parsed}"
 
 # 项目名与卷名固定，与部署文档描述一致，防止文档与配置漂移。
-project_name="$(docker compose --env-file "${bundle}/deploy/.env.example" -f "${bundle}/deploy/compose.yaml" config --format json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).name))')"
 [[ "${project_name}" == emby-auto ]] || {
   printf 'Compose 项目名意外变化：%s（文档固定为 emby-auto）\n' "${project_name}" >&2
+  exit 1
+}
+for image in "${api_image}" "${worker_image}" "${web_image}"; do
+  [[ -n "${image}" ]] || {
+    printf '%s\n' 'Compose 未解析出 api/worker/web 的镜像引用。' >&2
+    exit 1
+  }
+done
+[[ "${worker_image}" == "${api_image}" ]] || {
+  printf 'worker 与 api 镜像引用不一致：%s / %s\n' "${worker_image}" "${api_image}" >&2
+  exit 1
+}
+[[ "${api_image}" == emby-auto-backend:* && "${web_image}" == emby-auto-web:* ]] || {
+  printf '镜像仓库意外变化：api=%s web=%s\n' "${api_image}" "${web_image}" >&2
   exit 1
 }
 
 if [[ "${mode}" == build ]]; then
   "${compose[@]}" build
-  docker image inspect emby-auto-backend:local emby-auto-web:local >/dev/null
-  printf '%s\n' '发布包在无仓库源码的临时目录中完成镜像构建。'
+  docker image inspect "${api_image}" "${web_image}" >/dev/null
+  printf '发布包在无仓库源码的临时目录中完成镜像构建：%s %s\n' "${api_image}" "${web_image}"
 else
   printf '%s\n' '发布包配置与构建路径检查通过。'
 fi

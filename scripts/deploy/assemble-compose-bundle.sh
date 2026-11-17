@@ -43,4 +43,14 @@ done
 cp -a "$root_dir/docs/deployment.md" "$destination/DEPLOYMENT.md"
 cp -a "$root_dir/docs/deployment.en.md" "$destination/DEPLOYMENT.en.md"
 
+# 包根文档改名后，语言互链要指向包内实际文件名；只改写链接目标，
+# 仓库 docs 中的源文档继续使用仓库内有效的相对链接。
+for doc in DEPLOYMENT.md DEPLOYMENT.en.md; do
+  sed \
+    -e 's/](deployment\.en\.md)/](DEPLOYMENT.en.md)/g' \
+    -e 's/](deployment\.md)/](DEPLOYMENT.md)/g' \
+    "$destination/$doc" > "$destination/$doc.tmp"
+  mv "$destination/$doc.tmp" "$destination/$doc"
+done
+
 printf '%s\n' "Compose 发布包已组装：$destination"
