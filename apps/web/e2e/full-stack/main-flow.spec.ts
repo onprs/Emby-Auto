@@ -19,6 +19,16 @@ type Manifest = {
 
 type Acquisition = { id: string; mediaType: 'episode' | 'movie'; tmdbSeriesId?: number; downloadId?: string; tasks: Array<{ id: string }> };
 type Download = { id: string; status: string; version: number; failureStage?: string; errorCode?: string };
+type TaskOperation = {
+  id: string;
+  kind: string;
+  status: string;
+  attemptCount: number;
+  errorCode?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  updatedAt: string;
+};
 type Task = {
   id: string;
   mediaType: 'episode' | 'movie';
@@ -32,7 +42,7 @@ type Task = {
   errorCode?: string;
   artifacts?: { basename: string; video: { id: string }; subtitle: { id: string } };
   cleanup?: { status: string };
-  operations: Array<{ id: string; kind: string; status: string }>;
+  operations: TaskOperation[];
 };
 type Operation = { id: string; kind: string; status: string; attemptCount: number; errorCode?: string };
 type OperationPage = { items: Operation[] };
@@ -121,6 +131,22 @@ function currentResourceID(page: Page): string {
   const id = new URL(page.url()).pathname.split('/').filter(Boolean).at(-1);
   expect(id).toBeTruthy();
   return id!;
+}
+
+function operationTimestamp(operation: TaskOperation): number {
+  return Date.parse(operation.finishedAt ?? operation.startedAt ?? operation.updatedAt);
+}
+
+// 只取当前任务中该类型的最新一次操作，避免把重试前的历史失败当成当前结果。
+function latestTaskOperation(task: Task, kind: string): TaskOperation | undefined {
+  let latest: TaskOperation | undefined;
+  for (const operation of task.operations) {
+    if (operation.kind !== kind) continue;
+    if (!latest || operationTimestamp(operation) >= operationTimestamp(latest)) {
+      latest = operation;
+    }
+  }
+  return latest;
 }
 
 async function poll<T>(read: () => Promise<T>, done: (value: T) => boolean, timeout = 60_000): Promise<T> {
@@ -623,11 +649,25 @@ test('@recovery task media failure retries, stale review conflicts, and processi
       (value) => value.tasks.length > 0,
     );
     const retryTaskId = retryAcquisition.tasks[0].id;
-    await poll(
+    const failedTask = await poll(
       () => json<Task>(page.request, `/api/v1/tasks/${retryTaskId}`),
-      (value) => value.state === 'failed' && value.failureStage === 'video' && value.errorCode === 'transcode_output_invalid',
+      (value) => {
+        const transcode = latestTaskOperation(value, 'transcode.run');
+        return value.state === 'failed'
+          && value.videoState === 'failed'
+          && value.failureStage === 'video'
+          && value.subtitleState === 'ass_ready'
+          && transcode?.status === 'failed'
+          && transcode.errorCode === 'transcode_output_invalid';
+      },
       90_000,
     );
+    const failedTranscode = latestTaskOperation(failedTask, 'transcode.run');
+    expect(failedTask.state).toBe('failed');
+    expect(failedTask.videoState).toBe('failed');
+    expect(failedTask.failureStage).toBe('video');
+    expect(failedTranscode?.status).toBe('failed');
+    expect(failedTranscode?.errorCode).toBe('transcode_output_invalid');
     await setFixtureControl(page, 'media_invalid', false);
     await page.goto(`/tasks/${retryTaskId}`);
     await retryFailedTaskFromPage(page, retryTaskId);
