@@ -17,6 +17,7 @@ import (
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/domain"
 	"github.com/onprs/emby-auto/backend/internal/platform/database"
+	appqueue "github.com/onprs/emby-auto/backend/internal/platform/riverqueue"
 	"github.com/onprs/emby-auto/backend/internal/repository"
 	"github.com/onprs/emby-auto/backend/internal/service"
 	"github.com/onprs/emby-auto/backend/internal/testutil"
@@ -87,6 +88,7 @@ type subtitleGenerationFixture struct {
 	pool      *pgxpool.Pool
 	handler   *SubtitlePrepareHandler
 	lifecycle *repository.OperationLifecycle
+	scheduler *service.OperationScheduler
 	taskID    uuid.UUID
 }
 
@@ -115,7 +117,7 @@ func newSubtitleGenerationFixture(t *testing.T) *subtitleGenerationFixture {
 	}}
 	handler := NewSubtitlePrepareHandler(mediaTestConfiguration(t.TempDir()), tools, workflow, agent)
 	return &subtitleGenerationFixture{
-		ctx: ctx, pool: pool, handler: handler, taskID: taskID,
+		ctx: ctx, pool: pool, handler: handler, scheduler: scheduler, taskID: taskID,
 		lifecycle: repository.NewOperationLifecycle(db.New(pool), transactor),
 	}
 }
@@ -155,10 +157,26 @@ LIMIT 1
 
 func (fixture *subtitleGenerationFixture) scheduleAgent(t *testing.T) subtitleGenerationState {
 	t.Helper()
-	if err := fixture.handler.Handle(fixture.ctx, domain.Operation{
-		ID: uuid.New(), Kind: "subtitle.prepare", ResourceType: "episode_task", ResourceID: fixture.taskID,
-	}); err != nil {
+	scheduled, err := fixture.scheduler.Schedule(fixture.ctx, service.ScheduleOperationRequest{
+		Kind: appqueue.KindSubtitlePrepare, ResourceType: "episode_task", ResourceID: fixture.taskID,
+		IdempotencyKey: "phase2-generation-handler-" + uuid.NewString(), MaxAttempts: 3, Timeout: 30 * time.Minute,
+		Payload: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("schedule subtitle.prepare: %v", err)
+	}
+	started, err := fixture.lifecycle.StartAttempt(fixture.ctx, scheduled.Operation.ID, 1, "subtitle-generation-handler")
+	if err != nil {
+		t.Fatalf("start subtitle.prepare: %v", err)
+	}
+	if started.SubtitleAttempt == nil {
+		t.Fatal("subtitle.prepare StartAttempt did not capture the attempt handle")
+	}
+	if err := fixture.handler.Handle(fixture.ctx, started); err != nil {
 		t.Fatalf("SubtitlePrepareHandler.Handle() error = %v", err)
+	}
+	if err := fixture.lifecycle.SucceedSubtitleAttempt(fixture.ctx, *started.SubtitleAttempt); err != nil {
+		t.Fatalf("SucceedSubtitleAttempt() error = %v", err)
 	}
 	state := fixture.scheduling(t)
 	if state.resolutionVersion == 0 || state.resolutionVersion != state.taskVersion {

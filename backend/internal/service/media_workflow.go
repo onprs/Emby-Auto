@@ -822,81 +822,93 @@ func (workflow *MediaWorkflow) ExpireOwnerlessSubtitleVideoMatchScope(ctx contex
 	if scopeID == uuid.Nil {
 		return domain.SubtitleScopeExpiry{}, mediaWorkflowError("subtitle_scope_invalid", "the subtitle video match scope is invalid", false)
 	}
-	result := domain.SubtitleScopeExpiry{ScopeID: scopeID}
+	var result domain.SubtitleScopeExpiry
 	err := workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
-		contextRow, err := scope.Queries.GetSubtitleVideoMatchContext(ctx, repository.UUIDToPG(scopeID))
-		if errors.Is(err, pgx.ErrNoRows) {
-			result.Outcome = domain.SubtitleScopeAbsent
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		result.ScopeStatus = contextRow.ScopeStatus
-		result.TaskVersion = int(contextRow.TaskVersion)
-		result.TaskState = contextRow.TaskState
-		result.SubtitleState = contextRow.SubtitleState
-		switch contextRow.ScopeStatus {
-		case "pending":
-		case "applied":
-			result.Outcome = domain.SubtitleScopeAlreadyApplied
-			return nil
-		case "expired":
-			result.Outcome = domain.SubtitleScopeAlreadyExpired
-			return nil
-		default:
-			result.Outcome = domain.SubtitleScopeConflict
-			return nil
-		}
-		candidates, err := scope.Queries.ListSubtitleVideoMatchCandidates(ctx, repository.UUIDToPG(scopeID))
-		if err != nil {
-			return err
-		}
-		_, _, resourceJSON, err := subtitleVideoMatchContent(contextRow, candidates)
-		if err != nil {
-			return err
-		}
-		result.ContentHash = sha256.Sum256(resourceJSON)
-		owners, err := scope.Queries.ListSubtitleVideoMatchActiveOwners(ctx, repository.UUIDToPG(scopeID))
-		if err != nil {
-			return err
-		}
-		result.OwnerCount = len(owners)
-		changed := result.TaskVersion != observed.TaskVersion || result.TaskState != observed.TaskState ||
-			result.SubtitleState != observed.SubtitleState || result.ContentHash != observed.ContentHash
-		if len(owners) > 1 {
-			result.Outcome = domain.SubtitleScopeMultipleOwners
-			return nil
-		}
-		if len(owners) == 1 {
-			ownerResolutionID := repository.UUIDFromPG(owners[0].ID)
-			ownerOperationID := repository.UUIDFromPG(owners[0].OperationID)
-			result.OwnerResolutionID = &ownerResolutionID
-			result.OwnerOperationID = &ownerOperationID
-			if changed {
-				result.Outcome = domain.SubtitleScopeChanged
-			} else {
-				result.Outcome = domain.SubtitleScopeOwnerPresent
-			}
-			return nil
-		}
-		if changed {
-			result.Outcome = domain.SubtitleScopeChanged
-			return nil
-		}
-		if _, err := scope.Queries.ExpireSubtitleVideoMatchScope(ctx, repository.UUIDToPG(scopeID)); errors.Is(err, pgx.ErrNoRows) {
-			result.Outcome = domain.SubtitleScopeConflict
-			return nil
-		} else if err != nil {
-			return err
-		}
-		result.Outcome = domain.SubtitleScopeExpired
-		result.ScopeStatus = "expired"
-		return nil
+		var innerErr error
+		result, innerErr = expireOwnerlessSubtitleScopeInTx(ctx, scope.Queries, scopeID, observed)
+		return innerErr
 	})
 	if err != nil {
 		return domain.SubtitleScopeExpiry{}, mediaWorkflowError("subtitle_scope_unavailable", "the subtitle video match scope could not be expired", true)
 	}
+	return result, nil
+}
+
+func expireOwnerlessSubtitleScopeInTx(
+	ctx context.Context,
+	queries *db.Queries,
+	scopeID uuid.UUID,
+	observed domain.SubtitleScopeObservation,
+) (domain.SubtitleScopeExpiry, error) {
+	result := domain.SubtitleScopeExpiry{ScopeID: scopeID}
+	contextRow, err := queries.GetSubtitleVideoMatchContext(ctx, repository.UUIDToPG(scopeID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		result.Outcome = domain.SubtitleScopeAbsent
+		return result, nil
+	}
+	if err != nil {
+		return domain.SubtitleScopeExpiry{}, err
+	}
+	result.ScopeStatus = contextRow.ScopeStatus
+	result.TaskVersion = int(contextRow.TaskVersion)
+	result.TaskState = contextRow.TaskState
+	result.SubtitleState = contextRow.SubtitleState
+	switch contextRow.ScopeStatus {
+	case "pending":
+	case "applied":
+		result.Outcome = domain.SubtitleScopeAlreadyApplied
+		return result, nil
+	case "expired":
+		result.Outcome = domain.SubtitleScopeAlreadyExpired
+		return result, nil
+	default:
+		result.Outcome = domain.SubtitleScopeConflict
+		return result, nil
+	}
+	candidates, err := queries.ListSubtitleVideoMatchCandidates(ctx, repository.UUIDToPG(scopeID))
+	if err != nil {
+		return domain.SubtitleScopeExpiry{}, err
+	}
+	_, _, resourceJSON, err := subtitleVideoMatchContent(contextRow, candidates)
+	if err != nil {
+		return domain.SubtitleScopeExpiry{}, err
+	}
+	result.ContentHash = sha256.Sum256(resourceJSON)
+	owners, err := queries.ListSubtitleVideoMatchActiveOwners(ctx, repository.UUIDToPG(scopeID))
+	if err != nil {
+		return domain.SubtitleScopeExpiry{}, err
+	}
+	result.OwnerCount = len(owners)
+	changed := result.TaskVersion != observed.TaskVersion || result.TaskState != observed.TaskState ||
+		result.SubtitleState != observed.SubtitleState || result.ContentHash != observed.ContentHash
+	if len(owners) > 1 {
+		result.Outcome = domain.SubtitleScopeMultipleOwners
+		return result, nil
+	}
+	if len(owners) == 1 {
+		ownerResolutionID := repository.UUIDFromPG(owners[0].ID)
+		ownerOperationID := repository.UUIDFromPG(owners[0].OperationID)
+		result.OwnerResolutionID = &ownerResolutionID
+		result.OwnerOperationID = &ownerOperationID
+		if changed {
+			result.Outcome = domain.SubtitleScopeChanged
+		} else {
+			result.Outcome = domain.SubtitleScopeOwnerPresent
+		}
+		return result, nil
+	}
+	if changed {
+		result.Outcome = domain.SubtitleScopeChanged
+		return result, nil
+	}
+	if _, err := queries.ExpireSubtitleVideoMatchScope(ctx, repository.UUIDToPG(scopeID)); errors.Is(err, pgx.ErrNoRows) {
+		result.Outcome = domain.SubtitleScopeConflict
+		return result, nil
+	} else if err != nil {
+		return domain.SubtitleScopeExpiry{}, err
+	}
+	result.Outcome = domain.SubtitleScopeExpired
+	result.ScopeStatus = "expired"
 	return result, nil
 }
 

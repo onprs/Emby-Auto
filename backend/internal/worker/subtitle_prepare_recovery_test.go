@@ -17,7 +17,7 @@ func TestQASubtitlePrepareRetryAfterScheduleFailureDoesNotHang(t *testing.T) {
 	tools, store, taskID, stagingRoot := ambiguousSubtitlePrepareFixture(t, scopeID)
 	agent := &subtitleMatchAgentStub{enabled: true, createErr: errors.New("agent scheduler unavailable")}
 	handler := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent)
-	operation := domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}
+	operation := subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID})
 	err := handler.Handle(context.Background(), operation)
 	var failure *Failure
 	if !errors.As(err, &failure) || !failure.Retryable {
@@ -66,7 +66,7 @@ func TestQASubtitlePrepareStateConflictLeavesTaskProcessing(t *testing.T) {
 	}
 	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(
 		context.Background(),
-		domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+		subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 	)
 	var failure *Failure
 	if !errors.As(err, &failure) || failure.Retryable || failure.Code != "agent_subtitle_match_exhausted" {
@@ -93,7 +93,7 @@ func TestQASubtitlePrepareScopeConflictWithActiveResolutionSucceeds(t *testing.T
 	agent := &subtitleMatchAgentStub{enabled: true}
 	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(
 		context.Background(),
-		domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+		subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 	); err != nil {
 		t.Fatalf("Handle() error = %v, want success while an active resolution covers this task version", err)
 	}
@@ -122,7 +122,7 @@ func TestQASubtitlePrepareScopeConflictWithStaleGenerationReschedules(t *testing
 	// 作废后重新创建会成功；stub 的 scopeErr 只模拟第一次冲突。
 	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(
 		context.Background(),
-		domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+		subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 	); err != nil {
 		t.Fatalf("Handle() error = %v, want rescheduling after expiring the stale scope", err)
 	}
@@ -147,7 +147,7 @@ func TestQASubtitlePrepareDisabledAgentFailsInsteadOfHanging(t *testing.T) {
 	)}
 	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(
 		context.Background(),
-		domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+		subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 	)
 	var failure *Failure
 	if !errors.As(err, &failure) || failure.Retryable || failure.Code != "agent_capability_disabled" {

@@ -28,7 +28,7 @@ func TestQAReplayRequeueCapPermanentFailure(t *testing.T) {
 	}
 	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(
 		context.Background(),
-		domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+		subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 	)
 	var failure *Failure
 	if !errors.As(err, &failure) || failure.Code != "agent_subtitle_match_exhausted" {
@@ -44,7 +44,7 @@ func TestQAReplayRetryAfterScheduleFailure(t *testing.T) {
 	tools, store, taskID, stagingRoot := ambiguousSubtitlePrepareFixture(t, scopeID)
 	agent := &subtitleMatchAgentStub{enabled: true, createErr: errors.New("agent scheduler unavailable")}
 	handler := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent)
-	operation := domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}
+	operation := subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID})
 	err := handler.Handle(context.Background(), operation)
 	var failure *Failure
 	if !errors.As(err, &failure) || !failure.Retryable {

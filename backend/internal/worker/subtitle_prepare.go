@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/onprs/emby-auto/backend/internal/domain"
 	"github.com/onprs/emby-auto/backend/internal/service"
+	"github.com/onprs/emby-auto/backend/internal/subtitlebinding"
 )
 
 const (
@@ -20,12 +21,12 @@ const (
 )
 
 type SubtitleStore interface {
-	BeginSubtitle(context.Context, uuid.UUID) (domain.TaskMediaCommand, error)
+	BeginSubtitleForOperation(context.Context, subtitlebinding.AttemptHandle, uuid.UUID) (domain.TaskMediaCommand, error)
 	CompleteArtifact(context.Context, domain.MediaArtifactCompletion) error
-	CreateSubtitleVideoMatchScope(context.Context, uuid.UUID, []domain.SubtitleMatchCandidate) (uuid.UUID, error)
+	CreateSubtitleVideoMatchScopeForOperation(context.Context, subtitlebinding.AttemptHandle, uuid.UUID, []domain.SubtitleMatchCandidate) (uuid.UUID, error)
 	GetSubtitleVideoMatchSelection(context.Context, uuid.UUID) (domain.SubtitleMatchSelection, error)
 	GetSubtitleVideoMatchSchedulingState(context.Context, uuid.UUID) (domain.SubtitleVideoMatchSchedulingState, error)
-	ExpireOwnerlessSubtitleVideoMatchScope(context.Context, uuid.UUID, domain.SubtitleScopeObservation) (domain.SubtitleScopeExpiry, error)
+	ExpireOwnerlessSubtitleVideoMatchScopeForOperation(context.Context, subtitlebinding.AttemptHandle, uuid.UUID, domain.SubtitleScopeObservation) (domain.SubtitleScopeExpiry, error)
 }
 
 type SubtitleMatchAgentResolutionCreator interface {
@@ -54,6 +55,7 @@ func NewSubtitlePrepareHandler(configuration MediaConfiguration, tools MediaTool
 // 让 guard 自行判断 absent；不会把 nil 当已过期。
 func (handler *SubtitlePrepareHandler) cleanupSubtitleScope(
 	ctx context.Context,
+	handle subtitlebinding.AttemptHandle,
 	taskID uuid.UUID,
 	scopeID uuid.UUID,
 	state *domain.SubtitleVideoMatchSchedulingState,
@@ -62,7 +64,7 @@ func (handler *SubtitlePrepareHandler) cleanupSubtitleScope(
 	if observedState == nil {
 		loaded, err := handler.store.GetSubtitleVideoMatchSchedulingState(ctx, taskID)
 		if errors.Is(err, domain.ErrNotFound) {
-			return handler.store.ExpireOwnerlessSubtitleVideoMatchScope(ctx, scopeID, domain.SubtitleScopeObservation{})
+			return handler.store.ExpireOwnerlessSubtitleVideoMatchScopeForOperation(ctx, handle, scopeID, domain.SubtitleScopeObservation{})
 		}
 		if err != nil {
 			return domain.SubtitleScopeExpiry{}, mediaStoreFailure("subtitle", err)
@@ -73,7 +75,7 @@ func (handler *SubtitlePrepareHandler) cleanupSubtitleScope(
 	if observedState.ScopeID != uuid.Nil {
 		guardScopeID = observedState.ScopeID
 	}
-	return handler.store.ExpireOwnerlessSubtitleVideoMatchScope(ctx, guardScopeID, domain.SubtitleScopeObservation{
+	return handler.store.ExpireOwnerlessSubtitleVideoMatchScopeForOperation(ctx, handle, guardScopeID, domain.SubtitleScopeObservation{
 		TaskVersion: observedState.TaskVersion, TaskState: observedState.TaskState,
 		SubtitleState: observedState.SubtitleState, ContentHash: observedState.ContentObservation,
 	})
@@ -99,6 +101,7 @@ func subtitleScopeCleanupExpired(result domain.SubtitleScopeExpiry) bool {
 
 func (handler *SubtitlePrepareHandler) scheduleSubtitleAgentMatch(
 	ctx context.Context,
+	handle subtitlebinding.AttemptHandle,
 	command domain.TaskMediaCommand,
 	plans []domain.SubtitlePlan,
 	probe domain.MediaProbe,
@@ -111,7 +114,7 @@ func (handler *SubtitlePrepareHandler) scheduleSubtitleAgentMatch(
 	if applied.CandidateID != "" {
 		return nil
 	}
-	scopeID, scopeErr := handler.store.CreateSubtitleVideoMatchScope(ctx, command.TaskID, subtitleMatchCandidates(plans, probe.SubtitleStreams(), external))
+	scopeID, scopeErr := handler.store.CreateSubtitleVideoMatchScopeForOperation(ctx, handle, command.TaskID, subtitleMatchCandidates(plans, probe.SubtitleStreams(), external))
 	if scopeErr != nil {
 		var mediaErr *domain.MediaWorkflowError
 		if !errors.As(scopeErr, &mediaErr) || mediaErr.Code != "subtitle_scope_conflict" {
@@ -134,7 +137,7 @@ func (handler *SubtitlePrepareHandler) scheduleSubtitleAgentMatch(
 			// 已应用的范围等待 apply 路径处理，不能作废。
 			return nil
 		}
-		cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, command.TaskID, state.ScopeID, &state)
+		cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, handle, command.TaskID, state.ScopeID, &state)
 		if cleanupErr != nil {
 			return cleanupErr
 		}
@@ -147,7 +150,7 @@ func (handler *SubtitlePrepareHandler) scheduleSubtitleAgentMatch(
 		}
 		// 范围已作废：本轮先用当前候选集重新创建并调度，避免只返回可重试失败
 		// 而让任务再等一轮 River 重试才能推进。
-		scopeID, scopeErr = handler.store.CreateSubtitleVideoMatchScope(ctx, command.TaskID, subtitleMatchCandidates(plans, probe.SubtitleStreams(), external))
+		scopeID, scopeErr = handler.store.CreateSubtitleVideoMatchScopeForOperation(ctx, handle, command.TaskID, subtitleMatchCandidates(plans, probe.SubtitleStreams(), external))
 		if scopeErr != nil {
 			var retryMediaErr *domain.MediaWorkflowError
 			if errors.As(scopeErr, &retryMediaErr) && retryMediaErr.Code == "subtitle_scope_conflict" {
@@ -170,7 +173,7 @@ func (handler *SubtitlePrepareHandler) scheduleSubtitleAgentMatch(
 			case "agent_disabled", "agent_capability_disabled", "agent_not_configured":
 				// Agent 能力在调度时被关闭或未完成配置：只有本次清理真正确认
 				// ownerless/absent 才永久终止；新 owner/applied/新代次必须 handoff。
-				cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, command.TaskID, scopeID, nil)
+				cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, handle, command.TaskID, scopeID, nil)
 				if cleanupErr != nil {
 					return cleanupErr
 				}
@@ -183,7 +186,7 @@ func (handler *SubtitlePrepareHandler) scheduleSubtitleAgentMatch(
 				return permanentFailure(serviceErr.Code, serviceErr.Message, agentErr)
 			case "agent_resolution_requeue_exhausted":
 				// 自动恢复上限已用尽：只有 ownerless/absent 才永久失败。
-				cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, command.TaskID, scopeID, nil)
+				cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, handle, command.TaskID, scopeID, nil)
 				if cleanupErr != nil {
 					return cleanupErr
 				}
@@ -196,7 +199,7 @@ func (handler *SubtitlePrepareHandler) scheduleSubtitleAgentMatch(
 				return permanentFailure("agent_subtitle_match_exhausted", "the Agent subtitle matching resolution reached its automatic recovery limit", agentErr)
 			case "agent_resolution_not_required":
 				// 确定性规则已解决该任务，不需要 Agent；清理结果不改变这一结论。
-				if _, cleanupErr := handler.cleanupSubtitleScope(ctx, command.TaskID, scopeID, nil); cleanupErr != nil {
+				if _, cleanupErr := handler.cleanupSubtitleScope(ctx, handle, command.TaskID, scopeID, nil); cleanupErr != nil {
 					return cleanupErr
 				}
 				return nil
@@ -205,7 +208,7 @@ func (handler *SubtitlePrepareHandler) scheduleSubtitleAgentMatch(
 		if !errors.Is(agentErr, service.ErrStateConflict) {
 			// 范围已提交但调度失败：只有 ownerless/absent 才按原样返回可重试
 			// 调度失败；新 owner/applied/新代次必须 handoff。
-			cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, command.TaskID, scopeID, nil)
+			cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, handle, command.TaskID, scopeID, nil)
 			if cleanupErr != nil {
 				return cleanupErr
 			}
@@ -226,7 +229,7 @@ func (handler *SubtitlePrepareHandler) scheduleSubtitleAgentMatch(
 		if state.ActiveResolution() && state.CoversGeneration() && !state.CancellationRequested {
 			return nil
 		}
-		cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, command.TaskID, scopeID, &state)
+		cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, handle, command.TaskID, scopeID, &state)
 		if cleanupErr != nil {
 			return cleanupErr
 		}
@@ -239,7 +242,7 @@ func (handler *SubtitlePrepareHandler) scheduleSubtitleAgentMatch(
 		if _, retryErr := handler.agentResolutions.RetryAutomatic(ctx, result.Resolution.ID, result.Resolution.Version); retryErr != nil {
 			var serviceErr *service.Error
 			if errors.As(retryErr, &serviceErr) && serviceErr.Code == "agent_resolution_requeue_exhausted" {
-				cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, command.TaskID, scopeID, nil)
+				cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, handle, command.TaskID, scopeID, nil)
 				if cleanupErr != nil {
 					return cleanupErr
 				}
@@ -258,7 +261,7 @@ func (handler *SubtitlePrepareHandler) scheduleSubtitleAgentMatch(
 	} else if result.Resolution.Status == domain.AgentResolutionFailed {
 		// 不可自动重试的失败：只有 ownerless/absent 才永久终止；新 owner/applied/
 		// 新代次必须 handoff，不能由旧调度失败误杀。
-		cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, command.TaskID, scopeID, nil)
+		cleanup, cleanupErr := handler.cleanupSubtitleScope(ctx, handle, command.TaskID, scopeID, nil)
 		if cleanupErr != nil {
 			return cleanupErr
 		}
@@ -282,7 +285,10 @@ func (handler *SubtitlePrepareHandler) Handle(ctx context.Context, operation dom
 	if handler.tools == nil || handler.store == nil {
 		return permanentFailure("subtitle_handler_not_configured", "subtitle handler dependencies are unavailable", nil)
 	}
-	command, err := handler.store.BeginSubtitle(ctx, operation.ResourceID)
+	if operation.SubtitleAttempt == nil || !operation.SubtitleAttempt.Valid() {
+		return permanentFailure("subtitle_attempt_missing", "subtitle.prepare requires a captured attempt handle", nil)
+	}
+	command, err := handler.store.BeginSubtitleForOperation(ctx, *operation.SubtitleAttempt, operation.ResourceID)
 	if err != nil {
 		return mediaStoreFailure("subtitle", err)
 	}
@@ -364,7 +370,7 @@ func (handler *SubtitlePrepareHandler) Handle(ctx context.Context, operation dom
 					}
 				} else {
 					// 等待 Agent 选择候选；由本函数决定成功/失败，不再落入确定性转换。
-					return handler.scheduleSubtitleAgentMatch(ctx, command, plans, probe, external)
+					return handler.scheduleSubtitleAgentMatch(ctx, *operation.SubtitleAttempt, command, plans, probe, external)
 				}
 			}
 		}

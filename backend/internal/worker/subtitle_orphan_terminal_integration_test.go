@@ -20,6 +20,7 @@ import (
 	"github.com/onprs/emby-auto/backend/internal/platform/database"
 	"github.com/onprs/emby-auto/backend/internal/repository"
 	"github.com/onprs/emby-auto/backend/internal/service"
+	"github.com/onprs/emby-auto/backend/internal/subtitlebinding"
 	"github.com/onprs/emby-auto/backend/internal/testutil"
 )
 
@@ -30,8 +31,8 @@ type f3TerminalBarrierStore struct {
 	once         sync.Once
 }
 
-func (store *f3TerminalBarrierStore) ExpireOwnerlessSubtitleVideoMatchScope(ctx context.Context, scopeID uuid.UUID, observed domain.SubtitleScopeObservation) (domain.SubtitleScopeExpiry, error) {
-	result, err := store.MediaWorkflow.ExpireOwnerlessSubtitleVideoMatchScope(ctx, scopeID, observed)
+func (store *f3TerminalBarrierStore) ExpireOwnerlessSubtitleVideoMatchScopeForOperation(ctx context.Context, handle subtitlebinding.AttemptHandle, scopeID uuid.UUID, observed domain.SubtitleScopeObservation) (domain.SubtitleScopeExpiry, error) {
+	result, err := store.MediaWorkflow.ExpireOwnerlessSubtitleVideoMatchScopeForOperation(ctx, handle, scopeID, observed)
 	if err == nil && result.Outcome == domain.SubtitleScopeExpired {
 		store.once.Do(func() {
 			close(store.guardReached)
@@ -114,12 +115,13 @@ VALUES ($1, 'subtitle.prepare', 'episode_task', $2, $3, 'queued', 1, 60, '{}'::j
 		t.Fatal(err)
 	}
 	lifecycle := repository.NewOperationLifecycle(db.New(pool), transactor)
-	if _, err := lifecycle.StartAttempt(ctx, operationID, 1, "f3-terminal-worker"); err != nil {
-		t.Fatal(err)
+	started, err := lifecycle.StartAttempt(ctx, operationID, 1, "f3-terminal-worker")
+	if err != nil || started.SubtitleAttempt == nil {
+		t.Fatalf("start terminal worker: %+v/%v", started, err)
 	}
 	handlerErr := make(chan error, 1)
 	go func() {
-		handlerErr <- handler.Handle(ctx, domain.Operation{ID: operationID, Kind: "subtitle.prepare", ResourceType: "episode_task", ResourceID: taskID})
+		handlerErr <- handler.Handle(ctx, started)
 	}()
 	select {
 	case <-store.guardReached:
@@ -149,8 +151,8 @@ VALUES ($1, 'subtitle.prepare', 'episode_task', $2, $3, 'queued', 1, 60, '{}'::j
 	case <-time.After(10 * time.Second):
 		t.Fatal("handler did not return after guard release")
 	}
-	if err := lifecycle.FailAttempt(ctx, operationID, 1, handlerFailure.Code, handlerFailure.Message, handlerFailure.Retryable); err != nil {
-		t.Fatalf("old operation FailAttempt() error = %v", err)
+	if err := lifecycle.FailSubtitleAttempt(ctx, *started.SubtitleAttempt, handlerFailure.Code, handlerFailure.Message, handlerFailure.Retryable); err != nil {
+		t.Fatalf("old operation FailSubtitleAttempt() error = %v", err)
 	}
 	// The old permanent failure must not mark the task terminal or disturb the new
 	// owner; the new owner must still be able to Apply.

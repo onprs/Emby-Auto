@@ -20,6 +20,7 @@ import (
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/domain"
 	"github.com/onprs/emby-auto/backend/internal/platform/database"
+	appqueue "github.com/onprs/emby-auto/backend/internal/platform/riverqueue"
 	"github.com/onprs/emby-auto/backend/internal/repository"
 	"github.com/onprs/emby-auto/backend/internal/service"
 	"github.com/onprs/emby-auto/backend/internal/testutil"
@@ -71,7 +72,8 @@ func TestSubtitlePrepareOrphanGuardHandsOffToConcurrentOwner(t *testing.T) {
 	_, pool := testutil.NewMigratedPostgres(t)
 	transactor := database.NewTransactor(pool)
 	taskID := seedSubtitleGenerationTask(t, ctx, pool)
-	workflow := service.NewMediaWorkflow(db.New(pool), transactor, service.NewOperationScheduler(transactor, &subtitleGenerationJobInserter{}))
+	scheduler := service.NewOperationScheduler(transactor, &subtitleGenerationJobInserter{})
+	workflow := service.NewMediaWorkflow(db.New(pool), transactor, scheduler)
 	scopeID, err := workflow.CreateSubtitleVideoMatchScope(ctx, taskID, f3HandoffCandidates())
 	if err != nil {
 		t.Fatalf("CreateSubtitleVideoMatchScope() error = %v", err)
@@ -89,7 +91,7 @@ func TestSubtitlePrepareOrphanGuardHandsOffToConcurrentOwner(t *testing.T) {
 	configuration.Settings.Agent.BaseURL = server.URL + "/v1"
 	configuration.Settings.Agent.Model = "f3-handoff-model"
 	configuration.Settings.Agent.RequestTimeoutSeconds = 60
-	agent := service.NewAgentResolutionService(db.New(pool), transactor, service.NewOperationScheduler(transactor, &subtitleGenerationJobInserter{}), subtitleGenerationConfiguration{configuration: configuration}, nil, nil)
+	agent := service.NewAgentResolutionService(db.New(pool), transactor, scheduler, subtitleGenerationConfiguration{configuration: configuration}, nil, nil)
 	store := &f3HandoffBarrierStore{MediaWorkflow: workflow, read: make(chan struct{}), release: make(chan struct{})}
 	tools := &mediaToolsStub{probe: func(string) (domain.MediaProbe, error) {
 		return domain.MediaProbe{Streams: []domain.MediaStreamProbe{
@@ -98,9 +100,22 @@ func TestSubtitlePrepareOrphanGuardHandsOffToConcurrentOwner(t *testing.T) {
 		}}, nil
 	}}
 	handler := NewSubtitlePrepareHandler(mediaTestConfiguration(t.TempDir()), tools, store, agent)
+	scheduled, err := scheduler.Schedule(ctx, service.ScheduleOperationRequest{
+		Kind: appqueue.KindSubtitlePrepare, ResourceType: "episode_task", ResourceID: taskID,
+		IdempotencyKey: "f3-handoff-parent-" + uuid.NewString(), MaxAttempts: 3, Timeout: 30 * time.Minute,
+		Payload: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("schedule parent subtitle.prepare: %v", err)
+	}
+	lifecycle := repository.NewOperationLifecycle(db.New(pool), transactor)
+	started, err := lifecycle.StartAttempt(ctx, scheduled.Operation.ID, 1, "f3-handoff-parent")
+	if err != nil || started.SubtitleAttempt == nil {
+		t.Fatalf("start parent subtitle.prepare: %+v/%v", started, err)
+	}
 	handlerErr := make(chan error, 1)
 	go func() {
-		handlerErr <- handler.Handle(ctx, domain.Operation{ID: uuid.New(), Kind: "subtitle.prepare", ResourceType: "episode_task", ResourceID: taskID})
+		handlerErr <- handler.Handle(ctx, started)
 	}()
 	select {
 	case <-store.read:
@@ -169,7 +184,6 @@ func TestSubtitlePrepareOrphanGuardHandsOffToConcurrentOwner(t *testing.T) {
 	if ownerOps != 1 || queuedEvents != 1 || taskEvents != 0 {
 		t.Fatalf("handler side effects: ownerOps=%d queuedEvents=%d taskEvents=%d, want 1/1/0", ownerOps, queuedEvents, taskEvents)
 	}
-	lifecycle := repository.NewOperationLifecycle(db.New(pool), transactor)
 	if _, err := lifecycle.StartAttempt(ctx, ownerOperationID, 1, "f3-handoff-owner"); err != nil {
 		t.Fatalf("StartAttempt() error = %v", err)
 	}

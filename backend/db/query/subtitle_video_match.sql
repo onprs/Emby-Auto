@@ -34,6 +34,7 @@ SELECT
     scope.id AS scope_id,
     scope.status AS scope_status,
     scope.selected_candidate_id,
+    scope.agent_resolution_id,
     task.id AS task_id,
     task.media_type,
     acquisition.series_id,
@@ -46,7 +47,9 @@ SELECT
     download.save_path,
     task.version AS task_version,
     task.state AS task_state,
-    task.subtitle_state AS subtitle_state
+    task.video_state AS video_state,
+    task.subtitle_state AS subtitle_state,
+    task.failure_stage AS failure_stage
 FROM subtitle_video_match_scopes AS scope
 JOIN episode_tasks AS task ON task.id = scope.task_id
 JOIN download_files AS video ON video.id = task.source_video_file_id
@@ -58,6 +61,38 @@ LEFT JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
 LEFT JOIN tmdb_seasons AS season ON season.id = episode.season_id
 WHERE scope.id = sqlc.arg(scope_id)
 FOR UPDATE OF scope, task;
+
+-- name: GetSubtitleVideoMatchBindingSnapshot :one
+SELECT
+    scope.id AS scope_id,
+    scope.status AS scope_status,
+    scope.selected_candidate_id,
+    scope.agent_resolution_id,
+    task.id AS task_id,
+    task.media_type,
+    acquisition.series_id,
+    series.title AS series_title,
+    mapping.id AS mapping_id,
+    episode.episode_number AS target_episode_number,
+    episode.title AS target_episode_title,
+    season.season_number AS target_season_number,
+    video.relative_path AS source_video_relative_path,
+    download.save_path,
+    task.version AS task_version,
+    task.state AS task_state,
+    task.video_state AS video_state,
+    task.subtitle_state AS subtitle_state,
+    task.failure_stage AS failure_stage
+FROM subtitle_video_match_scopes AS scope
+JOIN episode_tasks AS task ON task.id = scope.task_id
+JOIN download_files AS video ON video.id = task.source_video_file_id
+JOIN downloads AS download ON download.id = video.download_id
+JOIN acquisitions AS acquisition ON acquisition.id = task.acquisition_id
+JOIN media_series AS series ON series.id = acquisition.series_id
+LEFT JOIN episode_mappings AS mapping ON mapping.id = task.mapping_id AND mapping.mapping_status = 'mapped'
+LEFT JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
+LEFT JOIN tmdb_seasons AS season ON season.id = episode.season_id
+WHERE scope.id = sqlc.arg(scope_id);
 
 -- name: GetSubtitleVideoMatchScopeID :one
 SELECT id

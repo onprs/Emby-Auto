@@ -101,11 +101,12 @@ func (q *Queries) ExpireSubtitleVideoMatchScope(ctx context.Context, id pgtype.U
 	return task_id, err
 }
 
-const getSubtitleVideoMatchContext = `-- name: GetSubtitleVideoMatchContext :one
+const getSubtitleVideoMatchBindingSnapshot = `-- name: GetSubtitleVideoMatchBindingSnapshot :one
 SELECT
     scope.id AS scope_id,
     scope.status AS scope_status,
     scope.selected_candidate_id,
+    scope.agent_resolution_id,
     task.id AS task_id,
     task.media_type,
     acquisition.series_id,
@@ -118,7 +119,91 @@ SELECT
     download.save_path,
     task.version AS task_version,
     task.state AS task_state,
-    task.subtitle_state AS subtitle_state
+    task.video_state AS video_state,
+    task.subtitle_state AS subtitle_state,
+    task.failure_stage AS failure_stage
+FROM subtitle_video_match_scopes AS scope
+JOIN episode_tasks AS task ON task.id = scope.task_id
+JOIN download_files AS video ON video.id = task.source_video_file_id
+JOIN downloads AS download ON download.id = video.download_id
+JOIN acquisitions AS acquisition ON acquisition.id = task.acquisition_id
+JOIN media_series AS series ON series.id = acquisition.series_id
+LEFT JOIN episode_mappings AS mapping ON mapping.id = task.mapping_id AND mapping.mapping_status = 'mapped'
+LEFT JOIN media_episodes AS episode ON episode.id = mapping.target_episode_id
+LEFT JOIN tmdb_seasons AS season ON season.id = episode.season_id
+WHERE scope.id = $1
+`
+
+type GetSubtitleVideoMatchBindingSnapshotRow struct {
+	ScopeID                 pgtype.UUID `db:"scope_id" json:"scope_id"`
+	ScopeStatus             string      `db:"scope_status" json:"scope_status"`
+	SelectedCandidateID     *string     `db:"selected_candidate_id" json:"selected_candidate_id"`
+	AgentResolutionID       pgtype.UUID `db:"agent_resolution_id" json:"agent_resolution_id"`
+	TaskID                  pgtype.UUID `db:"task_id" json:"task_id"`
+	MediaType               string      `db:"media_type" json:"media_type"`
+	SeriesID                pgtype.UUID `db:"series_id" json:"series_id"`
+	SeriesTitle             string      `db:"series_title" json:"series_title"`
+	MappingID               pgtype.UUID `db:"mapping_id" json:"mapping_id"`
+	TargetEpisodeNumber     *int32      `db:"target_episode_number" json:"target_episode_number"`
+	TargetEpisodeTitle      *string     `db:"target_episode_title" json:"target_episode_title"`
+	TargetSeasonNumber      *int32      `db:"target_season_number" json:"target_season_number"`
+	SourceVideoRelativePath string      `db:"source_video_relative_path" json:"source_video_relative_path"`
+	SavePath                *string     `db:"save_path" json:"save_path"`
+	TaskVersion             int32       `db:"task_version" json:"task_version"`
+	TaskState               string      `db:"task_state" json:"task_state"`
+	VideoState              string      `db:"video_state" json:"video_state"`
+	SubtitleState           string      `db:"subtitle_state" json:"subtitle_state"`
+	FailureStage            *string     `db:"failure_stage" json:"failure_stage"`
+}
+
+func (q *Queries) GetSubtitleVideoMatchBindingSnapshot(ctx context.Context, scopeID pgtype.UUID) (GetSubtitleVideoMatchBindingSnapshotRow, error) {
+	row := q.db.QueryRow(ctx, getSubtitleVideoMatchBindingSnapshot, scopeID)
+	var i GetSubtitleVideoMatchBindingSnapshotRow
+	err := row.Scan(
+		&i.ScopeID,
+		&i.ScopeStatus,
+		&i.SelectedCandidateID,
+		&i.AgentResolutionID,
+		&i.TaskID,
+		&i.MediaType,
+		&i.SeriesID,
+		&i.SeriesTitle,
+		&i.MappingID,
+		&i.TargetEpisodeNumber,
+		&i.TargetEpisodeTitle,
+		&i.TargetSeasonNumber,
+		&i.SourceVideoRelativePath,
+		&i.SavePath,
+		&i.TaskVersion,
+		&i.TaskState,
+		&i.VideoState,
+		&i.SubtitleState,
+		&i.FailureStage,
+	)
+	return i, err
+}
+
+const getSubtitleVideoMatchContext = `-- name: GetSubtitleVideoMatchContext :one
+SELECT
+    scope.id AS scope_id,
+    scope.status AS scope_status,
+    scope.selected_candidate_id,
+    scope.agent_resolution_id,
+    task.id AS task_id,
+    task.media_type,
+    acquisition.series_id,
+    series.title AS series_title,
+    mapping.id AS mapping_id,
+    episode.episode_number AS target_episode_number,
+    episode.title AS target_episode_title,
+    season.season_number AS target_season_number,
+    video.relative_path AS source_video_relative_path,
+    download.save_path,
+    task.version AS task_version,
+    task.state AS task_state,
+    task.video_state AS video_state,
+    task.subtitle_state AS subtitle_state,
+    task.failure_stage AS failure_stage
 FROM subtitle_video_match_scopes AS scope
 JOIN episode_tasks AS task ON task.id = scope.task_id
 JOIN download_files AS video ON video.id = task.source_video_file_id
@@ -136,6 +221,7 @@ type GetSubtitleVideoMatchContextRow struct {
 	ScopeID                 pgtype.UUID `db:"scope_id" json:"scope_id"`
 	ScopeStatus             string      `db:"scope_status" json:"scope_status"`
 	SelectedCandidateID     *string     `db:"selected_candidate_id" json:"selected_candidate_id"`
+	AgentResolutionID       pgtype.UUID `db:"agent_resolution_id" json:"agent_resolution_id"`
 	TaskID                  pgtype.UUID `db:"task_id" json:"task_id"`
 	MediaType               string      `db:"media_type" json:"media_type"`
 	SeriesID                pgtype.UUID `db:"series_id" json:"series_id"`
@@ -148,7 +234,9 @@ type GetSubtitleVideoMatchContextRow struct {
 	SavePath                *string     `db:"save_path" json:"save_path"`
 	TaskVersion             int32       `db:"task_version" json:"task_version"`
 	TaskState               string      `db:"task_state" json:"task_state"`
+	VideoState              string      `db:"video_state" json:"video_state"`
 	SubtitleState           string      `db:"subtitle_state" json:"subtitle_state"`
+	FailureStage            *string     `db:"failure_stage" json:"failure_stage"`
 }
 
 func (q *Queries) GetSubtitleVideoMatchContext(ctx context.Context, scopeID pgtype.UUID) (GetSubtitleVideoMatchContextRow, error) {
@@ -158,6 +246,7 @@ func (q *Queries) GetSubtitleVideoMatchContext(ctx context.Context, scopeID pgty
 		&i.ScopeID,
 		&i.ScopeStatus,
 		&i.SelectedCandidateID,
+		&i.AgentResolutionID,
 		&i.TaskID,
 		&i.MediaType,
 		&i.SeriesID,
@@ -170,7 +259,9 @@ func (q *Queries) GetSubtitleVideoMatchContext(ctx context.Context, scopeID pgty
 		&i.SavePath,
 		&i.TaskVersion,
 		&i.TaskState,
+		&i.VideoState,
 		&i.SubtitleState,
+		&i.FailureStage,
 	)
 	return i, err
 }

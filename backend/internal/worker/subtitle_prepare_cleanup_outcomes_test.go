@@ -16,7 +16,7 @@ func TestQASubtitlePrepareDisabledOwnerPresentHandoffs(t *testing.T) {
 	store.expiryResult = domain.SubtitleScopeExpiry{Outcome: domain.SubtitleScopeOwnerPresent, OwnerCount: 1, ScopeStatus: "pending"}
 	agent := &subtitleMatchAgentStub{enabled: true, createErr: service.NewError("agent_disabled", "Agent disabled", nil, nil)}
 	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(
-		context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+		context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 	)
 	if err != nil {
 		t.Fatalf("Handle() error = %v, want nil handoff with owner present", err)
@@ -37,7 +37,7 @@ func TestQASubtitlePrepareFailedOwnerPresentHandoffs(t *testing.T) {
 		Status: domain.AgentResolutionFailed, Trigger: "automatic", Version: 1, ErrorCode: "agent_tool_scope_violation",
 	}}}
 	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(
-		context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+		context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 	)
 	if err != nil {
 		t.Fatalf("Handle() error = %v, want nil handoff for non-retryable failed owner present", err)
@@ -55,7 +55,7 @@ func TestQASubtitlePrepareScopeConflictChangedIsRetryable(t *testing.T) {
 	store.expiryResult = domain.SubtitleScopeExpiry{Outcome: domain.SubtitleScopeChanged, ScopeStatus: "pending"}
 	agent := &subtitleMatchAgentStub{enabled: true}
 	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(
-		context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+		context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 	)
 	var failure *Failure
 	if !errors.As(err, &failure) || !failure.Retryable || failure.Code != "agent_resolution_schedule_conflict" {
@@ -74,7 +74,7 @@ func TestQASubtitlePrepareScopeConflictAlreadyAppliedHandoffs(t *testing.T) {
 	store.expiryResult = domain.SubtitleScopeExpiry{Outcome: domain.SubtitleScopeAlreadyApplied, ScopeStatus: "applied"}
 	agent := &subtitleMatchAgentStub{enabled: true}
 	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(
-		context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+		context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 	)
 	if err != nil {
 		t.Fatalf("Handle() error = %v, want nil handoff for applied scope", err)
@@ -92,7 +92,7 @@ func TestQASubtitlePrepareScopeConflictAlreadyExpiredRebuilds(t *testing.T) {
 	store.expiryResult = domain.SubtitleScopeExpiry{Outcome: domain.SubtitleScopeAlreadyExpired, ScopeStatus: "expired"}
 	agent := &subtitleMatchAgentStub{enabled: true}
 	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(
-		context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+		context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 	)
 	if err != nil {
 		t.Fatalf("Handle() error = %v, want rebuild after already-expired scope", err)
@@ -110,7 +110,7 @@ func TestQASubtitlePrepareScopeConflictMultipleOwnersConflict(t *testing.T) {
 	store.expiryResult = domain.SubtitleScopeExpiry{Outcome: domain.SubtitleScopeMultipleOwners, OwnerCount: 2, ScopeStatus: "pending"}
 	agent := &subtitleMatchAgentStub{enabled: true}
 	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(
-		context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+		context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 	)
 	var failure *Failure
 	if !errors.As(err, &failure) || !failure.Retryable || failure.Code != "agent_resolution_schedule_conflict" {
@@ -127,7 +127,7 @@ func TestQASubtitlePrepareNotRequiredOwnerPresentNil(t *testing.T) {
 	store.expiryResult = domain.SubtitleScopeExpiry{Outcome: domain.SubtitleScopeOwnerPresent, OwnerCount: 1, ScopeStatus: "pending"}
 	agent := &subtitleMatchAgentStub{enabled: true, createErr: service.NewError("agent_resolution_not_required", "deterministic rules resolved", nil, nil)}
 	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(
-		context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID},
+		context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}),
 	)
 	if err != nil {
 		t.Fatalf("Handle() error = %v, want nil for not-required with owner present", err)

@@ -13,6 +13,7 @@ import (
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/domain"
 	"github.com/onprs/emby-auto/backend/internal/platform/database"
+	"github.com/onprs/emby-auto/backend/internal/subtitlebinding"
 )
 
 type OperationLifecycle struct {
@@ -31,7 +32,23 @@ func (lifecycle *OperationLifecycle) StartAttempt(
 	workerID string,
 ) (domain.Operation, error) {
 	var operation db.Operation
+	var handle *subtitlebinding.AttemptHandle
 	err := lifecycle.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+		existing, err := scope.Queries.GetOperation(ctx, UUIDToPG(operationID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrOperationNotRunnable
+		}
+		if err != nil {
+			return fmt.Errorf("read operation before attempt: %w", err)
+		}
+		subtitleOperation := existing.Kind == "subtitle.prepare" && valueOrEmpty(existing.ResourceType) == "episode_task"
+		if subtitleOperation {
+			locked, lockErr := scope.Queries.LockOperation(ctx, UUIDToPG(operationID))
+			if lockErr != nil {
+				return fmt.Errorf("lock subtitle operation before attempt: %w", lockErr)
+			}
+			existing = locked
+		}
 		if _, err := scope.Queries.AbandonRunningOperationAttempts(ctx, UUIDToPG(operationID)); err != nil {
 			return fmt.Errorf("close interrupted operation attempts: %w", err)
 		}
@@ -58,20 +75,41 @@ func (lifecycle *OperationLifecycle) StartAttempt(
 			return fmt.Errorf("start operation attempt: %w", err)
 		}
 		operation = started
-		if _, err := scope.Queries.CreateOperationAttempt(ctx, db.CreateOperationAttemptParams{
-			ID:          UUIDToPG(uuid.New()),
+		auditID := uuid.New()
+		audit, err := scope.Queries.CreateOperationAttempt(ctx, db.CreateOperationAttemptParams{
+			ID:          UUIDToPG(auditID),
 			OperationID: UUIDToPG(operationID),
 			Attempt:     int32(attempt),
 			WorkerID:    &workerID,
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("create operation attempt audit: %w", err)
+		}
+		if subtitleOperation {
+			captured := subtitlebinding.AttemptHandle{
+				OperationID:           UUIDFromPG(started.ID),
+				JobAttempt:            attempt,
+				AttemptID:             UUIDFromPG(audit.ID),
+				OperationAttemptCount: int(started.AttemptCount),
+				ResourceType:          valueOrEmpty(started.ResourceType),
+				ResourceID:            UUIDFromPG(started.ResourceID),
+			}
+			if !captured.Valid() {
+				return fmt.Errorf("subtitle attempt handle is invalid")
+			}
+			if err := writeSubtitleStartBinding(ctx, scope.Queries, started, captured); err != nil {
+				return err
+			}
+			handle = &captured
 		}
 		return appendOperationEvent(ctx, scope.Queries, operation, "operation.started", map[string]any{"attempt": attempt})
 	})
 	if err != nil {
 		return domain.Operation{}, err
 	}
-	return mapOperation(operation), nil
+	mapped := mapOperation(operation)
+	mapped.SubtitleAttempt = handle
+	return mapped, nil
 }
 
 func (lifecycle *OperationLifecycle) Heartbeat(
@@ -559,16 +597,11 @@ func cancelOperationResource(ctx context.Context, queries *db.Queries, operation
 	case "transcode.run":
 		task, err = queries.MarkTaskVideoCancelled(ctx, operation.ResourceID)
 	case "subtitle.prepare":
-		allowed, authorizeErr := subtitleVideoMatchScopeAllowsTaskTerminal(ctx, queries, operation.ResourceID)
-		if authorizeErr != nil {
-			return fmt.Errorf("authorize subtitle task cancellation: %w", authorizeErr)
-		}
-		if !allowed {
-			// A newer subtitle generation/owner/applied selection exists; do not
-			// cancel the task on behalf of the old operation.
-			return nil
-		}
-		task, err = queries.MarkTaskSubtitleCancelled(ctx, operation.ResourceID)
+		// 字幕取消现在通过捕获的尝试句柄及其绑定执行。
+		// 没有句柄的 pre-start/legacy 调用方无权取消任务；
+		// 正式的整任务取消已由 TaskCommandWorkflow.Cancel
+		// 设置任务状态。
+		return nil
 	case "media.finalize":
 		task, err = queries.MarkTaskFinalizeCancelled(ctx, operation.ResourceID)
 	default:

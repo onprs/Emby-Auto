@@ -86,12 +86,13 @@ VALUES ($1, 'subtitle.prepare', 'episode_task', $2, $3, 'queued', 1, 60, '{}'::j
 		t.Fatal(err)
 	}
 	lifecycle := repository.NewOperationLifecycle(db.New(pool), transactor)
-	if _, err := lifecycle.StartAttempt(ctx, operationID, 1, "f3-matrix-worker"); err != nil {
-		t.Fatal(err)
+	started, err := lifecycle.StartAttempt(ctx, operationID, 1, "f3-matrix-worker")
+	if err != nil || started.SubtitleAttempt == nil {
+		t.Fatalf("start matrix worker: %+v/%v", started, err)
 	}
 	handlerErr := make(chan error, 1)
 	go func() {
-		handlerErr <- handler.Handle(ctx, domain.Operation{ID: operationID, Kind: "subtitle.prepare", ResourceType: "episode_task", ResourceID: taskID})
+		handlerErr <- handler.Handle(ctx, started)
 	}()
 	select {
 	case <-store.guardReached:
@@ -140,12 +141,12 @@ VALUES ($1, 'subtitle.prepare', 'episode_task', $2, $3, 'queued', 1, 60, '{}'::j
 		if handlerFailure != nil {
 			code, message, retryable = handlerFailure.Code, handlerFailure.Message, handlerFailure.Retryable
 		}
-		if err := lifecycle.FailAttempt(ctx, operationID, 1, code, message, retryable); err != nil {
-			t.Fatalf("old operation FailAttempt() error = %v", err)
+		if err := lifecycle.FailSubtitleAttempt(ctx, *started.SubtitleAttempt, code, message, retryable); err != nil {
+			t.Fatalf("old operation FailSubtitleAttempt() error = %v", err)
 		}
 	case "cancel":
-		if err := lifecycle.CancelAttempt(ctx, operationID, 1); err != nil {
-			t.Fatalf("old operation CancelAttempt() error = %v", err)
+		if err := lifecycle.CancelSubtitleAttempt(ctx, *started.SubtitleAttempt); err != nil {
+			t.Fatalf("old operation CancelSubtitleAttempt() error = %v", err)
 		}
 	}
 	var taskState, subtitleState string

@@ -57,7 +57,7 @@ func TestSubtitlePrepareSchedulesAgentWhenAmbiguousAndEnabled(t *testing.T) {
 		}}, nil
 	}}
 	agent := &subtitleMatchAgentStub{enabled: true}
-	err := NewSubtitlePrepareHandler(mediaTestConfiguration(filepath.Join(root, "staging")), tools, store, agent).Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID})
+	err := NewSubtitlePrepareHandler(mediaTestConfiguration(filepath.Join(root, "staging")), tools, store, agent).Handle(context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}))
 	if err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
@@ -98,7 +98,7 @@ func TestSubtitlePrepareKeepsSameBasenameExternalCandidatesDistinct(t *testing.T
 	agent := &subtitleMatchAgentStub{enabled: true}
 	if err := NewSubtitlePrepareHandler(
 		mediaTestConfiguration(filepath.Join(root, "staging")), tools, store, agent,
-	).Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}); err != nil {
+	).Handle(context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID})); err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
 	if len(store.scopeCandidates) != 2 {
@@ -144,7 +144,7 @@ func TestSubtitlePrepareResumesRetryableAgentFailure(t *testing.T) {
 	}}}
 	store.schedulingState = domain.SubtitleVideoMatchSchedulingState{ScopeID: scopeID, ScopeStatus: "pending", TaskVersion: 1}
 	store.selection = domain.SubtitleMatchSelection{}
-	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}); err != nil {
+	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID})); err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
 	if agent.retryCalls != 1 {
@@ -158,7 +158,7 @@ func TestSubtitlePrepareFailsTaskWhenAgentFailureIsNotRetryable(t *testing.T) {
 	agent := &subtitleMatchAgentStub{enabled: true, created: service.AgentResolutionCommandResult{Resolution: domain.AgentResolution{
 		Status: domain.AgentResolutionFailed, Trigger: "automatic", ErrorCode: "agent_tool_scope_violation", Proposal: []byte(`{}`),
 	}}}
-	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID})
+	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}))
 	var failure *Failure
 	if !errors.As(err, &failure) || failure.Code != "agent_subtitle_match_failed" || failure.Retryable {
 		t.Fatalf("Handle() error = %v, want permanent agent_subtitle_match_failed", err)
@@ -218,7 +218,7 @@ func TestSubtitlePrepareUsesAppliedAgentSelection(t *testing.T) {
 		},
 	}
 	agent := &subtitleMatchAgentStub{enabled: true}
-	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID})
+	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store, agent).Handle(context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}))
 	if err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
