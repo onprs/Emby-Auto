@@ -114,9 +114,18 @@ func (handler *CleanupRunHandler) Handle(ctx context.Context, operation domain.O
 	}
 
 	stagingRoots := []string{settings.Paths.StagingRoot, settings.Paths.WorkRoot}
+	stagedDirectories := make(map[string]struct{}, 2)
 	for _, path := range []string{command.StagedVideoPath, command.StagedSubtitlePath} {
 		if err := removeAllowedPath(path, stagingRoots, false); err != nil {
 			return cleanupPathFailure("staged artifact", err)
+		}
+		stagedDirectories[filepath.Dir(path)] = struct{}{}
+	}
+	// 任务进入终态后回收同一暂存目录中崩溃遗留的临时文件。
+	// 清理范围限定在任务 UUID 目录内，且只处理本服务的临时文件命名。
+	for directory := range stagedDirectories {
+		if err := removeMediaTemporariesInTaskDirectory(directory, stagingRoots); err != nil {
+			return cleanupPathFailure("staged temporary file", err)
 		}
 	}
 	for _, path := range []string{command.StagedVideoPath, command.StagedSubtitlePath} {
@@ -250,4 +259,37 @@ func pathsAbsent(paths ...string) bool {
 		}
 	}
 	return true
+}
+
+// removeMediaTemporariesInTaskDirectory 回收任务暂存目录中的遗留临时文件。
+// 只扫描配置根目录下任务 UUID 子目录内的普通文件，不会跨任务或跨根目录删除。
+func removeMediaTemporariesInTaskDirectory(directory string, roots []string) error {
+	target, root, err := resolveAllowedPath(directory, roots)
+	if err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(root, target)
+	if err != nil || relative == "." {
+		return nil
+	}
+	first := strings.Split(relative, string(filepath.Separator))[0]
+	if _, err := uuid.Parse(first); err != nil {
+		return nil
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() || !isMediaTemporaryName(entry.Name()) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(target, entry.Name())); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }

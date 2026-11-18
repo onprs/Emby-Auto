@@ -161,6 +161,16 @@ type ImportCompletion struct {
 	DestinationSubtitlePath string
 }
 
+// ImportRecoveryState 是导入提交失败后用于安全补偿的导入记录状态快照。
+type ImportRecoveryState struct {
+	TaskState   TaskState
+	ImportState string
+	// Succeeded 表示任务与导入记录已在同一事务中进入成功终态。
+	Succeeded bool
+	// DestinationClaimed 表示目标路径已被任一成功导入记录占用。
+	DestinationClaimed bool
+}
+
 type CleanupCommand struct {
 	TaskID             uuid.UUID
 	CleanupID          uuid.UUID

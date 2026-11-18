@@ -138,12 +138,15 @@ func ValidateTranscodeProfile(profile TranscodeProfile) error {
 	return nil
 }
 
-func BuildTranscodeFFmpegArgs(profile TranscodeProfile, inputPath, temporaryOutput string) ([]string, error) {
+func BuildTranscodeFFmpegArgs(profile TranscodeProfile, inputPath, temporaryOutput string, mainVideoIndex int) ([]string, error) {
 	if err := ValidateTranscodeProfile(profile); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(inputPath) == "" {
 		return nil, invalidTranscodeField("inputPath", "must not be blank")
+	}
+	if mainVideoIndex < 0 {
+		return nil, invalidTranscodeField("mainVideoIndex", "must identify the selected video stream")
 	}
 	if strings.TrimSpace(temporaryOutput) == "" {
 		return nil, invalidTranscodeField("temporaryOutput", "must not be blank")
@@ -165,7 +168,8 @@ func BuildTranscodeFFmpegArgs(profile TranscodeProfile, inputPath, temporaryOutp
 	}
 	args := []string{
 		"-y", "-i", inputPath,
-		"-map", "0:v:0", "-map", "0:a?", "-sn",
+		// 按探测确定的正片流索引映射，避免 0:v:0 选中封面或附加图片流。
+		"-map", "0:" + strconv.Itoa(mainVideoIndex), "-map", "0:a?", "-sn",
 		"-c:v", profile.Encoder, qualityOption, qualityValue,
 		presetOption, profile.Preset,
 		"-pix_fmt", profile.PixelFormat,

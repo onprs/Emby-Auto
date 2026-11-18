@@ -15,13 +15,13 @@ const cancelAcquisitionDownloadsForDeletion = `-- name: CancelAcquisitionDownloa
 UPDATE downloads
 SET status = 'cancelled',
     failure_stage = NULL,
-    error_code = NULL,
+    error_code = 'deletion_cancelled',
     error_message = NULL,
     version = version + 1,
     updated_at = now()
 WHERE acquisition_id = $1
   AND deleted_at IS NULL
-  AND status IN ('enqueue_pending', 'downloading', 'completed', 'selecting_files')
+  AND status IN ('enqueue_pending', 'file_resolution_pending', 'downloading', 'completed', 'selecting_files')
 `
 
 func (q *Queries) CancelAcquisitionDownloadsForDeletion(ctx context.Context, acquisitionID pgtype.UUID) (int64, error) {
@@ -48,6 +48,35 @@ WHERE acquisition_id = $1
 
 func (q *Queries) CancelAcquisitionTasksForDeletion(ctx context.Context, acquisitionID pgtype.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, cancelAcquisitionTasksForDeletion, acquisitionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const clearSubscriptionAcquisitionsDeletionRequested = `-- name: ClearSubscriptionAcquisitionsDeletionRequested :execrows
+UPDATE acquisitions AS acquisition
+SET deletion_requested_at = NULL,
+    updated_at = now()
+WHERE acquisition.deletion_requested_at IS NOT NULL
+  AND acquisition.id IN (
+      SELECT entry_acquisition.id
+      FROM rss_entries AS entry
+      JOIN acquisitions AS entry_acquisition ON entry_acquisition.rss_entry_id = entry.id
+      WHERE entry.subscription_id = $1
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM operations AS operation
+      WHERE operation.kind = 'acquisition.delete'
+        AND operation.resource_type = 'acquisition'
+        AND operation.resource_id = acquisition.id
+        AND operation.status IN ('queued', 'running')
+  )
+`
+
+func (q *Queries) ClearSubscriptionAcquisitionsDeletionRequested(ctx context.Context, subscriptionID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, clearSubscriptionAcquisitionsDeletionRequested, subscriptionID)
 	if err != nil {
 		return 0, err
 	}
@@ -326,6 +355,50 @@ func (q *Queries) ListAcquisitionDeletionDownloads(ctx context.Context, acquisit
 	return items, nil
 }
 
+const listAcquisitionDeletionLibraryFilePairs = `-- name: ListAcquisitionDeletionLibraryFilePairs :many
+SELECT
+    imported.destination_video_path::text AS video_path,
+    imported.destination_subtitle_path::text AS subtitle_path
+FROM imports AS imported
+JOIN episode_tasks AS task ON task.id = imported.task_id
+WHERE task.acquisition_id = $1
+  AND imported.status = 'succeeded'
+  AND imported.destination_video_path IS NOT NULL
+  AND imported.destination_subtitle_path IS NOT NULL
+  AND btrim(imported.destination_video_path) <> ''
+  AND btrim(imported.destination_subtitle_path) <> ''
+ORDER BY imported.destination_video_path, imported.destination_subtitle_path, imported.id
+`
+
+type ListAcquisitionDeletionLibraryFilePairsRow struct {
+	VideoPath    string `db:"video_path" json:"video_path"`
+	SubtitlePath string `db:"subtitle_path" json:"subtitle_path"`
+}
+
+// 删除已导入文件前的锁集合：本 acquisition 仍为 succeeded 的导入目标对。
+// 按视频→字幕的稳定顺序返回，调用方逐对取锁；该顺序与
+// PrepareImportDestination/CompleteImport/RunImportCompensation 一致，
+// 避免多个目标之间出现反向锁序。
+func (q *Queries) ListAcquisitionDeletionLibraryFilePairs(ctx context.Context, acquisitionID pgtype.UUID) ([]ListAcquisitionDeletionLibraryFilePairsRow, error) {
+	rows, err := q.db.Query(ctx, listAcquisitionDeletionLibraryFilePairs, acquisitionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAcquisitionDeletionLibraryFilePairsRow{}
+	for rows.Next() {
+		var i ListAcquisitionDeletionLibraryFilePairsRow
+		if err := rows.Scan(&i.VideoPath, &i.SubtitlePath); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAcquisitionDeletionLibraryFiles = `-- name: ListAcquisitionDeletionLibraryFiles :many
 WITH deletion_imports AS (
     SELECT imported.id, imported.destination_video_path AS file_path
@@ -366,6 +439,9 @@ type ListAcquisitionDeletionLibraryFilesRow struct {
 	Preserve bool   `db:"preserve" json:"preserve"`
 }
 
+// 删除命令快照：preserve 只表示加载时其它未删除 acquisition 的 succeeded 引用，
+// 是提示而非实时占用结论。真正执行 delete-imported 前必须进入目标路径锁域，
+// 用 ListAcquisitionDeletionLibraryFilesForDeletion 重新判定。
 func (q *Queries) ListAcquisitionDeletionLibraryFiles(ctx context.Context, acquisitionID pgtype.UUID) ([]ListAcquisitionDeletionLibraryFilesRow, error) {
 	rows, err := q.db.Query(ctx, listAcquisitionDeletionLibraryFiles, acquisitionID)
 	if err != nil {
@@ -375,6 +451,78 @@ func (q *Queries) ListAcquisitionDeletionLibraryFiles(ctx context.Context, acqui
 	items := []ListAcquisitionDeletionLibraryFilesRow{}
 	for rows.Next() {
 		var i ListAcquisitionDeletionLibraryFilesRow
+		if err := rows.Scan(&i.FilePath, &i.Preserve); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAcquisitionDeletionLibraryFilesForDeletion = `-- name: ListAcquisitionDeletionLibraryFilesForDeletion :many
+WITH deletion_files AS (
+    SELECT imported.id AS import_id, imported.destination_video_path::text AS file_path
+    FROM imports AS imported
+    JOIN episode_tasks AS task ON task.id = imported.task_id
+    WHERE task.acquisition_id = $1
+      AND imported.status = 'succeeded'
+      AND imported.destination_video_path IS NOT NULL
+      AND btrim(imported.destination_video_path) <> ''
+    UNION ALL
+    SELECT imported.id, imported.destination_subtitle_path::text
+    FROM imports AS imported
+    JOIN episode_tasks AS task ON task.id = imported.task_id
+    WHERE task.acquisition_id = $1
+      AND imported.status = 'succeeded'
+      AND imported.destination_subtitle_path IS NOT NULL
+      AND btrim(imported.destination_subtitle_path) <> ''
+)
+SELECT
+    deletion_file.file_path AS file_path,
+    EXISTS (
+        SELECT 1
+        FROM imports AS claimed
+        JOIN episode_tasks AS claimed_task ON claimed_task.id = claimed.task_id
+        JOIN acquisitions AS claimed_acquisition ON claimed_acquisition.id = claimed_task.acquisition_id
+        WHERE claimed.id <> deletion_file.import_id
+          AND (
+              claimed.status = 'running'
+              OR (
+                  claimed.status = 'succeeded'
+                  AND claimed_acquisition.id <> $1
+                  AND claimed_acquisition.deletion_requested_at IS NULL
+              )
+          )
+          AND (
+              claimed.destination_video_path = deletion_file.file_path
+              OR claimed.destination_subtitle_path = deletion_file.file_path
+          )
+    ) AS preserve
+FROM deletion_files AS deletion_file
+ORDER BY deletion_file.file_path, deletion_file.import_id
+`
+
+type ListAcquisitionDeletionLibraryFilesForDeletionRow struct {
+	FilePath string `db:"file_path" json:"file_path"`
+	Preserve bool   `db:"preserve" json:"preserve"`
+}
+
+// 持锁后的新鲜占用判定：只返回本 acquisition 仍为 succeeded 的导入文件。
+// preserve 表示同一路径仍被其它 running 已登记采用者（含同一 acquisition
+// 的活跃导入）或其它未请求删除 acquisition 的 succeeded 导入引用；
+// 终态 failed/cancelled 不构成占用，本导入自身不计入。
+func (q *Queries) ListAcquisitionDeletionLibraryFilesForDeletion(ctx context.Context, acquisitionID pgtype.UUID) ([]ListAcquisitionDeletionLibraryFilesForDeletionRow, error) {
+	rows, err := q.db.Query(ctx, listAcquisitionDeletionLibraryFilesForDeletion, acquisitionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAcquisitionDeletionLibraryFilesForDeletionRow{}
+	for rows.Next() {
+		var i ListAcquisitionDeletionLibraryFilesForDeletionRow
 		if err := rows.Scan(&i.FilePath, &i.Preserve); err != nil {
 			return nil, err
 		}
@@ -553,6 +701,95 @@ type RequestAcquisitionOperationCancellationsParams struct {
 
 func (q *Queries) RequestAcquisitionOperationCancellations(ctx context.Context, arg RequestAcquisitionOperationCancellationsParams) (int64, error) {
 	result, err := q.db.Exec(ctx, requestAcquisitionOperationCancellations, arg.ExcludedOperationID, arg.AcquisitionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const restoreAcquisitionAfterFailedDeletion = `-- name: RestoreAcquisitionAfterFailedDeletion :one
+UPDATE acquisitions AS acquisition
+SET deletion_requested_at = NULL,
+    updated_at = now()
+WHERE acquisition.id = $1
+  AND acquisition.deletion_requested_at IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM operations AS operation
+      WHERE operation.kind = 'acquisition.delete'
+        AND operation.resource_type = 'acquisition'
+        AND operation.resource_id = acquisition.id
+        AND operation.status IN ('queued', 'running')
+        AND operation.id <> $2
+  )
+RETURNING acquisition.id, acquisition.series_id, acquisition.mapping_profile_id, acquisition.source_kind, acquisition.release_candidate_id, acquisition.rss_entry_id, acquisition.source_uri, acquisition.source_payload, acquisition.legacy_id, acquisition.created_by, acquisition.created_at, acquisition.updated_at, acquisition.deletion_requested_at
+`
+
+type RestoreAcquisitionAfterFailedDeletionParams struct {
+	ID          pgtype.UUID `db:"id" json:"id"`
+	OperationID pgtype.UUID `db:"operation_id" json:"operation_id"`
+}
+
+func (q *Queries) RestoreAcquisitionAfterFailedDeletion(ctx context.Context, arg RestoreAcquisitionAfterFailedDeletionParams) (Acquisition, error) {
+	row := q.db.QueryRow(ctx, restoreAcquisitionAfterFailedDeletion, arg.ID, arg.OperationID)
+	var i Acquisition
+	err := row.Scan(
+		&i.ID,
+		&i.SeriesID,
+		&i.MappingProfileID,
+		&i.SourceKind,
+		&i.ReleaseCandidateID,
+		&i.RssEntryID,
+		&i.SourceUri,
+		&i.SourcePayload,
+		&i.LegacyID,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletionRequestedAt,
+	)
+	return i, err
+}
+
+const restoreAcquisitionDeletionCancelledDownloads = `-- name: RestoreAcquisitionDeletionCancelledDownloads :execrows
+UPDATE downloads
+SET failure_stage = NULL,
+    error_code = 'deletion_failed',
+    error_message = 'the previous deletion did not finish; the record can be deleted again',
+    version = version + 1,
+    updated_at = now()
+WHERE acquisition_id = $1
+  AND deleted_at IS NULL
+  AND status = 'cancelled'
+  AND error_code = 'deletion_cancelled'
+`
+
+func (q *Queries) RestoreAcquisitionDeletionCancelledDownloads(ctx context.Context, acquisitionID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, restoreAcquisitionDeletionCancelledDownloads, acquisitionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const restoreSubscriptionDeletionCancelledDownloads = `-- name: RestoreSubscriptionDeletionCancelledDownloads :execrows
+UPDATE downloads AS download
+SET failure_stage = NULL,
+    error_code = 'deletion_failed',
+    error_message = 'the previous deletion did not finish; the record can be deleted again',
+    version = version + 1,
+    updated_at = now()
+FROM acquisitions AS acquisition
+JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
+WHERE download.acquisition_id = acquisition.id
+  AND entry.subscription_id = $1
+  AND download.deleted_at IS NULL
+  AND download.status = 'cancelled'
+  AND download.error_code = 'deletion_cancelled'
+`
+
+func (q *Queries) RestoreSubscriptionDeletionCancelledDownloads(ctx context.Context, subscriptionID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, restoreSubscriptionDeletionCancelledDownloads, subscriptionID)
 	if err != nil {
 		return 0, err
 	}

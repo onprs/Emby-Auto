@@ -29,7 +29,7 @@ func TestImportArtifactPairHonorsCancellationBeforeLibraryCommit(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cancel(ErrCancellationRequested)
 
-	err := importArtifactPair(
+	_, err := importArtifactPair(
 		ctx,
 		command.Video,
 		command.Subtitle,

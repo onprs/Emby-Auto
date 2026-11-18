@@ -16,7 +16,7 @@ import (
 	"github.com/onprs/emby-auto/backend/internal/testutil"
 )
 
-func TestZZR1P4Migration46To47PreservesDataAndCascade(t *testing.T) {
+func TestZZR1P4Migration46To50PreservesDataAndCascade(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	databaseURL, pool := testutil.NewMigratedPostgres(t)

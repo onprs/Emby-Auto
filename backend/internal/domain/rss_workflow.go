@@ -35,6 +35,15 @@ type RSSSubscription struct {
 	UpdatedAt                 time.Time
 }
 
+// RSSSubscriptionDeletionPollState 是删除订阅前在订阅行锁内捕获的轮询意图。
+// 它随 rss.subscription.delete 操作的 payload 持久化，供终态失败恢复在同一事务内还原；
+// 缺少该快照的旧在途操作无法重建原文意图，恢复时不得猜测 enabled。
+type RSSSubscriptionDeletionPollState struct {
+	Enabled    bool       `json:"enabled"`
+	NextPollAt *time.Time `json:"nextPollAt"`
+	Version    int32      `json:"version"`
+}
+
 type CreateRSSSubscription struct {
 	TMDbSeriesID              int64
 	SeriesTitle               string
