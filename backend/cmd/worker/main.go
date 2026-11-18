@@ -203,6 +203,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, checkOnly 
 		}
 		options := searchOptions
 		options.HTTPClient = httpClient
+		options.ProxyEnabled = runtimeConfiguration.Settings.NetworkProxy.Enabled
 		return searchsource.NewClient(options)
 	}
 	searchWorkflow := service.NewSearchWorkflow(queries, transactor, operationScheduler)

@@ -23,6 +23,7 @@ import (
 
 const (
 	maxErrorBodyBytes                       = 64 << 10
+	maxJSONBodyBytes                        = 16 << 20
 	maxTorrentRateLimitBytesPerSecond int64 = math.MaxInt32 - 1 // MaxInt32 在 qBittorrent 中表示不限速。
 	ManagedCategory                         = "emby_auto"
 	RuntimePausedTag                        = "emby_auto_runtime_paused"
@@ -197,8 +198,12 @@ func (client *Client) ListTorrents(ctx context.Context, category string) ([]Torr
 		return nil, fmt.Errorf("list qBittorrent torrents: %w", err)
 	}
 	defer func() { _ = response.Body.Close() }()
+	body, err := readBoundedJSONBody(response, "qBittorrent torrent response")
+	if err != nil {
+		return nil, fmt.Errorf("read qBittorrent torrents: %w", err)
+	}
 	var torrents []Torrent
-	if err := json.NewDecoder(response.Body).Decode(&torrents); err != nil {
+	if err := json.Unmarshal(body, &torrents); err != nil {
 		return nil, fmt.Errorf("decode qBittorrent torrents: %w", err)
 	}
 	return torrents, nil
@@ -301,8 +306,12 @@ func (client *Client) TorrentFiles(ctx context.Context, hash string) ([]TorrentF
 		return nil, fmt.Errorf("list qBittorrent torrent files: %w", err)
 	}
 	defer func() { _ = response.Body.Close() }()
+	body, err := readBoundedJSONBody(response, "qBittorrent torrent files response")
+	if err != nil {
+		return nil, fmt.Errorf("read qBittorrent torrent files: %w", err)
+	}
 	var files []TorrentFile
-	if err := json.NewDecoder(response.Body).Decode(&files); err != nil {
+	if err := json.Unmarshal(body, &files); err != nil {
 		return nil, fmt.Errorf("decode qBittorrent torrent files: %w", err)
 	}
 	return files, nil
@@ -520,8 +529,12 @@ func (client *Client) categoryExists(ctx context.Context, category string) (bool
 		return false, err
 	}
 	defer func() { _ = response.Body.Close() }()
+	body, err := readBoundedJSONBody(response, "qBittorrent torrent categories response")
+	if err != nil {
+		return false, fmt.Errorf("read qBittorrent torrent categories: %w", err)
+	}
 	categories := map[string]json.RawMessage{}
-	if err := json.NewDecoder(response.Body).Decode(&categories); err != nil {
+	if err := json.Unmarshal(body, &categories); err != nil {
 		return false, fmt.Errorf("decode qBittorrent torrent categories: %w", err)
 	}
 	_, exists := categories[category]
@@ -785,6 +798,22 @@ func (client *Client) do(request *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("read qBittorrent error response: %w", readErr)
 	}
 	return nil, &HTTPError{StatusCode: response.StatusCode, Body: strings.TrimSpace(string(body))}
+}
+
+// readBoundedJSONBody 为成功响应提供与其它上游客户端一致的字节上限，
+// 避免单个异常或超大 JSON 响应在 Worker 中无限扩张内存。
+func readBoundedJSONBody(response *http.Response, label string) ([]byte, error) {
+	if response.ContentLength > maxJSONBodyBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", label, maxJSONBodyBytes)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxJSONBodyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", label, err)
+	}
+	if int64(len(body)) > maxJSONBodyBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", label, maxJSONBodyBytes)
+	}
+	return body, nil
 }
 
 func stopTimer(timer *time.Timer) {
