@@ -151,7 +151,8 @@ func TestSearchFetchesCrossHostDetailWhenItResolvesToPublicAddress(t *testing.T)
 	client, err := NewClient(ClientOptions{
 		HTTPClient: &http.Client{Transport: &http.Transport{DialContext: testDialer(map[string]string{
 			"provider.example.test:80": strings.TrimPrefix(providerServer.URL, "http://"),
-			"cdn.example.test:80":      strings.TrimPrefix(detailServer.URL, "http://"),
+			// 详情页必须拨向校验阶段固定下来的地址，而不是再次解析域名。
+			"203.0.113.20:80": strings.TrimPrefix(detailServer.URL, "http://"),
 		})}},
 		Providers: []Provider{{Name: "dmhy", SearchURLTemplate: "http://provider.example.test/search?q={query}"}},
 		Resolver: staticResolver{

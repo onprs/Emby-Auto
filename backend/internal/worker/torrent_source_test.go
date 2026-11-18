@@ -436,6 +436,42 @@ func TestFetchTorrentSourceBlocksResolvedPrivateHostBeforeClientCreation(t *test
 	}
 }
 
+func TestFetchTorrentSourcePinsValidatedAddressForDirectDial(t *testing.T) {
+	var dialed string
+	var hostHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		hostHeader = request.Host
+		_, _ = response.Write(testTorrentPayload)
+	}))
+	defer server.Close()
+
+	opts := torrentSourceOptions{
+		resolver: staticTorrentResolver{"cdn.example.test": {netip.MustParseAddr("203.0.113.9")}},
+		newClient: func(domain.NetworkProxySettings) (*http.Client, error) {
+			return &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+				dialed = address
+				if address != "203.0.113.9:80" {
+					return nil, fmt.Errorf("unexpected dial target %s", address)
+				}
+				return (&net.Dialer{}).DialContext(ctx, network, strings.TrimPrefix(server.URL, "http://"))
+			}}}, nil
+		},
+	}
+	body, err := fetchTorrentSource(context.Background(), "http://cdn.example.test/file.torrent", domain.NetworkProxySettings{}, opts)
+	if err != nil {
+		t.Fatalf("fetchTorrentSource() error = %v", err)
+	}
+	if string(body) != string(testTorrentPayload) {
+		t.Fatalf("body = %q, want torrent payload", body)
+	}
+	if dialed != "203.0.113.9:80" {
+		t.Fatalf("dial target = %q, want pinned address", dialed)
+	}
+	if hostHeader != "cdn.example.test" {
+		t.Fatalf("Host header = %q, want original hostname", hostHeader)
+	}
+}
+
 func errorIsFailure(err error, target **Failure) bool {
 	for err != nil {
 		if f, ok := err.(*Failure); ok {
