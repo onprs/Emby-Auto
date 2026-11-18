@@ -53,12 +53,47 @@ ssh -L 18080:127.0.0.1:18080 用户@设备地址
 | --- | --- |
 | `--version v版本号` | 安装指定 Release，默认最新正式版本 |
 | `--user 账户` | 使用现有媒体所有者账户，默认创建 `emby-auto` |
+| `--share-group 共享组` | 与 qBittorrent 等账户共享下载目录的现有用户组 |
 | `--port 端口` | 网页与 API 共用的回环端口，默认 `18080` |
 | `--archive 文件`、`--checksums 文件` | 校验并使用已下载的发布包与 `SHA256SUMS` |
 | `--no-start` | 准备应用和服务，保持服务状态，供迁移使用 |
 | `--finalize` | 核验准备后的服务并完成安装登记，保持配置和服务状态 |
 
 端口被占用时，例如使用 `--port 19080`，访问地址和 SSH 隧道也应改用该端口。重复执行保留当前版本、初始化状态和运行配置。更换版本按下文升级步骤操作。
+
+### 账户与目录权限
+
+一键安装默认创建 `emby-auto` 账户；已有媒体库时使用 `--user 媒体账户`。新安装的目录使用以下权限：
+
+| 目录 | 权限 | 用途与要求 |
+| --- | --- | --- |
+| `/srv/emby-auto/downloads` | `2770`，setgid；使用 `--share-group` 时另有默认 ACL | qBittorrent 写入，应用读取并删除缓存 |
+| `/srv/emby-auto/work`、`staging` | `2770`，setgid | 应用处理与入库暂存 |
+| `/srv/emby-auto/media/{anime,movies}` | `2775` | 应用写入；Emby 以其它账户读取与遍历 |
+
+qBittorrent、Emby 与应用通常由不同账户运行。推荐在安装时指定一个共享组，并让 qBittorrent 账户加入该组（组需提前创建，例如 `sudo groupadd emby-share`）：
+
+```bash
+curl -fsSL https://github.com/onprs/Emby-Auto/releases/latest/download/install.sh | \
+  sudo bash -s -- --share-group emby-share
+sudo usermod -aG emby-share qbittorrent
+sudo systemctl restart qbittorrent
+```
+
+已有安装未使用共享组时，重复执行安装命令并添加 `--share-group` 会实际应用组成员与目录权限，并写入安装记录。已有媒体库使用 `--user 媒体账户 --share-group 共享组` 时，媒体账户负责媒体文件所有权，共享组负责下载目录协作；账户 UID 和 GID 仍必须大于 0。
+
+也可以不重跑安装器，手工补充权限（示例使用应用账户同名组 `emby-auto`）：
+
+```bash
+sudo apt-get install -y acl
+sudo usermod -aG emby-auto qbittorrent
+sudo chgrp -R emby-auto /srv/emby-auto/downloads
+sudo chmod -R g+rwX /srv/emby-auto/downloads
+sudo find /srv/emby-auto/downloads -type d -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+sudo systemctl restart qbittorrent
+```
+
+默认 ACL 让 qBittorrent 使用常见 `umask 022` 创建的子目录仍保留组写权限；只设置共享组而缺少默认 ACL 或 `umask 002` 时，应用仍无法删除这些子目录。Emby 只需要读取和遍历；已有媒体库权限更严格时，可单独为 Emby 账户添加只读 ACL。不要把整个媒体目录改成 `0777`。
 
 ## 部署目录与服务
 
@@ -111,13 +146,16 @@ id -g emby
 新部署尚未创建媒体目录时，可使用以下示例；已有目录保持原有权限：
 
 ```bash
-sudo install -d -o emby -g emby -m 0770 \
+sudo install -d -o emby -g emby -m 2770 \
   /srv/emby-auto/downloads \
   /srv/emby-auto/work \
-  /srv/emby-auto/staging \
+  /srv/emby-auto/staging
+sudo install -d -o emby -g emby -m 2775 \
   /srv/emby-auto/media/anime \
   /srv/emby-auto/media/movies
 ```
+
+qBittorrent 使用其它账户时，按上文“账户与目录权限”为该账户配置共享组与默认 ACL。媒体库根的 `2775` 允许其它账户的 Emby 遍历和读取，应用仍以所有者身份写入。入库后的标题子树由应用设为目录 `0755`、文件 `0644`，独立 Emby 账户保持只读访问。
 
 使用硬件转码时，将服务账户加入设备需要的 `render`、`video` 等组，并重启服务以应用组成员关系。
 
