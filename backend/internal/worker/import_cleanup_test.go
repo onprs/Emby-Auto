@@ -41,7 +41,12 @@ func (access *testImportedLibraryAccess) Apply(path string) error {
 	if access.err != nil && (access.failAfter == 0 || len(access.paths) >= access.failAfter) {
 		return access.err
 	}
-	return os.Chmod(path, importedLibraryPathMode)
+	if info, err := os.Lstat(path); err != nil {
+		return err
+	} else if info.IsDir() {
+		return os.Chmod(path, importedLibraryDirMode)
+	}
+	return os.Chmod(path, importedLibraryFileMode)
 }
 
 func (access *testImportedLibraryAccess) ApplyTree(ctx context.Context, root string) error {
@@ -245,14 +250,14 @@ func TestEmbyImportCopiesAndCommitsValidatedPair(t *testing.T) {
 	}
 	assertFileContent(t, wantVideo, videoContent)
 	assertFileContent(t, wantSubtitle, subtitleContent)
-	assertFilePermissions(t, filepath.Dir(wantDirectory), importedLibraryPathMode)
-	assertFilePermissions(t, wantDirectory, importedLibraryPathMode)
-	assertFilePermissions(t, metadataDirectory, importedLibraryPathMode)
-	assertFilePermissions(t, metadataPath, importedLibraryPathMode)
-	assertFilePermissions(t, seriesMetadataPath, importedLibraryPathMode)
-	assertFilePermissions(t, artworkPath, importedLibraryPathMode)
-	assertFilePermissions(t, wantVideo, importedLibraryPathMode)
-	assertFilePermissions(t, wantSubtitle, importedLibraryPathMode)
+	assertFilePermissions(t, filepath.Dir(wantDirectory), importedLibraryDirMode)
+	assertFilePermissions(t, wantDirectory, importedLibraryDirMode)
+	assertFilePermissions(t, metadataDirectory, importedLibraryDirMode)
+	assertFilePermissions(t, metadataPath, importedLibraryFileMode)
+	assertFilePermissions(t, seriesMetadataPath, importedLibraryFileMode)
+	assertFilePermissions(t, artworkPath, importedLibraryFileMode)
+	assertFilePermissions(t, wantVideo, importedLibraryFileMode)
+	assertFilePermissions(t, wantSubtitle, importedLibraryFileMode)
 	assertFileContent(t, videoPath, videoContent)
 	matches, err := filepath.Glob(filepath.Join(wantDirectory, "*.part*"))
 	if err != nil || len(matches) != 0 {
@@ -315,9 +320,9 @@ func TestEmbyImportCopiesMoviePairToMovieLibraryTitleDirectory(t *testing.T) {
 	wantSubtitle := filepath.Join(wantDirectory, baseName+".ass")
 	assertFileContent(t, wantVideo, videoContent)
 	assertFileContent(t, wantSubtitle, validASSFixture)
-	assertFilePermissions(t, wantDirectory, importedLibraryPathMode)
-	assertFilePermissions(t, wantVideo, importedLibraryPathMode)
-	assertFilePermissions(t, wantSubtitle, importedLibraryPathMode)
+	assertFilePermissions(t, wantDirectory, importedLibraryDirMode)
+	assertFilePermissions(t, wantVideo, importedLibraryFileMode)
+	assertFilePermissions(t, wantSubtitle, importedLibraryFileMode)
 	if _, err := os.Stat(animeRoot); err != nil {
 		t.Fatalf("anime library root was changed or removed: %v", err)
 	}
@@ -352,9 +357,9 @@ func TestEmbyImportCrashReplayUsesCommittedPairWithoutStagedFiles(t *testing.T) 
 	if store.completion.DestinationVideoPath != videoDestination || store.completion.DestinationSubtitlePath != subtitleDestination {
 		t.Fatalf("replay completion = %#v", store.completion)
 	}
-	assertFilePermissions(t, destination, importedLibraryPathMode)
-	assertFilePermissions(t, videoDestination, importedLibraryPathMode)
-	assertFilePermissions(t, subtitleDestination, importedLibraryPathMode)
+	assertFilePermissions(t, destination, importedLibraryDirMode)
+	assertFilePermissions(t, videoDestination, importedLibraryFileMode)
+	assertFilePermissions(t, subtitleDestination, importedLibraryFileMode)
 }
 
 func TestEmbyImportRejectsDifferentExistingDestination(t *testing.T) {

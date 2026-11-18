@@ -227,6 +227,7 @@ type EmbyLibraryItem struct {
 	UpstreamPayload []byte             `db:"upstream_payload" json:"upstream_payload"`
 	CreatedAt       pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	TmdbProviderID  *string            `db:"tmdb_provider_id" json:"tmdb_provider_id"`
 }
 
 type EmbyScanRun struct {
@@ -366,6 +367,7 @@ type MediaEpisode struct {
 	UpstreamPayload []byte             `db:"upstream_payload" json:"upstream_payload"`
 	CreatedAt       pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	Present         bool               `db:"present" json:"present"`
 }
 
 type MediaSeries struct {
@@ -630,6 +632,7 @@ type TmdbSeason struct {
 	UpstreamPayload []byte             `db:"upstream_payload" json:"upstream_payload"`
 	CreatedAt       pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	Present         bool               `db:"present" json:"present"`
 }
 
 type TranscodeProfile struct {

@@ -555,7 +555,7 @@ func TestConfigurationUpdateMapsExplicitSecretActionsAndActor(t *testing.T) {
 		"emby":{"url":"https://emby.test","apiKey":{"action":"clear"}},
 		"tmdb":{"apiToken":{"action":"keep"}},
 		"networkProxy":{"enabled":true,"url":"http://127.0.0.1:7890"},
-		"agent":{"enabled":true,"protocol":"openai_chat_completions","baseUrl":"https://agent.example/v1","model":"fixture-model","apiKey":{"action":"set","value":"agent-secret"},"useNetworkProxy":true,"requestTimeoutSeconds":60,"rssCoordinateMode":"suggest","downloadFileSelectionMode":"off","catalogMatchEnabled":false,"episodeMappingEnabled":true,"allowAutomaticEpisodeMapping":false},
+		"agent":{"enabled":true,"protocol":"openai_chat_completions","baseUrl":"https://agent.example/v1","model":"fixture-model","apiKey":{"action":"set","value":"agent-secret"},"useNetworkProxy":true,"requestTimeoutSeconds":60,"rssCoordinateMode":"suggest","downloadFileSelectionMode":"off","catalogMatchEnabled":false,"episodeMappingEnabled":true,"allowAutomaticEpisodeMapping":false,"subtitleVideoMatchMode":"off"},
 		"paths":{"downloadRoot":"C:\\media\\downloads","workRoot":"C:\\media\\work","stagingRoot":"C:\\media\\staging","animeLibraryRoot":"C:\\media\\library\\anime","movieLibraryRoot":"C:\\media\\library\\movies","ffmpegPath":"ffmpeg","ffprobePath":"ffprobe"},
 		"transcode":{"name":"h264","videoCodec":"h264","encoder":"libx264","container":"mp4","fileExtension":"mp4","qualityMode":"crf","qualityValue":20,"audioPolicy":"transcode","audioCodec":"aac","preset":"medium","pixelFormat":"yuv420p","threadCount":2,"maxConcurrency":1},
 		"events":{"retentionDays":90}

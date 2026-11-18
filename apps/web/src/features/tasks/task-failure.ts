@@ -205,6 +205,12 @@ const codeReasons: Record<string, Reason> = {
     detail: 'FFprobe 无法读取关联源视频的媒体信息。',
     recommendation: '确认源文件完整且可正常播放后再重试。',
   },
+  source_video_without_main_stream: {
+    reason: '源视频没有正片视频流',
+    detail: '源文件只包含音频、封面图片或附加图片，没有可转换的正片画面。',
+    recommendation: '更换包含正片视频的下载资源，或在文件选择中指定其它视频。',
+    neverRetry: true,
+  },
   ffmpeg_transcode_failed: {
     reason: 'FFmpeg 未能完成视频转换',
     detail: 'FFmpeg 在转换源视频时异常退出，未生成可用视频。',

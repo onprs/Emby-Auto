@@ -81,7 +81,7 @@ func TestBuildTranscodeFFmpegArgsForDistinctProfiles(t *testing.T) {
 			output: "/work/.episode.part.mkv",
 			want: []string{
 				"-y", "-i", "/downloads/source.mkv",
-				"-map", "0:v:0", "-map", "0:a?", "-sn",
+				"-map", "0:0", "-map", "0:a?", "-sn",
 				"-c:v", "libsvtav1", "-crf", "22", "-preset", "6",
 				"-pix_fmt", "yuv420p10le", "-threads", "4",
 				"-c:a", "copy", "-f", "matroska", "/work/.episode.part.mkv",
@@ -108,7 +108,7 @@ func TestBuildTranscodeFFmpegArgsForDistinctProfiles(t *testing.T) {
 			output: "/work/.episode.part.mp4",
 			want: []string{
 				"-y", "-i", "/downloads/source.m2ts",
-				"-map", "0:v:0", "-map", "0:a?", "-sn",
+				"-map", "0:0", "-map", "0:a?", "-sn",
 				"-c:v", "libx264", "-crf", "20", "-preset", "slow",
 				"-pix_fmt", "yuv420p", "-threads", "0",
 				"-c:a", "aac", "-f", "mp4", "/work/.episode.part.mp4",
@@ -118,7 +118,7 @@ func TestBuildTranscodeFFmpegArgsForDistinctProfiles(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := BuildTranscodeFFmpegArgs(test.profile, test.input, test.output)
+			got, err := BuildTranscodeFFmpegArgs(test.profile, test.input, test.output, 0)
 			if err != nil {
 				t.Fatalf("BuildTranscodeFFmpegArgs() error = %v", err)
 			}
@@ -126,6 +126,27 @@ func TestBuildTranscodeFFmpegArgsForDistinctProfiles(t *testing.T) {
 				t.Fatalf("arguments = %#v, want %#v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestBuildTranscodeFFmpegArgsUsesSelectedVideoStreamIndex(t *testing.T) {
+	profile := DefaultTranscodeProfile()
+	args, err := BuildTranscodeFFmpegArgs(profile, "/downloads/source.mkv", "/work/.episode.part.mp4", 3)
+	if err != nil {
+		t.Fatalf("BuildTranscodeFFmpegArgs() error = %v", err)
+	}
+	mapped := ""
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == "-map" && args[index+1] != "0:a?" {
+			mapped = args[index+1]
+			break
+		}
+	}
+	if mapped != "0:3" {
+		t.Fatalf("video map = %q, want 0:3", mapped)
+	}
+	if _, err := BuildTranscodeFFmpegArgs(profile, "/downloads/source.mkv", "/work/.episode.part.mp4", -1); err == nil {
+		t.Fatal("BuildTranscodeFFmpegArgs() accepted a missing video stream index")
 	}
 }
 
