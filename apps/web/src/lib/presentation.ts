@@ -89,6 +89,7 @@ const errorMessages: Record<string, string> = {
   invalid_state: '当前任务状态不允许执行这个操作，请刷新后查看最新状态。',
   idempotency_conflict: '同一操作正在处理中，请等待状态更新。',
   service_unavailable: '后端服务暂时不可用，请稍后再试。',
+  request_too_large: '请求内容过大，请精简后重试。',
   acquisition_delete_path_unsafe: '待删除文件不在允许的临时目录内，请检查路径设置。',
   acquisition_delete_roots_not_configured: '临时文件目录尚未配置完整。',
   acquisition_delete_file_failed: '暂时无法删除源文件或临时文件，请检查文件是否正在使用。',

@@ -98,6 +98,8 @@ paths:
             schema:
               $ref: "#/components/schemas/InitializeSetupRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "200":
           description: Installation completed.
           content:
@@ -123,6 +125,8 @@ paths:
             schema:
               $ref: "#/components/schemas/LoginRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "200":
           description: The administrator is authenticated.
           headers:
@@ -198,6 +202,8 @@ paths:
             schema:
               $ref: "#/components/schemas/UpdateConfigurationRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "200":
           description: The updated runtime configuration.
           content:
@@ -322,6 +328,8 @@ paths:
             schema:
               $ref: "#/components/schemas/CreateSearchRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "202":
           description: The search operation was accepted.
           content:
@@ -471,6 +479,8 @@ paths:
             schema:
               $ref: "#/components/schemas/CreateAcquisitionRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "202":
           description: The acquisition and download operation were accepted.
           content:
@@ -508,6 +518,8 @@ paths:
             schema:
               $ref: "#/components/schemas/SyncTMDbSeriesRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "202":
           description: TMDb synchronization was scheduled.
           content:
@@ -541,6 +553,8 @@ paths:
             schema:
               $ref: "#/components/schemas/EpisodeMappingPlanRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "200":
           description: Mapping preview.
           content:
@@ -577,6 +591,8 @@ paths:
             schema:
               $ref: "#/components/schemas/SaveEpisodeMappingRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "200":
           description: Mapping profile saved.
           content:
@@ -792,6 +808,8 @@ paths:
             schema:
               $ref: "#/components/schemas/RSSFeedLookupRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "200":
           description: The RSS feed lookup result.
           content:
@@ -831,6 +849,8 @@ paths:
             schema:
               $ref: "#/components/schemas/CreateRSSSubtitleGroupRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "201":
           description: The RSS subtitle group was created.
           content:
@@ -864,6 +884,8 @@ paths:
             schema:
               $ref: "#/components/schemas/UpdateRSSSubtitleGroupRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "200":
           description: The RSS subtitle group was updated.
           content:
@@ -960,6 +982,8 @@ paths:
             schema:
               $ref: "#/components/schemas/CreateRSSSubscriptionRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "201":
           description: The RSS subscription was created.
           content:
@@ -1010,6 +1034,8 @@ paths:
             schema:
               $ref: "#/components/schemas/UpdateRSSSubscriptionRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "200":
           description: The updated RSS subscription.
           content:
@@ -1184,6 +1210,8 @@ paths:
             schema:
               $ref: "#/components/schemas/ReviewTaskRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "200":
           description: The reviewed media task.
           content:
@@ -1220,6 +1248,8 @@ paths:
             schema:
               $ref: "#/components/schemas/ImportTaskRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "202":
           description: The Emby import operation was accepted.
           content:
@@ -1431,6 +1461,8 @@ paths:
             schema:
               $ref: "#/components/schemas/RetryDownloadRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "202":
           description: The download retry operation was accepted.
           content:
@@ -1467,6 +1499,8 @@ paths:
             schema:
               $ref: "#/components/schemas/CancelDownloadRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "202":
           description: The download cancel operation was accepted.
           content:
@@ -1503,6 +1537,8 @@ paths:
             schema:
               $ref: "#/components/schemas/SaveDownloadFileResolutionRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "202":
           description: The validated file resolution was accepted for application.
           content:
@@ -1539,6 +1575,8 @@ paths:
             schema:
               $ref: "#/components/schemas/SaveFileSelectionRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "202":
           description: The file-selection correction and re-materialization were accepted.
           content:
@@ -1575,6 +1613,8 @@ paths:
             schema:
               $ref: "#/components/schemas/RetryTaskRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "202":
           description: The task retry operation was accepted.
           content:
@@ -1611,6 +1651,8 @@ paths:
             schema:
               $ref: "#/components/schemas/CancelTaskRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "202":
           description: The task cancel operation was accepted.
           content:
@@ -1807,6 +1849,8 @@ paths:
             schema:
               $ref: "#/components/schemas/RetryRSSEntryRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "202":
           description: The RSS entry retry operation was accepted.
           content:
@@ -2075,6 +2119,8 @@ paths:
             schema:
               $ref: "#/components/schemas/ConnectivityTestRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "200":
           description: The connectivity test result.
           content:
@@ -2130,6 +2176,8 @@ paths:
             schema:
               $ref: "#/components/schemas/UpdateBackgroundRuntimeRequest"
       responses:
+        "413":
+          $ref: "#/components/responses/RequestBodyTooLarge"
         "200":
           description: The Worker reached the requested runtime state.
           content:
@@ -2241,6 +2289,12 @@ components:
             $ref: "#/components/schemas/ApiError"
     ServiceUnavailable:
       description: A required dependency is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    RequestBodyTooLarge:
+      description: The JSON request body exceeds the 1 MiB API limit.
       content:
         application/json:
           schema:
