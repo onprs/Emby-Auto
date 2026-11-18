@@ -158,13 +158,40 @@ WHERE acquisition_id = sqlc.arg(acquisition_id)
 UPDATE downloads
 SET status = 'cancelled',
     failure_stage = NULL,
-    error_code = NULL,
+    error_code = 'deletion_cancelled',
     error_message = NULL,
     version = version + 1,
     updated_at = now()
 WHERE acquisition_id = sqlc.arg(acquisition_id)
   AND deleted_at IS NULL
-  AND status IN ('enqueue_pending', 'downloading', 'completed', 'selecting_files');
+  AND status IN ('enqueue_pending', 'file_resolution_pending', 'downloading', 'completed', 'selecting_files');
+
+-- name: RestoreAcquisitionDeletionCancelledDownloads :execrows
+UPDATE downloads
+SET failure_stage = NULL,
+    error_code = 'deletion_failed',
+    error_message = 'the previous deletion did not finish; the record can be deleted again',
+    version = version + 1,
+    updated_at = now()
+WHERE acquisition_id = sqlc.arg(acquisition_id)
+  AND deleted_at IS NULL
+  AND status = 'cancelled'
+  AND error_code = 'deletion_cancelled';
+
+-- name: RestoreSubscriptionDeletionCancelledDownloads :execrows
+UPDATE downloads AS download
+SET failure_stage = NULL,
+    error_code = 'deletion_failed',
+    error_message = 'the previous deletion did not finish; the record can be deleted again',
+    version = version + 1,
+    updated_at = now()
+FROM acquisitions AS acquisition
+JOIN rss_entries AS entry ON entry.id = acquisition.rss_entry_id
+WHERE download.acquisition_id = acquisition.id
+  AND entry.subscription_id = sqlc.arg(subscription_id)
+  AND download.deleted_at IS NULL
+  AND download.status = 'cancelled'
+  AND download.error_code = 'deletion_cancelled';
 
 -- name: MarkAcquisitionDeletionRequested :one
 UPDATE acquisitions
@@ -173,6 +200,43 @@ SET deletion_requested_at = COALESCE(deletion_requested_at, now()),
 WHERE id = sqlc.arg(id)
   AND deletion_requested_at IS NULL
 RETURNING *;
+
+-- name: RestoreAcquisitionAfterFailedDeletion :one
+UPDATE acquisitions AS acquisition
+SET deletion_requested_at = NULL,
+    updated_at = now()
+WHERE acquisition.id = sqlc.arg(id)
+  AND acquisition.deletion_requested_at IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM operations AS operation
+      WHERE operation.kind = 'acquisition.delete'
+        AND operation.resource_type = 'acquisition'
+        AND operation.resource_id = acquisition.id
+        AND operation.status IN ('queued', 'running')
+        AND operation.id <> sqlc.arg(operation_id)
+  )
+RETURNING acquisition.*;
+
+-- name: ClearSubscriptionAcquisitionsDeletionRequested :execrows
+UPDATE acquisitions AS acquisition
+SET deletion_requested_at = NULL,
+    updated_at = now()
+WHERE acquisition.deletion_requested_at IS NOT NULL
+  AND acquisition.id IN (
+      SELECT entry_acquisition.id
+      FROM rss_entries AS entry
+      JOIN acquisitions AS entry_acquisition ON entry_acquisition.rss_entry_id = entry.id
+      WHERE entry.subscription_id = sqlc.arg(subscription_id)
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM operations AS operation
+      WHERE operation.kind = 'acquisition.delete'
+        AND operation.resource_type = 'acquisition'
+        AND operation.resource_id = acquisition.id
+        AND operation.status IN ('queued', 'running')
+  );
 
 -- name: CountAcquisitionDeletionActiveOperations :one
 SELECT count(*)::bigint

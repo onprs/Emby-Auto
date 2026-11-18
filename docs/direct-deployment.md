@@ -250,6 +250,8 @@ emby_auto_maintenance emby-auto-release-preflight --require-idle
 emby_auto_maintenance emby-auto-recover-stale-operations --worker-stopped --stale-after 5m
 ```
 
+预览输出分别列出 `eligible`、`staleRecovery` 与 `terminalSettlement`。`terminalSettlement` 表示删除操作的终态恢复被中断：订阅或获取记录仍在删除中，但对应后台作业已经结束。增加 `--apply` 后会在同一事务内完成这些操作的失败结算并恢复受保护的资源，输出 `recovered` 与 `settled` 两个计数；重复执行不会重复结算。旧记录缺少删除前的轮询快照时保持停用，需要手动确认后再启用。
+
 核对候选范围后使用相同命令增加 `--apply`，重新检查运行态。满足门禁后替换应用：
 
 ```bash

@@ -247,7 +247,7 @@ func (workflow *DownloadCommandWorkflow) Cancel(ctx context.Context, downloadID 
 			view, loadErr = loadDownloadCommandView(ctx, scope, downloadID)
 			return loadErr
 		}
-		if err := requestResourceOperationCancellations(ctx, scope, "download", downloadID, actorUserID); err != nil {
+		if err := requestResourceOperationCancellations(ctx, scope, workflow.operations, "download", downloadID, actorUserID); err != nil {
 			return err
 		}
 		current, err := scope.Queries.LockDownloadByID(ctx, repository.UUIDToPG(downloadID))
@@ -344,7 +344,7 @@ func (workflow *DownloadCommandWorkflow) Remove(ctx context.Context, downloadID 
 		if err != nil {
 			return fmt.Errorf("check torrent ownership: %w", err)
 		}
-		if err := requestResourceOperationCancellations(ctx, scope, "download", downloadID, actorUserID); err != nil {
+		if err := requestResourceOperationCancellations(ctx, scope, workflow.operations, "download", downloadID, actorUserID); err != nil {
 			return err
 		}
 		removed, err := scope.Queries.MarkDownloadRemovalRequested(ctx, db.MarkDownloadRemovalRequestedParams{

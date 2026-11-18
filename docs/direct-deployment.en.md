@@ -250,6 +250,8 @@ Confirm `state=stopped`, `verified=true`, and `transfers.active=0`. Check prefli
 emby_auto_maintenance emby-auto-recover-stale-operations --worker-stopped --stale-after 5m
 ```
 
+Preview output lists `eligible`, `staleRecovery`, and `terminalSettlement`. `terminalSettlement` means a deletion operation was interrupted after its background job had already finished: the subscription or acquisition record is still mid-deletion. Adding `--apply` settles those operations as failures and restores the guarded resources in one transaction, then prints `recovered` and `settled` counts; running it again does not settle the same operation twice. Records from older releases without a captured pre-deletion poll snapshot stay disabled until enabled manually.
+
 Review the candidates, repeat the same command with `--apply`, and check runtime state again. Once the gates pass, switch releases:
 
 ```bash

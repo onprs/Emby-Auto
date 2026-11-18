@@ -81,6 +81,7 @@ const errorMessages: Record<string, string> = {
   tmdb_catalog_missing: '作品信息还没有同步完成。',
   operation_interrupted: '处理被中断，系统会自动重试。',
   download_manifest_changed: '资源文件清单已变化，请删除旧获取记录后重新添加，并重新确认剧集对应关系。',
+  deletion_failed: '上次删除没有完成，可以刷新后再次删除这条记录。',
   operation_in_progress: '上一次操作尚未结束，请稍后重试。',
   deletion_in_progress: '这条记录正在删除，完成后才能重新获取。',
   target_episode_processing: '这集已由其他任务处理，请先检查当前进度。',
