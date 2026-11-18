@@ -80,6 +80,26 @@ jobs:
       - name: Run migration and integration checks
         run: npm run check:integration
 
+      - name: Run full-stack browser E2E tests
+        env:
+          TEST_DATABASE_URL: postgres://emby_auto:emby_auto@127.0.0.1:15432/emby_auto?sslmode=disable
+          E2E_DATABASE_NAME: emby_auto_e2e_ci
+          E2E_API_PORT: "18081"
+          E2E_FIXTURE_PORT: "19090"
+        run: npm run test:e2e:full --workspace @emby-auto/web -- --project=chromium --project=narrow-chromium
+
+      - name: Upload full-stack Playwright results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-full-stack-results
+          path: |
+            apps/web/test-results/
+            apps/web/playwright-report/
+            runtime/e2e/logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Stop integration PostgreSQL
         if: always()
         run: docker compose -f compose.yaml down --volumes
