@@ -192,9 +192,10 @@ API_ADDRESS=127.0.0.1:18080
 WEB_ROOT=/opt/emby-auto/current/web
 BOOTSTRAP_CONFIG_PATH=/var/lib/emby-auto/bootstrap.json
 SESSION_COOKIE_SECURE=false
+TRUSTED_PROXY_CIDRS=127.0.0.0/8,::1/128
 ```
 
-保留数据库连接和加密密钥为空，首次打开页面时由初始化向导设置。`WEB_ROOT` 指定应用提供的网页目录；独立托管网页时可留空，并自行将 `/api/` 转发到应用。
+保留数据库连接和加密密钥为空，首次打开页面时由初始化向导设置。`WEB_ROOT` 指定应用提供的网页目录；独立托管网页时可留空，并自行将 `/api/` 转发到应用。`TRUSTED_PROXY_CIDRS` 声明本机反向代理网段；只有来自这些网段的请求才采信 `X-Forwarded-For`，登录限流据此按真实客户端地址计数。安装初始化总时长上限由 `SETUP_INITIALIZE_TIMEOUT`（默认 `10m`）控制；迁移逐条事务，超时后直接重试即可继续。登录失败的全局预算耗尽后，短时间内即使口令正确也会返回 `429` 与 `Retry-After`。失败计数按 10 分钟窗口统计；`Retry-After` 只是当前建议等待的秒数，持续失败可能再次触发限流，等待一次不保证成功。无需重启服务。
 
 ### 4. 配置应用服务
 
@@ -247,8 +248,9 @@ sudo systemctl enable --now emby-auto-systemd-control.service emby-auto-api.serv
 - 将网页和 `/api/` 请求转发到同一应用入口，并传递原始 Host 和协议。
 - `/api/v1/events` 使用长连接 SSE，并关闭响应缓冲。
 - 媒体预览请求透传 `Range` 和 `If-Range`，支持流式响应。
+- 外层反向代理按最终客户端来源限速 `/api/v1/auth/login`，并按 `TRUSTED_PROXY_CIDRS` 声明的代理网段传递 `X-Forwarded-For`。
 
-发布包中的 `config/nginx.conf` 是可选回环代理示例，监听 `127.0.0.1:18079`。使用 Nginx 时可按自己的站点和证书配置调整；使用其它代理时按对应产品配置。
+发布包中的 `config/nginx.conf` 是可选回环转发示例，监听 `127.0.0.1:18079`，不内置登录限速；它位于外层代理之后，只看到外层代理地址。登录限速应放在接收客户端连接的外层代理，并按最终客户端来源执行；使用 Nginx 时可按自己的站点和证书配置调整，使用其它代理时配置对应的限速与转发头。
 
 HTTPS 可用后，将 `/etc/emby-auto/runtime.env` 的 `SESSION_COOKIE_SECURE` 设为 `true`，并重启 API：
 
@@ -278,6 +280,14 @@ emby_auto_maintenance emby-auto-release-preflight --require-idle
 ```
 
 后台状态的 `verified=true` 表示 Worker 和下载状态通过核验。`transfers.active` 是实际活动 torrent 数量；预检中的 `downloads.active` 是业务记录数量，暂停后仍可保留。状态输出包括计数、下载摘要和进度。
+
+长期运行后，操作历史与 Agent 决议会持续累积。需要清理时先用维护函数查看候选，默认只统计不删除：
+
+```bash
+emby_auto_maintenance emby-auto-history-retention --older-than 2160h
+```
+
+确认候选数量后追加 `--apply` 分批删除。命令只清理早于截止时间且处于终态的操作与决议；仍在排队或运行、被扫描历史或映射引用、以及被映射保存、裁决、文件选择或字幕匹配引用的记录始终保留。默认每批 500 行、单次最多 20 批，可用 `--batch-size` 与 `--max-batches` 调整；`--older-than` 最少为 24h。建议先备份数据库并保留命令输出作为审计记录。
 
 备份范围包括 PostgreSQL 一致性备份、`/etc/emby-auto`、`/var/lib/emby-auto`，以及按既有存储策略备份的媒体和工作目录。`bootstrap.json` 与 `bootstrap.json.complete` 必须一起保留，包含的加密密钥用于读取数据库中保存的外部服务凭据。备份应加密保存并限制访问权限。
 
@@ -332,6 +342,8 @@ emby_auto_maintenance emby-auto-release-preflight --require-idle
 ```bash
 emby_auto_maintenance emby-auto-recover-stale-operations --worker-stopped --stale-after 5m
 ```
+
+预览输出分别列出 `eligible`、`staleRecovery` 与 `terminalSettlement`。`terminalSettlement` 表示删除操作的终态恢复被中断：订阅或获取记录仍在删除中，但对应后台作业已经结束。增加 `--apply` 后会在同一事务内完成这些操作的失败结算并恢复受保护的资源，输出 `recovered` 与 `settled` 两个计数；重复执行不会重复结算。旧记录缺少删除前的轮询快照时保持停用，需要手动确认后再启用。
 
 核对候选范围后使用相同命令增加 `--apply`，重新检查运行态。
 

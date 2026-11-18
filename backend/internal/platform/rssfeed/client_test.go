@@ -2,6 +2,7 @@ package rssfeed
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -195,5 +196,78 @@ func TestClientFetchRejectsOversizedOrInvalidResponses(t *testing.T) {
 				t.Fatal("Fetch() error = nil")
 			}
 		})
+	}
+}
+
+// directTestHTTPClient 避免测试受到环境代理影响。
+func directTestHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{Transport: &http.Transport{}, Timeout: timeout}
+}
+
+func TestClientFetchErrorDoesNotExposeFeedURLCredentials(t *testing.T) {
+	const secret = "AUDIT-SECRET-TOKEN-13"
+	client, err := NewClient(ClientOptions{HTTPClient: directTestHTTPClient(5 * time.Second)})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	_, err = client.Fetch(context.Background(), "http://127.0.0.1:1/private/feed.xml?passkey="+secret)
+	if err == nil {
+		t.Fatal("Fetch() error = nil, want connection failure")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "fetch RSS feed:") {
+		t.Fatalf("error = %q, want stable diagnostic category", message)
+	}
+	for _, forbidden := range []string{secret, "passkey", "/private/feed.xml", "127.0.0.1"} {
+		if strings.Contains(message, forbidden) {
+			t.Fatalf("error = %q, must not contain %q", message, forbidden)
+		}
+	}
+}
+
+func TestClientFetchClassifiesTimeoutWithoutExposingURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		_, _ = response.Write([]byte("<rss><channel><title>slow</title></channel></rss>"))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientOptions{HTTPClient: directTestHTTPClient(20 * time.Millisecond)})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	_, err = client.Fetch(context.Background(), server.URL+"/feed.xml?token=AUDIT-SECRET-TOKEN-13")
+	if err == nil {
+		t.Fatal("Fetch() error = nil, want timeout")
+	}
+	if message := err.Error(); message != "fetch RSS feed: request timed out" {
+		t.Fatalf("error = %q, want timeout category", message)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context deadline cause", err)
+	}
+}
+
+func TestClientFetchClassifiesCancellationWithoutExposingURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		_, _ = response.Write([]byte("<rss><channel><title>cancelled</title></channel></rss>"))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientOptions{HTTPClient: directTestHTTPClient(5 * time.Second)})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = client.Fetch(ctx, server.URL+"/feed.xml?authkey=AUDIT-SECRET-TOKEN-13")
+	if err == nil {
+		t.Fatal("Fetch() error = nil, want cancellation")
+	}
+	if message := err.Error(); message != "fetch RSS feed: request cancelled" {
+		t.Fatalf("error = %q, want cancellation category", message)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancelled cause", err)
 	}
 }

@@ -26,7 +26,13 @@ type RiverJobInserter interface {
 	InsertTx(context.Context, pgx.Tx, river.JobArgs, *river.InsertOpts) (*rivertype.JobInsertResult, error)
 }
 
+// RiverJobCanceller 由 River 客户端或事务句柄实现，用于在同一事务内取消 snooze 中的作业。
+type RiverJobCanceller interface {
+	JobCancelTx(context.Context, pgx.Tx, int64) (*rivertype.JobRow, error)
+}
+
 var _ RiverJobInserter = (*river.Client[pgx.Tx])(nil)
+var _ RiverJobCanceller = (*river.Client[pgx.Tx])(nil)
 
 type ScheduleOperationRequest struct {
 	Kind           string
@@ -47,10 +53,15 @@ type ScheduleOperationResult struct {
 type OperationScheduler struct {
 	transactor *database.Transactor
 	jobs       RiverJobInserter
+	canceller  RiverJobCanceller
 }
 
 func NewOperationScheduler(transactor *database.Transactor, jobs RiverJobInserter) *OperationScheduler {
-	return &OperationScheduler{transactor: transactor, jobs: jobs}
+	scheduler := &OperationScheduler{transactor: transactor, jobs: jobs}
+	if canceller, ok := jobs.(RiverJobCanceller); ok {
+		scheduler.canceller = canceller
+	}
+	return scheduler
 }
 
 type preparedOperation struct {
@@ -324,6 +335,7 @@ func findIdempotentResourceCommand(
 func requestResourceOperationCancellations(
 	ctx context.Context,
 	scope database.TxScope,
+	scheduler *OperationScheduler,
 	resourceType string,
 	resourceID uuid.UUID,
 	actorUserID uuid.UUID,
@@ -355,6 +367,29 @@ func requestResourceOperationCancellations(
 		); err != nil {
 			return err
 		}
+		if requested.Status != "queued" {
+			continue
+		}
+		// snooze 中的作业仍标记为 queued；同时取消 River 作业和操作行，避免等待下一次轮询。
+		if requested.RiverJobID != nil {
+			if err := scheduler.cancelQueuedRiverJobTx(ctx, scope.Tx, *requested.RiverJobID); err != nil {
+				return err
+			}
+		}
+		if _, err := repository.CancelOperationBeforeAttempt(ctx, scope.Queries, requested); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// cancelQueuedRiverJobTx 在调用方事务内取消 River 作业；缺少取消能力时仍会取消操作行。
+func (scheduler *OperationScheduler) cancelQueuedRiverJobTx(ctx context.Context, tx pgx.Tx, jobID int64) error {
+	if scheduler == nil || scheduler.canceller == nil || jobID <= 0 {
+		return nil
+	}
+	if _, err := scheduler.canceller.JobCancelTx(ctx, tx, jobID); err != nil && !errors.Is(err, rivertype.ErrNotFound) {
+		return fmt.Errorf("cancel River job %d: %w", jobID, err)
 	}
 	return nil
 }

@@ -28,23 +28,36 @@ var (
 	// 用于脱敏的稳定错误，避免将原始 URL/host/query 放入 Failure.Cause。
 	errTorrentSourceInvalidURL    = errors.New("torrent source url is invalid")
 	errTorrentSourceRequestFailed = errors.New("torrent source request failed")
+	errTorrentSourceResolveFailed = errors.New("torrent source host resolution failed")
 )
 
-// torrentSourceOptions 为测试提供局部注入能力，生产路径固定使用零值（不允许私网、默认 proxy 客户端）。
+// torrentSourceResolver 抽象 DNS 解析，便于测试注入；生产路径使用系统解析器。
+type torrentSourceResolver interface {
+	LookupNetIP(context.Context, string, string) ([]netip.Addr, error)
+}
+
+// torrentSourceOptions 为测试提供局部注入能力；生产入口 defaultTorrentSourceFetcher
+// 注入系统解析器且不允许私网，测试可替换解析器与 HTTP 客户端。
 type torrentSourceOptions struct {
 	allowPrivate bool
 	newClient    func(domain.NetworkProxySettings) (*http.Client, error)
+	// resolver 为零时仅做字面量校验；defaultTorrentSourceFetcher 在生产线注入系统解析器，
+	// 测试可注入静态解析器避免依赖运行环境 DNS。
+	resolver     torrentSourceResolver
+	proxyEnabled bool
 }
 
 // torrentSourceFetcher 获取 HTTP(S) 种子文件，需经过应用代理且不泄露敏感信息。
 type torrentSourceFetcher func(context.Context, string, domain.NetworkProxySettings) ([]byte, error)
 
 func defaultTorrentSourceFetcher(ctx context.Context, rawURL string, proxySettings domain.NetworkProxySettings) ([]byte, error) {
-	return fetchTorrentSource(ctx, rawURL, proxySettings, torrentSourceOptions{})
+	return fetchTorrentSource(ctx, rawURL, proxySettings, torrentSourceOptions{resolver: net.DefaultResolver})
 }
 
 func fetchTorrentSource(ctx context.Context, rawURL string, proxySettings domain.NetworkProxySettings, opts torrentSourceOptions) ([]byte, error) {
-	if err := validateTorrentSourceURL(rawURL, opts); err != nil {
+	// 代理启用时由代理解析目标域名，本地解析失败不构成永久无效。
+	opts.proxyEnabled = proxySettings.Enabled
+	if err := validateTorrentSourceURL(ctx, rawURL, opts); err != nil {
 		return nil, err
 	}
 	newClient := proxyhttp.NewClient
@@ -60,7 +73,7 @@ func fetchTorrentSource(ctx context.Context, rawURL string, proxySettings domain
 		if len(via) >= torrentSourceMaxRedirects {
 			return permanentFailure("torrent_source_invalid", "下载链接重定向过多", nil)
 		}
-		if err := validateTorrentSourceURL(req.URL.String(), opts); err != nil {
+		if err := validateTorrentSourceURL(req.Context(), req.URL.String(), opts); err != nil {
 			return err
 		}
 		return nil
@@ -121,7 +134,7 @@ func fetchTorrentSource(ctx context.Context, rawURL string, proxySettings domain
 	return body, nil
 }
 
-func validateTorrentSourceURL(rawURL string, opts torrentSourceOptions) error {
+func validateTorrentSourceURL(ctx context.Context, rawURL string, opts torrentSourceOptions) error {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
 		return permanentFailure("torrent_source_invalid", "下载链接无效", errTorrentSourceInvalidURL)
@@ -141,11 +154,38 @@ func validateTorrentSourceURL(rawURL string, opts torrentSourceOptions) error {
 		return permanentFailure("torrent_source_invalid", "下载链接无效", nil)
 	}
 	// 字面量 IP 阻断：loopback/private/link-local/unspecified/multicast
-	// 本轮仅做字面量校验，不做 DNS 解析/重绑定防护，需在外层注释与测试中明确边界。
 	if blocked := isBlockedTorrentSourceHost(host, opts.allowPrivate); blocked {
 		return permanentFailure("torrent_source_invalid", "下载链接无效", nil)
 	}
+	if opts.allowPrivate || isTorrentSourceIPLiteral(host) {
+		return nil
+	}
+	// 域名解析后再判定，防止“字面量合法、解析后指向内网”的链接绕过。
+	// 解析失败时沿用原有请求路径（由实际连接返回可重试失败），避免本地 DNS
+	// 与代理解析主体不一致时把可用链接误判为永久无效。
+	if opts.resolver == nil {
+		return nil
+	}
+	addresses, lookupErr := opts.resolver.LookupNetIP(ctx, "ip", host)
+	if lookupErr != nil || len(addresses) == 0 {
+		if opts.proxyEnabled {
+			return nil
+		}
+		return retryableFailure("torrent_source_unavailable", "暂时无法确认种子链接目标", errTorrentSourceResolveFailed)
+	}
+	for _, address := range addresses {
+		if isBlockedNetipAddr(address) {
+			return permanentFailure("torrent_source_invalid", "下载链接无效", nil)
+		}
+	}
 	return nil
+}
+
+func isTorrentSourceIPLiteral(host string) bool {
+	if _, err := netip.ParseAddr(strings.TrimRight(host, ".")); err == nil {
+		return true
+	}
+	return net.ParseIP(host) != nil
 }
 
 // isLocalhostTorrentSourceHost 按 URL host 语义归一化后拒绝 localhost 及其变体。

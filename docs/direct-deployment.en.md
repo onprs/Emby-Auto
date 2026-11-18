@@ -193,9 +193,10 @@ API_ADDRESS=127.0.0.1:18080
 WEB_ROOT=/opt/emby-auto/current/web
 BOOTSTRAP_CONFIG_PATH=/var/lib/emby-auto/bootstrap.json
 SESSION_COOKIE_SECURE=false
+TRUSTED_PROXY_CIDRS=127.0.0.0/8,::1/128
 ```
 
-Leave the database connection and encryption key unset so the setup wizard can configure them. `WEB_ROOT` selects the directory served by the application. If you host the web files separately, leave it unset and forward `/api/` to the application yourself.
+Leave the database connection and encryption key unset so the setup wizard can configure them. `WEB_ROOT` selects the directory served by the application. If you host the web files separately, leave it unset and forward `/api/` to the application yourself. `TRUSTED_PROXY_CIDRS` declares the loopback reverse proxy networks; `X-Forwarded-For` is trusted only from these networks, and login throttling keys on the real client address. `SETUP_INITIALIZE_TIMEOUT` (default `10m`) bounds one setup initialization; migrations are applied one transaction at a time, so a retry after a timeout continues safely. Once the global login failure budget is exhausted, even a correct password is briefly rejected with `429` and `Retry-After`. Failure counts use a 10-minute window; `Retry-After` is only the current delay hint, and continued failures can trigger throttling again, so waiting once does not guarantee success. No service restart is needed.
 
 ### 4. Configure application services
 
@@ -248,8 +249,9 @@ The proxy must:
 - Forward the web interface and `/api/` to the same application endpoint, preserving the original host and protocol.
 - Support long-lived SSE at `/api/v1/events` without response buffering.
 - Forward `Range` and `If-Range` for media previews and stream the response.
+- Rate-limit `/api/v1/auth/login` per source at the outer reverse proxy and forward `X-Forwarded-For` from the networks declared in `TRUSTED_PROXY_CIDRS`.
 
-The release includes `config/nginx.conf` as an optional loopback proxy example on `127.0.0.1:18079`. Adapt it to your own Nginx site and certificate configuration, or use your selected proxy's configuration.
+The release includes `config/nginx.conf` as an optional loopback forwarding example on `127.0.0.1:18079`; it does not include login rate limiting and sits behind the outer proxy, so it only sees the proxy address. Apply login rate limiting at the outer proxy that receives client connections, keyed by the final client source. Adapt the example to your own Nginx site and certificate configuration, or configure the equivalent rate limit and forwarding headers in your selected proxy.
 
 Once HTTPS works, set `SESSION_COOKIE_SECURE=true` in `/etc/emby-auto/runtime.env` and restart API:
 
@@ -279,6 +281,14 @@ emby_auto_maintenance emby-auto-release-preflight --require-idle
 ```
 
 `verified=true` confirms Worker and download state. `transfers.active` counts active torrents; preflight `downloads.active` counts business records, which may remain after pausing. Status output includes counts, download digests, and progress.
+
+Operation history and Agent resolutions accumulate over time. Preview retention candidates without deleting anything:
+
+```bash
+emby_auto_maintenance emby-auto-history-retention --older-than 2160h
+```
+
+Add `--apply` to delete candidates in bounded batches. Only terminal operations and resolutions older than the cutoff are removed. Queued or running records, records referenced by scan history or mappings, and records referenced by mapping saves, adjudications, file selection, or subtitle matching are always retained. Defaults are 500 rows per batch and 20 batches per run; adjust with `--batch-size` and `--max-batches`. `--older-than` must be at least 24h. Back up the database first and retain the command output as an audit record.
 
 Back up PostgreSQL consistently, `/etc/emby-auto`, `/var/lib/emby-auto`, and media and work directories according to your storage policy. Preserve both `bootstrap.json` and `bootstrap.json.complete`. The encryption key is required to read stored service credentials. Encrypt backups and restrict access.
 
@@ -333,6 +343,8 @@ Confirm `state=stopped`, `verified=true`, and `transfers.active=0`. Check prefli
 ```bash
 emby_auto_maintenance emby-auto-recover-stale-operations --worker-stopped --stale-after 5m
 ```
+
+Preview output lists `eligible`, `staleRecovery`, and `terminalSettlement`. `terminalSettlement` means a deletion operation was interrupted after its background job had already finished: the subscription or acquisition record is still mid-deletion. Adding `--apply` settles those operations as failures and restores the guarded resources in one transaction, then prints `recovered` and `settled` counts; running it again does not settle the same operation twice. Records from older releases without a captured pre-deletion poll snapshot stay disabled until enabled manually.
 
 Review the candidates, repeat the same command with `--apply`, and check runtime state again.
 
