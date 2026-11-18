@@ -205,6 +205,14 @@ func (lifecycle *OperationLifecycle) FailAttempt(
 			if err := failEmbyScanResource(ctx, scope.Queries, locked, "failed", code, message); err != nil {
 				return err
 			}
+		case locked.Kind == "acquisition.delete" && valueOrEmpty(locked.ResourceType) == "acquisition":
+			if _, err := restoreAcquisitionDeletionResource(ctx, scope.Queries, locked, code); err != nil {
+				return err
+			}
+		case locked.Kind == "rss.subscription.delete" && valueOrEmpty(locked.ResourceType) == "rss_subscription":
+			if _, err := restoreRSSSubscriptionDeletionResource(ctx, scope.Queries, locked, code); err != nil {
+				return err
+			}
 		}
 		operation, err := scope.Queries.FailOperation(ctx, db.FailOperationParams{
 			ErrorCode:    &code,
@@ -243,6 +251,25 @@ func (lifecycle *OperationLifecycle) CancelAttempt(
 		}
 		return appendOperationEvent(ctx, scope.Queries, operation, "operation.cancelled", map[string]any{"attempt": attempt})
 	})
+}
+
+// CancelOperationBeforeAttempt 在同一事务内取消尚未开始的排队操作，并同步资源状态与事件。
+// 调用方需已锁定该操作行，避免与 StartAttempt 并发竞争。
+func CancelOperationBeforeAttempt(ctx context.Context, queries *db.Queries, operation db.Operation) (db.Operation, error) {
+	cancelled, err := queries.CancelOperation(ctx, operation.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return operation, nil
+	}
+	if err != nil {
+		return db.Operation{}, fmt.Errorf("cancel queued operation: %w", err)
+	}
+	if err := cancelOperationResource(ctx, queries, cancelled); err != nil {
+		return db.Operation{}, err
+	}
+	if err := appendOperationEvent(ctx, queries, cancelled, "operation.cancelled", map[string]any{"beforeAttempt": true}); err != nil {
+		return db.Operation{}, err
+	}
+	return cancelled, nil
 }
 
 func (lifecycle *OperationLifecycle) SnoozeAttempt(
@@ -468,7 +495,182 @@ func failTaskCleanupResource(
 	})
 }
 
+func restoreAcquisitionDeletionResource(ctx context.Context, queries *db.Queries, operation db.Operation, code string) (bool, error) {
+	restored, err := queries.RestoreAcquisitionAfterFailedDeletion(ctx, db.RestoreAcquisitionAfterFailedDeletionParams{
+		ID: operation.ResourceID, OperationID: operation.ID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("restore acquisition after failed deletion: %w", err)
+	}
+	if _, err := queries.RestoreAcquisitionDeletionCancelledDownloads(ctx, operation.ResourceID); err != nil {
+		return false, fmt.Errorf("restore deletion-cancelled downloads: %w", err)
+	}
+	resourceType := "acquisition"
+	data, err := json.Marshal(map[string]any{"status": "deletion_failed", "errorCode": code})
+	if err != nil {
+		return false, fmt.Errorf("encode acquisition deletion recovery event: %w", err)
+	}
+	if _, err := queries.AppendEvent(ctx, db.AppendEventParams{
+		ID: UUIDToPG(uuid.New()), Topic: "acquisition.deletion_recovery_required",
+		ResourceType: &resourceType, ResourceID: restored.ID, OperationID: operation.ID, Data: data,
+	}); err != nil {
+		return false, fmt.Errorf("append acquisition deletion recovery event: %w", err)
+	}
+	return true, nil
+}
+
+func restoreRSSSubscriptionDeletionResource(ctx context.Context, queries *db.Queries, operation db.Operation, code string) (bool, error) {
+	pollState, hasPollState := decodeRSSSubscriptionDeletionPollState(operation.Payload)
+	var restored db.RssSubscription
+	var err error
+	if hasPollState {
+		restored, err = queries.RestoreRSSSubscriptionAfterFailedDeletionWithPollState(ctx, db.RestoreRSSSubscriptionAfterFailedDeletionWithPollStateParams{
+			Enabled:         pollState.Enabled,
+			NextPollAt:      nullableTimestamptz(pollState.NextPollAt),
+			ID:              operation.ResourceID,
+			ArchivedVersion: pollState.Version + 1,
+			OperationID:     operation.ID,
+		})
+	} else {
+		restored, err = queries.RestoreRSSSubscriptionAfterFailedDeletion(ctx, db.RestoreRSSSubscriptionAfterFailedDeletionParams{
+			ID: operation.ResourceID, OperationID: operation.ID,
+		})
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("restore RSS subscription after failed deletion: %w", err)
+	}
+	if _, err := queries.RestoreSubscriptionDeletionCancelledDownloads(ctx, operation.ResourceID); err != nil {
+		return false, fmt.Errorf("restore subscription deletion-cancelled downloads: %w", err)
+	}
+	if _, err := queries.ClearSubscriptionAcquisitionsDeletionRequested(ctx, operation.ResourceID); err != nil {
+		return false, fmt.Errorf("restore RSS acquisitions after failed deletion: %w", err)
+	}
+	resourceType := "rss_subscription"
+	eventData := map[string]any{"status": "deletion_failed", "errorCode": code, "pollStateRestored": hasPollState}
+	if hasPollState {
+		eventData["enabled"] = pollState.Enabled
+	}
+	data, err := json.Marshal(eventData)
+	if err != nil {
+		return false, fmt.Errorf("encode RSS deletion recovery event: %w", err)
+	}
+	if _, err := queries.AppendEvent(ctx, db.AppendEventParams{
+		ID: UUIDToPG(uuid.New()), Topic: "rss.subscription.deletion_recovery_required",
+		ResourceType: &resourceType, ResourceID: restored.ID, OperationID: operation.ID, Data: data,
+	}); err != nil {
+		return false, fmt.Errorf("append RSS deletion recovery event: %w", err)
+	}
+	return true, nil
+}
+
+// SettleTerminalDeletionFailureInTx 在调用方事务内结算“River 已终态丢弃、
+// operation 与当前 attempt 仍 running”的删除中断记录：完成既有 attempt 与
+// operation 的正式失败结算，并复用受守卫的删除失败资源恢复。
+//
+// 调用方必须已在本事务内锁定该 operation 行（performance 与并发只结算一次都依赖
+// 该锁），且不得在持锁后调用另开事务的 FailAttempt/CancelAttempt 等公开方法。
+// River 作业保持已确认的终态；不 rescue/requeue、不新建或删除 attempt、不重置
+// 重试预算。资源恢复被既有版本/删除代次守卫跳过时返回 settled=true 且
+// resourceRestored=false，由事件记录该事实。
+func SettleTerminalDeletionFailureInTx(
+	ctx context.Context,
+	queries *db.Queries,
+	locked db.Operation,
+	attempt int32,
+	code string,
+	message string,
+) (settled bool, err error) {
+	if locked.Status != "running" || locked.CancelRequestedAt.Valid {
+		return false, nil
+	}
+	if attempt < 1 || attempt > locked.MaxAttempts || attempt != locked.AttemptCount {
+		return false, nil
+	}
+	if !locked.ResourceID.Valid || UUIDFromPG(locked.ResourceID) == uuid.Nil {
+		return false, nil
+	}
+	var resourceRestored bool
+	switch {
+	case locked.Kind == "acquisition.delete" && valueOrEmpty(locked.ResourceType) == "acquisition":
+		resourceRestored, err = restoreAcquisitionDeletionResource(ctx, queries, locked, code)
+	case locked.Kind == "rss.subscription.delete" && valueOrEmpty(locked.ResourceType) == "rss_subscription":
+		resourceRestored, err = restoreRSSSubscriptionDeletionResource(ctx, queries, locked, code)
+	default:
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if _, err := queries.FinishOperationAttempt(ctx, db.FinishOperationAttemptParams{
+		Status:       "failed",
+		ErrorCode:    &code,
+		ErrorMessage: &message,
+		OperationID:  locked.ID,
+		Attempt:      attempt,
+	}); err != nil {
+		return false, fmt.Errorf("finish interrupted operation attempt: %w", err)
+	}
+	operation, err := queries.FailOperation(ctx, db.FailOperationParams{
+		ErrorCode:    &code,
+		ErrorMessage: &message,
+		ID:           locked.ID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("fail interrupted operation: %w", err)
+	}
+	if err := appendOperationEvent(ctx, queries, operation, "operation.failed", map[string]any{
+		"attempt":          attempt,
+		"errorCode":        code,
+		"resourceRestored": resourceRestored,
+		"settledBy":        "maintenance_recovery",
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// decodeRSSSubscriptionDeletionPollState 从删除操作 payload 读取归档前的轮询意图。
+// 旧在途操作没有该快照，返回 false，恢复保持既有的仅清 deleted_at 行为，不得猜测
+// 原 enabled；version 必须为正数，才能用作归档后的乐观锁守卫。
+func decodeRSSSubscriptionDeletionPollState(payload []byte) (domain.RSSSubscriptionDeletionPollState, bool) {
+	if len(payload) == 0 {
+		return domain.RSSSubscriptionDeletionPollState{}, false
+	}
+	var envelope struct {
+		PollState *domain.RSSSubscriptionDeletionPollState `json:"pollState"`
+	}
+	if json.Unmarshal(payload, &envelope) != nil || envelope.PollState == nil {
+		return domain.RSSSubscriptionDeletionPollState{}, false
+	}
+	state := *envelope.PollState
+	if state.Version <= 0 {
+		return domain.RSSSubscriptionDeletionPollState{}, false
+	}
+	return state, true
+}
+
+func nullableTimestamptz(value *time.Time) pgtype.Timestamptz {
+	if value == nil {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: value.UTC(), Valid: true}
+}
+
 func cancelOperationResource(ctx context.Context, queries *db.Queries, operation db.Operation) error {
+	if operation.Kind == "acquisition.delete" && valueOrEmpty(operation.ResourceType) == "acquisition" {
+		_, err := restoreAcquisitionDeletionResource(ctx, queries, operation, "operation_cancelled")
+		return err
+	}
+	if operation.Kind == "rss.subscription.delete" && valueOrEmpty(operation.ResourceType) == "rss_subscription" {
+		_, err := restoreRSSSubscriptionDeletionResource(ctx, queries, operation, "operation_cancelled")
+		return err
+	}
 	if operation.Kind == "agent.resolve" && valueOrEmpty(operation.ResourceType) == "agent_resolution" {
 		return failAgentResolutionResource(ctx, queries, operation, "cancelled", "operation_cancelled", "the Agent resolution was cancelled")
 	}

@@ -23,6 +23,8 @@ const (
 	defaultDownloadSyncInterval   = 15 * time.Second
 	defaultRSSScheduleConcurrency = 4
 	defaultBootstrapConfigPath    = "runtime/bootstrap.json"
+	// defaultSetupInitializeTimeout 是单次安装初始化的默认总时长上限。
+	defaultSetupInitializeTimeout = 10 * time.Minute
 )
 
 // Config contains process-level settings shared by the API and Worker.
@@ -31,6 +33,7 @@ type Config struct {
 	WebRoot                           string
 	DatabaseURL                       string
 	DatabaseConnectTimeout            time.Duration
+	SetupInitializeTimeout            time.Duration
 	ShutdownTimeout                   time.Duration
 	LogLevel                          string
 	SessionTTL                        time.Duration
@@ -54,6 +57,10 @@ type Config struct {
 // Load reads process settings from environment variables.
 func Load() (Config, error) {
 	databaseConnectTimeout, err := durationFromEnv("DATABASE_CONNECT_TIMEOUT", defaultDatabaseConnectTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+	setupInitializeTimeout, err := durationFromEnv("SETUP_INITIALIZE_TIMEOUT", defaultSetupInitializeTimeout)
 	if err != nil {
 		return Config{}, err
 	}
@@ -138,6 +145,7 @@ func Load() (Config, error) {
 		WebRoot:                           webRoot,
 		DatabaseURL:                       databaseURL,
 		DatabaseConnectTimeout:            databaseConnectTimeout,
+		SetupInitializeTimeout:            setupInitializeTimeout,
 		ShutdownTimeout:                   shutdownTimeout,
 		LogLevel:                          stringFromEnv("LOG_LEVEL", defaultLogLevel),
 		SessionTTL:                        sessionTTL,

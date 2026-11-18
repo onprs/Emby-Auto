@@ -48,3 +48,14 @@ func (handle *ClientHandle) InsertTx(
 	}
 	return client.InsertTx(ctx, tx, args, options)
 }
+
+// JobCancelTx 在调用方事务内取消已插入的 River 作业，使 snooze 中的排队作业立即停止重试。
+func (handle *ClientHandle) JobCancelTx(ctx context.Context, tx pgx.Tx, jobID int64) (*rivertype.JobRow, error) {
+	handle.mutex.RLock()
+	client := handle.client
+	handle.mutex.RUnlock()
+	if client == nil {
+		return nil, fmt.Errorf("river client handle is not bound")
+	}
+	return client.JobCancelTx(ctx, tx, jobID)
+}

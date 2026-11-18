@@ -568,6 +568,16 @@ WHERE id = sqlc.arg(id)
   AND deleted_at IS NOT NULL
 RETURNING *;
 
+-- name: LockRSSSubscriptionDeletionState :one
+SELECT
+    subscription.id,
+    subscription.enabled,
+    subscription.next_poll_at,
+    subscription.version
+FROM rss_subscriptions AS subscription
+WHERE subscription.id = sqlc.arg(id)
+FOR UPDATE OF subscription;
+
 -- name: ArchiveRSSSubscription :one
 UPDATE rss_subscriptions
 SET enabled = false,
@@ -579,6 +589,45 @@ WHERE id = sqlc.arg(id)
   AND version = sqlc.arg(expected_version)
   AND deleted_at IS NULL
 RETURNING *;
+
+-- name: RestoreRSSSubscriptionAfterFailedDeletion :one
+UPDATE rss_subscriptions AS subscription
+SET deleted_at = NULL,
+    version = version + 1,
+    updated_at = now()
+WHERE subscription.id = sqlc.arg(id)
+  AND subscription.deleted_at IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM operations AS operation
+      WHERE operation.kind = 'rss.subscription.delete'
+        AND operation.resource_type = 'rss_subscription'
+        AND operation.resource_id = subscription.id
+        AND operation.status IN ('queued', 'running')
+        AND operation.id <> sqlc.arg(operation_id)
+  )
+RETURNING subscription.*;
+
+-- name: RestoreRSSSubscriptionAfterFailedDeletionWithPollState :one
+UPDATE rss_subscriptions AS subscription
+SET deleted_at = NULL,
+    enabled = sqlc.arg(enabled),
+    next_poll_at = sqlc.narg(next_poll_at),
+    version = version + 1,
+    updated_at = now()
+WHERE subscription.id = sqlc.arg(id)
+  AND subscription.deleted_at IS NOT NULL
+  AND subscription.version = sqlc.arg(archived_version)
+  AND NOT EXISTS (
+      SELECT 1
+      FROM operations AS operation
+      WHERE operation.kind = 'rss.subscription.delete'
+        AND operation.resource_type = 'rss_subscription'
+        AND operation.resource_id = subscription.id
+        AND operation.status IN ('queued', 'running')
+        AND operation.id <> sqlc.arg(operation_id)
+  )
+RETURNING subscription.*;
 
 -- name: GetRSSPollCommand :one
 SELECT
@@ -664,6 +713,8 @@ WHERE subscription.enabled
       WHERE season.series_id = subscription.series_id
         AND season.season_number > 0
         AND episode.episode_number > 0
+        AND season.present
+        AND episode.present
   )
   AND EXISTS (
       SELECT 1
@@ -683,17 +734,10 @@ WHERE subscription.enabled
 ORDER BY subscription.created_at, subscription.id
 LIMIT 100;
 
+-- 到期条件只做候选预筛；真正的判定在订阅行锁内重新读取 next_poll_at 与 version，
+-- 避免并发巡检或订阅变更后用旧值生成幂等键。
 -- name: ListDueRSSPollRecoveryCandidates :many
-SELECT
-    subscription.id,
-    subscription.version,
-    (
-        SELECT count(*)
-        FROM operations AS poll
-        WHERE poll.kind = 'rss.poll'
-          AND poll.resource_type = 'rss_subscription'
-          AND poll.resource_id = subscription.id
-    )::bigint AS poll_generation
+SELECT subscription.id
 FROM rss_subscriptions AS subscription
 WHERE subscription.enabled
   AND subscription.deleted_at IS NULL
@@ -710,6 +754,35 @@ WHERE subscription.enabled
   )
 ORDER BY subscription.next_poll_at, subscription.id
 LIMIT sqlc.arg(page_size);
+
+-- 轮询恢复的判定与代际输入：锁住订阅行后重新读取 version 与持久化的到期时刻，
+-- due 由数据库时钟计算，避免本机时间或旧候选值参与幂等键。
+-- name: LockRSSSubscriptionForPollRecovery :one
+SELECT
+    subscription.id,
+    subscription.version,
+    subscription.next_poll_at,
+    COALESCE(
+        subscription.enabled
+        AND subscription.deleted_at IS NULL
+        AND subscription.completed_at IS NULL
+        AND subscription.next_poll_at IS NOT NULL
+        AND subscription.next_poll_at <= now(),
+        false
+    )::boolean AS due
+FROM rss_subscriptions AS subscription
+WHERE subscription.id = sqlc.arg(id)
+FOR UPDATE;
+
+-- name: HasActiveRSSPollOperation :one
+SELECT EXISTS (
+    SELECT 1
+    FROM operations AS active_poll
+    WHERE active_poll.kind = 'rss.poll'
+      AND active_poll.resource_type = 'rss_subscription'
+      AND active_poll.resource_id = sqlc.arg(resource_id)
+      AND active_poll.status IN ('queued', 'running')
+);
 
 -- name: AdvanceDueRSSPollRecovery :execrows
 UPDATE rss_subscriptions
@@ -898,43 +971,36 @@ SELECT
         WHERE item.present
           AND item.item_type = 'Episode'
           AND item.file_path IS NOT NULL
-          AND (
-              (
-                  target.tmdb_episode_id IS NOT NULL
-                  AND EXISTS (
-                      SELECT 1
-                      FROM jsonb_each_text(item.provider_ids) AS provider
-                      WHERE lower(provider.key) IN ('tmdb', 'themoviedb')
-                        AND provider.value = target.tmdb_episode_id::text
-                  )
-              )
-              OR (
-                  item.season_number = target.target_season
-                  AND item.episode_number = target.target_episode
-                  AND EXISTS (
-                      SELECT 1
-                      FROM emby_library_items AS series_item
-                      WHERE series_item.present
-                        AND series_item.item_type = 'Series'
-                        AND EXISTS (
-                            SELECT 1
-                            FROM jsonb_each_text(series_item.provider_ids) AS provider
-                            WHERE lower(provider.key) IN ('tmdb', 'themoviedb')
-                              AND provider.value = target.tmdb_series_id::text
-                        )
-                        AND (
-                            item.parent_emby_id = series_item.emby_id
-                            OR EXISTS (
-                                SELECT 1
-                                FROM emby_library_items AS season_item
-                                WHERE season_item.present
-                                  AND season_item.item_type = 'Season'
-                                  AND season_item.emby_id = item.parent_emby_id
-                                  AND season_item.parent_emby_id = series_item.emby_id
-                            )
-                        )
-                  )
-              )
+          AND target.tmdb_episode_id IS NOT NULL
+          AND item.tmdb_provider_id <> ''
+          AND item.tmdb_provider_id = target.tmdb_episode_id::text
+        UNION ALL
+        SELECT 1
+        FROM emby_library_items AS item
+        WHERE item.present
+          AND item.item_type = 'Episode'
+          AND item.file_path IS NOT NULL
+          AND item.season_number = target.target_season
+          AND item.episode_number = target.target_episode
+          AND target.tmdb_series_id IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM emby_library_items AS series_item
+              WHERE series_item.present
+                AND series_item.item_type = 'Series'
+                AND series_item.tmdb_provider_id <> ''
+                AND series_item.tmdb_provider_id = target.tmdb_series_id::text
+                AND (
+                    item.parent_emby_id = series_item.emby_id
+                    OR EXISTS (
+                        SELECT 1
+                        FROM emby_library_items AS season_item
+                        WHERE season_item.present
+                          AND season_item.item_type = 'Season'
+                          AND season_item.emby_id = item.parent_emby_id
+                          AND season_item.parent_emby_id = series_item.emby_id
+                    )
+                )
           )
     ) AS catalog_present,
     EXISTS (

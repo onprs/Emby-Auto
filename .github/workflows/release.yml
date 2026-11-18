@@ -39,8 +39,8 @@ jobs:
       - name: 检查一键安装入口
         run: npm run deploy:install:check
 
-      - name: Build Compose release images
-        run: npm run deploy:build
+      - name: Build Compose release bundle images
+        run: npm run deploy:bundle:build
 
       - name: Validate Compose release
         run: npm run deploy:check-release
@@ -66,11 +66,7 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           bundle_dir="runtime/release/compose"
-          mkdir -p "${bundle_dir}"
-          cp deploy/compose.yaml deploy/.env.example LICENSE "${bundle_dir}/"
-          cp -r deploy/docker deploy/nginx "${bundle_dir}/"
-          cp docs/deployment.md "${bundle_dir}/DEPLOYMENT.md"
-          cp docs/deployment.en.md "${bundle_dir}/DEPLOYMENT.en.md"
+          bash scripts/deploy/assemble-compose-bundle.sh "${bundle_dir}"
           tar -C "${bundle_dir}" -czf "runtime/release/emby-auto-compose-${tag}.tar.gz" .
           echo "bundle=emby-auto-compose-${tag}.tar.gz" >> "${GITHUB_ENV}"
 
@@ -84,16 +80,26 @@ jobs:
             emby-auto-direct-amd64-linux-amd64.tar.gz \
             emby-auto-direct-arm64-linux-arm64.tar.gz install.sh > SHA256SUMS
 
+      - name: Determine release channel
+        id: channel
+        run: |
+          set -euo pipefail
+          eval "$(bash scripts/deploy/release-channel.sh "${GITHUB_REF_NAME}")"
+          printf 'prerelease=%s\nrelease_flag=%s\n' "${prerelease}" "${release_flag}" >> "${GITHUB_OUTPUT}"
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_FLAG: ${{ steps.channel.outputs.release_flag }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           cd runtime/release
+          args=()
+          [[ -z "${RELEASE_FLAG}" ]] || args+=("${RELEASE_FLAG}")
           gh release create "${tag}" \
             "emby-auto-compose-${tag}.tar.gz" \
             emby-auto-direct-amd64-linux-amd64.tar.gz \
             emby-auto-direct-arm64-linux-arm64.tar.gz \
             SHA256SUMS install.sh \
-            --latest --verify-tag --generate-notes
+            "${args[@]}" --verify-tag --generate-notes
