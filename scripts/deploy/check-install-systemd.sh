@@ -81,8 +81,18 @@ control_command() {
 # 此时尚未填写数据库，Worker 只在等待初始化，可直接验证隔离 CI 设备的控制通道。
 [[ "$(control_command worker-stop)" == stopped ]]
 ! systemctl is-active --quiet emby-auto-worker
+# 后台暂停后重复执行安装器必须成功，并且保持暂停意图。
+paused_record="$(sha256sum /etc/emby-auto/installer.env /etc/emby-auto/runtime.env)"
+paused_output="$(run_installer)"
+printf '%s\n' "$paused_output"
+grep -Fq '后台当前处于暂停状态' <<<"$paused_output"
+[[ "$paused_record" == "$(sha256sum /etc/emby-auto/installer.env /etc/emby-auto/runtime.env)" ]]
+! systemctl is-active --quiet emby-auto-worker
+[[ "$(control_command worker-status)" == stopped ]]
 [[ "$(control_command worker-start)" == running ]]
 systemctl is-active --quiet emby-auto-worker
+[[ "$(stat -c %a /srv/emby-auto/downloads)" == 2770 ]]
+[[ "$(stat -c %a /srv/emby-auto/media/anime)" == 2775 ]]
 external_services_snapshot >"$assets/external.after"
 cmp -s "$assets/external.before" "$assets/external.after"
 before="$(sha256sum /etc/emby-auto/installer.env /etc/emby-auto/runtime.env)"

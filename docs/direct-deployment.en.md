@@ -53,12 +53,47 @@ The application creates its tables in the selected database. The service account
 | --- | --- |
 | `--version vVERSION` | Install a specific Release; defaults to the latest stable Release |
 | `--user ACCOUNT` | Use an existing media owner; defaults to creating `emby-auto` |
+| `--share-group GROUP` | Existing user group shared with qBittorrent and other accounts for download directories |
 | `--port PORT` | Shared loopback web and API port; defaults to `18080` |
 | `--archive FILE`, `--checksums FILE` | Verify and use a downloaded archive and `SHA256SUMS` |
 | `--no-start` | Prepare application files and services without changing their running state |
 | `--finalize` | Verify prepared services and complete installation registration without restarting services or rewriting configuration |
 
 For a port conflict, use a free port such as `--port 19080`, and adjust the browser address and SSH tunnel accordingly. Repeating the installer preserves the installed version, setup state, and runtime configuration. Follow the upgrade procedure to change versions.
+
+### Account and directory permissions
+
+Automatic installation creates an `emby-auto` account by default; use `--user MEDIA_ACCOUNT` for an existing library. New directories use these permissions:
+
+| Directory | Permissions | Purpose and requirements |
+| --- | --- | --- |
+| `/srv/emby-auto/downloads` | `2770`, setgid; a default ACL applies with `--share-group` | qBittorrent writes; the application reads and removes cached files |
+| `/srv/emby-auto/work`, `staging` | `2770`, setgid | Application processing and import staging |
+| `/srv/emby-auto/media/{anime,movies}` | `2775` | The application writes; Emby reads and traverses as another account |
+
+qBittorrent, Emby, and the application usually run as different accounts. Prefer a shared group during installation, then add the qBittorrent account to it (create the group first, for example `sudo groupadd emby-share`):
+
+```bash
+curl -fsSL https://github.com/onprs/Emby-Auto/releases/latest/download/install.sh | \
+  sudo bash -s -- --share-group emby-share
+sudo usermod -aG emby-share qbittorrent
+sudo systemctl restart qbittorrent
+```
+
+For an existing installation without a shared group, rerunning the installer with `--share-group` applies the membership and directory permissions and records them in the installer record. With `--user MEDIA_ACCOUNT --share-group GROUP`, the media account owns library files and the shared group coordinates download directories. The account UID and GID must still be nonzero.
+
+Alternatively, apply the permissions manually without rerunning the installer (the example uses the application account's primary group `emby-auto`):
+
+```bash
+sudo apt-get install -y acl
+sudo usermod -aG emby-auto qbittorrent
+sudo chgrp -R emby-auto /srv/emby-auto/downloads
+sudo chmod -R g+rwX /srv/emby-auto/downloads
+sudo find /srv/emby-auto/downloads -type d -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+sudo systemctl restart qbittorrent
+```
+
+The default ACL keeps group write permission on subdirectories that qBittorrent creates with the common `umask 022`. A shared group alone, without a default ACL or `umask 002`, still prevents the application from removing those subdirectories. Emby only needs read and traverse access; for stricter existing libraries, grant the Emby account a read-only ACL. Do not make the whole media directory `0777`.
 
 ## Directories and services
 
@@ -111,13 +146,16 @@ The service UID must match the owner of imported media. It needs access to downl
 For a new deployment whose media directories do not exist yet, create them with the following example. Preserve permissions on existing directories.
 
 ```bash
-sudo install -d -o emby -g emby -m 0770 \
+sudo install -d -o emby -g emby -m 2770 \
   /srv/emby-auto/downloads \
   /srv/emby-auto/work \
-  /srv/emby-auto/staging \
+  /srv/emby-auto/staging
+sudo install -d -o emby -g emby -m 2775 \
   /srv/emby-auto/media/anime \
   /srv/emby-auto/media/movies
 ```
+
+If qBittorrent uses another account, configure a shared group and default ACL as described in “Account and directory permissions”. The `2775` library root lets a separate Emby account traverse and read while the application writes as the owner. Imported title subtrees are set by the application to directory mode `0755` and file mode `0644`, keeping separate Emby accounts read-only.
 
 For hardware transcoding, add the service account to the device-required `render`, `video`, or other groups, then restart services to apply group membership.
 
@@ -146,9 +184,10 @@ API_ADDRESS=127.0.0.1:18080
 WEB_ROOT=/opt/emby-auto/current/web
 BOOTSTRAP_CONFIG_PATH=/var/lib/emby-auto/bootstrap.json
 SESSION_COOKIE_SECURE=false
+TRUSTED_PROXY_CIDRS=127.0.0.0/8,::1/128
 ```
 
-Leave the database connection and encryption key unset so the setup wizard can configure them. `WEB_ROOT` selects the directory served by the application. If you host the web files separately, leave it unset and forward `/api/` to the application yourself.
+Leave the database connection and encryption key unset so the setup wizard can configure them. `WEB_ROOT` selects the directory served by the application. If you host the web files separately, leave it unset and forward `/api/` to the application yourself. `TRUSTED_PROXY_CIDRS` declares the loopback reverse proxy networks; `X-Forwarded-For` is trusted only from these networks, and login throttling keys on the real client address. `SETUP_INITIALIZE_TIMEOUT` (default `10m`) bounds one setup initialization; migrations are applied one transaction at a time, so a retry after a timeout continues safely. Once the global login failure budget is exhausted, even a correct password is briefly rejected with `429` and `Retry-After`. Failure counts use a 10-minute window; `Retry-After` is only the current delay hint, and continued failures can trigger throttling again, so waiting once does not guarantee success. No service restart is needed.
 
 ### 4. Configure application services
 
@@ -201,8 +240,9 @@ The proxy must:
 - Forward the web interface and `/api/` to the same application endpoint, preserving the original host and protocol.
 - Support long-lived SSE at `/api/v1/events` without response buffering.
 - Forward `Range` and `If-Range` for media previews and stream the response.
+- Rate-limit `/api/v1/auth/login` per source at the outer reverse proxy and forward `X-Forwarded-For` from the networks declared in `TRUSTED_PROXY_CIDRS`.
 
-The release includes `config/nginx.conf` as an optional loopback proxy example on `127.0.0.1:18079`. Adapt it to your own Nginx site and certificate configuration, or use your selected proxy's configuration.
+The release includes `config/nginx.conf` as an optional loopback forwarding example on `127.0.0.1:18079`; it does not include login rate limiting and sits behind the outer proxy, so it only sees the proxy address. Apply login rate limiting at the outer proxy that receives client connections, keyed by the final client source. Adapt the example to your own Nginx site and certificate configuration, or configure the equivalent rate limit and forwarding headers in your selected proxy.
 
 Once HTTPS works, set `SESSION_COOKIE_SECURE=true` in `/etc/emby-auto/runtime.env` and restart API:
 
@@ -233,6 +273,14 @@ emby_auto_maintenance emby-auto-release-preflight --require-idle
 
 `verified=true` confirms Worker and download state. `transfers.active` counts active torrents; preflight `downloads.active` counts business records, which may remain after pausing. Status output includes counts, download digests, and progress.
 
+Operation history and Agent resolutions accumulate over time. Preview retention candidates without deleting anything:
+
+```bash
+emby_auto_maintenance emby-auto-history-retention --older-than 2160h
+```
+
+Add `--apply` to delete candidates in bounded batches. Only terminal operations and resolutions older than the cutoff are removed. Queued or running records, records referenced by scan history or mappings, and records referenced by mapping saves, adjudications, file selection, or subtitle matching are always retained. Defaults are 500 rows per batch and 20 batches per run; adjust with `--batch-size` and `--max-batches`. `--older-than` must be at least 24h. Back up the database first and retain the command output as an audit record.
+
 Back up PostgreSQL consistently, `/etc/emby-auto`, `/var/lib/emby-auto`, and media and work directories according to your storage policy. Preserve both `bootstrap.json` and `bootstrap.json.complete`. The encryption key is required to read stored service credentials. Encrypt backups and restrict access.
 
 ## Upgrades and existing deployments
@@ -249,6 +297,8 @@ Confirm `state=stopped`, `verified=true`, and `transfers.active=0`. Check prefli
 ```bash
 emby_auto_maintenance emby-auto-recover-stale-operations --worker-stopped --stale-after 5m
 ```
+
+Preview output lists `eligible`, `staleRecovery`, and `terminalSettlement`. `terminalSettlement` means a deletion operation was interrupted after its background job had already finished: the subscription or acquisition record is still mid-deletion. Adding `--apply` settles those operations as failures and restores the guarded resources in one transaction, then prints `recovered` and `settled` counts; running it again does not settle the same operation twice. Records from older releases without a captured pre-deletion poll snapshot stay disabled until enabled manually.
 
 Review the candidates, repeat the same command with `--apply`, and check runtime state again. Once the gates pass, switch releases:
 

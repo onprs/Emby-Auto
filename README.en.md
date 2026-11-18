@@ -44,12 +44,13 @@ For an existing media library, install using the account that owns its files:
 curl -fsSL https://github.com/onprs/Emby-Auto/releases/latest/download/install.sh | sudo bash -s -- --user media-owner
 ~~~
 
-Running the installer again preserves the installed version, configuration, and data. Use `--port PORT` if the web port is occupied. See [Linux direct deployment](docs/direct-deployment.en.md) for options, HTTPS, backups, and upgrades.
+Running the installer again preserves the installed version, configuration, and data. Use `--port PORT` if the web port is occupied, and `--share-group GROUP` when qBittorrent runs as a separate account. See [Linux direct deployment](docs/direct-deployment.en.md) for options, HTTPS, backups, and upgrades.
 
 ## Requirements for use
 
 - Install and configure PostgreSQL, qBittorrent, and Emby Server separately before setup.
 - The device must have access to download and library directories. qBittorrent and the application must use identical absolute download paths.
+- If qBittorrent runs as a separate service account, that account needs write access to the download directory through a shared group or ACL, and the Emby service account needs to traverse the media library. Use `--share-group GROUP` during installation, then add the qBittorrent account to that group.
 - The application account UID must match the owner of Emby media files.
 - Access locally or through an SSH tunnel by default. Configure HTTPS and secure session cookies for network access.
 - Back up the database, installation configuration, and media directories regularly.
