@@ -203,8 +203,9 @@ func TestSubtitleAgentVideoReadyDuringProviderAppliesIntegration(t *testing.T) {
 // 期间候选或源视频内容真实变化：语义校验失败，不应用，终态收敛任务。
 func TestSubtitleAgentContentChangeDuringProviderExpiresIntegration(t *testing.T) {
 	tests := []struct {
-		name   string
-		mutate func(*subtitleLeaseFixture) error
+		name    string
+		prepare func(*subtitleLeaseFixture) error
+		mutate  func(*subtitleLeaseFixture) error
 	}{
 		{
 			name: "candidate_changed",
@@ -220,10 +221,27 @@ func TestSubtitleAgentContentChangeDuringProviderExpiresIntegration(t *testing.T
 				return err
 			},
 		},
+		{
+			// 原始候选路径变化但脱敏后的展示路径不变：内部指纹必须包含原始路径。
+			name: "raw_candidate_path_changed",
+			prepare: func(fixture *subtitleLeaseFixture) error {
+				_, err := fixture.pool.Exec(fixture.ctx, `UPDATE subtitle_video_match_candidates SET path = '/host/cache/embedded-2.ass' WHERE scope_id = $1 AND candidate_id = 'embedded-2'`, repository.UUIDToPG(fixture.scopeID))
+				return err
+			},
+			mutate: func(fixture *subtitleLeaseFixture) error {
+				_, err := fixture.pool.Exec(fixture.ctx, `UPDATE subtitle_video_match_candidates SET path = '/other/host/embedded-2.ass' WHERE scope_id = $1 AND candidate_id = 'embedded-2'`, repository.UUIDToPG(fixture.scopeID))
+				return err
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newSubtitleLeaseFixture(t)
+			if test.prepare != nil {
+				if err := test.prepare(fixture); err != nil {
+					t.Fatalf("prepare content: %v", err)
+				}
+			}
 			var mutated atomic.Bool
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 				if mutated.CompareAndSwap(false, true) {

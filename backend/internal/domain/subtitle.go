@@ -56,6 +56,8 @@ const (
 type SubtitleCandidate struct {
 	SourceFileID uuid.UUID
 	Path         string
+	// RelativePath 相对下载根目录，用于对外展示与字幕检查，避免泄漏宿主路径。
+	RelativePath string
 	Format       SubtitleFormat
 	Language     string
 }
@@ -103,7 +105,9 @@ type subtitleChoice struct {
 }
 
 type SubtitleInspectionRequest struct {
-	VideoPath   string
+	VideoPath string
+	// BasePath 是外挂字幕相对路径的解析基准，仅在后端内部使用。
+	BasePath    string
 	CandidateID string
 	Source      SubtitleSource
 	StreamIndex int
