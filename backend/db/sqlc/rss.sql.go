@@ -2035,6 +2035,8 @@ WHERE subscription.enabled
       WHERE season.series_id = subscription.series_id
         AND season.season_number > 0
         AND episode.episode_number > 0
+        AND season.present
+        AND episode.present
   )
   AND EXISTS (
       SELECT 1
