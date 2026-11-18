@@ -1669,6 +1669,10 @@ export type LoginErrors = {
      */
     413: ApiError;
     /**
+     * Login attempts exceeded the per-source or global failure budget, or the concurrent verification capacity was saturated.
+     */
+    429: ApiError;
+    /**
      * A required dependency is unavailable.
      */
     503: ApiError;

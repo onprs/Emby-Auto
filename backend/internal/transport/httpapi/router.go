@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"regexp"
 	"runtime/debug"
@@ -47,15 +48,24 @@ func (err *requestFieldError) Error() string {
 type HandlerOption func(*handlerOptions)
 
 type handlerOptions struct {
-	logger *slog.Logger
+	logger         *slog.Logger
+	trustedProxies []*net.IPNet
 }
 
-// WithHandlerLogger 注入处理器日志，用于记录被恢复的 panic 等运行期故障。
+// WithHandlerLogger 注入处理器日志，用于记录被恢复的 panic 与登录失败审计事件。
 func WithHandlerLogger(logger *slog.Logger) HandlerOption {
 	return func(options *handlerOptions) {
 		if logger != nil {
 			options.logger = logger
 		}
+	}
+}
+
+// WithTrustedProxies 声明可代表客户端提供 X-Forwarded-For 的代理网段。
+// 空列表表示不信任任何代理头，登录限流只使用 TCP 对端地址。
+func WithTrustedProxies(networks []*net.IPNet) HandlerOption {
+	return func(options *handlerOptions) {
+		options.trustedProxies = networks
 	}
 }
 
@@ -80,6 +90,7 @@ func NewHandler(server StrictServerInterface, options ...HandlerOption) http.Han
 	router.Use(configurationSecretsNoStore)
 	router.Use(requestBodyLimit(maxRequestBodyBytes))
 	router.Use(recoverer(settings.logger))
+	router.Use(loginAttemptLimit(newLoginLimiter(time.Now), settings.trustedProxies, settings.logger))
 	if concreteServer, ok := server.(*Server); ok && concreteServer.auth != nil {
 		router.Use(sessionAuthentication(concreteServer.auth))
 	}

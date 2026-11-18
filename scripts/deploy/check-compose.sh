@@ -47,6 +47,12 @@ grep -Fq 'location = /api/v1/events' "${root_dir}/deploy/nginx/locations.conf"
 grep -Fq 'proxy_set_header Range $http_range;' "${root_dir}/deploy/nginx/locations.conf"
 grep -Fq 'try_files $uri $uri/ /index.html;' "${root_dir}/deploy/nginx/locations.conf"
 
+# Web 容器只看到外层代理地址；按对端 IP 限速登录会把不同客户端合并到同一个桶。
+if grep -Fq 'limit_req' "${root_dir}/deploy/docker/nginx.conf" "${root_dir}/deploy/nginx/locations.conf"; then
+  echo "bundled Web container nginx must not rate-limit login by proxy peer address" >&2
+  exit 1
+fi
+
 if grep -Eq '/var/run/docker\.sock|/run/systemd|network_mode:[[:space:]]*host' "${compose_file}"; then
   echo "deployment must not expose privileged host-control surfaces" >&2
   exit 1
