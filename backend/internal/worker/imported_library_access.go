@@ -12,7 +12,13 @@ import (
 	"strings"
 )
 
-const importedLibraryPathMode os.FileMode = 0o777
+// 入库后的媒体权限模型：应用账户（所有者）保持读写；独立运行的 Emby 服务账户
+// 只需要读取与遍历。目录 0755 提供 other 的读与执行（遍历），文件 0644 提供
+// other 的读；不向任何账户授予写入或文件执行位，避免入库媒体变为全局可写。
+const (
+	importedLibraryDirMode  os.FileMode = 0o755
+	importedLibraryFileMode os.FileMode = 0o644
+)
 
 type ImportedLibraryAccess interface {
 	Apply(string) error
@@ -36,7 +42,13 @@ func (access osImportedLibraryAccess) Apply(path string) error {
 			return fmt.Errorf("set imported library owner: %w", err)
 		}
 	}
-	if err := os.Chmod(path, importedLibraryPathMode); err != nil {
+	mode := importedLibraryFileMode
+	if info, err := os.Lstat(path); err != nil {
+		return fmt.Errorf("inspect imported library path: %w", err)
+	} else if info.IsDir() {
+		mode = importedLibraryDirMode
+	}
+	if err := os.Chmod(path, mode); err != nil {
 		return fmt.Errorf("set imported library permissions: %w", err)
 	}
 	return nil

@@ -16,11 +16,11 @@ func TestZZR1OperationSubtitleBindingMigrationDownUp(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	_, pool := testutil.NewMigratedPostgres(t)
-	up, err := os.ReadFile(filepath.Join("..", "..", "db", "migrations", "000047_operation_subtitle_bindings.up.sql"))
+	up, err := os.ReadFile(filepath.Join("..", "..", "db", "migrations", "000050_operation_subtitle_bindings.up.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	down, err := os.ReadFile(filepath.Join("..", "..", "db", "migrations", "000047_operation_subtitle_bindings.down.sql"))
+	down, err := os.ReadFile(filepath.Join("..", "..", "db", "migrations", "000050_operation_subtitle_bindings.down.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}

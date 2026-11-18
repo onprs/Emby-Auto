@@ -2,10 +2,18 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Activity, LoaderCircle, LogIn } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 
-import { createSession } from '@/api/app-client';
+import { ApiFailure, createSession } from '@/api/app-client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { friendlyError } from '@/lib/presentation';
+
+function loginErrorMessage(error: Error): string {
+  if (error instanceof ApiFailure && (error.status === 429 || error.code === 'rate_limited')) {
+    return friendlyError('rate_limited', error.message);
+  }
+  return error.message;
+}
 
 export function LoginPage() {
   const queryClient = useQueryClient();
@@ -42,7 +50,7 @@ export function LoginPage() {
             <Input id="login-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required />
           </div>
           <div className="min-h-5" aria-live="polite">
-            {mutation.error && <p className="animate-fade-in text-sm text-red-700">{mutation.error.message}</p>}
+            {mutation.error && <p className="animate-fade-in text-sm text-red-700">{loginErrorMessage(mutation.error)}</p>}
           </div>
           <Button type="submit" variant="accent" className="w-full" disabled={mutation.isPending}>
             {mutation.isPending ? <LoaderCircle className="animate-spin" /> : <LogIn />}

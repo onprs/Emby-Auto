@@ -167,6 +167,14 @@ describe('taskFailureInfo', () => {
     expect(info?.recommendation).toContain('重新下载');
   });
 
+  it('does not offer a retry when the source has no main video stream', () => {
+    const info = taskFailureInfo(task({ errorCode: 'source_video_without_main_stream', errorMessage: undefined }));
+
+    expect(info?.summary).toBe('视频转码失败：源视频没有正片视频流');
+    expect(info?.canRetry).toBe(false);
+    expect(info?.recommendation).toContain('正片视频');
+  });
+
   it('uses the fixed unknown-error copy and never puts raw internals in the summary', () => {
     const info = taskFailureInfo(task({ errorCode: 'process_error', errorMessage: '{"stack":"panic at worker.go:20"}' }));
 

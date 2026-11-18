@@ -2,10 +2,13 @@ package rssfeed
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -33,6 +36,45 @@ type Client struct {
 	maxBytes   int64
 }
 
+// fetchFailure 只暴露稳定的失败类别，同时保留原始错误供 errors.Is/As 判定。
+// RSS 地址常携带私有源凭据，*url.Error 的文本会包含完整 URL 与 query；
+// 该文本若进入事件、日志或 River 作业错误，会让凭据在保留期内持续暴露。
+type fetchFailure struct {
+	category string
+	cause    error
+}
+
+func (failure *fetchFailure) Error() string { return failure.category }
+
+func (failure *fetchFailure) Unwrap() error { return failure.cause }
+
+// describeFetchFailure 将传输层错误归类为不含地址与凭据的稳定文本。
+func describeFetchFailure(action string, err error) error {
+	category := action + ": request failed"
+	switch {
+	case errors.Is(err, context.Canceled):
+		category = action + ": request cancelled"
+	case errors.Is(err, context.DeadlineExceeded):
+		category = action + ": request timed out"
+	default:
+		var dnsError *net.DNSError
+		var verificationError *tls.CertificateVerificationError
+		var recordError tls.RecordHeaderError
+		var networkError net.Error
+		switch {
+		case errors.As(err, &dnsError):
+			category = action + ": DNS lookup failed"
+		case errors.As(err, &verificationError):
+			category = action + ": TLS certificate verification failed"
+		case errors.As(err, &recordError):
+			category = action + ": TLS handshake failed"
+		case errors.As(err, &networkError) && networkError.Timeout():
+			category = action + ": request timed out"
+		}
+	}
+	return &fetchFailure{category: category, cause: err}
+}
+
 func NewClient(options ClientOptions) (*Client, error) {
 	maxBytes := options.MaxBytes
 	if maxBytes <= 0 {
@@ -58,13 +100,13 @@ func (client *Client) Fetch(ctx context.Context, feedURL string) (domain.RSSFeed
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return domain.RSSFeed{}, fmt.Errorf("create RSS request: %w", err)
+		return domain.RSSFeed{}, describeFetchFailure("create RSS request", err)
 	}
 	request.Header.Set("Accept", "application/atom+xml, application/rss+xml, application/xml, text/xml;q=0.9")
 	request.Header.Set("User-Agent", "Emby-Auto/0.1")
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return domain.RSSFeed{}, fmt.Errorf("fetch RSS feed: %w", err)
+		return domain.RSSFeed{}, describeFetchFailure("fetch RSS feed", err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
@@ -75,7 +117,7 @@ func (client *Client) Fetch(ctx context.Context, feedURL string) (domain.RSSFeed
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, client.maxBytes+1))
 	if err != nil {
-		return domain.RSSFeed{}, fmt.Errorf("read RSS feed: %w", err)
+		return domain.RSSFeed{}, describeFetchFailure("read RSS feed", err)
 	}
 	if int64(len(body)) > client.maxBytes {
 		return domain.RSSFeed{}, fmt.Errorf("RSS feed exceeds %d bytes", client.maxBytes)

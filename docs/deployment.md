@@ -4,6 +4,11 @@
 
 本文档说明如何使用项目提供的 Docker Compose 配置部署 Emby Auto。Compose 管理 PostgreSQL、API、Worker 和 Web；qBittorrent 与 Emby Server 作为外部服务接入。
 
+Compose 部署有两种获取方式，本文命令在两种目录中通用：
+
+- 克隆仓库：在仓库根目录执行，配置文件位于 `deploy/`。
+- Release 发布包：下载 `emby-auto-compose-<版本>.tar.gz`，解压后进入包根目录执行。包内已包含构建所需源码与 `deploy/` 目录，无需克隆仓库。
+
 ## 部署拓扑
 
 | 服务 | 网络入口 | 持久化内容 |
@@ -23,6 +28,7 @@ API 与 Worker 是独立进程，共用 PostgreSQL、安装配置和媒体目录
 - 可访问的 qBittorrent Web API 与 Emby Server。
 - TMDb API Read Access Token。
 - 五个可由应用读写的绝对目录。
+- 首次构建需要访问 Docker Hub、Debian 软件源（apt）及 npm、Go 模块来源。
 
 ## 1. 配置环境
 
@@ -45,7 +51,10 @@ chmod 600 deploy/.env
 | `ANIME_LIBRARY_ROOT` | Emby 动漫媒体库目录 |
 | `MOVIE_LIBRARY_ROOT` | Emby 电影媒体库目录 |
 | `APP_BIND_ADDRESS` / `APP_PORT` | Web 在宿主机上的监听地址与端口 |
+| `EMBY_AUTO_IMAGE_TAG` | 镜像标签，默认 `local`；同一主机多套部署时各套使用不同值 |
 | `SESSION_COOKIE_SECURE` | HTTPS 启用后设置为 `true` |
+| `SETUP_INITIALIZE_TIMEOUT` | 单次安装初始化的总时长上限，默认 `10m`；预算过小会截断慢迁移，可重试 |
+| `TRUSTED_PROXY_CIDRS` | 可选的反向代理网段（逗号分隔 CIDR）；只有来自这些网段的请求才采信 `X-Forwarded-For`。默认仅包含回环网段 |
 
 可使用以下命令查询 Emby 服务账户：
 
@@ -55,6 +64,22 @@ id -g emby
 ```
 
 `APP_UID` 和 `APP_GID` 必须大于 0。应用专用目录应提前创建，并允许该 UID/GID 读写。已有媒体库应遵循现有权限策略，不应为部署应用而执行无差别递归 `chown` 或 `chmod`。
+
+qBittorrent 或 Emby 使用独立账户（宿主机或其它容器）时，还要满足协作权限：
+
+- 下载目录需要 qBittorrent 写入，并允许应用删除其子目录。推荐使用共享组与默认 ACL，例如宿主机上的 `emby-auto` 组：
+
+```bash
+sudo apt-get install -y acl
+sudo usermod -aG emby-auto qbittorrent
+sudo chgrp -R emby-auto /srv/emby-auto/downloads
+sudo chmod -R g+rwX /srv/emby-auto/downloads
+sudo find /srv/emby-auto/downloads -type d -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+```
+
+  qBittorrent 容器需以相同 GID 运行或在挂载时保留组权限；独立宿主账户修改组后需重启服务。
+
+- 媒体库根需要允许 Emby 账户遍历和读取；已有库权限更严格时，单独为 Emby 账户添加只读 ACL，不要整体改为 `0777`。
 
 所有媒体目录都必须使用绝对路径。Compose 会在宿主机与 API/Worker 容器中保留相同路径；如果 qBittorrent 运行在另一个容器中，其下载目录也必须挂载到相同的容器路径。
 
@@ -107,7 +132,7 @@ Emby URL         http://host.docker.internal:<emby-port>/emby
 
 端口和 Emby 基础路径应以实际服务配置为准。
 
-安装向导会把数据库连接和生成的配置加密密钥写入 `app-data` 卷中的 `bootstrap.json`。Worker 会在安装完成前等待，不会领取后台任务。
+安装向导会把数据库连接和生成的配置加密密钥写入 `app-data` 卷中的 `bootstrap.json`。Worker 会在安装完成前等待，不会领取后台任务。安装初始化有总时长上限（`SETUP_INITIALIZE_TIMEOUT`，默认 `10m`）；迁移逐条事务，超时后直接重试即可继续。
 
 ## 3. 配置 HTTPS
 
@@ -117,7 +142,11 @@ Emby URL         http://host.docker.internal:<emby-port>/emby
 
 - `/api/v1/events` 使用长连接 SSE，并禁用响应缓冲。
 - `/api/v1/tasks/{taskId}/artifacts/{video|subtitle}` 透传 `Range` 与 `If-Range`。
+- `/api/` 请求体限制为 1 MiB（`client_max_body_size 1m;`），与应用内上限一致。
+- 外层反向代理按最终客户端来源限速 `/api/v1/auth/login`（例如 `limit_req_zone $binary_remote_addr zone=emby_auto_login:10m rate=10r/m;` 与 `limit_req zone=emby_auto_login burst=5 nodelay;`），并传递 `X-Forwarded-For`。Compose 内的 Web 服务负责静态资源与转发，并对 `/api/` 限制请求体；登录路径不按来源限速，因为它只能看到外层代理地址。
 - 其它 `/api/` 请求与 Web 路由均转发到 Web 服务。
+
+应用自身对登录失败按来源退避，并限制 argon2 校验并发；配置 `TRUSTED_PROXY_CIDRS` 后，应用从受信代理的 `X-Forwarded-For` 右侧取真实客户端地址。默认只信任回环网段；Compose 默认值额外包含 Docker 默认地址池 `172.16.0.0/12`。使用自定义 Docker 地址池或其它代理部署方式时，将其改为实际代理网段。连续失败也会计入全局失败预算：预算耗尽后，短时间内即使口令正确也会返回 `429` 与 `Retry-After`。失败计数按 10 分钟窗口统计；`Retry-After` 只是当前建议等待的秒数，持续失败可能再次触发限流，等待一次不保证成功。无需重启服务。
 
 TLS 验证完成后，在 `deploy/.env` 中设置：
 
@@ -157,10 +186,29 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml start worker
 
 ### 升级
 
-在应用处于空闲状态且备份完成后执行：
+在应用处于空闲状态且备份完成后执行。源码仓库与发布包二选一获取新版本，然后按下方顺序重新构建并启动。
+
+源码仓库升级：
 
 ```bash
+# 在仓库根目录执行
 git pull --ff-only
+```
+
+发布包升级：把新版本解压到与当前包根同级的新目录，保留当前目录、原 `deploy/.env` 与备份。不要把新版本覆盖解压到正在使用的包根：`tar` 只写入包内文件，不会删除新版本已移除的旧文件，残留的旧源码仍会留在构建上下文中。命令以 `&&` 串联，任一步失败即停止，不要继续执行后续命令。
+
+```bash
+# 在旧包根目录执行；v新版本 换成实际版本号
+bundle_dir="../emby-auto-compose-v新版本" &&
+mkdir "${bundle_dir}" &&
+tar -xzf emby-auto-compose-v新版本.tar.gz -C "${bundle_dir}" &&
+cp -a deploy/.env "${bundle_dir}/deploy/.env" &&
+cd "${bundle_dir}"
+```
+
+`mkdir` 不带 `-p`：目标目录已存在时命令失败，不会把新版本文件混入既有目录。完成上述步骤后，在新目录（源码仓库则为仓库根）依次执行：
+
+```bash
 docker compose --env-file deploy/.env -f deploy/compose.yaml build
 docker compose --env-file deploy/.env -f deploy/compose.yaml stop worker
 docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --wait postgres api web
@@ -170,7 +218,29 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d worker
 docker compose --env-file deploy/.env -f deploy/compose.yaml ps
 ```
 
+新目录沿用原项目名 `emby-auto` 与原命名卷 `emby-auto_postgres-data`、`emby-auto_app-data`：Compose 项目名与所在目录无关，换目录不会创建新卷，也不构成数据隔离。原部署使用了自定义项目名时，新目录的后续命令必须带上相同的 `-p` 或 `COMPOSE_PROJECT_NAME`。旧目录、旧 `deploy/.env` 与升级前数据库备份是回滚来源；默认镜像标签 `local` 会在重新构建时被覆盖，不能依赖旧镜像仍在。升级失败时保持 Worker 停止，确认数据库 schema 与旧版本兼容后，再从旧目录重新构建并启动。
+
 API 启动时会依次执行应用迁移与 River 迁移。就绪检查失败时，应保持 Worker 停止并检查 API 日志；不得让旧 Worker 连接迁移失败或不兼容的数据库。
+
+### 同一主机上的多套部署
+
+同一主机运行第二套部署时，需要独立的项目名与镜像标签，并分别使用独立的端口、目录与 `deploy/.env`。只换目录或只改端口会与原部署共享命名卷或镜像。
+
+```bash
+# 在第二套部署目录中执行；deploy/.env 需设置：
+#   EMBY_AUTO_IMAGE_TAG=staging
+#   APP_PORT=8081
+#   五个媒体相关目录均使用与原部署不同的路径
+cp deploy/.env.example deploy/.env
+
+docker compose -p emby-auto-staging --env-file deploy/.env -f deploy/compose.yaml up -d --build
+```
+
+`-p emby-auto-staging` 把项目名与命名卷改为 `emby-auto-staging_postgres-data`、`emby-auto-staging_app-data`；`EMBY_AUTO_IMAGE_TAG=staging` 生成 `emby-auto-backend:staging` 与 `emby-auto-web:staging`。第二套部署的后续命令必须沿用同一 `-p emby-auto-staging`（或在该 shell 中导出 `COMPOSE_PROJECT_NAME=emby-auto-staging`），否则 Compose 会回到默认项目 `emby-auto`：
+
+```bash
+docker compose -p emby-auto-staging --env-file deploy/.env -f deploy/compose.yaml ps
+```
 
 ### 停止与删除容器
 

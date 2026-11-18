@@ -186,16 +186,16 @@ VALUES ($1, 'subtitle.prepare', 'episode_task', $2, $3, 'running', 3, 1, 60, '{}
 		t.Fatalf("migrated 47 data = title %q operation %t binding %t, want fixture/true/true", migratedTitle, migratedOperation, migratedBinding)
 	}
 	newOutput, newErr := runChecker(newChecker, targetURL.String())
-	if newErr != nil || !strings.Contains(newOutput, "application: 47/47") || !strings.Contains(newOutput, "river: 8/8") {
-		t.Fatalf("new checker at migrated 47/River8 = err=%v output=%s", newErr, newOutput)
+	if newErr != nil || !strings.Contains(newOutput, "application: 50/50") || !strings.Contains(newOutput, "river: 8/8") {
+		t.Fatalf("new checker at migrated binding migration/River8 = err=%v output=%s", newErr, newOutput)
 	}
 	oldRejectOutput, oldRejectErr := runChecker(oldChecker, targetURL.String())
 	var exitErr *exec.ExitError
 	if !errors.As(oldRejectErr, &exitErr) || exitErr.ExitCode() != 1 {
 		t.Fatalf("old checker after 47 = err=%v output=%s, want explicit ExitCode=1", oldRejectErr, oldRejectOutput)
 	}
-	if !strings.Contains(oldRejectOutput, "application: 47/46") || !strings.Contains(oldRejectOutput, "river: 8/8") || !strings.Contains(oldRejectOutput, "application migrations are behind") {
-		t.Fatalf("old checker rejection output = %s, want app 47/46 + River 8/8 + real migration rejection", oldRejectOutput)
+	if !strings.Contains(oldRejectOutput, "application: 50/46") || !strings.Contains(oldRejectOutput, "river: 8/8") || !strings.Contains(oldRejectOutput, "application migrations are behind") {
+		t.Fatalf("old checker rejection output = %s, want app 50/46 + River 8/8 + real migration rejection", oldRejectOutput)
 	}
 	t.Logf("restore_control_ok source_db=%s target_db=%s dump_bytes=%d old46=%s new47=%s old47_reject=%s", sourceDB, targetDB, info.Size(), strings.ReplaceAll(strings.TrimSpace(oldRestoredOutput), "\n", ";"), strings.ReplaceAll(strings.TrimSpace(newOutput), "\n", ";"), strings.ReplaceAll(strings.TrimSpace(oldRejectOutput), "\n", ";"))
 }

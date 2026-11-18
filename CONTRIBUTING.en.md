@@ -75,7 +75,7 @@ Expected values in tests must come from independent, concrete business cases rat
 | Concurrency-sensitive Go code | `npm run test:race` |
 | Web interactions | `npm run test:e2e --workspace @emby-auto/web` |
 | Cross-process workflows | `npm run test:e2e:full` |
-| Docker deployment templates | `npm run deploy:check`, `npm run deploy:build`, `npm run deploy:check-release` |
+| Docker deployment templates | `npm run deploy:check`, `npm run deploy:build`, `npm run deploy:bundle:build`, `npm run deploy:check-release` |
 | Direct Linux templates | `npm run deploy:direct:check`, `npm run deploy:direct:build`, `npm run deploy:direct:check-release` |
 
 Run full E2E tests only in an isolated test environment. Automated tests must not connect to production qBittorrent, Emby, or TMDb accounts or production media directories. Inject external-service acceptance credentials through the process environment only.
