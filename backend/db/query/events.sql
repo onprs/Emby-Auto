@@ -29,6 +29,12 @@ SELECT
     min(occurred_at)::timestamptz AS earliest_occurred_at
 FROM events;
 
+-- name: GetLatestEvent :one
+SELECT *
+FROM events
+ORDER BY event_sequence DESC
+LIMIT 1;
+
 -- name: ListEvents :many
 SELECT *
 FROM events

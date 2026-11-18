@@ -11,6 +11,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 
 import { endSession } from '@/api/app-client';
 import type { Session } from '@/api/generated/types.gen';
+import { ActionFeedbackAlerts, ActionFeedbackProvider } from '@/components/action-feedback';
 import { appNavigation, moduleForPathname, routeForPathname, type AppNavigationItem } from '@/app/navigation';
 import { rememberLastValidAppLocation } from '@/app/navigation-context';
 import type { EventStream, SseStatus } from '@/app/sse';
@@ -35,6 +36,8 @@ export function AppLayout({ session, events }: { session: Session; events: Event
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const mobileDrawerRef = useRef<HTMLElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const wasMobileOpen = useRef(false);
   const location = useLocation();
   const activeModule = moduleForPathname(location.pathname);
@@ -90,6 +93,22 @@ export function AppLayout({ session, events }: { session: Session; events: Event
     };
   }, [mobileOpen]);
 
+  // 提示区与分区导航都以实际顶栏高度为吸顶基准，避免写死偏移。
+  useLayoutEffect(() => {
+    const header = headerRef.current;
+    const host = contentRef.current;
+    if (!header || !host) return;
+    const update = () => host.style.setProperty('--app-header-height', `${header.offsetHeight}px`);
+    update();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(update);
+    observer.observe(header);
+    return () => {
+      observer.disconnect();
+      host.style.removeProperty('--app-header-height');
+    };
+  }, []);
+
   const logout = useMutation({
     mutationFn: endSession,
     onSettled: () => reportSessionLoss('logout'),
@@ -108,14 +127,15 @@ export function AppLayout({ session, events }: { session: Session; events: Event
   };
 
   return (
-    <div className="min-h-screen bg-surface">
-      <aside
-        className={cn(
-          'fixed inset-y-0 left-0 z-40 hidden flex-col bg-zinc-950 text-zinc-100 shadow-xl transition-[width] duration-300 ease-out lg:flex',
-          sidebarCollapsed ? 'w-[72px]' : 'w-[228px]',
-        )}
-        aria-label="桌面主导航"
-      >
+    <ActionFeedbackProvider>
+      <div className="min-h-screen bg-surface">
+        <aside
+          className={cn(
+            'fixed inset-y-0 left-0 z-40 hidden flex-col bg-zinc-950 text-zinc-100 shadow-xl transition-[width] duration-300 ease-out lg:flex',
+            sidebarCollapsed ? 'w-[72px]' : 'w-[228px]',
+          )}
+          aria-label="桌面主导航"
+        >
         <div className={cn('flex h-16 shrink-0 items-center border-b border-white/10', sidebarCollapsed ? 'justify-center px-2' : 'px-5')}>
           {sidebarCollapsed ? (
             <img src="/brand/mark.svg" alt="Emby Auto" className="size-9" />
@@ -161,8 +181,8 @@ export function AppLayout({ session, events }: { session: Session; events: Event
         </div>
       ) : null}
 
-      <div className={cn('min-w-0 transition-[padding] duration-300 ease-out', sidebarCollapsed ? 'lg:pl-[72px]' : 'lg:pl-[228px]')}>
-        <header className="sticky top-0 z-30 flex h-14 items-center justify-between gap-3 border-b border-zinc-200/80 bg-white/85 px-4 shadow-[0_1px_2px_rgb(9_9_11/0.04)] backdrop-blur-md sm:px-6 lg:h-16">
+      <div ref={contentRef} className={cn('min-w-0 transition-[padding] duration-300 ease-out', sidebarCollapsed ? 'lg:pl-[72px]' : 'lg:pl-[228px]')}>
+        <header ref={headerRef} className="sticky top-0 z-30 flex h-14 items-center justify-between gap-3 border-b border-zinc-200/80 bg-white/85 px-4 shadow-[0_1px_2px_rgb(9_9_11/0.04)] backdrop-blur-md sm:px-6 lg:h-16">
           <div className="flex min-w-0 items-center gap-3">
             <Button
               ref={menuButtonRef}
@@ -198,11 +218,13 @@ export function AppLayout({ session, events }: { session: Session; events: Event
             </Button>
           </div>
         </header>
+        <ActionFeedbackAlerts />
         <main id="main-content" className="min-w-0">
           <Outlet />
         </main>
       </div>
     </div>
+    </ActionFeedbackProvider>
   );
 }
 

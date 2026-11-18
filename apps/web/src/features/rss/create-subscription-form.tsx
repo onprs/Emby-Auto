@@ -112,6 +112,20 @@ export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
     || (Boolean(agentProposal) && agentCandidateSearch.isPending)
   );
 
+  const searchManually = () => {
+    const next = keyword.trim();
+    if (!next) {
+      return;
+    }
+    setMode('manual');
+    if (next === submitted) {
+      // 关键词未变时 setSubmitted 不会触发新查询；显式重试，失败后不必先改关键词。
+      void results.refetch();
+      return;
+    }
+    setSubmitted(next);
+  };
+
   const create = useMutation({
     mutationFn: () => {
       if (!series) {
@@ -285,15 +299,14 @@ export function CreateSubscriptionForm({ onDone }: { onDone: () => void }) {
                     onKeyDown={(event) => {
                       if (event.key === 'Enter') {
                         event.preventDefault();
-                        setMode('manual');
-                        setSubmitted(keyword.trim());
+                        searchManually();
                       }
                     }}
                   />
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => { setMode('manual'); setSubmitted(keyword.trim()); }}
+                    onClick={searchManually}
                     disabled={!keyword.trim() || results.isFetching}
                   >
                     查询
