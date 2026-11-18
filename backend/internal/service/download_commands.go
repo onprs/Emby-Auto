@@ -247,7 +247,7 @@ func (workflow *DownloadCommandWorkflow) Cancel(ctx context.Context, downloadID 
 			view, loadErr = loadDownloadCommandView(ctx, scope, downloadID)
 			return loadErr
 		}
-		if err := requestResourceOperationCancellations(ctx, scope, "download", downloadID, actorUserID); err != nil {
+		if err := requestResourceOperationCancellations(ctx, scope, workflow.operations, "download", downloadID, actorUserID); err != nil {
 			return err
 		}
 		current, err := scope.Queries.LockDownloadByID(ctx, repository.UUIDToPG(downloadID))
@@ -344,7 +344,7 @@ func (workflow *DownloadCommandWorkflow) Remove(ctx context.Context, downloadID 
 		if err != nil {
 			return fmt.Errorf("check torrent ownership: %w", err)
 		}
-		if err := requestResourceOperationCancellations(ctx, scope, "download", downloadID, actorUserID); err != nil {
+		if err := requestResourceOperationCancellations(ctx, scope, workflow.operations, "download", downloadID, actorUserID); err != nil {
 			return err
 		}
 		removed, err := scope.Queries.MarkDownloadRemovalRequested(ctx, db.MarkDownloadRemovalRequestedParams{
@@ -660,21 +660,31 @@ func (workflow *DownloadCommandWorkflow) SaveFileSelection(ctx context.Context, 
 				return NewError("invalid_file", "a selected file does not belong to the download", ErrInvalidInput, map[string]any{"fileId": fileID.String()})
 			}
 		}
-		selectedVideos := 0
-		for fileID, selected := range selections {
-			file := known[fileID]
-			if selected && file.MediaKind == "video" {
-				selectedVideos++
+		// 把局部选择叠加到现有清单后复用源坐标校验，防止同一坐标选中两个视频。
+		items := make([]domain.DownloadFileResolutionItem, 0, len(files))
+		for _, file := range files {
+			fileID := repository.UUIDFromPG(file.ID)
+			selected := file.Selected
+			if value, ok := selections[fileID]; ok {
+				selected = value
 			}
+			items = append(items, domain.DownloadFileResolutionItem{
+				FileID: fileID, Selected: selected,
+				SourceSeason:                    int32PointerToInt(file.SourceSeason),
+				SourceEpisode:                   int32PointerToInt(file.SourceEpisode),
+				SourceEpisodeFractionHundredths: int(file.SourceEpisodeFractionHundredths),
+			})
+		}
+		if _, err := validateDownloadFileResolution(files, items); err != nil {
+			return err
+		}
+		for fileID, selected := range selections {
 			if _, err := scope.Queries.SetDownloadFileSelection(ctx, db.SetDownloadFileSelectionParams{
 				ID:       repository.UUIDToPG(fileID),
 				Selected: selected,
 			}); err != nil {
 				return fmt.Errorf("update file selection: %w", err)
 			}
-		}
-		if selectedVideos == 0 {
-			return NewError("no_main_video", "at least one video file must be selected", ErrInvalidInput, map[string]any{})
 		}
 		if current.Status == "completed" {
 			if _, err := scope.Queries.MarkDownloadSelectingFiles(ctx, repository.UUIDToPG(downloadID)); err != nil {

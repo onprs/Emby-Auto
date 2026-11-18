@@ -103,8 +103,9 @@ func downloadViewFromDB(row db.Download, files []db.DownloadFile) domain.Downloa
 		Actions: domain.DownloadActions{
 			CanRetry: (row.Status == "cancelled" || (row.Status == "failed" && row.FailureStage != nil &&
 				!isMappingMaterializationFailure(row.Status, valueOrEmpty(row.FailureStage), valueOrEmpty(row.ErrorCode)) && valueOrEmpty(row.ErrorCode) != "download_manifest_changed")) &&
+				valueOrEmpty(row.ErrorCode) != "deletion_failed" && !row.DeletionRequestedAt.Valid && !row.DeletedAt.Valid,
+			CanCancel: (row.Status == "enqueue_pending" || row.Status == "file_resolution_pending" || row.Status == "downloading" || row.Status == "completed" || row.Status == "selecting_files" || (row.Status == "failed" && valueOrEmpty(row.ErrorCode) != "deletion_failed")) &&
 				!row.DeletionRequestedAt.Valid && !row.DeletedAt.Valid,
-			CanCancel:            (row.Status == "enqueue_pending" || row.Status == "file_resolution_pending" || row.Status == "downloading" || row.Status == "completed" || row.Status == "selecting_files" || row.Status == "failed") && !row.DeletionRequestedAt.Valid && !row.DeletedAt.Valid,
 			CanDelete:            (row.Status == "completed" || row.Status == "materialized" || row.Status == "failed" || row.Status == "cancelled") && !row.DeletionRequestedAt.Valid && !row.DeletedAt.Valid,
 			CanEditFileSelection: (row.Status == "completed" || row.Status == "selecting_files") && !row.DeletionRequestedAt.Valid,
 			CanResolveFiles:      hasSupportedVideo && (row.Status == "file_resolution_pending" || (row.Status == "failed" && valueOrEmpty(row.FailureStage) == "file_resolution")) && !row.DeletionRequestedAt.Valid,

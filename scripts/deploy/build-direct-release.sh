@@ -41,6 +41,7 @@ binary_names=(
   emby-auto-background-runtime
   emby-auto-release-preflight
   emby-auto-recover-stale-operations
+  emby-auto-history-retention
   emby-auto-migrate-runtime-addresses
   emby-auto-migrate-staging-ownership
 )
@@ -52,6 +53,7 @@ binary_packages=(
   ./cmd/background-runtime
   ./cmd/release-preflight
   ./cmd/recover-stale-operations
+  ./cmd/history-retention
   ./cmd/migrate-runtime-addresses
   ./cmd/migrate-staging-ownership
 )

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -819,5 +820,78 @@ func TestResolveTorrentBySavePathRequiresExactNormalizedMatch(t *testing.T) {
 				t.Fatalf("ResolveTorrentBySavePath() = %#v/%t, want hash %q ok %t", got, ok, test.wantHash, test.wantOK)
 			}
 		})
+	}
+}
+
+// writeOversizedJSON 强制使用 chunked 编码写入超过上限的响应，
+// 以覆盖没有 Content-Length 预检时的 LimitReader 分支。
+func writeOversizedJSON(response http.ResponseWriter) {
+	response.Header().Set("Content-Type", "application/json")
+	if flusher, ok := response.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	chunk := bytes.Repeat([]byte("0"), 32<<10)
+	remaining := int64(maxJSONBodyBytes + 1)
+	for remaining > 0 {
+		length := int64(len(chunk))
+		if length > remaining {
+			length = remaining
+		}
+		if _, err := response.Write(chunk[:length]); err != nil {
+			return
+		}
+		remaining -= length
+	}
+}
+
+func TestClientRejectsOversizedJSONResponses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		writeOversizedJSON(response)
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, RequestTimeout: 10 * time.Second})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{name: "list torrents", call: func() error {
+			_, err := client.ListTorrents(context.Background(), "")
+			return err
+		}},
+		{name: "torrent files", call: func() error {
+			_, err := client.TorrentFiles(context.Background(), torrentHashA)
+			return err
+		}},
+		{name: "categories", call: func() error {
+			_, err := client.categoryExists(context.Background(), ManagedCategory)
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.call()
+			if err == nil || !strings.Contains(err.Error(), "exceeds") {
+				t.Fatalf("error = %v, want size limit error", err)
+			}
+		})
+	}
+}
+
+func TestClientRejectsDeclaredOversizedJSONResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		response.Header().Set("Content-Length", strconv.Itoa(maxJSONBodyBytes+1))
+		response.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, RequestTimeout: 10 * time.Second})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if _, err := client.ListTorrents(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("ListTorrents() error = %v, want size limit error", err)
 	}
 }

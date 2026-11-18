@@ -5,10 +5,13 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	db "github.com/onprs/emby-auto/backend/db/sqlc"
 	"github.com/onprs/emby-auto/backend/internal/domain"
 	"github.com/onprs/emby-auto/backend/internal/platform/database"
@@ -244,7 +247,7 @@ WHERE idempotency_key = $1 AND status = 'queued'`,
 	}
 }
 
-func TestReconcileDuePollsRecoversEveryTerminalGenerationIntegration(t *testing.T) {
+func TestReconcileDuePollsRecoversEveryDueCycleIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, pool := testutil.NewMigratedPostgres(t)
@@ -274,11 +277,99 @@ INSERT INTO operations (
 		uuid.New(), subscriptionID, "rss.poll:"+subscriptionID.String()+":v1:continuous"); err != nil {
 		t.Fatal(err)
 	}
+	// 旧代际命名空间的终态操作：历史保留后的数据库里可能残留 g<N> 键，
+	// 新命名空间必须照常调度，不能把旧键当作本轮已完成的工作。
+	if _, err := pool.Exec(ctx, `
+INSERT INTO operations (
+  id, kind, resource_type, resource_id, idempotency_key, status, max_attempts, attempt_count,
+  timeout_seconds, error_code, error_message, finished_at
+) VALUES ($1, 'rss.poll', 'rss_subscription', $2, $3, 'failed', 5, 5, 30,
+          'rss_storage_unavailable', 'legacy generation', now())`,
+		uuid.New(), subscriptionID, "rss.poll:recovery:due-v1:"+subscriptionID.String()+":v1:g2"); err != nil {
+		t.Fatal(err)
+	}
+
+	countOperations := func() int {
+		t.Helper()
+		var count int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM operations`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	countRiverJobs := func() int {
+		t.Helper()
+		var count int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	latestQueuedKey := func() string {
+		t.Helper()
+		var key string
+		if err := pool.QueryRow(ctx, `
+SELECT idempotency_key FROM operations
+WHERE resource_id = $1 AND status = 'queued'
+ORDER BY created_at DESC LIMIT 1`, subscriptionID).Scan(&key); err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+	failOperation := func(key string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `
+UPDATE operations
+SET status = 'failed', error_code = 'rss_storage_unavailable', error_message = 'still unavailable',
+    finished_at = now(), updated_at = now()
+WHERE idempotency_key = $1`, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setNextPollAt := func(at time.Time) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `UPDATE rss_subscriptions SET next_poll_at = $2 WHERE id = $1`, subscriptionID, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dueAt := func() time.Time {
+		t.Helper()
+		var at time.Time
+		if err := pool.QueryRow(ctx, `SELECT next_poll_at FROM rss_subscriptions WHERE id = $1`, subscriptionID).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+
+	firstDue := dueAt()
+	wantFirstKey := fmt.Sprintf("rss.poll:recovery:due-v2:%s:v1:t%d", subscriptionID, firstDue.UnixMicro())
+
+	// 观测推进次数：并发巡检只能更新一次 next_poll_at。
+	if _, err := pool.Exec(ctx, `CREATE TABLE rss_poll_recovery_advance_probe (subscription_id uuid NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+CREATE FUNCTION rss_poll_recovery_advance_probe_fn() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.next_poll_at IS DISTINCT FROM OLD.next_poll_at THEN
+        INSERT INTO rss_poll_recovery_advance_probe (subscription_id) VALUES (NEW.id);
+    END IF;
+    RETURN NEW;
+END
+$$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+CREATE TRIGGER rss_poll_recovery_advance_probe AFTER UPDATE ON rss_subscriptions
+FOR EACH ROW EXECUTE FUNCTION rss_poll_recovery_advance_probe_fn()`); err != nil {
+		t.Fatal(err)
+	}
 
 	type reconciliationResult struct {
 		count int
 		err   error
 	}
+	operationsBefore, riverBefore := countOperations(), countRiverJobs()
 	start := make(chan struct{})
 	results := make(chan reconciliationResult, 2)
 	for range 2 {
@@ -300,19 +391,21 @@ INSERT INTO operations (
 	if count != 1 {
 		t.Fatalf("concurrent ReconcileDuePolls() created %d operations, want 1", count)
 	}
-	var firstKey string
-	var nextPollInFuture bool
-	if err := pool.QueryRow(ctx, `
-SELECT idempotency_key
-FROM operations
-WHERE resource_id = $1 AND status = 'queued'
-ORDER BY created_at DESC LIMIT 1`, subscriptionID).Scan(&firstKey); err != nil {
+	if operationsAfter, riverAfter := countOperations(), countRiverJobs(); operationsAfter != operationsBefore+1 || riverAfter != riverBefore+1 {
+		t.Fatalf("concurrent ReconcileDuePolls() operations %d->%d river %d->%d, want exactly one of each", operationsBefore, operationsAfter, riverBefore, riverAfter)
+	}
+	var advances int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rss_poll_recovery_advance_probe`).Scan(&advances); err != nil {
 		t.Fatal(err)
 	}
+	if advances != 1 {
+		t.Fatalf("concurrent ReconcileDuePolls() advanced next_poll_at %d times, want 1", advances)
+	}
+	firstKey := latestQueuedKey()
+	var nextPollInFuture bool
 	if err := pool.QueryRow(ctx, `SELECT next_poll_at > now() FROM rss_subscriptions WHERE id = $1`, subscriptionID).Scan(&nextPollInFuture); err != nil {
 		t.Fatal(err)
 	}
-	wantFirstKey := "rss.poll:recovery:due-v1:" + subscriptionID.String() + ":v1:g1"
 	if firstKey != wantFirstKey || !nextPollInFuture {
 		t.Fatalf("first recovery = key %q future %t, want %q/true", firstKey, nextPollInFuture, wantFirstKey)
 	}
@@ -321,30 +414,282 @@ ORDER BY created_at DESC LIMIT 1`, subscriptionID).Scan(&firstKey); err != nil {
 		t.Fatalf("active ReconcileDuePolls() = %d, %v, want 0/nil", count, err)
 	}
 
-	if _, err := pool.Exec(ctx, `
-UPDATE operations
-SET status = 'failed', error_code = 'rss_storage_unavailable', error_message = 'still unavailable', finished_at = now()
-WHERE idempotency_key = $1`, firstKey); err != nil {
+	// 同一到期时刻重复巡检：上一代已终态，键仍对应同一到期时刻，不得重复调度。
+	failOperation(firstKey)
+	setNextPollAt(firstDue)
+	operationsBefore, riverBefore = countOperations(), countRiverJobs()
+	count, err = workflow.ReconcileDuePolls(ctx)
+	if err != nil || count != 0 {
+		t.Fatalf("duplicate due ReconcileDuePolls() = %d, %v, want 0/nil", count, err)
+	}
+	if operationsAfter, riverAfter := countOperations(), countRiverJobs(); operationsAfter != operationsBefore || riverAfter != riverBefore {
+		t.Fatalf("duplicate due created work: operations %d->%d river %d->%d", operationsBefore, operationsAfter, riverBefore, riverAfter)
+	}
+
+	// 终态失败后的下一轮到达到期时刻产生新的幂等键。
+	secondDue := time.Now().Add(-time.Minute).UTC()
+	setNextPollAt(secondDue)
+	secondDue = dueAt()
+	count, err = workflow.ReconcileDuePolls(ctx)
+	if err != nil || count != 1 {
+		t.Fatalf("next-due ReconcileDuePolls() = %d, %v, want 1/nil", count, err)
+	}
+	secondKey := latestQueuedKey()
+	wantSecondKey := fmt.Sprintf("rss.poll:recovery:due-v2:%s:v1:t%d", subscriptionID, secondDue.UnixMicro())
+	if secondKey != wantSecondKey || secondKey == firstKey {
+		t.Fatalf("second recovery key = %q, want %q and different from %q", secondKey, wantSecondKey, firstKey)
+	}
+
+	// 订阅版本变更后，同一次到期时刻也属于新的轮询代际。
+	failOperation(secondKey)
+	if _, err := pool.Exec(ctx, `UPDATE rss_subscriptions SET version = version + 1 WHERE id = $1`, subscriptionID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE rss_subscriptions SET next_poll_at = now() - interval '1 minute' WHERE id = $1`, subscriptionID); err != nil {
+	setNextPollAt(secondDue)
+	count, err = workflow.ReconcileDuePolls(ctx)
+	if err != nil || count != 1 {
+		t.Fatalf("version-change ReconcileDuePolls() = %d, %v, want 1/nil", count, err)
+	}
+	thirdKey := latestQueuedKey()
+	wantThirdKey := fmt.Sprintf("rss.poll:recovery:due-v2:%s:v2:t%d", subscriptionID, secondDue.UnixMicro())
+	if thirdKey != wantThirdKey {
+		t.Fatalf("version-change recovery key = %q, want %q", thirdKey, wantThirdKey)
+	}
+
+	// 停用与完成状态的订阅不再安排轮询。
+	failOperation(thirdKey)
+	if _, err := pool.Exec(ctx, `UPDATE rss_subscriptions SET enabled = false, next_poll_at = now() - interval '1 minute' WHERE id = $1`, subscriptionID); err != nil {
 		t.Fatal(err)
 	}
 	count, err = workflow.ReconcileDuePolls(ctx)
-	if err != nil || count != 1 {
-		t.Fatalf("next-generation ReconcileDuePolls() = %d, %v, want 1/nil", count, err)
+	if err != nil || count != 0 {
+		t.Fatalf("disabled ReconcileDuePolls() = %d, %v, want 0/nil", count, err)
 	}
-	var secondKey string
-	if err := pool.QueryRow(ctx, `
-SELECT idempotency_key
-FROM operations
-WHERE resource_id = $1 AND status = 'queued'
-ORDER BY created_at DESC LIMIT 1`, subscriptionID).Scan(&secondKey); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE rss_subscriptions SET completed_at = now(), enabled = false, next_poll_at = NULL WHERE id = $1`, subscriptionID); err != nil {
 		t.Fatal(err)
 	}
-	wantSecondKey := "rss.poll:recovery:due-v1:" + subscriptionID.String() + ":v1:g2"
-	if secondKey != wantSecondKey {
-		t.Fatalf("second recovery key = %q, want %q", secondKey, wantSecondKey)
+	count, err = workflow.ReconcileDuePolls(ctx)
+	if err != nil || count != 0 {
+		t.Fatalf("completed ReconcileDuePolls() = %d, %v, want 0/nil", count, err)
+	}
+}
+
+func waitForRSSPollRecoveryLockWait(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting int
+		if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM pg_stat_activity
+WHERE wait_event_type = 'Lock'
+  AND query LIKE '%LockRSSSubscriptionForPollRecovery%'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("context ended before ReconcileDuePolls waited for the subscription lock")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	t.Fatal("ReconcileDuePolls did not wait for the subscription row lock")
+}
+
+// reconcileWhileSubscriptionLocked 在一个未提交事务里先修改订阅行（持有行锁），
+// 再启动 ReconcileDuePolls；巡检应卡在行锁上，随后重新读取提交后的 version/到期时刻。
+func reconcileWhileSubscriptionLocked(
+	t *testing.T,
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	workflow *RSSWorkflow,
+	mutate func(context.Context, pgx.Tx) error,
+) (int, error) {
+	t.Helper()
+	lockTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mutate(ctx, lockTx); err != nil {
+		_ = lockTx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	type reconciliationResult struct {
+		count int
+		err   error
+	}
+	done := make(chan reconciliationResult, 1)
+	go func() {
+		count, reconcileErr := workflow.ReconcileDuePolls(ctx)
+		done <- reconciliationResult{count: count, err: reconcileErr}
+	}()
+	waitForRSSPollRecoveryLockWait(t, ctx, pool)
+	if err := lockTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	result := <-done
+	return result.count, result.err
+}
+
+// TestReconcileDuePollsReReadsLockedSubscriptionIntegration 验证巡检在订阅行锁内
+// 重新读取 version 与持久化到期时刻：候选查询看到的旧值不得进入幂等键；
+// 锁内已不再到期或已停用/删除时不能插入 operation 或推进 due。
+func TestReconcileDuePollsReReadsLockedSubscriptionIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, pool := testutil.NewMigratedPostgres(t)
+	transactor := database.NewTransactor(pool)
+	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := NewRSSWorkflow(db.New(pool), transactor, NewOperationScheduler(transactor, riverClient))
+
+	seriesID, subscriptionID := uuid.New(), uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO media_series (id, title) VALUES ($1, 'Locked Due Poll')`, seriesID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO rss_subscriptions (id, series_id, name, feed_url, enabled, poll_interval_seconds, source_season, next_poll_at)
+VALUES ($1, $2, 'Locked Due Poll', 'https://example.test/locked.xml', true, 900, 1, now() - interval '1 hour')`,
+		subscriptionID, seriesID); err != nil {
+		t.Fatal(err)
+	}
+
+	countOperations := func() int {
+		t.Helper()
+		var count int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM operations`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	countRiverJobs := func() int {
+		t.Helper()
+		var count int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	queuedKey := func() string {
+		t.Helper()
+		var key string
+		if err := pool.QueryRow(ctx, `
+SELECT idempotency_key FROM operations
+WHERE resource_id = $1 AND status = 'queued'
+ORDER BY created_at DESC LIMIT 1`, subscriptionID).Scan(&key); err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+	failQueued := func() {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `
+UPDATE operations
+SET status = 'failed', error_code = 'rss_storage_unavailable', error_message = 'locked re-read fixture',
+    finished_at = now(), updated_at = now()
+WHERE resource_id = $1 AND status = 'queued'`, subscriptionID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setDue := func(at time.Time) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `UPDATE rss_subscriptions SET next_poll_at = $2 WHERE id = $1`, subscriptionID, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	readDue := func() time.Time {
+		t.Helper()
+		var at time.Time
+		if err := pool.QueryRow(ctx, `SELECT next_poll_at FROM rss_subscriptions WHERE id = $1`, subscriptionID).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+
+	// 候选查询先看到旧 version/到期时刻，另一事务在行锁内更新后提交。
+	firstDue := readDue()
+	newDue := time.Now().Add(-2 * time.Minute).UTC()
+	var lockedDue time.Time
+	count, err := reconcileWhileSubscriptionLocked(t, ctx, pool, workflow, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `UPDATE rss_subscriptions SET version = version + 1, next_poll_at = $2 WHERE id = $1`, subscriptionID, newDue); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT next_poll_at FROM rss_subscriptions WHERE id = $1`, subscriptionID).Scan(&lockedDue)
+	})
+	if err != nil || count != 1 {
+		t.Fatalf("locked re-read ReconcileDuePolls() = %d, %v, want 1/nil", count, err)
+	}
+	key := queuedKey()
+	wantKey := fmt.Sprintf("rss.poll:recovery:due-v2:%s:v2:t%d", subscriptionID, lockedDue.UnixMicro())
+	if key != wantKey {
+		t.Fatalf("locked re-read key = %q, want %q", key, wantKey)
+	}
+	if staleKey := fmt.Sprintf("rss.poll:recovery:due-v2:%s:v1:t%d", subscriptionID, firstDue.UnixMicro()); key == staleKey {
+		t.Fatalf("locked re-read used the stale candidate values: %q", key)
+	}
+	var payloadVersion int
+	if err := pool.QueryRow(ctx, `SELECT (payload->>'subscriptionVersion')::int FROM operations WHERE idempotency_key = $1`, key).Scan(&payloadVersion); err != nil {
+		t.Fatal(err)
+	}
+	if payloadVersion != 2 {
+		t.Fatalf("locked re-read payload subscriptionVersion = %d, want 2", payloadVersion)
+	}
+
+	// 候选列出后，锁内把到期时刻推到未来：不得插入或推进。
+	failQueued()
+	setDue(time.Now().Add(-time.Minute).UTC())
+	operationsBefore, riverBefore := countOperations(), countRiverJobs()
+	count, err = reconcileWhileSubscriptionLocked(t, ctx, pool, workflow, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE rss_subscriptions SET next_poll_at = now() + interval '1 hour' WHERE id = $1`, subscriptionID)
+		return err
+	})
+	if err != nil || count != 0 {
+		t.Fatalf("future-due ReconcileDuePolls() = %d, %v, want 0/nil", count, err)
+	}
+	if operationsAfter, riverAfter := countOperations(), countRiverJobs(); operationsAfter != operationsBefore || riverAfter != riverBefore {
+		t.Fatalf("future-due created work: operations %d->%d river %d->%d", operationsBefore, operationsAfter, riverBefore, riverAfter)
+	}
+
+	// 锁内停用：不得插入或推进。
+	setDue(time.Now().Add(-time.Minute).UTC())
+	operationsBefore, riverBefore = countOperations(), countRiverJobs()
+	count, err = reconcileWhileSubscriptionLocked(t, ctx, pool, workflow, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE rss_subscriptions SET enabled = false, next_poll_at = now() - interval '1 minute' WHERE id = $1`, subscriptionID)
+		return err
+	})
+	if err != nil || count != 0 {
+		t.Fatalf("paused ReconcileDuePolls() = %d, %v, want 0/nil", count, err)
+	}
+	if operationsAfter, riverAfter := countOperations(), countRiverJobs(); operationsAfter != operationsBefore || riverAfter != riverBefore {
+		t.Fatalf("paused created work: operations %d->%d river %d->%d", operationsBefore, operationsAfter, riverBefore, riverAfter)
+	}
+
+	// 恢复启用：到期时刻按产品语义重算并递增 version，巡检使用新 version/到期时刻。
+	resumeDue := time.Now().Add(-time.Minute).UTC()
+	if _, err := pool.Exec(ctx, `UPDATE rss_subscriptions SET enabled = true, next_poll_at = $2, version = version + 1 WHERE id = $1`, subscriptionID, resumeDue); err != nil {
+		t.Fatal(err)
+	}
+	resumeDue = readDue()
+	count, err = workflow.ReconcileDuePolls(ctx)
+	if err != nil || count != 1 {
+		t.Fatalf("resumed ReconcileDuePolls() = %d, %v, want 1/nil", count, err)
+	}
+	wantResumeKey := fmt.Sprintf("rss.poll:recovery:due-v2:%s:v3:t%d", subscriptionID, resumeDue.UnixMicro())
+	if key := queuedKey(); key != wantResumeKey {
+		t.Fatalf("resumed recovery key = %q, want %q", key, wantResumeKey)
+	}
+
+	// 删除（归档）后不再调度。
+	failQueued()
+	if _, err := pool.Exec(ctx, `UPDATE rss_subscriptions SET enabled = false, deleted_at = now(), next_poll_at = now() - interval '1 minute' WHERE id = $1`, subscriptionID); err != nil {
+		t.Fatal(err)
+	}
+	count, err = workflow.ReconcileDuePolls(ctx)
+	if err != nil || count != 0 {
+		t.Fatalf("archived ReconcileDuePolls() = %d, %v, want 0/nil", count, err)
 	}
 }
 

@@ -44,12 +44,13 @@ ssh -L 18080:127.0.0.1:18080 用户@设备地址
 curl -fsSL https://github.com/onprs/Emby-Auto/releases/latest/download/install.sh | sudo bash -s -- --user 媒体账户
 ~~~
 
-重复执行安装命令会保留已有版本、配置与数据。端口冲突时可添加 `--port 端口号`；更多选项、HTTPS、备份和升级见 [Linux 直接部署](docs/direct-deployment.md)。
+重复执行安装命令会保留已有版本、配置与数据。端口冲突时可添加 `--port 端口号`；qBittorrent 使用独立账户时可添加 `--share-group 共享组`。更多选项、HTTPS、备份和升级见 [Linux 直接部署](docs/direct-deployment.md)。
 
 ## 使用条件
 
 - PostgreSQL、qBittorrent 与 Emby Server 由用户自行安装配置，需要提前准备。
 - 部署设备必须能访问下载目录和媒体库；qBittorrent 与应用使用的下载绝对路径需要一致。
+- qBittorrent 使用独立服务账户时，需要通过共享组或 ACL 获得下载目录写权限；Emby 服务账户需要能遍历媒体库。安装时可使用 `--share-group 共享组`，并在安装后把 qBittorrent 账户加入该组。
 - 应用服务账户的 UID 必须与 Emby 媒体文件所有者一致。
 - 默认通过本机或 SSH 隧道访问。通过网络对外提供服务时，需要配置 HTTPS，并启用安全会话 Cookie。
 - 定期备份数据库、安装配置和媒体目录。

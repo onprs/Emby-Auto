@@ -20,6 +20,11 @@ import (
 const (
 	fixtureHash    = "0123456789abcdef0123456789abcdef01234567"
 	fixtureRSSHash = "1123456789abcdef0123456789abcdef01234567"
+
+	// isolatedSeriesQueryPrefix 标记需要独立剧集数据的搜索请求，避免全栈用例共享同一 TMDb 剧集目标。
+	isolatedSeriesQueryPrefix = "Fixture Isolated "
+	isolatedSeriesIDBase      = 1000
+	isolatedEpisodeIDBase     = 100000
 )
 
 var fixtureEpisodePattern = regexp.MustCompile(`(?i)S([0-9]{2})E([0-9]{2})`)
@@ -65,6 +70,7 @@ type fixtureServer struct {
 	torrent          *torrentState
 	categories       map[string]struct{}
 	failures         map[string]bool
+	isolatedSeries   map[int]fixtureSeriesSpec
 	animeLibraryRoot string
 	movieLibraryRoot string
 	controlDir       string
@@ -78,8 +84,9 @@ func main() {
 	flag.Parse()
 
 	fixture := &fixtureServer{
-		categories: make(map[string]struct{}), failures: make(map[string]bool), animeLibraryRoot: *animeLibraryRoot,
-		movieLibraryRoot: *movieLibraryRoot, controlDir: *controlDir,
+		categories: make(map[string]struct{}), failures: make(map[string]bool),
+		isolatedSeries:   make(map[int]fixtureSeriesSpec),
+		animeLibraryRoot: *animeLibraryRoot, movieLibraryRoot: *movieLibraryRoot, controlDir: *controlDir,
 	}
 	server := &http.Server{Addr: *address, Handler: fixture.routes()}
 	log.Printf("E2E fixture listening on %s", *address)
@@ -182,7 +189,10 @@ func (fixture *fixtureServer) rss(writer http.ResponseWriter, request *http.Requ
 	if parsed, err := strconv.Atoi(request.URL.Query().Get("series")); err == nil {
 		seriesID = parsed
 	}
-	series := fixtureSeriesByID(seriesID)
+	series, ok := fixture.seriesByID(seriesID)
+	if !ok {
+		series = fixtureSeriesSpecs[0]
+	}
 	coordinate := "S01E01"
 	displayName := url.QueryEscape(series.Title + " - " + coordinate)
 	_, _ = fmt.Fprintf(writer, `<?xml version="1.0"?><rss version="2.0"><channel><title>%s</title><item><guid>fixture-%d-%s-%s</guid><title>[Fixture] %s - %s</title><link>http://fixture.invalid/series/%d/episode/1</link><enclosure type="application/x-bittorrent" url="magnet:?xt=urn:btih:%s&amp;dn=%s" length="4096"/></item></channel></rss>`, series.Title, series.ID, strings.ToLower(coordinate), hash[:12], series.Title, coordinate, series.ID, hash, displayName)
@@ -191,13 +201,6 @@ func (fixture *fixtureServer) rss(writer http.ResponseWriter, request *http.Requ
 func fixtureHashFor(seed string) string {
 	value := sha1.Sum([]byte(seed))
 	return fmt.Sprintf("%x", value)
-}
-
-func fixtureSeriesByID(id int) fixtureSeriesSpec {
-	if series, ok := findFixtureSeriesByID(id); ok {
-		return series
-	}
-	return fixtureSeriesSpecs[0]
 }
 
 func findFixtureSeriesByID(id int) (fixtureSeriesSpec, bool) {
@@ -209,12 +212,61 @@ func findFixtureSeriesByID(id int) (fixtureSeriesSpec, bool) {
 	return fixtureSeriesSpec{}, false
 }
 
-func fixtureSeriesForSearch(query string) fixtureSeriesSpec {
-	normalized := strings.ToLower(strings.TrimSpace(query))
+// seriesByID 同时解析固定剧集和本次运行创建的独立剧集。
+func (fixture *fixtureServer) seriesByID(id int) (fixtureSeriesSpec, bool) {
+	if series, ok := findFixtureSeriesByID(id); ok {
+		return series, true
+	}
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	series, ok := fixture.isolatedSeries[id]
+	return series, ok
+}
+
+// allSeries 返回固定剧集与已创建的独立剧集，供 Emby 目录夹具枚举。
+func (fixture *fixtureServer) allSeries() []fixtureSeriesSpec {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	series := append([]fixtureSeriesSpec{}, fixtureSeriesSpecs...)
+	for _, isolated := range fixture.isolatedSeries {
+		series = append(series, isolated)
+	}
+	return series
+}
+
+// isolatedSeriesForToken 按查询尾部令牌创建独立剧集，同一令牌重复请求返回同一剧集。
+func (fixture *fixtureServer) isolatedSeriesForToken(token string) fixtureSeriesSpec {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		token = "default"
+	}
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	title := "Fixture Show " + token
+	for _, series := range fixture.isolatedSeries {
+		if series.Title == title {
+			return series
+		}
+	}
+	id := isolatedSeriesIDBase + len(fixture.isolatedSeries)
+	series := fixtureSeriesSpec{
+		ID: id, Title: title,
+		EpisodeID: isolatedEpisodeIDBase + id, EpisodeTitle: "Pilot " + token,
+	}
+	fixture.isolatedSeries[id] = series
+	return series
+}
+
+func (fixture *fixtureServer) fixtureSeriesForSearch(query string) fixtureSeriesSpec {
+	trimmed := strings.TrimSpace(query)
+	normalized := strings.ToLower(trimmed)
 	for _, series := range fixtureSeriesSpecs[1:] {
 		if strings.Contains(normalized, strings.ToLower(series.Title)) {
 			return series
 		}
+	}
+	if strings.HasPrefix(normalized, strings.ToLower(isolatedSeriesQueryPrefix)) {
+		return fixture.isolatedSeriesForToken(trimmed[len(isolatedSeriesQueryPrefix):])
 	}
 	return fixtureSeriesSpecs[0]
 }
@@ -438,14 +490,14 @@ func (fixture *fixtureServer) tmdb(writer http.ResponseWriter, request *http.Req
 	}
 	writer.Header().Set("Content-Type", "application/json")
 	if request.URL.Path == "/tmdb/search/tv" {
-		series := fixtureSeriesForSearch(request.URL.Query().Get("query"))
+		series := fixture.fixtureSeriesForSearch(request.URL.Query().Get("query"))
 		_ = json.NewEncoder(writer).Encode(map[string]any{"results": []map[string]any{{
 			"id": series.ID, "name": series.Title, "original_name": series.Title,
 			"first_air_date": "2026-01-01", "overview": "E2E fixture series",
 		}}})
 		return
 	}
-	for _, series := range fixtureSeriesSpecs {
+	for _, series := range fixture.allSeries() {
 		if request.URL.Path == fmt.Sprintf("/tmdb/tv/%d", series.ID) {
 			_ = json.NewEncoder(writer).Encode(map[string]any{
 				"id": series.ID, "name": series.Title, "original_name": series.Title,
@@ -511,7 +563,7 @@ func (fixture *fixtureServer) writeEmbyItems(writer http.ResponseWriter, request
 	requestedSeriesID := embyRequestedSeriesID(request)
 	if includeType == "Series" {
 		items := []map[string]any{}
-		if series, ok := findFixtureSeriesByID(requestedSeriesID); ok {
+		if series, ok := fixture.seriesByID(requestedSeriesID); ok {
 			items = append(items, embySeriesItem(series))
 		}
 		_ = json.NewEncoder(writer).Encode(map[string]any{"Items": items, "TotalRecordCount": len(items)})
@@ -519,14 +571,14 @@ func (fixture *fixtureServer) writeEmbyItems(writer http.ResponseWriter, request
 	}
 	if includeType == "Episode" && requestedSeriesID != 0 {
 		items := []map[string]any{}
-		if series, ok := findFixtureSeriesByID(requestedSeriesID); ok {
+		if series, ok := fixture.seriesByID(requestedSeriesID); ok {
 			items = fixture.embyEpisodeItems(series)
 		}
 		_ = json.NewEncoder(writer).Encode(map[string]any{"Items": items, "TotalRecordCount": len(items)})
 		return
 	}
 	items := make([]map[string]any, 0)
-	for _, series := range fixtureSeriesSpecs {
+	for _, series := range fixture.allSeries() {
 		items = append(items, embySeriesItem(series))
 		items = append(items, map[string]any{
 			"Id": fmt.Sprintf("season-fixture-%d", series.ID), "ParentId": fmt.Sprintf("series-fixture-%d", series.ID),

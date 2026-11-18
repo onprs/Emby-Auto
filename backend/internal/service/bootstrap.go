@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -46,6 +47,12 @@ type BootstrapOptions struct {
 	Migrator                  BootstrapMigrator
 	Passwords                 PasswordVerifier
 	Activate                  RuntimeActivator
+	// ConnectTimeout 限制安装流程中单条 PostgreSQL 连接与探测查询的总时长，
+	// 避免未响应的目标在初始化期间长期占用初始化互斥。
+	ConnectTimeout time.Duration
+	// OperationTimeout 限制单次安装初始化（迁移、建档与运行时激活）的总时长。
+	// 零值使用默认值；超时后初始化互斥被释放，可安全重试。
+	OperationTimeout time.Duration
 }
 
 type Bootstrap struct {
@@ -57,9 +64,12 @@ type Bootstrap struct {
 	passwords                 PasswordVerifier
 	activate                  RuntimeActivator
 	random                    io.Reader
+	connectTimeout            time.Duration
+	operationTimeout          time.Duration
 
 	mu           sync.Mutex
 	initializing bool
+	activating   bool
 }
 
 func NewBootstrap(options BootstrapOptions) *Bootstrap {
@@ -72,7 +82,29 @@ func NewBootstrap(options BootstrapOptions) *Bootstrap {
 		passwords:                 options.Passwords,
 		activate:                  options.Activate,
 		random:                    rand.Reader,
+		connectTimeout:            options.ConnectTimeout,
+		operationTimeout:          operationTimeoutOrDefault(options.OperationTimeout),
 	}
+}
+
+// defaultSetupOperationTimeout 是安装初始化的默认总时长上限。向导流程面向新建数据库，
+// 迁移与建档在秒级完成；该值只用于避免依赖长期阻塞占用初始化互斥。
+const defaultSetupOperationTimeout = 10 * time.Minute
+
+func operationTimeoutOrDefault(value time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return defaultSetupOperationTimeout
+}
+
+// operationContext 为单次安装操作套上总体时间预算，覆盖迁移、安装写入与运行时激活；
+// 依赖在握手后不再响应时，调用会在预算内返回错误而不是无期限占用初始化互斥。
+func (bootstrap *Bootstrap) operationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if bootstrap.operationTimeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, bootstrap.operationTimeout)
 }
 
 func (bootstrap *Bootstrap) Status(ctx context.Context) (domain.SetupStatus, error) {
@@ -146,6 +178,9 @@ func (bootstrap *Bootstrap) Initialize(
 		bootstrap.mu.Unlock()
 	}()
 
+	bounded, cancel := bootstrap.operationContext(ctx)
+	defer cancel()
+	ctx = bounded
 	data, completed, err := bootstrap.loadStored()
 	if err != nil {
 		return domain.SetupStatus{}, setupUnavailable("bootstrap_file", err)
@@ -254,11 +289,25 @@ func (bootstrap *Bootstrap) Initialize(
 // ActivateExisting migrates and activates an installation already represented by
 // environment configuration or a completed bootstrap file.
 func (bootstrap *Bootstrap) ActivateExisting(ctx context.Context) (bool, error) {
+	// 只在校验状态标志时持锁：激活可能持续到总预算上限，不能阻塞向导请求。
 	bootstrap.mu.Lock()
-	defer bootstrap.mu.Unlock()
-	if bootstrap.initializing {
+	if bootstrap.initializing || bootstrap.activating {
+		bootstrap.mu.Unlock()
 		return false, nil
 	}
+	bootstrap.activating = true
+	bootstrap.mu.Unlock()
+	defer func() {
+		bootstrap.mu.Lock()
+		bootstrap.activating = false
+		bootstrap.mu.Unlock()
+	}()
+
+	// 启动阶段同样使用初始化总预算：数据库在握手后不响应时，API 以未就绪状态
+	// 继续启动，而不是在开始监听前无限期阻塞。
+	bounded, cancel := bootstrap.operationContext(ctx)
+	defer cancel()
+	ctx = bounded
 	data, completed, err := bootstrap.loadStored()
 	if err != nil {
 		return false, err
@@ -273,7 +322,7 @@ func (bootstrap *Bootstrap) ActivateExisting(ctx context.Context) (bool, error) 
 	if err := bootstrap.migrator.Migrate(ctx, databaseURL); err != nil {
 		return false, err
 	}
-	pool, err := database.Open(ctx, databaseURL)
+	pool, err := database.OpenWithConnectTimeout(ctx, databaseURL, bootstrap.connectTimeout)
 	if err != nil {
 		return false, err
 	}
@@ -302,7 +351,9 @@ func (bootstrap *Bootstrap) ActivateExisting(ctx context.Context) (bool, error) 
 		adminID = data.AdminID
 	}
 	if _, err := queries.GetInstallationState(ctx); errors.Is(err, pgx.ErrNoRows) {
-		if _, completeErr := queries.CompleteInstallation(ctx, repository.UUIDToPG(adminID)); completeErr != nil {
+		// ON CONFLICT DO NOTHING RETURNING * 在并发方已写入时返回 0 行；
+		// 视为对方完成了同一条安装记录，继续标记完成与激活。
+		if _, completeErr := queries.CompleteInstallation(ctx, repository.UUIDToPG(adminID)); completeErr != nil && !errors.Is(completeErr, pgx.ErrNoRows) {
 			return false, fmt.Errorf("record existing installation: %w", completeErr)
 		}
 	} else if err != nil {
@@ -339,7 +390,7 @@ func (bootstrap *Bootstrap) createInstallation(
 	data platformconfig.BootstrapData,
 	configuration domain.SaveConfiguration,
 ) error {
-	pool, err := database.Open(ctx, databaseURL)
+	pool, err := database.OpenWithConnectTimeout(ctx, databaseURL, bootstrap.connectTimeout)
 	if err != nil {
 		return setupUnavailable("postgresql", err)
 	}
@@ -384,7 +435,14 @@ func (bootstrap *Bootstrap) databaseInstallationState(
 	ctx context.Context,
 	databaseURL string,
 ) (bool, uuid.UUID, error) {
-	pool, err := database.Open(ctx, databaseURL)
+	// 安装流程的探测查询只包含计数与单行读取；以连接超时作为上界，
+	// 避免无响应目标让未认证的状态轮询与初始化请求挂起。
+	if bootstrap.connectTimeout > 0 {
+		bounded, cancel := context.WithTimeout(ctx, bootstrap.connectTimeout)
+		defer cancel()
+		ctx = bounded
+	}
+	pool, err := database.OpenWithConnectTimeout(ctx, databaseURL, bootstrap.connectTimeout)
 	if err != nil {
 		return false, uuid.Nil, err
 	}
