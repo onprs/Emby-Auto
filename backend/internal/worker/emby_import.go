@@ -301,7 +301,7 @@ func prepareImportedLibraryDirectories(
 		}
 		info, statErr := os.Lstat(current)
 		if os.IsNotExist(statErr) {
-			if err := os.Mkdir(current, importedLibraryPathMode); err != nil {
+			if err := os.Mkdir(current, importedLibraryDirMode); err != nil {
 				return "", fmt.Errorf("create imported library directory: %w", err)
 			}
 		} else if statErr != nil {

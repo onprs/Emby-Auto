@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/onprs/emby-auto/backend/internal/domain"
 	"github.com/onprs/emby-auto/backend/internal/platform/emby"
 	"github.com/onprs/emby-auto/backend/internal/platform/tmdb"
@@ -133,11 +134,12 @@ func (stub *tmdbCatalogClientStub) Series(context.Context, int64) (domain.TMDbSe
 type tmdbCatalogStoreStub struct {
 	catalog      domain.TMDbSeriesCatalog
 	acquisitions []uuid.UUID
+	saveErr      error
 }
 
 func (stub *tmdbCatalogStoreStub) SaveTMDbCatalog(_ context.Context, _ domain.Operation, catalog domain.TMDbSeriesCatalog) error {
 	stub.catalog = catalog
-	return nil
+	return stub.saveErr
 }
 
 func (stub *tmdbCatalogStoreStub) ListAgentMappingAcquisitions(context.Context, uuid.UUID) ([]uuid.UUID, error) {
@@ -170,6 +172,30 @@ func (stub *tmdbAgentResolutionStub) ReconcileAutomaticRSSPreacquisitionMappings
 		return 0, stub.reconciliationErr
 	}
 	return 1, nil
+}
+
+func TestTMDbSyncHandlerTreatsCatalogReferenceConflictAsPermanent(t *testing.T) {
+	seriesID := uuid.MustParse("82000000-0000-0000-0000-000000000008")
+	catalog := domain.TMDbSeriesCatalog{TMDbSeriesID: 45, Name: "Show", Payload: []byte(`{"id":45}`)}
+	store := &tmdbCatalogStoreStub{saveErr: &pgconn.PgError{Code: "23503", ConstraintName: "episode_mappings_target_episode_id_fkey"}}
+	handler := NewTMDbSyncHandler(
+		&catalogConfigurationStub{
+			configuration: domain.Configuration{Settings: domain.RuntimeSettings{}},
+			secrets:       map[string]string{domain.SecretTMDbAPIToken: "tmdb-token"},
+		},
+		store,
+		func(tmdb.ClientOptions) (TMDbCatalogClient, error) {
+			return &tmdbCatalogClientStub{catalog: catalog}, nil
+		},
+		nil,
+	)
+	err := handler.Handle(context.Background(), domain.Operation{
+		ID: uuid.New(), ResourceType: "media_series", ResourceID: seriesID, Payload: []byte(`{"tmdbSeriesId":45}`),
+	})
+	var failure *Failure
+	if !errors.As(err, &failure) || failure.Retryable || failure.Code != "tmdb_catalog_reference_conflict" {
+		t.Fatalf("Handle() error = %#v", err)
+	}
 }
 
 func TestTMDbSyncHandlerReconcilesPendingRSSMappingsAfterCatalogCommit(t *testing.T) {
