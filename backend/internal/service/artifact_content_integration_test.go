@@ -64,6 +64,12 @@ WHERE task_id = $1 AND kind = $2 RETURNING id
 			t.Fatal(err)
 		}
 	}
+	if _, err := workflow.PrepareImportDestination(ctx, domain.ImportCompletion{
+		TaskID: taskID, ImportID: task.Import.ID,
+		DestinationVideoPath: artifacts[0].destination, DestinationSubtitlePath: artifacts[1].destination,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := workflow.CompleteImport(ctx, domain.ImportCompletion{
 		TaskID: taskID, ImportID: task.Import.ID, OperationID: task.Operations[0].ID,
 		DestinationVideoPath: artifacts[0].destination, DestinationSubtitlePath: artifacts[1].destination,

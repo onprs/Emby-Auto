@@ -81,6 +81,9 @@ WHERE task.acquisition_id = sqlc.arg(acquisition_id)
 ORDER BY artifact.id;
 
 -- name: ListAcquisitionDeletionLibraryFiles :many
+-- 删除命令快照：preserve 只表示加载时其它未删除 acquisition 的 succeeded 引用，
+-- 是提示而非实时占用结论。真正执行 delete-imported 前必须进入目标路径锁域，
+-- 用 ListAcquisitionDeletionLibraryFilesForDeletion 重新判定。
 WITH deletion_imports AS (
     SELECT imported.id, imported.destination_video_path AS file_path
     FROM imports AS imported
@@ -113,6 +116,70 @@ SELECT
     ) AS preserve
 FROM deletion_imports AS deletion_import
 ORDER BY deletion_import.file_path, deletion_import.id;
+
+-- name: ListAcquisitionDeletionLibraryFilePairs :many
+-- 删除已导入文件前的锁集合：本 acquisition 仍为 succeeded 的导入目标对。
+-- 按视频→字幕的稳定顺序返回，调用方逐对取锁；该顺序与
+-- PrepareImportDestination/CompleteImport/RunImportCompensation 一致，
+-- 避免多个目标之间出现反向锁序。
+SELECT
+    imported.destination_video_path::text AS video_path,
+    imported.destination_subtitle_path::text AS subtitle_path
+FROM imports AS imported
+JOIN episode_tasks AS task ON task.id = imported.task_id
+WHERE task.acquisition_id = sqlc.arg(acquisition_id)
+  AND imported.status = 'succeeded'
+  AND imported.destination_video_path IS NOT NULL
+  AND imported.destination_subtitle_path IS NOT NULL
+  AND btrim(imported.destination_video_path) <> ''
+  AND btrim(imported.destination_subtitle_path) <> ''
+ORDER BY imported.destination_video_path, imported.destination_subtitle_path, imported.id;
+
+-- name: ListAcquisitionDeletionLibraryFilesForDeletion :many
+-- 持锁后的新鲜占用判定：只返回本 acquisition 仍为 succeeded 的导入文件。
+-- preserve 表示同一路径仍被其它 running 已登记采用者（含同一 acquisition
+-- 的活跃导入）或其它未请求删除 acquisition 的 succeeded 导入引用；
+-- 终态 failed/cancelled 不构成占用，本导入自身不计入。
+WITH deletion_files AS (
+    SELECT imported.id AS import_id, imported.destination_video_path::text AS file_path
+    FROM imports AS imported
+    JOIN episode_tasks AS task ON task.id = imported.task_id
+    WHERE task.acquisition_id = sqlc.arg(acquisition_id)
+      AND imported.status = 'succeeded'
+      AND imported.destination_video_path IS NOT NULL
+      AND btrim(imported.destination_video_path) <> ''
+    UNION ALL
+    SELECT imported.id, imported.destination_subtitle_path::text
+    FROM imports AS imported
+    JOIN episode_tasks AS task ON task.id = imported.task_id
+    WHERE task.acquisition_id = sqlc.arg(acquisition_id)
+      AND imported.status = 'succeeded'
+      AND imported.destination_subtitle_path IS NOT NULL
+      AND btrim(imported.destination_subtitle_path) <> ''
+)
+SELECT
+    deletion_file.file_path AS file_path,
+    EXISTS (
+        SELECT 1
+        FROM imports AS claimed
+        JOIN episode_tasks AS claimed_task ON claimed_task.id = claimed.task_id
+        JOIN acquisitions AS claimed_acquisition ON claimed_acquisition.id = claimed_task.acquisition_id
+        WHERE claimed.id <> deletion_file.import_id
+          AND (
+              claimed.status = 'running'
+              OR (
+                  claimed.status = 'succeeded'
+                  AND claimed_acquisition.id <> sqlc.arg(acquisition_id)
+                  AND claimed_acquisition.deletion_requested_at IS NULL
+              )
+          )
+          AND (
+              claimed.destination_video_path = deletion_file.file_path
+              OR claimed.destination_subtitle_path = deletion_file.file_path
+          )
+    ) AS preserve
+FROM deletion_files AS deletion_file
+ORDER BY deletion_file.file_path, deletion_file.import_id;
 
 -- name: RequestAcquisitionOperationCancellations :execrows
 UPDATE operations AS operation
