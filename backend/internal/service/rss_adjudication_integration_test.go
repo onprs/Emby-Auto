@@ -266,17 +266,17 @@ INSERT INTO agent_resolutions (
 	if _, err := service.RetryAutomatic(ctx, resolutionID, 3); !errors.Is(err, ErrStateConflict) {
 		t.Fatalf("duplicate RetryAutomatic() error = %#v, want state conflict", err)
 	}
-	if err := service.persistAgentResolutionSteps(ctx, resolutionID, 2, []agentharness.Step{{
+	if persisted, err := service.persistAgentResolutionSteps(ctx, result.Operation.ID, resolutionID, 2, []agentharness.Step{{
 		Sequence: 1, ToolName: "submit_rss_release_adjudication", Status: "rejected",
 		ErrorCode: "rss_adjudication_coordinate_duplicate", ArgumentsDigest: make([]byte, 32), ResultDigest: make([]byte, 32),
-	}}); err != nil {
-		t.Fatalf("persist first partial step: %v", err)
+	}}); err != nil || !persisted {
+		t.Fatalf("persist first partial step: persisted=%t err=%v", persisted, err)
 	}
-	if err := service.persistAgentResolutionSteps(ctx, resolutionID, 5, []agentharness.Step{{
+	if persisted, err := service.persistAgentResolutionSteps(ctx, result.Operation.ID, resolutionID, 5, []agentharness.Step{{
 		Sequence: 1, ToolName: "submit_rss_release_adjudication", Status: "rejected",
 		ErrorCode: "rss_adjudication_scope_incomplete", ArgumentsDigest: make([]byte, 32), ResultDigest: make([]byte, 32),
-	}}); err != nil {
-		t.Fatalf("persist second partial step: %v", err)
+	}}); err != nil || !persisted {
+		t.Fatalf("persist second partial step: persisted=%t err=%v", persisted, err)
 	}
 	var firstSequence, secondSequence int
 	var firstCode, secondCode string

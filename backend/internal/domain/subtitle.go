@@ -134,6 +134,94 @@ type SubtitleMatchSelection struct {
 	Path        string
 }
 
+// SubtitleVideoMatchSchedulingState 描述字幕匹配范围当前的 Agent 调度状态。
+// 用于区分“确实已有活动决议承接”与“范围存在但从未成功调度”。
+// CancellationRequested 表示操作已请求取消，此时应等待取消收敛而不是重新调度。
+type SubtitleVideoMatchSchedulingState struct {
+	ScopeID               uuid.UUID
+	ScopeStatus           string
+	TaskVersion           int
+	TaskState             string
+	SubtitleState         string
+	ContentObservation    [32]byte
+	ResolutionID          *uuid.UUID
+	ResolutionStatus      string
+	ResolutionErrorCode   string
+	ResolutionVersion     int
+	OperationID           *uuid.UUID
+	OperationStatus       string
+	CancellationRequested bool
+	ActiveOwnerCount      int
+}
+
+// SubtitleScopeObservation 是 handler 在同一个读取事务中看到的 scope/task/
+// content 观察。ContentHash 只用于检测同一 handler 观察之后的候选/视频/
+// mapping 变化，不是持久 generation，也不参与 owner/operation 租约。
+type SubtitleScopeObservation struct {
+	TaskVersion   int
+	TaskState     string
+	SubtitleState string
+	ContentHash   [32]byte
+}
+
+// SubtitleScopeExpiryOutcome 是 orphan cleanup 的结构化结果；调用方必须按
+// outcome 决定 handoff/重建/失败，不能把 nil 当“已过期”。
+type SubtitleScopeExpiryOutcome string
+
+const (
+	SubtitleScopeExpired        SubtitleScopeExpiryOutcome = "expired"
+	SubtitleScopeOwnerPresent   SubtitleScopeExpiryOutcome = "owner_present"
+	SubtitleScopeMultipleOwners SubtitleScopeExpiryOutcome = "multiple_owners"
+	SubtitleScopeAlreadyApplied SubtitleScopeExpiryOutcome = "already_applied"
+	SubtitleScopeAlreadyExpired SubtitleScopeExpiryOutcome = "already_expired"
+	SubtitleScopeAbsent         SubtitleScopeExpiryOutcome = "absent"
+	SubtitleScopeChanged        SubtitleScopeExpiryOutcome = "scope_changed"
+	SubtitleScopeConflict       SubtitleScopeExpiryOutcome = "conflict"
+)
+
+// SubtitleScopeExpiry 返回当前锁内观察与 orphan cleanup 结果，便于 handler
+// 区分真正由本调用过期、合法 owner/applied、新代次变化与冲突。
+type SubtitleScopeExpiry struct {
+	ScopeID           uuid.UUID
+	Outcome           SubtitleScopeExpiryOutcome
+	ScopeStatus       string
+	OwnerCount        int
+	OwnerResolutionID *uuid.UUID
+	OwnerOperationID  *uuid.UUID
+	TaskVersion       int
+	TaskState         string
+	SubtitleState     string
+	ContentHash       [32]byte
+}
+
+// ActiveResolution 表示当前范围内恰好存在唯一活动 owner（决议与 operation）。
+// 0 个或多于 1 个活动 owner 都不能授权调度；历史 created_at 排序不参与判定。
+// 终态失败、取消或过期不由这里判定；调用方需结合
+// AutomaticAgentResolutionRetryable 决定恢复。
+func (state SubtitleVideoMatchSchedulingState) ActiveResolution() bool {
+	if state.ActiveOwnerCount != 1 || state.ResolutionID == nil {
+		return false
+	}
+	switch state.ResolutionStatus {
+	case string(AgentResolutionQueued), string(AgentResolutionRunning), string(AgentResolutionProposed),
+		string(AgentResolutionReviewRequired):
+	default:
+		return false
+	}
+	switch state.OperationStatus {
+	case "queued", "running":
+		return true
+	default:
+		return false
+	}
+}
+
+// CoversGeneration 表示唯一活动 owner 仍在承接当前 scope；正常 VideoReady
+// 引起的 task.version 推进不改变该判定。
+func (state SubtitleVideoMatchSchedulingState) CoversGeneration() bool {
+	return state.ActiveResolution()
+}
+
 // CandidateID returns the stable identifier used to reference a subtitle
 // candidate across scope persistence, the Agent context, and the inspection
 // tool. Embedded streams are keyed by their stream index; external files use

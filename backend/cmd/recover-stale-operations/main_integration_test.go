@@ -61,8 +61,12 @@ func (fixture staleRescueFixture) createStaleOperation(
 	attempt int32,
 ) service.ScheduleOperationResult {
 	t.Helper()
+	resourceID := uuid.New()
+	if resourceType == "episode_task" {
+		fixture.seedEpisodeTask(t, resourceID)
+	}
 	scheduled, err := fixture.scheduler.Schedule(fixture.ctx, service.ScheduleOperationRequest{
-		Kind: kind, ResourceType: resourceType, ResourceID: uuid.New(),
+		Kind: kind, ResourceType: resourceType, ResourceID: resourceID,
 		IdempotencyKey: "stale-rescue-" + uuid.NewString(),
 		MaxAttempts:    int(maxAttempts), Timeout: 30 * time.Second,
 	})
@@ -94,6 +98,42 @@ WHERE id = $1`, scheduled.Operation.RiverJobID, attempt); err != nil {
 		t.Fatal(err)
 	}
 	return scheduled
+}
+
+// seedEpisodeTask 为字幕类 operation 准备真实存在的 episode_task 行；
+// StartAttempt 需要锁定任务才能捕获字幕绑定身份。
+func (fixture staleRescueFixture) seedEpisodeTask(t *testing.T, taskID uuid.UUID) {
+	t.Helper()
+	seriesID, acquisitionID, downloadID := uuid.New(), uuid.New(), uuid.New()
+	fileID, profileID := uuid.New(), uuid.New()
+	if _, err := fixture.pool.Exec(fixture.ctx, `
+INSERT INTO media_series (id, title) VALUES ($1, 'Stale Rescue Show')`, seriesID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(fixture.ctx, `
+INSERT INTO acquisitions (id, series_id, source_kind, source_uri)
+VALUES ($1, $2, 'manual', $3)`, acquisitionID, seriesID, "magnet:?xt=urn:btih:"+uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(fixture.ctx, `
+INSERT INTO downloads (id, acquisition_id, status) VALUES ($1, $2, 'completed')`, downloadID, acquisitionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(fixture.ctx, `
+INSERT INTO transcode_profiles (id, name, version, video_codec, encoder, container, file_extension, quality_mode, quality_value, audio_policy, preset, pixel_format)
+VALUES ($1, $2, 1, 'h264', 'libx264', 'matroska', 'mkv', 'crf', 23, 'copy', 'medium', 'yuv420p')`, profileID, "stale-rescue-"+profileID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(fixture.ctx, `
+INSERT INTO download_files (id, download_id, file_index, relative_path, size_bytes, media_kind, selected)
+VALUES ($1, $2, 0, 'Episode.mkv', 1024, 'video', true)`, fileID, downloadID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(fixture.ctx, `
+INSERT INTO episode_tasks (id, acquisition_id, source_video_file_id, transcode_profile_id)
+VALUES ($1, $2, $3, $4)`, taskID, acquisitionID, fileID, profileID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (fixture staleRescueFixture) riverJob(t *testing.T, jobID int64) rivertype.JobRow {
