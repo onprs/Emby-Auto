@@ -143,6 +143,7 @@ describe('taskFailureInfo', () => {
     ['subtitle_output_commit_failed', 'subtitle', '字幕处理失败：无法保存字幕结果', true],
     ['source_video_path_invalid', 'video', '视频转码失败：源视频路径不安全', false],
     ['library_path_invalid', 'import', '入库失败：媒体库路径不安全', false],
+    ['library_tree_unsupported', 'import', '入库失败：媒体库目录布局不受支持', false],
   ] as const)('maps backend code %s without relying on an English exception', (errorCode, failureStage, summary, canRetry) => {
     const info = taskFailureInfo(task({ errorCode, errorMessage: undefined, failureStage }));
 
@@ -182,6 +183,14 @@ describe('taskFailureInfo', () => {
     expect(info?.detail).toBe('未能识别具体失败原因，请查看技术详情或运行日志。');
     expect(info?.summary).not.toContain('process_error');
     expect(info?.summary).not.toContain('panic');
+  });
+
+  it('explains an undecodable external subtitle without offering a pointless retry', () => {
+    const info = taskFailureInfo(task({ errorCode: 'subtitle_charset_unsupported', errorMessage: undefined, failureStage: 'subtitle' }));
+
+    expect(info?.summary).toBe('字幕处理失败：字幕文件编码无法识别');
+    expect(info?.canRetry).toBe(false);
+    expect(info?.recommendation).toContain('UTF-8');
   });
 });
 

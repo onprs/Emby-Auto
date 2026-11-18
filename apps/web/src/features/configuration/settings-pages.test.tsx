@@ -654,13 +654,80 @@ describe("SettingsAgentPage", () => {
     const body = captured as unknown as UpdateConfigurationRequest;
     expect(body.agent).toMatchObject({
       enabled: true,
-      rssCoordinateMode: "validated_auto",
+      // 未触碰的三态值原样保留，不得在保存时静默改写为 validated_auto。
+      rssCoordinateMode: "suggest",
       downloadFileSelectionMode: "validated_auto",
       catalogMatchEnabled: true,
       episodeMappingEnabled: true,
       allowAutomaticEpisodeMapping: true,
     });
     expect(body.agent.apiKey).toEqual({ action: "keep" });
+  });
+
+  it("keeps untouched suggest modes for every capability", async () => {
+    mockConfig();
+    const suggestConfiguration: Configuration = {
+      ...configuredAgent,
+      agent: {
+        ...configuredAgent.agent,
+        rssCoordinateMode: "suggest",
+        downloadFileSelectionMode: "suggest",
+        subtitleVideoMatchMode: "suggest",
+      },
+    };
+    server.use(
+      http.get("*/api/v1/config", () => HttpResponse.json(suggestConfiguration)),
+      http.post("*/api/v1/config/secrets/reveal", () => HttpResponse.json({
+        qbPassword: "qb", embyApiKey: "emby", tmdbApiToken: "tmdb", agentApiKey: "saved-agent-key",
+      })),
+    );
+    let captured: UpdateConfigurationRequest | null = null;
+    server.use(
+      http.put("*/api/v1/config", async ({ request }) => {
+        captured = (await request.json()) as UpdateConfigurationRequest;
+        return HttpResponse.json({ ...suggestConfiguration, version: 4, agent: captured.agent });
+      }),
+    );
+
+    renderWithProviders(<SettingsAgentPage />);
+    await screen.findByLabelText("Agent API key");
+    await userEvent.click(screen.getByRole("button", { name: "保存 Agent 配置" }));
+    await waitFor(() => expect(captured).not.toBeNull());
+    const body = captured as unknown as UpdateConfigurationRequest;
+    expect(body.agent.rssCoordinateMode).toBe("suggest");
+    expect(body.agent.downloadFileSelectionMode).toBe("suggest");
+    expect(body.agent.subtitleVideoMatchMode).toBe("suggest");
+  });
+
+  it("toggles capability modes to off and back to validated_auto", async () => {
+    mockConfig();
+    const suggestConfiguration: Configuration = {
+      ...configuredAgent,
+      agent: { ...configuredAgent.agent, rssCoordinateMode: "suggest" },
+    };
+    server.use(
+      http.get("*/api/v1/config", () => HttpResponse.json(suggestConfiguration)),
+      http.post("*/api/v1/config/secrets/reveal", () => HttpResponse.json({
+        qbPassword: "qb", embyApiKey: "emby", tmdbApiToken: "tmdb", agentApiKey: "saved-agent-key",
+      })),
+    );
+    let captured: UpdateConfigurationRequest | null = null;
+    server.use(
+      http.put("*/api/v1/config", async ({ request }) => {
+        captured = (await request.json()) as UpdateConfigurationRequest;
+        return HttpResponse.json({ ...suggestConfiguration, version: 4, agent: captured.agent });
+      }),
+    );
+
+    renderWithProviders(<SettingsAgentPage />);
+    await screen.findByLabelText("Agent API key");
+    const toggle = screen.getByRole("checkbox", { name: "RSS 发布筛选" });
+    expect(toggle).toBeChecked();
+    await userEvent.click(toggle);
+    await userEvent.click(toggle);
+    await userEvent.click(screen.getByRole("button", { name: "保存 Agent 配置" }));
+    await waitFor(() => expect(captured).not.toBeNull());
+    expect((captured as unknown as UpdateConfigurationRequest).agent.rssCoordinateMode).toBe("validated_auto");
   });
 });
 

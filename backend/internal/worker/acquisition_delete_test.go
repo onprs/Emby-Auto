@@ -18,6 +18,11 @@ type acquisitionDeleteStoreStub struct {
 	command    domain.AcquisitionDeletionCommand
 	completion domain.AcquisitionDeletionResult
 	completed  bool
+
+	lockedCalls int
+	lockedFiles []domain.AcquisitionDeletionLibraryFile
+	lockedError error
+	notPrepared bool
 }
 
 func (stub *acquisitionDeleteStoreStub) DeletionReady(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
@@ -25,6 +30,31 @@ func (stub *acquisitionDeleteStoreStub) DeletionReady(context.Context, uuid.UUID
 }
 func (stub *acquisitionDeleteStoreStub) LoadDeletionCommand(context.Context, uuid.UUID) (domain.AcquisitionDeletionCommand, error) {
 	return stub.command, nil
+}
+func (stub *acquisitionDeleteStoreStub) DeleteImportedLibraryFiles(
+	_ context.Context, _ uuid.UUID, _ uuid.UUID,
+	candidates []domain.AcquisitionDeletionLibraryFile,
+	remove func(context.Context, []domain.AcquisitionDeletionLibraryFile) error,
+) (bool, error) {
+	stub.lockedCalls++
+	if stub.lockedError != nil {
+		return false, stub.lockedError
+	}
+	if stub.notPrepared {
+		return false, nil
+	}
+	files := stub.lockedFiles
+	if files == nil {
+		for _, candidate := range candidates {
+			if !candidate.Preserve {
+				files = append(files, candidate)
+			}
+		}
+	}
+	if err := remove(context.Background(), files); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 func (stub *acquisitionDeleteStoreStub) CompleteDeletion(_ context.Context, acquisitionID, _ uuid.UUID) (domain.AcquisitionDeletionResult, error) {
 	stub.completed = true
@@ -122,6 +152,9 @@ func TestAcquisitionDeleteRemovesSourceAndTemporaryFilesButKeepsLibrary(t *testi
 	}
 	if !store.completed || len(torrent.hashes) != 1 || torrent.deleteFiles[0] {
 		t.Fatalf("cleanup result = completed %t hashes %#v deleteFiles %#v", store.completed, torrent.hashes, torrent.deleteFiles)
+	}
+	if store.lockedCalls != 0 {
+		t.Fatalf("default deletion called locked imported deletion %d times", store.lockedCalls)
 	}
 }
 

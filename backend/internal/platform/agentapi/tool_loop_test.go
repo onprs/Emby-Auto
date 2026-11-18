@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestToolLoopRepairsUnknownToolCallsWithinBudget(t *testing.T) {
@@ -219,5 +221,205 @@ func TestToolLoopRejectsBudgetAboveHardLimit(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("RunToolLoop() error = nil, want hard-limit rejection")
+	}
+}
+
+func TestToolLoopRepairsInvalidToolArgumentsWithinBudget(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch calls.Add(1) {
+		case 1:
+			_, _ = writer.Write([]byte(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call-1","type":"function","function":{"name":"read_scope","arguments":"{\"offset\":0,\"extra\":\"x\"}"}}]}}]}`))
+		case 2:
+			var payload map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Error(err)
+			}
+			messages := payload["messages"].([]any)
+			last := messages[len(messages)-1].(map[string]any)
+			if last["role"] != "tool" || last["content"] != `{"accepted":false,"error":"agent_tool_arguments_invalid"}` {
+				t.Fatalf("repair result = %#v", last)
+			}
+			_, _ = writer.Write([]byte(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"submit-1","type":"function","function":{"name":"submit_result","arguments":"{\"ok\":true}"}}]}}]}`))
+		default:
+			t.Fatal("unexpected extra provider request")
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, APIKey: "secret", Model: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.RunToolLoop(context.Background(), ToolLoopRequest{
+		SystemPrompt: "system", UserPrompt: "resource", MaxSteps: 6,
+		Tools: []ToolDefinition{{Name: "read_scope", Parameters: map[string]any{"type": "object"}}, {Name: "submit_result", Parameters: map[string]any{"type": "object"}}},
+		Execute: func(context.Context, string, json.RawMessage) (json.RawMessage, error) {
+			return nil, InvalidToolArguments(errors.New("json: unknown field \"extra\""))
+		},
+		Submit: func(name string, arguments json.RawMessage) (bool, error) { return name == "submit_result", nil },
+	})
+	if err != nil {
+		t.Fatalf("RunToolLoop() error = %v", err)
+	}
+	if calls.Load() != 2 || len(result.Steps) != 2 || result.Steps[0].ErrorCode != "agent_tool_arguments_invalid" || !result.Steps[1].Submitted {
+		t.Fatalf("calls = %d, result = %#v", calls.Load(), result)
+	}
+}
+
+func TestToolLoopAbortsScopeViolationWithoutRepair(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call-1","type":"function","function":{"name":"read_scope","arguments":"{}"}}]}}]}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, APIKey: "secret", Model: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.RunToolLoop(context.Background(), ToolLoopRequest{
+		SystemPrompt: "system", UserPrompt: "resource", MaxSteps: 6,
+		Tools: []ToolDefinition{{Name: "read_scope", Parameters: map[string]any{"type": "object"}}, {Name: "submit_result", Parameters: map[string]any{"type": "object"}}},
+		Execute: func(context.Context, string, json.RawMessage) (json.RawMessage, error) {
+			return nil, ToolScopeViolation(errors.New("file is outside this resolution scope"))
+		},
+		Submit: func(name string, arguments json.RawMessage) (bool, error) { return name == "submit_result", nil },
+	})
+	var apiErr *Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("RunToolLoop() error = %v", err)
+	}
+	if apiErr.Code != "agent_tool_scope_violation" || apiErr.Retryable || calls.Load() != 1 || len(result.Steps) != 1 || result.Steps[0].ErrorCode != "agent_tool_scope_violation" {
+		t.Fatalf("code=%s retryable=%v calls=%d steps=%#v", apiErr.Code, apiErr.Retryable, calls.Load(), result.Steps)
+	}
+}
+
+func TestToolLoopTreatsUnclassifiedExecutorErrorsAsRetryable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call-1","type":"function","function":{"name":"read_scope","arguments":"{}"}}]}}]}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, APIKey: "secret", Model: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.RunToolLoop(context.Background(), ToolLoopRequest{
+		SystemPrompt: "system", UserPrompt: "resource", MaxSteps: 6,
+		Tools: []ToolDefinition{{Name: "read_scope", Parameters: map[string]any{"type": "object"}}, {Name: "submit_result", Parameters: map[string]any{"type": "object"}}},
+		Execute: func(context.Context, string, json.RawMessage) (json.RawMessage, error) {
+			return nil, errors.New("list RSS pre-acquisition mapping sources: connection reset")
+		},
+		Submit: func(name string, arguments json.RawMessage) (bool, error) { return name == "submit_result", nil },
+	})
+	var apiErr *Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("RunToolLoop() error = %v", err)
+	}
+	if apiErr.Code != "agent_tool_execution_failed" || !apiErr.Retryable || len(result.Steps) != 1 || result.Steps[0].ErrorCode != "agent_tool_execution_failed" {
+		t.Fatalf("code=%s retryable=%v steps=%#v", apiErr.Code, apiErr.Retryable, result.Steps)
+	}
+}
+
+func TestToolLoopDegradesOversizedToolResult(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch calls.Add(1) {
+		case 1:
+			_, _ = writer.Write([]byte(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call-1","type":"function","function":{"name":"read_scope","arguments":"{}"}}]}}]}`))
+		case 2:
+			var payload map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Error(err)
+			}
+			messages := payload["messages"].([]any)
+			last := messages[len(messages)-1].(map[string]any)
+			if last["role"] != "tool" || last["content"] != `{"accepted":false,"error":"agent_tool_result_too_large"}` {
+				t.Fatalf("degraded result = %#v", last)
+			}
+			_, _ = writer.Write([]byte(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"submit-1","type":"function","function":{"name":"submit_result","arguments":"{\"ok\":true}"}}]}}]}`))
+		default:
+			t.Fatal("unexpected extra provider request")
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, APIKey: "secret", Model: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversized, _ := json.Marshal(map[string]any{"payload": strings.Repeat("a", MaxToolResultBytes+1)})
+	result, err := client.RunToolLoop(context.Background(), ToolLoopRequest{
+		SystemPrompt: "system", UserPrompt: "resource", MaxSteps: 4,
+		Tools:   []ToolDefinition{{Name: "read_scope", Parameters: map[string]any{"type": "object"}}, {Name: "submit_result", Parameters: map[string]any{"type": "object"}}},
+		Execute: func(context.Context, string, json.RawMessage) (json.RawMessage, error) { return oversized, nil },
+		Submit:  func(name string, arguments json.RawMessage) (bool, error) { return name == "submit_result", nil },
+	})
+	if err != nil {
+		t.Fatalf("RunToolLoop() error = %v", err)
+	}
+	if len(result.Steps) != 2 || result.Steps[0].ErrorCode != "agent_tool_result_too_large" || !result.Steps[1].Submitted {
+		t.Fatalf("steps = %#v", result.Steps)
+	}
+}
+
+func TestToolLoopStopsWhenJobBudgetIsInsufficient(t *testing.T) {
+	client, err := NewClient(ClientOptions{BaseURL: "http://127.0.0.1:1", APIKey: "secret", Model: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	result, err := client.RunToolLoop(ctx, ToolLoopRequest{
+		SystemPrompt: "system", UserPrompt: "resource", MaxSteps: 6,
+		Tools:   []ToolDefinition{{Name: "submit_result", Parameters: map[string]any{"type": "object"}}},
+		Execute: func(context.Context, string, json.RawMessage) (json.RawMessage, error) { return nil, nil },
+		Submit:  func(string, json.RawMessage) (bool, error) { return true, nil },
+	})
+	var apiErr *Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("RunToolLoop() error = %v", err)
+	}
+	if apiErr.Code != "agent_budget_exhausted" || apiErr.Retryable || len(result.Steps) != 0 {
+		t.Fatalf("code=%s retryable=%v steps=%d", apiErr.Code, apiErr.Retryable, len(result.Steps))
+	}
+}
+
+func TestToolLoopEnforcesTotalToolResultBudget(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		call := calls.Add(1)
+		writer.Header().Set("Content-Type", "application/json")
+		if call <= 33 {
+			_, _ = fmt.Fprintf(writer, `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call-%d","type":"function","function":{"name":"read_scope","arguments":"{}"}}]}}]}`, call)
+			return
+		}
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"submit-1","type":"function","function":{"name":"submit_result","arguments":"{\"ok\":true}"}}]}}]}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, APIKey: "secret", Model: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(map[string]any{"payload": strings.Repeat("a", MaxToolResultBytes-64)})
+	result, err := client.RunToolLoop(context.Background(), ToolLoopRequest{
+		SystemPrompt: "system", UserPrompt: "resource", MaxSteps: 64,
+		Tools:   []ToolDefinition{{Name: "read_scope", Parameters: map[string]any{"type": "object"}}, {Name: "submit_result", Parameters: map[string]any{"type": "object"}}},
+		Execute: func(context.Context, string, json.RawMessage) (json.RawMessage, error) { return payload, nil },
+		Submit:  func(name string, arguments json.RawMessage) (bool, error) { return name == "submit_result", nil },
+	})
+	if err != nil {
+		t.Fatalf("RunToolLoop() error = %v", err)
+	}
+	budgetSteps := 0
+	for _, step := range result.Steps {
+		if step.ErrorCode == "agent_tool_result_budget_exhausted" {
+			budgetSteps++
+		}
+	}
+	if budgetSteps != 1 || !result.Steps[len(result.Steps)-1].Submitted {
+		t.Fatalf("budget steps = %d, total steps = %d", budgetSteps, len(result.Steps))
 	}
 }

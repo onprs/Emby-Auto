@@ -18,6 +18,30 @@ import (
 	"github.com/onprs/emby-auto/backend/internal/platform/qbittorrent"
 )
 
+type threadCapExecutor struct {
+	inner mediatools.OSExecutor
+	runs  [][]string
+}
+
+func (*threadCapExecutor) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return mediatools.OSExecutor{}.Output(ctx, name, args...)
+}
+
+func (executor *threadCapExecutor) Run(ctx context.Context, name string, args ...string) error {
+	capped := append([]string{"-filter_threads", "1", "-filter_complex_threads", "1"}, args...)
+	executor.runs = append(executor.runs, capped)
+	return executor.inner.Run(ctx, name, capped...)
+}
+
+func hasFFmpegArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestSingleTaskRealMediaProcessingThroughCleanupIntegration(t *testing.T) {
 	ffmpegPath, err := exec.LookPath("ffmpeg")
 	if err != nil {
@@ -37,11 +61,12 @@ func TestSingleTaskRealMediaProcessingThroughCleanupIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	tools := mediatools.New(mediatools.OSExecutor{})
+	executor := &threadCapExecutor{}
+	tools := mediatools.New(executor)
 	if err := tools.RunFFmpeg(ctx, ffmpegPath, []string{
 		"-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=24",
 		"-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000", "-t", "2",
-		"-c:v", "libx264", "-preset", "ultrafast", "-threads", "2", "-c:a", "flac", filepath.Join(savePath, "source.mkv"),
+		"-c:v", "libx264", "-preset", "ultrafast", "-threads", "1", "-c:a", "flac", filepath.Join(savePath, "source.mkv"),
 	}); err != nil {
 		t.Fatalf("生成测试媒体失败：%v", err)
 	}
@@ -62,7 +87,7 @@ func TestSingleTaskRealMediaProcessingThroughCleanupIntegration(t *testing.T) {
 		TranscodeProfile: domain.TranscodeProfile{
 			Name: "软件转码测试", VideoCodec: "h264", Encoder: "libx264", Container: "mp4", FileExtension: "mp4",
 			QualityMode: "crf", QualityValue: 23, AudioPolicy: "transcode", AudioCodec: "aac",
-			Preset: "fast", PixelFormat: "yuv420p", ThreadCount: 2, MaxConcurrency: 1,
+			Preset: "fast", PixelFormat: "yuv420p", ThreadCount: 1, MaxConcurrency: 1,
 		},
 		ExternalSubtitles: []domain.TaskExternalSubtitle{{SourceFileID: uuid.New(), RelativePath: "source.zh-Hans.srt", Language: "zh-Hans", Format: domain.SubtitleSRT}},
 		Names:             domain.EpisodeFileNames{BaseName: baseName, VideoName: baseName + ".mp4", SubtitleName: baseName + ".ass"},
@@ -85,7 +110,7 @@ func TestSingleTaskRealMediaProcessingThroughCleanupIntegration(t *testing.T) {
 		return NewTranscodeRunHandler(configuration, tools, videoStore).Handle(ctx, operation())
 	})
 	timeStage("字幕转换与校验", func() error {
-		return NewSubtitlePrepareHandler(configuration, tools, subtitleStore).Handle(ctx, operation())
+		return NewSubtitlePrepareHandler(configuration, tools, subtitleStore).Handle(ctx, subtitleTestAttempt(operation()))
 	})
 	artifact := func(completion domain.MediaArtifactCompletion) domain.MediaArtifact {
 		t.Helper()
@@ -155,5 +180,13 @@ func TestSingleTaskRealMediaProcessingThroughCleanupIntegration(t *testing.T) {
 			t.Fatalf("清理后正式资源不完整：%v", err)
 		}
 	}
-	t.Logf("单任务媒体处理至清理总耗时：%s，视频产物：%d 字节，字幕产物：%d 字节", time.Since(started), video.SizeBytes, subtitle.SizeBytes)
+	if len(executor.runs) == 0 {
+		t.Fatal("真实 FFmpeg 未执行，无法验证线程限制")
+	}
+	for index, args := range executor.runs {
+		if !hasFFmpegArg(args, "-filter_threads") || !hasFFmpegArg(args, "-filter_complex_threads") {
+			t.Fatalf("FFmpeg call %d missing filter thread caps: %v", index, args)
+		}
+	}
+	t.Logf("单任务媒体处理至清理总耗时：%s，视频产物：%d 字节，字幕产物：%d 字节，FFmpeg calls=%d filter_threads=1", time.Since(started), video.SizeBytes, subtitle.SizeBytes, len(executor.runs))
 }
