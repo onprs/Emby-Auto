@@ -54,6 +54,7 @@ chmod 600 deploy/.env
 | `EMBY_AUTO_IMAGE_TAG` | 镜像标签，默认 `local`；同一主机多套部署时各套使用不同值 |
 | `SESSION_COOKIE_SECURE` | HTTPS 启用后设置为 `true` |
 | `SETUP_INITIALIZE_TIMEOUT` | 单次安装初始化的总时长上限，默认 `10m`；预算过小会截断慢迁移，可重试 |
+| `TRUSTED_PROXY_CIDRS` | 可选的反向代理网段（逗号分隔 CIDR）；只有来自这些网段的请求才采信 `X-Forwarded-For`。默认仅包含回环网段 |
 
 可使用以下命令查询 Emby 服务账户：
 
@@ -71,9 +72,12 @@ qBittorrent 或 Emby 使用独立账户（宿主机或其它容器）时，还�
 ```bash
 sudo apt-get install -y acl
 sudo usermod -aG emby-auto qbittorrent
-sudo chgrp -R emby-auto /srv/emby-auto/downloads
-sudo chmod -R g+rwX /srv/emby-auto/downloads
-sudo find /srv/emby-auto/downloads -type d -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+# 只处理本应用的下载缓存，不跟随符号链接；已有子目录与文件一并补齐。
+sudo find /srv/emby-auto/downloads -type d -exec chgrp emby-auto {} + \
+  -exec chmod g+rwx,g+s {} + \
+  -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+sudo find /srv/emby-auto/downloads -type f -exec chgrp emby-auto {} + \
+  -exec chmod g+rw {} +
 ```
 
   qBittorrent 容器需以相同 GID 运行或在挂载时保留组权限；独立宿主账户修改组后需重启服务。
@@ -142,7 +146,10 @@ Emby URL         http://host.docker.internal:<emby-port>/emby
 - `/api/v1/events` 使用长连接 SSE，并禁用响应缓冲。
 - `/api/v1/tasks/{taskId}/artifacts/{video|subtitle}` 透传 `Range` 与 `If-Range`。
 - `/api/` 请求体限制为 1 MiB（`client_max_body_size 1m;`），与应用内上限一致。
+- 外层反向代理按最终客户端来源限速 `/api/v1/auth/login`（例如 `limit_req_zone $binary_remote_addr zone=emby_auto_login:10m rate=10r/m;` 与 `limit_req zone=emby_auto_login burst=5 nodelay;`），并传递 `X-Forwarded-For`。Compose 内的 Web 服务负责静态资源与转发，并对 `/api/` 限制请求体；登录路径不按来源限速，因为它只能看到外层代理地址。
 - 其它 `/api/` 请求与 Web 路由均转发到 Web 服务。
+
+应用自身对登录失败按来源退避，并限制 argon2 校验并发；配置 `TRUSTED_PROXY_CIDRS` 后，应用从受信代理的 `X-Forwarded-For` 右侧取真实客户端地址。默认只信任回环网段；Compose 默认值额外包含 Docker 默认地址池 `172.16.0.0/12`。使用自定义 Docker 地址池或其它代理部署方式时，将其改为实际代理网段。连续失败也会计入全局失败预算：预算耗尽后，短时间内即使口令正确也会返回 `429` 与 `Retry-After`。失败计数按 10 分钟窗口统计；`Retry-After` 只是当前建议等待的秒数，持续失败可能再次触发限流，等待一次不保证成功。无需重启服务。
 
 TLS 验证完成后，在 `deploy/.env` 中设置：
 
@@ -174,7 +181,7 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml start worker
 升级或维护前应备份：
 
 - `postgres-data` 中的 PostgreSQL 数据，包括业务数据与安装状态；优先使用 `pg_dump` 生成一致性备份。
-- `app-data` 中的 `bootstrap.json`。
+- `app-data` 中的 `bootstrap.json` 与 `bootstrap.json.complete`，两者必须成对保留。
 - `deploy/.env`。
 - 媒体目录，按存储系统的既有策略独立备份。
 
@@ -238,13 +245,57 @@ docker compose -p emby-auto-staging --env-file deploy/.env -f deploy/compose.yam
 docker compose -p emby-auto-staging --env-file deploy/.env -f deploy/compose.yaml ps
 ```
 
-### 停止与删除容器
+### 停止与卸载
 
 ```bash
 docker compose --env-file deploy/.env -f deploy/compose.yaml down
 ```
 
-该命令保留命名卷。仅在确认永久删除 PostgreSQL 数据和安装配置时才可使用 `down --volumes`。
+该命令停止并删除容器与网络，保留 `postgres-data`、`app-data` 命名卷和 `deploy/.env`，宿主机媒体目录不受影响。重新启动按“启动与首次安装”执行。
+
+确认不再需要数据后，再单独执行销毁操作（不可恢复）：
+
+```bash
+docker compose --env-file deploy/.env -f deploy/compose.yaml down --volumes
+```
+
+`--volumes` 删除 PostgreSQL 数据与安装配置；宿主机媒体目录仍需按存储策略单独处理。镜像可用 `docker image rm "emby-auto-backend:${EMBY_AUTO_IMAGE_TAG:-local}" "emby-auto-web:${EMBY_AUTO_IMAGE_TAG:-local}"` 清理；自定义 `EMBY_AUTO_IMAGE_TAG` 时先在当前 shell 导出 `deploy/.env` 中的值。
+
+### 从备份恢复
+
+恢复顺序为 PostgreSQL、初始化文件、服务。数据库与 `bootstrap.json` 必须来自同一套备份。先停止 Worker 和 API：
+
+```bash
+docker compose --env-file deploy/.env -f deploy/compose.yaml stop worker api
+docker compose --env-file deploy/.env -f deploy/compose.yaml up -d postgres
+```
+
+恢复数据库（示例为自定义格式备份）：
+
+```bash
+docker compose --env-file deploy/.env -f deploy/compose.yaml exec -T postgres \
+  sh -c 'pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  < /path/to/emby_auto.dump
+```
+
+将两个初始化文件成对写入 `app-data`，并设为应用 UID/GID 与 `0600`（占位符使用 `deploy/.env` 中的 `APP_UID`/`APP_GID`）：
+
+```bash
+docker compose --env-file deploy/.env -f deploy/compose.yaml run --rm --no-deps \
+  --user 0 -v /path/to/backup:/backup:ro --entrypoint sh api -c \
+  'install -o <APP_UID> -g <APP_GID> -m 0600 /backup/bootstrap.json /data/bootstrap.json && \
+   install -o <APP_UID> -g <APP_GID> -m 0600 /backup/bootstrap.json.complete /data/bootstrap.json.complete'
+docker compose --env-file deploy/.env -f deploy/compose.yaml up -d api worker
+```
+
+核对初始化状态与就绪检查：
+
+```bash
+curl --fail http://127.0.0.1:<APP_PORT>/api/v1/setup/status
+curl --fail http://127.0.0.1:<APP_PORT>/api/v1/health/ready
+```
+
+`setup/status` 应为 `state=completed`；若 `curl --fail` 返回非零或 HTTP 503 `service_unavailable`，检查两个初始化文件是否成对、权限是否正确以及数据库是否恢复完整。该接口的状态值只有 `required`、`initializing`、`completed`，没有 `unavailable`。恢复失败时保持 Worker 停止，不要只恢复数据库或只恢复 `bootstrap.json`。
 
 ## 故障排查
 

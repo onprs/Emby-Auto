@@ -153,12 +153,15 @@ describe('EventStream', () => {
     expect(sessionStorage.getItem('emby_auto_last_event_id')).toBe('10000000-0000-0000-0000-000000000002');
   });
 
-  it('clears an invalid cursor, revalidates protected queries, and reconnects', async () => {
+  it('游标失效后丢弃旧水位，收到新边界时只做一次全量失效', async () => {
     sessionStorage.setItem('emby_auto_last_event_id', '10000000-0000-0000-0000-000000000099');
     const queryClient = new QueryClient();
     queryClient.setQueryData(['tasks'], { items: [] });
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    const fullRefreshes = () => invalidate.mock.calls.filter(([filters]) => filters !== undefined && 'predicate' in filters);
+    const head = '10000000-0000-0000-0000-000000000100';
     let calls = 0;
+    let deliverBoundary!: ReadableStreamDefaultController<Uint8Array>;
     const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
       calls += 1;
       if (calls === 1) {
@@ -169,8 +172,8 @@ describe('EventStream', () => {
       }
       return new Response(
         new ReadableStream<Uint8Array>({
-          start() {
-            // Keep the recovered stream open until stop aborts it.
+          start(controller) {
+            deliverBoundary = controller;
           },
         }),
         { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
@@ -178,16 +181,110 @@ describe('EventStream', () => {
     });
     const events = new EventStream(queryClient, { fetch: fetcher as typeof fetch, reconnectBaseMs: 1, refreshIntervalMs: 5 });
 
-    events.start();
-    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
-    expect(sessionStorage.getItem('emby_auto_last_event_id')).toBeNull();
-    await vi.waitFor(() => expect(invalidate).toHaveBeenCalledWith(
-      expect.objectContaining({ predicate: expect.any(Function) }),
-      { cancelRefetch: false },
-    ));
-    const secondHeaders = new Headers(fetcher.mock.calls[1]?.[1]?.headers);
-    expect(secondHeaders.has('Last-Event-ID')).toBe(false);
-    events.stop();
+    try {
+      events.start();
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+      const secondHeaders = new Headers(fetcher.mock.calls[1]?.[1]?.headers);
+      expect(secondHeaders.has('Last-Event-ID')).toBe(false);
+      // 新水位尚未到达时不能先失效：全量重读必须发生在拿到边界之后。
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(fullRefreshes()).toHaveLength(0);
+
+      deliverBoundary.enqueue(encoder.encode(`id: ${head}\nevent: stream.started\ndata: {"cursor":"${head}"}\n\n`));
+      await vi.waitFor(() => expect(sessionStorage.getItem('emby_auto_last_event_id')).toBe(head));
+      await vi.waitFor(() => expect(invalidate).toHaveBeenCalledWith(
+        expect.objectContaining({ predicate: expect.any(Function) }),
+        { cancelRefetch: false },
+      ));
+      expect(fullRefreshes()).toHaveLength(1);
+      expect(queryClient.getQueryState(['tasks'])?.isInvalidated).toBe(true);
+    } finally {
+      events.stop();
+      queryClient.clear();
+    }
+  });
+
+  it('首次订阅从边界开始，并补取边界前已开始的初始化读取', async () => {
+    vi.useFakeTimers();
+    const queryClient = new QueryClient();
+    const head = '10000000-0000-0000-0000-000000000101';
+    let finishInitial!: (value: string) => void;
+    let reads = 0;
+    const read = vi.fn(() => {
+      reads += 1;
+      if (reads === 1) {
+        return new Promise<string>((resolve) => { finishInitial = resolve; });
+      }
+      return Promise.resolve('边界后的最新状态');
+    });
+    const observer = new QueryObserver(queryClient, {
+      queryKey: ['downloads', 'list'], queryFn: read, staleTime: Infinity,
+    });
+    const unsubscribe = observer.subscribe(() => undefined);
+    const requests: Headers[] = [];
+    let deliver!: ReadableStreamDefaultController<Uint8Array>;
+    const events = new EventStream(queryClient, {
+      fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
+        requests.push(new Headers(init?.headers));
+        return new Response(new ReadableStream<Uint8Array>({ start(controller) { deliver = controller; } }));
+      },
+      refreshIntervalMs: 10,
+    });
+
+    try {
+      events.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(requests).toHaveLength(1);
+      // 首连不携带任何历史游标，服务端据此返回当前水位边界而不是重放保留期历史。
+      expect(requests[0].has('Last-Event-ID')).toBe(false);
+
+      deliver.enqueue(encoder.encode(`id: ${head}\nevent: stream.started\ndata: {"cursor":"${head}"}\n\n`));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sessionStorage.getItem('emby_auto_last_event_id')).toBe(head);
+      // 初始化读取仍在进行，边界失效不能先发一次会覆盖它的新请求。
+      expect(read).toHaveBeenCalledTimes(1);
+
+      finishInitial('初始化读取的旧状态');
+      await vi.advanceTimersByTimeAsync(20);
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(queryClient.getQueryData(['downloads', 'list'])).toBe('边界后的最新状态');
+    } finally {
+      events.stop();
+      unsubscribe();
+      queryClient.clear();
+    }
+  });
+
+  it('边界后的重连从新水位继续，不再重放历史', async () => {
+    const queryClient = new QueryClient();
+    const head = '10000000-0000-0000-0000-000000000102';
+    let calls = 0;
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(encoder.encode(`id: ${head}\nevent: stream.started\ndata: {"cursor":"${head}"}\n\n`));
+              controller.close();
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(new ReadableStream<Uint8Array>({ start() {} }), { status: 200 });
+    });
+    const events = new EventStream(queryClient, { fetch: fetcher as typeof fetch, reconnectBaseMs: 1, refreshIntervalMs: 5 });
+
+    try {
+      events.start();
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+      const headers = new Headers(fetcher.mock.calls[1]?.[1]?.headers);
+      expect(headers.get('Last-Event-ID')).toBe(head);
+    } finally {
+      events.stop();
+      queryClient.clear();
+    }
   });
 
   it('重连后刷新断线期间失败的读取，即使事件游标已经推进', async () => {

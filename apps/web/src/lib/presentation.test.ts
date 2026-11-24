@@ -50,9 +50,16 @@ describe('friendlyError', () => {
     expect(friendlyError('simplified_chinese_subtitle_not_found')).toBe('没有找到可尝试的中文文本字幕。');
     expect(friendlyError('subtitle_candidates_exhausted')).toBe('已尝试所有可用字幕，但都无法生成有效的简体 ASS 字幕。');
     expect(friendlyError('ffmpeg_subtitle_candidates_failed')).toBe('字幕转换暂时失败，系统会自动重试其他候选。');
+    expect(friendlyError('subtitle_charset_unsupported')).toBe('外挂字幕编码无法识别，请转换为 UTF-8 后重试。');
     expect(friendlyError('subtitle_output_invalid')).toBe('字幕转换结果校验失败，请检查字幕来源后重试。');
     expect(friendlyError('subtitle_content_inspection_failed')).toBe('暂时无法检查内封字幕内容，系统会自动重试。');
     expect(friendlyError('subtitle_content_inspection_limit')).toBe('内封字幕轨过多，无法安全判断简体字幕。');
+  });
+
+  it('explains Agent subtitle matching terminal failures with recovery guidance', () => {
+    expect(friendlyError('agent_subtitle_match_failed')).toBe('Agent 字幕匹配建议校验未通过，本次任务已失败。');
+    expect(friendlyError('agent_subtitle_match_exhausted')).toBe('Agent 字幕匹配多次自动恢复未成功，请重试任务。');
+    expect(friendlyError('agent_resolution_requeue_exhausted')).toBe('Agent 自动恢复次数已达上限，请重试任务。');
   });
 });
 

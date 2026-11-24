@@ -1669,6 +1669,10 @@ export type LoginErrors = {
      */
     413: ApiError;
     /**
+     * Login attempts exceeded the per-source or global failure budget, or the concurrent verification capacity was saturated.
+     */
+    429: ApiError;
+    /**
      * A required dependency is unavailable.
      */
     503: ApiError;
@@ -4242,7 +4246,7 @@ export type StreamEventsError = StreamEventsErrors[keyof StreamEventsErrors];
 
 export type StreamEventsResponses = {
     /**
-     * A server-sent event stream. Event IDs are public event UUIDs.
+     * A server-sent event stream. Event IDs are public event UUIDs. A request without a cursor first receives the `stream.started` boundary event.
      */
     200: string;
 };

@@ -54,6 +54,7 @@ Review at least the following settings:
 | `EMBY_AUTO_IMAGE_TAG` | Image tag, `local` by default; use a distinct value per deployment on the same host |
 | `SESSION_COOKIE_SECURE` | Set to `true` after HTTPS is enabled |
 | `SETUP_INITIALIZE_TIMEOUT` | Overall limit for one setup initialization, default `10m`; a tight budget truncates slow migrations, which can be retried |
+| `TRUSTED_PROXY_CIDRS` | Optional comma-separated CIDRs of reverse proxies; `X-Forwarded-For` is trusted only from these networks. Defaults to loopback |
 
 A common way to inspect the Emby service account is:
 
@@ -71,9 +72,12 @@ When qBittorrent or Emby runs as a separate account (on the host or in another c
 ```bash
 sudo apt-get install -y acl
 sudo usermod -aG emby-auto qbittorrent
-sudo chgrp -R emby-auto /srv/emby-auto/downloads
-sudo chmod -R g+rwX /srv/emby-auto/downloads
-sudo find /srv/emby-auto/downloads -type d -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+# Touch only this application's download cache; do not follow symlinks.
+sudo find /srv/emby-auto/downloads -type d -exec chgrp emby-auto {} + \
+  -exec chmod g+rwx,g+s {} + \
+  -exec setfacl -m g:emby-auto:rwx,d:g:emby-auto:rwx {} +
+sudo find /srv/emby-auto/downloads -type f -exec chgrp emby-auto {} + \
+  -exec chmod g+rw {} +
 ```
 
   A qBittorrent container must run with the same GID or preserve group permissions through its mount; a host service picks up the new group after a restart.
@@ -142,7 +146,10 @@ The reverse proxy must preserve the following behavior:
 - Long-lived, unbuffered SSE connections at `/api/v1/events`.
 - `Range` and `If-Range` headers for `/api/v1/tasks/{taskId}/artifacts/{video|subtitle}`.
 - A 1 MiB request body limit for `/api/` (`client_max_body_size 1m;`), matching the application limit.
+- Per-source rate limiting for `/api/v1/auth/login` at the outer reverse proxy (for example `limit_req_zone $binary_remote_addr zone=emby_auto_login:10m rate=10r/m;` with `limit_req zone=emby_auto_login burst=5 nodelay;`), plus `X-Forwarded-For` forwarding. The Web service inside Compose serves static assets and forwards requests, and enforces the request body limit for `/api/`; it does not rate-limit logins by source because it only sees the outer proxy address.
 - All other `/api/` requests and Web routes forwarded to the Web service.
+
+The application also backs off login failures per source and bounds concurrent argon2 verification. With `TRUSTED_PROXY_CIDRS` set, it takes the client address from the right side of the trusted proxy's `X-Forwarded-For`. The default trusts loopback only; the Compose default additionally covers the Docker default address pool `172.16.0.0/12`. Adjust it when Docker uses a custom pool or another proxy layout. Repeated failures also count against a global failure budget: once it is exhausted, even a correct password is rejected with `429` and `Retry-After`. Failure counts use a 10-minute window; `Retry-After` is only the current delay hint, and continued failures can trigger throttling again, so waiting once does not guarantee success. No service restart is needed.
 
 After validating TLS, set the following value in `deploy/.env`:
 
@@ -174,7 +181,7 @@ The standard Compose deployment does not include a host controller. Dashboard co
 Back up the following data before upgrades or maintenance:
 
 - PostgreSQL data from `postgres-data`, including business data and installation state; use a consistent `pg_dump` archive whenever possible.
-- `bootstrap.json` from `app-data`.
+- `bootstrap.json` and `bootstrap.json.complete` from `app-data`; keep both as a pair.
 - `deploy/.env`.
 - Media directories according to the storage system's independent backup policy.
 
@@ -238,13 +245,57 @@ docker compose -p emby-auto-staging --env-file deploy/.env -f deploy/compose.yam
 docker compose -p emby-auto-staging --env-file deploy/.env -f deploy/compose.yaml ps
 ```
 
-### Stop and Remove Containers
+### Stop and Uninstall
 
 ```bash
 docker compose --env-file deploy/.env -f deploy/compose.yaml down
 ```
 
-This command retains named volumes. Use `down --volumes` only when permanently deleting the PostgreSQL data and installation configuration is intentional.
+This command stops and removes containers and the network while retaining the `postgres-data` and `app-data` named volumes, `deploy/.env`, and host media directories. To start again, follow “Start and Complete Setup”.
+
+Destroy data separately only after confirming it is no longer needed (irreversible):
+
+```bash
+docker compose --env-file deploy/.env -f deploy/compose.yaml down --volumes
+```
+
+`--volumes` deletes the PostgreSQL data and installation configuration; host media directories still require separate handling under your storage policy. Remove local images with `docker image rm "emby-auto-backend:${EMBY_AUTO_IMAGE_TAG:-local}" "emby-auto-web:${EMBY_AUTO_IMAGE_TAG:-local}"`; when using a custom `EMBY_AUTO_IMAGE_TAG`, export its value from `deploy/.env` in the current shell first.
+
+### Restore from Backup
+
+Restore PostgreSQL, then the setup files, then services. The database and `bootstrap.json` must come from the same backup set. Stop Worker and API first:
+
+```bash
+docker compose --env-file deploy/.env -f deploy/compose.yaml stop worker api
+docker compose --env-file deploy/.env -f deploy/compose.yaml up -d postgres
+```
+
+Restore the database (the example uses a custom-format backup):
+
+```bash
+docker compose --env-file deploy/.env -f deploy/compose.yaml exec -T postgres \
+  sh -c 'pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  < /path/to/emby_auto.dump
+```
+
+Write both setup files as a pair into `app-data`, owned by the application UID/GID with mode `0600` (use `APP_UID`/`APP_GID` from `deploy/.env`):
+
+```bash
+docker compose --env-file deploy/.env -f deploy/compose.yaml run --rm --no-deps \
+  --user 0 -v /path/to/backup:/backup:ro --entrypoint sh api -c \
+  'install -o <APP_UID> -g <APP_GID> -m 0600 /backup/bootstrap.json /data/bootstrap.json && \
+   install -o <APP_UID> -g <APP_GID> -m 0600 /backup/bootstrap.json.complete /data/bootstrap.json.complete'
+docker compose --env-file deploy/.env -f deploy/compose.yaml up -d api worker
+```
+
+Verify setup state and readiness:
+
+```bash
+curl --fail http://127.0.0.1:<APP_PORT>/api/v1/setup/status
+curl --fail http://127.0.0.1:<APP_PORT>/api/v1/health/ready
+```
+
+`setup/status` should report `state=completed`. If `curl --fail` exits nonzero or returns HTTP 503 `service_unavailable`, check that both setup files form a pair, their permissions, and the restored database. The endpoint's state values are only `required`, `initializing`, and `completed`; it never reports `unavailable`. If recovery fails, keep Worker stopped; never restore only the database or only `bootstrap.json`.
 
 ## Troubleshooting
 

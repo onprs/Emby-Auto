@@ -108,9 +108,12 @@ export function OperationsPage() {
           </div>
           <PaginationControls
             canGoBack={pagination.canGoBack}
+            canGoFirst={pagination.canGoFirst}
+            historyTruncated={pagination.historyTruncated}
             hasNext={Boolean(operations.data.nextCursor)}
             onPrevious={pagination.goPrevious}
             onNext={() => pagination.goNext(operations.data.nextCursor)}
+            onFirst={pagination.reset}
             isFetching={operations.isFetching}
           />
         </>

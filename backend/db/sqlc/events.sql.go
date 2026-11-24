@@ -138,6 +138,30 @@ func (q *Queries) GetEventStats(ctx context.Context) (GetEventStatsRow, error) {
 	return i, err
 }
 
+const getLatestEvent = `-- name: GetLatestEvent :one
+SELECT id, event_sequence, topic, resource_type, resource_id, operation_id, actor_user_id, data, occurred_at
+FROM events
+ORDER BY event_sequence DESC
+LIMIT 1
+`
+
+func (q *Queries) GetLatestEvent(ctx context.Context) (Event, error) {
+	row := q.db.QueryRow(ctx, getLatestEvent)
+	var i Event
+	err := row.Scan(
+		&i.ID,
+		&i.EventSequence,
+		&i.Topic,
+		&i.ResourceType,
+		&i.ResourceID,
+		&i.OperationID,
+		&i.ActorUserID,
+		&i.Data,
+		&i.OccurredAt,
+	)
+	return i, err
+}
+
 const listEvents = `-- name: ListEvents :many
 SELECT id, event_sequence, topic, resource_type, resource_id, operation_id, actor_user_id, data, occurred_at
 FROM events

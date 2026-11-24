@@ -1,4 +1,5 @@
 import type { TranscodeProfileConfiguration } from '@/api/generated/types.gen';
+import { FieldHintProvider } from '@/components/ui/field-hint';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
@@ -189,7 +190,7 @@ function Field({ label, htmlFor, hint, className, children }: { label: string; h
   return (
     <div className={cn('min-w-0 space-y-2', className)}>
       <Label htmlFor={htmlFor}>{label}</Label>
-      <div aria-describedby={hintId}>{children}</div>
+      <FieldHintProvider id={hintId}>{children}</FieldHintProvider>
       {hint ? <p id={hintId} className="text-xs leading-5 text-zinc-500">{hint}</p> : null}
     </div>
   );

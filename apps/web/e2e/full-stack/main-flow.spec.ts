@@ -568,6 +568,7 @@ test('@recovery configuration connectivity is persisted and stale tabs conflict'
   const stalePage = await context.newPage();
   await stalePage.route('**/api/v1/events**', (route) => route.abort());
   await stalePage.goto('/settings/services');
+  await expect(stalePage.locator('#qb-username')).toHaveValue('fixture');
   await page.locator('#qb-username').fill('fixture-primary');
   const firstSave = page.waitForResponse((response) => response.url().includes('/api/v1/config') && response.request().method() === 'PUT');
   await page.getByRole('button', { name: '保存外部服务配置' }).click();

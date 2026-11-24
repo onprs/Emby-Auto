@@ -419,6 +419,18 @@ type OperationAttempt struct {
 	FinishedAt   pgtype.Timestamptz `db:"finished_at" json:"finished_at"`
 }
 
+type OperationSubtitleBinding struct {
+	OperationID           pgtype.UUID        `db:"operation_id" json:"operation_id"`
+	BindingVersion        int32              `db:"binding_version" json:"binding_version"`
+	Phase                 string             `db:"phase" json:"phase"`
+	Attempt               int32              `db:"attempt" json:"attempt"`
+	AttemptID             pgtype.UUID        `db:"attempt_id" json:"attempt_id"`
+	OperationAttemptCount int32              `db:"operation_attempt_count" json:"operation_attempt_count"`
+	Binding               []byte             `db:"binding" json:"binding"`
+	CreatedAt             pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt             pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
 type ReleaseCandidate struct {
 	ID              pgtype.UUID        `db:"id" json:"id"`
 	SearchRunID     pgtype.UUID        `db:"search_run_id" json:"search_run_id"`

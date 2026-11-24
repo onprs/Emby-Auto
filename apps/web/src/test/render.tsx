@@ -10,6 +10,8 @@ import {
 import { render, type RenderOptions } from '@testing-library/react';
 import type { ReactElement, ReactNode } from 'react';
 
+import { ActionFeedbackAlerts, ActionFeedbackProvider } from '@/components/action-feedback';
+
 export function createTestQueryClient(): QueryClient {
   return new QueryClient({
     defaultOptions: {
@@ -123,7 +125,10 @@ export function renderWithProviders(ui: ReactElement, options?: ProviderRenderOp
   function Wrapper() {
     return (
       <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router} />
+        <ActionFeedbackProvider>
+          <RouterProvider router={router} />
+          <ActionFeedbackAlerts />
+        </ActionFeedbackProvider>
       </QueryClientProvider>
     );
   }

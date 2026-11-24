@@ -56,6 +56,34 @@ func TestEventStatsReportsEmptyOldestAndRetentionChangesIntegration(t *testing.T
 	}
 }
 
+func TestEventsHeadReportsLatestEventIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, pool := testutil.NewMigratedPostgres(t)
+	queries := db.New(pool)
+	events := NewEvents(queries)
+
+	head, err := events.Head(ctx)
+	if err != nil {
+		t.Fatalf("Head() on empty table error = %v", err)
+	}
+	if head != nil {
+		t.Fatalf("Head() on empty table = %v, want nil", head)
+	}
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	appendTestEvent(t, ctx, pool, queries, "operation.started", now.Add(-time.Minute))
+	latest := appendTestEvent(t, ctx, pool, queries, "operation.succeeded", now)
+
+	head, err = events.Head(ctx)
+	if err != nil {
+		t.Fatalf("Head() with events error = %v", err)
+	}
+	if head == nil || *head != latest {
+		t.Fatalf("Head() = %v, want latest event %s", head, latest)
+	}
+}
+
 func appendTestEvent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, topic string, occurredAt time.Time) uuid.UUID {
 	t.Helper()
 	event, err := queries.AppendEvent(ctx, db.AppendEventParams{

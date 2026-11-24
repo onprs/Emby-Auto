@@ -94,15 +94,20 @@ WHERE id = $1
 
 	taskWorkflow := NewTaskWorkflow(db.New(fixture.pool), fixture.transactor, fixture.scheduler)
 	rssWorkflow := NewRSSWorkflow(db.New(fixture.pool), fixture.transactor, fixture.scheduler)
+	completion := domain.ImportCompletion{
+		TaskID:                  taskID,
+		ImportID:                importID,
+		OperationID:             operationID,
+		DestinationVideoPath:    "/library/LockOrder/Season1/LockOrder - S01E01.mkv",
+		DestinationSubtitlePath: "/library/LockOrder/Season1/LockOrder - S01E01.ass",
+	}
+	// 先按正式准入登记目标路径；CompleteImport 只接受已登记的一致路径。
+	if reserved, err := taskWorkflow.PrepareImportDestination(ctx, completion); err != nil || !reserved {
+		t.Fatalf("PrepareImportDestination() = %t, %v", reserved, err)
+	}
 	importFinished := make(chan error, 1)
 	go func() {
-		importFinished <- taskWorkflow.CompleteImport(ctx, domain.ImportCompletion{
-			TaskID:                  taskID,
-			ImportID:                importID,
-			OperationID:             operationID,
-			DestinationVideoPath:    "/library/LockOrder/Season1/LockOrder - S01E01.mkv",
-			DestinationSubtitlePath: "/library/LockOrder/Season1/LockOrder - S01E01.ass",
-		})
+		importFinished <- taskWorkflow.CompleteImport(ctx, completion)
 	}()
 	waitForIntegrationPgSleep(t, ctx, fixture.pool)
 
