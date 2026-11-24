@@ -30,7 +30,7 @@ export function FilterChip({
       search={search as never}
       data-sliding-item
       data-sliding-active={active ? 'true' : undefined}
-      aria-pressed={active}
+      aria-current={active ? 'true' : undefined}
       aria-label={ariaLabel}
       className={cn(
         'relative z-10 shrink-0 whitespace-nowrap rounded-full border px-3.5 py-1.5 text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600',

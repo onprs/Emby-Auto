@@ -280,9 +280,12 @@ export function RssDetailPage({ subscriptionId }: { subscriptionId: string }) {
               </div>
               <PaginationControls
                 canGoBack={entriesPagination.canGoBack}
+                canGoFirst={entriesPagination.canGoFirst}
+                historyTruncated={entriesPagination.historyTruncated}
                 hasNext={Boolean(entries.data.nextCursor)}
                 onPrevious={entriesPagination.goPrevious}
                 onNext={() => entriesPagination.goNext(entries.data.nextCursor)}
+                onFirst={entriesPagination.reset}
                 isFetching={entries.isFetching}
               />
             </>

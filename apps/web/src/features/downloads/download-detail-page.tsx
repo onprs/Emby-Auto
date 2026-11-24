@@ -15,6 +15,7 @@ import {
   downloadRetryLabel,
   downloadWaitsForMapping,
   formatSourceEpisodeInput,
+  fileSelectionSubmitState,
   parseSourceEpisodeInput,
   sourceCoordinateLabel,
 } from '@/features/downloads/download-presentation';
@@ -293,6 +294,7 @@ function FileSelection({ download, onChanged }: { download: Download; onChanged:
   });
 
   const dirty = Object.keys(selection).length > 0 || Object.keys(coordinates).length > 0;
+  const submit = fileSelectionSubmitState(resolving, dirty);
 
   return (
     <div>
@@ -366,8 +368,8 @@ function FileSelection({ download, onChanged }: { download: Download; onChanged:
       </div>
       {editable ? (
         <div className="mt-4 flex items-center gap-3">
-          <Button type="button" onClick={() => save.mutate()} disabled={!dirty || save.isPending}>
-            {resolving ? '保存并开始下载' : '保存并重新物化'}
+          <Button type="button" onClick={() => save.mutate()} disabled={!submit.enabled || save.isPending}>
+            {submit.label}
           </Button>
           {dirty ? <span className="text-sm text-zinc-500">有未保存的修改</span> : null}
         </div>

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,7 +59,7 @@ func (workflow *MediaWorkflow) MaterializeDownload(
 		if locked.Status == string(domain.DownloadMaterialized) {
 			return nil
 		}
-		if locked.Status != string(domain.DownloadCompleted) {
+		if locked.Status != string(domain.DownloadCompleted) && locked.Status != string(domain.DownloadSelectingFiles) {
 			return mediaWorkflowError("download_state_conflict", fmt.Sprintf("download cannot materialize from state %q", locked.Status), false)
 		}
 		mediaType := domain.TaskMediaEpisode
@@ -100,8 +101,10 @@ func (workflow *MediaWorkflow) MaterializeDownload(
 				return err
 			}
 		}
-		if _, err := scope.Queries.MarkDownloadSelectingFiles(ctx, repository.UUIDToPG(downloadID)); err != nil {
-			return fmt.Errorf("mark download selecting files: %w", err)
+		if locked.Status == string(domain.DownloadCompleted) {
+			if _, err := scope.Queries.MarkDownloadSelectingFiles(ctx, repository.UUIDToPG(downloadID)); err != nil {
+				return fmt.Errorf("mark download selecting files: %w", err)
+			}
 		}
 
 		for _, video := range videos {
@@ -704,12 +707,23 @@ func (workflow *MediaWorkflow) CreateSubtitleVideoMatchScope(
 			ID: repository.UUIDToPG(scopeID), TaskID: repository.UUIDToPG(taskID),
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
-			// An existing scope under the same task is reused; the caller should
-			// treat this as already-scheduled rather than creating a duplicate.
+			// 已存在 pending 或 applied 的范围时复用既有调度，不创建重复范围。
 			return mediaWorkflowError("subtitle_scope_conflict", "a subtitle video match scope already exists for this task", false)
 		}
 		if err != nil {
 			return mediaWorkflowError("subtitle_scope_unavailable", "the subtitle video match scope could not be created", true)
+		}
+		// 已过期范围的候选集属于上一次失败尝试，换用当前候选集；
+		// 同时作废旧候选集上的活动决议，防止旧操作失败时回收新 generation。
+		if repository.UUIDFromPG(created.ID) != scopeID {
+			if err := scope.Queries.DeleteSubtitleVideoMatchCandidates(ctx, created.ID); err != nil {
+				return mediaWorkflowError("subtitle_scope_unavailable", "stale subtitle candidates could not be cleared", true)
+			}
+			if _, err := scope.Queries.SupersedeSubtitleVideoMatchResolutions(ctx, db.SupersedeSubtitleVideoMatchResolutionsParams{
+				ScopeID: created.ID,
+			}); err != nil {
+				return mediaWorkflowError("subtitle_scope_unavailable", "stale subtitle resolutions could not be superseded", true)
+			}
 		}
 		scopeID = repository.UUIDFromPG(created.ID)
 		for _, candidate := range candidates {
@@ -732,6 +746,189 @@ func (workflow *MediaWorkflow) CreateSubtitleVideoMatchScope(
 		return uuid.Nil, err
 	}
 	return scopeID, nil
+}
+
+// GetSubtitleVideoMatchSchedulingState 在同一个读取事务中锁 S/T、重读 scope/task/
+// candidates/owner，并生成 content observation。observation 只用于同一 handler
+// 后续 cleanup 的变化检测，不是持久 generation。
+func (workflow *MediaWorkflow) GetSubtitleVideoMatchSchedulingState(ctx context.Context, taskID uuid.UUID) (domain.SubtitleVideoMatchSchedulingState, error) {
+	var state domain.SubtitleVideoMatchSchedulingState
+	err := workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+		scopeID, err := scope.Queries.GetSubtitleVideoMatchScopeID(ctx, repository.UUIDToPG(taskID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		contextRow, err := scope.Queries.GetSubtitleVideoMatchContext(ctx, scopeID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		row, err := scope.Queries.GetSubtitleVideoMatchSchedulingState(ctx, repository.UUIDToPG(taskID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		candidates, err := scope.Queries.ListSubtitleVideoMatchCandidates(ctx, scopeID)
+		if err != nil {
+			return err
+		}
+		match, resourceJSON, err := subtitleVideoMatchContent(contextRow, candidates)
+		if err != nil {
+			return err
+		}
+		state = domain.SubtitleVideoMatchSchedulingState{
+			ScopeID:               repository.UUIDFromPG(row.ScopeID),
+			ScopeStatus:           contextRow.ScopeStatus,
+			TaskVersion:           int(contextRow.TaskVersion),
+			TaskState:             contextRow.TaskState,
+			SubtitleState:         contextRow.SubtitleState,
+			ContentObservation:    sha256.Sum256(subtitleVideoMatchFingerprintInput(match, resourceJSON, contextRow.TaskVersion)),
+			ResolutionStatus:      row.ResolutionStatus,
+			ResolutionErrorCode:   row.ResolutionErrorCode,
+			ResolutionVersion:     int(row.ResolutionVersion),
+			OperationStatus:       row.OperationStatus,
+			CancellationRequested: row.CancellationRequested,
+			ActiveOwnerCount:      int(row.ActiveOwnerCount),
+		}
+		if row.ResolutionID.Valid {
+			resolutionID := repository.UUIDFromPG(row.ResolutionID)
+			state.ResolutionID = &resolutionID
+		}
+		if row.OperationID.Valid {
+			operationID := repository.UUIDFromPG(row.OperationID)
+			state.OperationID = &operationID
+		}
+		return nil
+	})
+	if errors.Is(err, domain.ErrNotFound) {
+		return domain.SubtitleVideoMatchSchedulingState{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return domain.SubtitleVideoMatchSchedulingState{}, mediaWorkflowError("subtitle_scope_unavailable", "the subtitle video match scheduling state could not be loaded", true)
+	}
+	return state, nil
+}
+
+// ExpireOwnerlessSubtitleVideoMatchScope 在 S/T 锁内用调用方观察的安全重读
+// 结果决定是否作废 pending 孤儿范围。只有 pending、无活动 owner、且 task
+// state/version/content observation 与调用方观察一致时才 expire；owner/applied/
+// 新代次变化全部结构化返回，调用方不得把 nil 当已过期。
+func (workflow *MediaWorkflow) ExpireOwnerlessSubtitleVideoMatchScope(ctx context.Context, scopeID uuid.UUID, observed domain.SubtitleScopeObservation) (domain.SubtitleScopeExpiry, error) {
+	if scopeID == uuid.Nil {
+		return domain.SubtitleScopeExpiry{}, mediaWorkflowError("subtitle_scope_invalid", "the subtitle video match scope is invalid", false)
+	}
+	var result domain.SubtitleScopeExpiry
+	err := workflow.transactor.WithinTx(ctx, pgx.TxOptions{}, func(scope database.TxScope) error {
+		var innerErr error
+		result, innerErr = expireOwnerlessSubtitleScopeInTx(ctx, scope.Queries, scopeID, observed)
+		return innerErr
+	})
+	if err != nil {
+		return domain.SubtitleScopeExpiry{}, mediaWorkflowError("subtitle_scope_unavailable", "the subtitle video match scope could not be expired", true)
+	}
+	return result, nil
+}
+
+func expireOwnerlessSubtitleScopeInTx(
+	ctx context.Context,
+	queries *db.Queries,
+	scopeID uuid.UUID,
+	observed domain.SubtitleScopeObservation,
+) (domain.SubtitleScopeExpiry, error) {
+	result := domain.SubtitleScopeExpiry{ScopeID: scopeID}
+	contextRow, err := queries.GetSubtitleVideoMatchContext(ctx, repository.UUIDToPG(scopeID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		result.Outcome = domain.SubtitleScopeAbsent
+		return result, nil
+	}
+	if err != nil {
+		return domain.SubtitleScopeExpiry{}, err
+	}
+	result.ScopeStatus = contextRow.ScopeStatus
+	result.TaskVersion = int(contextRow.TaskVersion)
+	result.TaskState = contextRow.TaskState
+	result.SubtitleState = contextRow.SubtitleState
+	switch contextRow.ScopeStatus {
+	case "pending":
+	case "applied":
+		result.Outcome = domain.SubtitleScopeAlreadyApplied
+		return result, nil
+	case "expired":
+		result.Outcome = domain.SubtitleScopeAlreadyExpired
+		return result, nil
+	default:
+		result.Outcome = domain.SubtitleScopeConflict
+		return result, nil
+	}
+	candidates, err := queries.ListSubtitleVideoMatchCandidates(ctx, repository.UUIDToPG(scopeID))
+	if err != nil {
+		return domain.SubtitleScopeExpiry{}, err
+	}
+	match, resourceJSON, err := subtitleVideoMatchContent(contextRow, candidates)
+	if err != nil {
+		return domain.SubtitleScopeExpiry{}, err
+	}
+	result.ContentHash = sha256.Sum256(subtitleVideoMatchFingerprintInput(match, resourceJSON, contextRow.TaskVersion))
+	owners, err := queries.ListSubtitleVideoMatchActiveOwners(ctx, repository.UUIDToPG(scopeID))
+	if err != nil {
+		return domain.SubtitleScopeExpiry{}, err
+	}
+	result.OwnerCount = len(owners)
+	changed := result.TaskVersion != observed.TaskVersion || result.TaskState != observed.TaskState ||
+		result.SubtitleState != observed.SubtitleState || result.ContentHash != observed.ContentHash
+	if len(owners) > 1 {
+		result.Outcome = domain.SubtitleScopeMultipleOwners
+		return result, nil
+	}
+	if len(owners) == 1 {
+		ownerResolutionID := repository.UUIDFromPG(owners[0].ID)
+		ownerOperationID := repository.UUIDFromPG(owners[0].OperationID)
+		result.OwnerResolutionID = &ownerResolutionID
+		result.OwnerOperationID = &ownerOperationID
+		if changed {
+			result.Outcome = domain.SubtitleScopeChanged
+		} else {
+			result.Outcome = domain.SubtitleScopeOwnerPresent
+		}
+		return result, nil
+	}
+	if changed {
+		result.Outcome = domain.SubtitleScopeChanged
+		return result, nil
+	}
+	if _, err := queries.ExpireSubtitleVideoMatchScope(ctx, repository.UUIDToPG(scopeID)); errors.Is(err, pgx.ErrNoRows) {
+		result.Outcome = domain.SubtitleScopeConflict
+		return result, nil
+	} else if err != nil {
+		return domain.SubtitleScopeExpiry{}, err
+	}
+	result.Outcome = domain.SubtitleScopeExpired
+	result.ScopeStatus = "expired"
+	return result, nil
+}
+
+// SupersedeSubtitleVideoMatchResolutions 作废指定范围内与新任务版本不符的
+// 活动决议；taskVersion 为 nil 时作废该范围内的全部活动决议。
+func (workflow *MediaWorkflow) SupersedeSubtitleVideoMatchResolutions(ctx context.Context, scopeID uuid.UUID, taskVersion *int) error {
+	if scopeID == uuid.Nil {
+		return mediaWorkflowError("subtitle_scope_invalid", "the subtitle video match scope is invalid", false)
+	}
+	params := db.SupersedeSubtitleVideoMatchResolutionsParams{ScopeID: repository.UUIDToPG(scopeID)}
+	if taskVersion != nil {
+		value := int32(*taskVersion)
+		params.TaskVersion = &value
+	}
+	if _, err := workflow.queries.SupersedeSubtitleVideoMatchResolutions(ctx, params); err != nil {
+		return mediaWorkflowError("subtitle_scope_unavailable", "stale subtitle resolutions could not be superseded", true)
+	}
+	return nil
 }
 
 // GetSubtitleVideoMatchSelection returns the Agent-selected candidate for a

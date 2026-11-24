@@ -205,6 +205,12 @@ const codeReasons: Record<string, Reason> = {
     detail: 'FFprobe 无法读取关联源视频的媒体信息。',
     recommendation: '确认源文件完整且可正常播放后再重试。',
   },
+  source_video_without_main_stream: {
+    reason: '源视频没有正片视频流',
+    detail: '源文件只包含音频、封面图片或附加图片，没有可转换的正片画面。',
+    recommendation: '更换包含正片视频的下载资源，或在文件选择中指定其它视频。',
+    neverRetry: true,
+  },
   ffmpeg_transcode_failed: {
     reason: 'FFmpeg 未能完成视频转换',
     detail: 'FFmpeg 在转换源视频时异常退出，未生成可用视频。',
@@ -252,6 +258,12 @@ const codeReasons: Record<string, Reason> = {
     reason: '中文字幕格式不受支持',
     detail: '选中的字幕无法转换为独立 ASS 字幕。',
     recommendation: '更换 SRT、ASS 等受支持的文本字幕。',
+    neverRetry: true,
+  },
+  subtitle_charset_unsupported: {
+    reason: '字幕文件编码无法识别',
+    detail: '外挂字幕不是 UTF-8、GB18030 或 BIG5，无法安全转换为简体 ASS。',
+    recommendation: '将字幕转换为 UTF-8 后重新处理，或更换字幕来源。',
     neverRetry: true,
   },
   ffmpeg_subtitle_failed: {
@@ -328,6 +340,12 @@ const codeReasons: Record<string, Reason> = {
     reason: '无法写入媒体库',
     detail: '配对的视频和字幕没有完整写入媒体库目录。',
     recommendation: '检查媒体库目录、磁盘空间和权限后重试入库。',
+  },
+  library_tree_unsupported: {
+    reason: '媒体库目录布局不受支持',
+    detail: '目标目录树中存在符号链接或特殊文件，应用无法安全写入。',
+    recommendation: '将媒体库改为由真实目录组成（不使用符号链接）后重新入库。',
+    neverRetry: true,
   },
   library_path_invalid: {
     reason: '媒体库路径不安全',

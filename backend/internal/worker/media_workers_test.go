@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/onprs/emby-auto/backend/internal/domain"
+	"github.com/onprs/emby-auto/backend/internal/subtitlebinding"
 )
 
 var validASSFixture = []byte("[Script Info]\nTitle: Episode\n\n[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,Hello\n")
@@ -26,6 +27,10 @@ type mediaToolsStub struct {
 }
 
 func (stub *mediaToolsStub) Probe(_ context.Context, _ string, input string) (domain.MediaProbe, error) {
+	return stub.probe(input)
+}
+
+func (stub *mediaToolsStub) ProbeWithPacketCounts(_ context.Context, _ string, input string) (domain.MediaProbe, error) {
 	return stub.probe(input)
 }
 
@@ -69,6 +74,16 @@ type subtitleStoreStub struct {
 	selErr          error
 	scopeCalls      int
 	scopeCandidates []domain.SubtitleMatchCandidate
+	expiredScopes   []uuid.UUID
+	expireErr       error
+	expiryResult    domain.SubtitleScopeExpiry
+	schedulingState domain.SubtitleVideoMatchSchedulingState
+	schedulingErr   error
+	stateCalls      int
+}
+
+func (stub *subtitleStoreStub) BeginSubtitleForOperation(context.Context, subtitlebinding.AttemptHandle, uuid.UUID) (domain.TaskMediaCommand, error) {
+	return stub.command, stub.beginErr
 }
 
 func (stub *subtitleStoreStub) BeginSubtitle(context.Context, uuid.UUID) (domain.TaskMediaCommand, error) {
@@ -78,13 +93,57 @@ func (stub *subtitleStoreStub) CompleteArtifact(_ context.Context, completion do
 	stub.completion = completion
 	return stub.completeErr
 }
+func (stub *subtitleStoreStub) CreateSubtitleVideoMatchScopeForOperation(_ context.Context, _ subtitlebinding.AttemptHandle, _ uuid.UUID, candidates []domain.SubtitleMatchCandidate) (uuid.UUID, error) {
+	stub.scopeCalls++
+	stub.scopeCandidates = append([]domain.SubtitleMatchCandidate(nil), candidates...)
+	if stub.scopeCalls > 1 && stub.scopeErr != nil {
+		// 冲突只发生在首次创建；作废后的重新创建不再返回冲突。
+		return stub.scopeID, nil
+	}
+	return stub.scopeID, stub.scopeErr
+}
+
 func (stub *subtitleStoreStub) CreateSubtitleVideoMatchScope(_ context.Context, _ uuid.UUID, candidates []domain.SubtitleMatchCandidate) (uuid.UUID, error) {
 	stub.scopeCalls++
 	stub.scopeCandidates = append([]domain.SubtitleMatchCandidate(nil), candidates...)
+	if stub.scopeCalls > 1 && stub.scopeErr != nil {
+		// 冲突只发生在首次创建；作废后的重新创建不再返回冲突。
+		return stub.scopeID, nil
+	}
 	return stub.scopeID, stub.scopeErr
 }
 func (stub *subtitleStoreStub) GetSubtitleVideoMatchSelection(context.Context, uuid.UUID) (domain.SubtitleMatchSelection, error) {
 	return stub.selection, stub.selErr
+}
+func (stub *subtitleStoreStub) ExpireOwnerlessSubtitleVideoMatchScopeForOperation(ctx context.Context, _ subtitlebinding.AttemptHandle, scopeID uuid.UUID, observed domain.SubtitleScopeObservation) (domain.SubtitleScopeExpiry, error) {
+	return stub.ExpireOwnerlessSubtitleVideoMatchScope(ctx, scopeID, observed)
+}
+func (stub *subtitleStoreStub) ExpireOwnerlessSubtitleVideoMatchScope(_ context.Context, scopeID uuid.UUID, _ domain.SubtitleScopeObservation) (domain.SubtitleScopeExpiry, error) {
+	stub.expiredScopes = append(stub.expiredScopes, scopeID)
+	if stub.expireErr != nil {
+		return domain.SubtitleScopeExpiry{}, stub.expireErr
+	}
+	if stub.expiryResult.Outcome != "" {
+		return stub.expiryResult, nil
+	}
+	return domain.SubtitleScopeExpiry{ScopeID: scopeID, Outcome: domain.SubtitleScopeExpired, ScopeStatus: "expired"}, nil
+}
+func (stub *subtitleStoreStub) GetSubtitleVideoMatchSchedulingState(context.Context, uuid.UUID) (domain.SubtitleVideoMatchSchedulingState, error) {
+	stub.stateCalls++
+	return stub.schedulingState, stub.schedulingErr
+}
+
+// subtitleTestAttempt 只服务 stub store 单元场景：生产 handler 仍要求真实
+// Start 捕获的 handle；stub 不读取绑定，只验证 operation 内部身份。
+func subtitleTestAttempt(operation domain.Operation) domain.Operation {
+	if operation.ID == uuid.Nil {
+		operation.ID = uuid.New()
+	}
+	operation.SubtitleAttempt = &subtitlebinding.AttemptHandle{
+		OperationID: operation.ID, JobAttempt: 1, AttemptID: uuid.New(),
+		OperationAttemptCount: 1, ResourceType: "episode_task", ResourceID: operation.ResourceID,
+	}
+	return operation
 }
 
 func TestTranscodeRunWritesValidatedAtomicOutputAndPersistsArtifact(t *testing.T) {
@@ -115,9 +174,15 @@ func TestTranscodeRunWritesValidatedAtomicOutputAndPersistsArtifact(t *testing.T
 	}}
 	tools := &mediaToolsStub{runOutput: []byte("transcoded-video"), probe: func(input string) (domain.MediaProbe, error) {
 		if input == sourcePath {
-			return domain.MediaProbe{FormatNames: []string{"matroska"}, Streams: []domain.MediaStreamProbe{{Type: "video", Codec: "hevc"}, {Type: "audio", Codec: "flac"}}}, nil
+			return domain.MediaProbe{DurationSeconds: 4, Streams: []domain.MediaStreamProbe{
+				{Index: 0, Type: "video", Codec: "hevc", DurationSeconds: 4, PacketCount: 100},
+				{Index: 1, Type: "audio", Codec: "flac"},
+			}}, nil
 		}
-		return domain.MediaProbe{FormatNames: []string{"mov", "mp4"}, Streams: []domain.MediaStreamProbe{{Type: "video", Codec: "h264"}, {Type: "audio", Codec: "aac"}}}, nil
+		return domain.MediaProbe{DurationSeconds: 4, FormatNames: []string{"mov", "mp4"}, Streams: []domain.MediaStreamProbe{
+			{Index: 0, Type: "video", Codec: "h264", DurationSeconds: 4, PacketCount: 100},
+			{Index: 1, Type: "audio", Codec: "aac"},
+		}}, nil
 	}}
 	handler := NewTranscodeRunHandler(mediaTestConfiguration(stagingRoot), tools, store)
 
@@ -128,7 +193,7 @@ func TestTranscodeRunWritesValidatedAtomicOutputAndPersistsArtifact(t *testing.T
 	if len(tools.runArgs) != 1 {
 		t.Fatalf("FFmpeg calls = %d", len(tools.runArgs))
 	}
-	wantPrefix := []string{"-y", "-i", sourcePath, "-map", "0:v:0", "-map", "0:a?", "-sn", "-c:v", "libx264", "-crf", "20", "-preset", "slow", "-pix_fmt", "yuv420p", "-threads", "2", "-c:a", "aac", "-f", "mp4"}
+	wantPrefix := []string{"-y", "-i", sourcePath, "-map", "0:0", "-map", "0:a?", "-sn", "-c:v", "libx264", "-crf", "20", "-preset", "slow", "-pix_fmt", "yuv420p", "-threads", "2", "-c:a", "aac", "-f", "mp4"}
 	if !reflect.DeepEqual(tools.runArgs[0][:len(wantPrefix)], wantPrefix) {
 		t.Fatalf("FFmpeg args = %#v", tools.runArgs[0])
 	}
@@ -164,15 +229,153 @@ func TestTranscodeRunReusesCommittedOutputAfterCrashReplay(t *testing.T) {
 	}}
 	tools := &mediaToolsStub{probe: func(input string) (domain.MediaProbe, error) {
 		if input == filepath.Join(downloadRoot, "source.mkv") {
-			return domain.MediaProbe{Streams: []domain.MediaStreamProbe{{Type: "video", Codec: "hevc"}, {Type: "audio", Codec: "flac"}}}, nil
+			return domain.MediaProbe{DurationSeconds: 4, Streams: []domain.MediaStreamProbe{
+				{Index: 0, Type: "video", Codec: "hevc", DurationSeconds: 4, PacketCount: 100},
+				{Index: 1, Type: "audio", Codec: "flac"},
+			}}, nil
 		}
-		return domain.MediaProbe{FormatNames: []string{"mov", "mp4"}, Streams: []domain.MediaStreamProbe{{Type: "video", Codec: "h264"}, {Type: "audio", Codec: "aac"}}}, nil
+		return domain.MediaProbe{DurationSeconds: 4, FormatNames: []string{"mov", "mp4"}, Streams: []domain.MediaStreamProbe{
+			{Index: 0, Type: "video", Codec: "h264", DurationSeconds: 4, PacketCount: 100},
+			{Index: 1, Type: "audio", Codec: "aac"},
+		}}, nil
 	}}
 	if err := NewTranscodeRunHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), domain.Operation{ID: operationID, ResourceType: "episode_task", ResourceID: taskID}); err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
 	if len(tools.runArgs) != 0 || store.completion.SizeBytes != int64(len("existing-output")) {
 		t.Fatalf("replay ran FFmpeg or missed completion: calls=%d completion=%#v", len(tools.runArgs), store.completion)
+	}
+}
+
+func TestTranscodeRunMapsSelectedMainVideoStream(t *testing.T) {
+	root := t.TempDir()
+	downloadRoot := filepath.Join(root, "download")
+	stagingRoot := filepath.Join(root, "staging")
+	if err := os.MkdirAll(downloadRoot, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(downloadRoot, "source.mkv")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	taskID, operationID := uuid.New(), uuid.New()
+	store := &transcodeStoreStub{command: domain.TaskMediaCommand{
+		TaskID: taskID, State: domain.TaskProcessing, VideoState: domain.VideoTranscoding,
+		SavePath: downloadRoot, SourceVideoFileID: uuid.New(), SourceVideoRelativePath: "source.mkv", TranscodeProfileID: uuid.New(),
+		TranscodeProfile: domain.TranscodeProfile{Name: "h264", VideoCodec: "h264", Encoder: "libx264", Container: "matroska", FileExtension: "mkv", QualityMode: "crf", QualityValue: 20, AudioPolicy: "transcode", AudioCodec: "aac", Preset: "ultrafast", PixelFormat: "yuv420p", MaxConcurrency: 1},
+		Names:            domain.EpisodeFileNames{BaseName: "Show - S01E01 - Cover", VideoName: "Show - S01E01 - Cover.mkv"},
+	}}
+	tools := &mediaToolsStub{runOutput: []byte("main-video"), probe: func(input string) (domain.MediaProbe, error) {
+		if input == sourcePath {
+			// 首视频流是 1 帧封面，正片在索引 1。
+			return domain.MediaProbe{DurationSeconds: 4.023, Streams: []domain.MediaStreamProbe{
+				{Index: 0, Type: "video", Codec: "png", DurationSeconds: 0.04, PacketCount: 1},
+				{Index: 1, Type: "video", Codec: "hevc", DurationSeconds: 4.023, PacketCount: 100},
+				{Index: 2, Type: "audio", Codec: "flac"},
+			}}, nil
+		}
+		return domain.MediaProbe{DurationSeconds: 4.063, FormatNames: []string{"matroska", "webm"}, Streams: []domain.MediaStreamProbe{
+			{Index: 0, Type: "video", Codec: "h264", DurationSeconds: 4.063, PacketCount: 100},
+			{Index: 1, Type: "audio", Codec: "aac"},
+		}}, nil
+	}}
+	if err := NewTranscodeRunHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), domain.Operation{ID: operationID, ResourceType: "episode_task", ResourceID: taskID}); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(tools.runArgs) != 1 {
+		t.Fatalf("FFmpeg calls = %d", len(tools.runArgs))
+	}
+	args := tools.runArgs[0]
+	mappedIndex := ""
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == "-map" && strings.HasPrefix(args[index+1], "0:") && args[index+1] != "0:a?" {
+			mappedIndex = args[index+1]
+			break
+		}
+	}
+	if mappedIndex != "0:1" {
+		t.Fatalf("video map = %q, want 0:1 (args %#v)", mappedIndex, args)
+	}
+	if store.completion.FilePath == "" || store.completion.SizeBytes != int64(len("main-video")) {
+		t.Fatalf("completion = %#v", store.completion)
+	}
+}
+
+func TestTranscodeRunRejectsOutputWithTooFewFrames(t *testing.T) {
+	root := t.TempDir()
+	downloadRoot := filepath.Join(root, "download")
+	stagingRoot := filepath.Join(root, "staging")
+	if err := os.MkdirAll(downloadRoot, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(downloadRoot, "source.mkv")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	taskID, operationID := uuid.New(), uuid.New()
+	store := &transcodeStoreStub{command: domain.TaskMediaCommand{
+		TaskID: taskID, State: domain.TaskProcessing, VideoState: domain.VideoTranscoding,
+		SavePath: downloadRoot, SourceVideoFileID: uuid.New(), SourceVideoRelativePath: "source.mkv", TranscodeProfileID: uuid.New(),
+		TranscodeProfile: domain.TranscodeProfile{Name: "h264", VideoCodec: "h264", Encoder: "libx264", Container: "matroska", FileExtension: "mkv", QualityMode: "crf", QualityValue: 20, AudioPolicy: "transcode", AudioCodec: "aac", Preset: "ultrafast", PixelFormat: "yuv420p", MaxConcurrency: 1},
+		Names:            domain.EpisodeFileNames{BaseName: "Show - S01E01 - Static", VideoName: "Show - S01E01 - Static.mkv"},
+	}}
+	tools := &mediaToolsStub{runOutput: []byte("static-video"), probe: func(input string) (domain.MediaProbe, error) {
+		if input == sourcePath {
+			return domain.MediaProbe{DurationSeconds: 4.023, Streams: []domain.MediaStreamProbe{
+				{Index: 0, Type: "video", Codec: "hevc", DurationSeconds: 4.023, PacketCount: 100},
+				{Index: 1, Type: "audio", Codec: "flac"},
+			}}, nil
+		}
+		// 容器时长看似正常，但只有 1 帧，属于封面冒充正片。
+		return domain.MediaProbe{DurationSeconds: 4.063, FormatNames: []string{"matroska", "webm"}, Streams: []domain.MediaStreamProbe{
+			{Index: 0, Type: "video", Codec: "h264", DurationSeconds: 4.063, PacketCount: 1},
+			{Index: 1, Type: "audio", Codec: "aac"},
+		}}, nil
+	}}
+	err := NewTranscodeRunHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), domain.Operation{ID: operationID, ResourceType: "episode_task", ResourceID: taskID})
+	var failure *Failure
+	if !errors.As(err, &failure) || failure.Code != "transcode_output_invalid" || failure.Retryable {
+		t.Fatalf("Handle() error = %#v, want permanent transcode_output_invalid", err)
+	}
+	if store.completion.TaskID != uuid.Nil {
+		t.Fatalf("invalid output completed artifact: %#v", store.completion)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(stagingRoot, taskID.String(), "*")); len(matches) != 0 {
+		t.Fatalf("invalid output left files: %v", matches)
+	}
+}
+
+func TestTranscodeRunRejectsSourceWithoutMainVideoStream(t *testing.T) {
+	root := t.TempDir()
+	downloadRoot := filepath.Join(root, "download")
+	stagingRoot := filepath.Join(root, "staging")
+	if err := os.MkdirAll(downloadRoot, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(downloadRoot, "source.m4a")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	taskID := uuid.New()
+	store := &transcodeStoreStub{command: domain.TaskMediaCommand{
+		TaskID: taskID, State: domain.TaskProcessing, VideoState: domain.VideoTranscoding,
+		SavePath: downloadRoot, SourceVideoFileID: uuid.New(), SourceVideoRelativePath: "source.m4a", TranscodeProfileID: uuid.New(),
+		TranscodeProfile: domain.TranscodeProfile{Name: "h264", VideoCodec: "h264", Encoder: "libx264", Container: "mp4", FileExtension: "mp4", QualityMode: "crf", QualityValue: 20, AudioPolicy: "transcode", AudioCodec: "aac", Preset: "medium", PixelFormat: "yuv420p", MaxConcurrency: 1},
+		Names:            domain.EpisodeFileNames{BaseName: "Show - S01E01 - Audio", VideoName: "Show - S01E01 - Audio.mp4"},
+	}}
+	tools := &mediaToolsStub{probe: func(string) (domain.MediaProbe, error) {
+		return domain.MediaProbe{DurationSeconds: 3, Streams: []domain.MediaStreamProbe{
+			{Index: 0, Type: "audio", Codec: "aac"},
+			{Index: 1, Type: "video", Codec: "mjpeg", AttachedPic: true, DurationSeconds: 3, FrameCount: 1},
+		}}, nil
+	}}
+	err := NewTranscodeRunHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID})
+	var failure *Failure
+	if !errors.As(err, &failure) || failure.Code != "source_video_without_main_stream" || failure.Retryable {
+		t.Fatalf("Handle() error = %#v, want permanent source_video_without_main_stream", err)
+	}
+	if len(tools.runArgs) != 0 {
+		t.Fatalf("FFmpeg ran without a main video: %#v", tools.runArgs)
 	}
 }
 
@@ -193,7 +396,7 @@ func TestSubtitlePrepareNormalizesAndValidatesExternalASS(t *testing.T) {
 		Names:             domain.EpisodeFileNames{BaseName: "Show - S01E01 - One", SubtitleName: "Show - S01E01 - One.ass"},
 	}}
 	tools := &mediaToolsStub{runOutput: validASSFixture, probe: func(string) (domain.MediaProbe, error) { return domain.MediaProbe{}, nil }}
-	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), domain.Operation{ID: operationID, ResourceType: "episode_task", ResourceID: taskID}); err != nil {
+	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), subtitleTestAttempt(domain.Operation{ID: operationID, ResourceType: "episode_task", ResourceID: taskID})); err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
 	if len(tools.runArgs) != 1 || store.completion.SourceFileID != subtitleFileID || store.completion.Kind != domain.MediaSubtitle || store.completion.Format != "ass" {
@@ -229,7 +432,7 @@ func TestSubtitlePrepareRecognizesJPSCTrackAsSimplifiedBilingualASS(t *testing.T
 			}}, nil
 		},
 	}
-	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), domain.Operation{ID: operationID, ResourceType: "episode_task", ResourceID: taskID}); err != nil {
+	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), subtitleTestAttempt(domain.Operation{ID: operationID, ResourceType: "episode_task", ResourceID: taskID})); err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
 	if len(tools.runArgs) != 1 || len(tools.runArgs[0]) < 5 || tools.runArgs[0][4] != "0:4" {
@@ -273,7 +476,7 @@ func TestSubtitlePrepareInspectsAmbiguousEmbeddedASSContent(t *testing.T) {
 			}
 		},
 	}
-	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), domain.Operation{ID: operationID, ResourceType: "episode_task", ResourceID: taskID}); err != nil {
+	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), subtitleTestAttempt(domain.Operation{ID: operationID, ResourceType: "episode_task", ResourceID: taskID})); err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
 	wantMaps := []string{"0:2"}
@@ -320,7 +523,7 @@ func TestSubtitlePrepareFallsBackAfterInvalidPreferredCandidate(t *testing.T) {
 			return traditional, nil
 		},
 	}
-	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}); err != nil {
+	if err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID})); err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
 	if len(tools.runArgs) != 2 || tools.runArgs[0][4] != "0:2" || tools.runArgs[1][4] != "0:3" {
@@ -353,7 +556,7 @@ func TestSubtitlePrepareAcceptsGenericChineseContent(t *testing.T) {
 		},
 		runOutput: neutral,
 	}
-	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID})
+	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}))
 	if err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
@@ -383,7 +586,7 @@ func TestSubtitlePrepareInspectionFailureIsRetryableAndCleansPartialOutput(t *te
 		},
 		run: func([]string) ([]byte, error) { return []byte("partial"), errors.New("ffmpeg stopped") },
 	}
-	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID})
+	err := NewSubtitlePrepareHandler(mediaTestConfiguration(stagingRoot), tools, store).Handle(context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}))
 	var failure *Failure
 	if !errors.As(err, &failure) || failure.Code != "ffmpeg_subtitle_candidates_failed" || !failure.Retryable {
 		t.Fatalf("Handle() error = %#v", err)
@@ -411,7 +614,7 @@ func TestSubtitlePrepareCapsCandidateAttempts(t *testing.T) {
 	tools := &mediaToolsStub{probe: func(string) (domain.MediaProbe, error) {
 		return domain.MediaProbe{Streams: streams}, nil
 	}}
-	err := NewSubtitlePrepareHandler(mediaTestConfiguration(filepath.Join(root, "staging")), tools, store).Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID})
+	err := NewSubtitlePrepareHandler(mediaTestConfiguration(filepath.Join(root, "staging")), tools, store).Handle(context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}))
 	var failure *Failure
 	if !errors.As(err, &failure) || failure.Code != "subtitle_candidates_exhausted" || failure.Retryable {
 		t.Fatalf("Handle() error = %#v", err)
@@ -439,7 +642,7 @@ func TestSubtitlePrepareConvertsTraditionalFallbackToSimplified(t *testing.T) {
 			{Index: 3, Type: "subtitle", Codec: "ass", Language: "eng", Title: "English"},
 		}}, nil
 	}}
-	err := NewSubtitlePrepareHandler(mediaTestConfiguration(filepath.Join(root, "staging")), tools, store).Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID})
+	err := NewSubtitlePrepareHandler(mediaTestConfiguration(filepath.Join(root, "staging")), tools, store).Handle(context.Background(), subtitleTestAttempt(domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID}))
 	if err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}

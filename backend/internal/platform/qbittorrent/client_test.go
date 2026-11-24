@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -11,8 +12,10 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -819,5 +822,197 @@ func TestResolveTorrentBySavePathRequiresExactNormalizedMatch(t *testing.T) {
 				t.Fatalf("ResolveTorrentBySavePath() = %#v/%t, want hash %q ok %t", got, ok, test.wantHash, test.wantOK)
 			}
 		})
+	}
+}
+
+// writeOversizedJSON 强制使用 chunked 编码写入超过上限的响应，
+// 以覆盖没有 Content-Length 预检时的 LimitReader 分支。
+func writeOversizedJSON(response http.ResponseWriter) {
+	response.Header().Set("Content-Type", "application/json")
+	if flusher, ok := response.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	chunk := bytes.Repeat([]byte("0"), 32<<10)
+	remaining := int64(maxJSONBodyBytes + 1)
+	for remaining > 0 {
+		length := int64(len(chunk))
+		if length > remaining {
+			length = remaining
+		}
+		if _, err := response.Write(chunk[:length]); err != nil {
+			return
+		}
+		remaining -= length
+	}
+}
+
+func TestClientRejectsOversizedJSONResponses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		writeOversizedJSON(response)
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, RequestTimeout: 10 * time.Second})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{name: "list torrents", call: func() error {
+			_, err := client.ListTorrents(context.Background(), "")
+			return err
+		}},
+		{name: "torrent files", call: func() error {
+			_, err := client.TorrentFiles(context.Background(), torrentHashA)
+			return err
+		}},
+		{name: "categories", call: func() error {
+			_, err := client.categoryExists(context.Background(), ManagedCategory)
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.call()
+			if err == nil || !strings.Contains(err.Error(), "exceeds") {
+				t.Fatalf("error = %v, want size limit error", err)
+			}
+		})
+	}
+}
+
+func TestClientRejectsDeclaredOversizedJSONResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		response.Header().Set("Content-Length", strconv.Itoa(maxJSONBodyBytes+1))
+		response.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, RequestTimeout: 10 * time.Second})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if _, err := client.ListTorrents(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("ListTorrents() error = %v, want size limit error", err)
+	}
+}
+
+func TestClientReloginsAndRetriesGetAfterSessionExpiry(t *testing.T) {
+	var valid atomic.Bool
+	var logins, listCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v2/auth/login":
+			logins.Add(1)
+			if err := request.ParseForm(); err != nil {
+				t.Errorf("parse login form: %v", err)
+			}
+			if request.Form.Get("username") != "admin" || request.Form.Get("password") != "secret" {
+				t.Errorf("login form = %v", request.Form)
+			}
+			valid.Store(true)
+			http.SetCookie(response, &http.Cookie{Name: "SID", Value: "fresh", Path: "/"})
+			_, _ = response.Write([]byte("Ok."))
+		case "/api/v2/torrents/info":
+			listCalls.Add(1)
+			if _, err := request.Cookie("SID"); err != nil || !valid.Load() {
+				http.Error(response, "Forbidden", http.StatusForbidden)
+				return
+			}
+			_ = json.NewEncoder(response).Encode([]Torrent{{Hash: torrentHashA}})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, Username: "admin", Password: "secret", RequestTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if err := client.Login(context.Background()); err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	valid.Store(false)
+	torrents, err := client.ListTorrents(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ListTorrents() error = %v", err)
+	}
+	if len(torrents) != 1 || torrents[0].Hash != torrentHashA {
+		t.Fatalf("torrents = %#v", torrents)
+	}
+	if logins.Load() != 2 || listCalls.Load() != 2 {
+		t.Fatalf("logins/list calls = %d/%d, want 2/2", logins.Load(), listCalls.Load())
+	}
+}
+
+func TestClientDoesNotReplayPostAfterSessionExpiry(t *testing.T) {
+	var valid atomic.Bool
+	var logins, postCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v2/auth/login":
+			logins.Add(1)
+			valid.Store(true)
+			http.SetCookie(response, &http.Cookie{Name: "SID", Value: "fresh", Path: "/"})
+			_, _ = response.Write([]byte("Ok."))
+		case "/api/v2/torrents/setCategory":
+			postCalls.Add(1)
+			if _, err := request.Cookie("SID"); err != nil || !valid.Load() {
+				http.Error(response, "Forbidden", http.StatusForbidden)
+				return
+			}
+			response.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, Username: "admin", Password: "secret", RequestTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if err := client.Login(context.Background()); err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	valid.Store(false)
+	err = client.SetTorrentCategory(context.Background(), torrentHashA, "temporary")
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusForbidden {
+		t.Fatalf("SetTorrentCategory() error = %#v, want HTTP 403", err)
+	}
+	if postCalls.Load() != 1 || logins.Load() != 1 {
+		t.Fatalf("post/login calls = %d/%d, want 1/1 (POST must not be replayed)", postCalls.Load(), logins.Load())
+	}
+}
+
+func TestClientRejectsCrossOriginRedirectWithoutReplayingLogin(t *testing.T) {
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		targetHits.Add(1)
+		t.Errorf("redirect target must not receive request: %s %s", request.Method, request.URL.Path)
+		http.Error(response, "unexpected", http.StatusBadRequest)
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		http.Redirect(response, request, target.URL+"/capture", http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	client, err := NewClient(ClientOptions{BaseURL: source.URL, Username: "admin", Password: "secret", RequestTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	err = client.Login(context.Background())
+	if err == nil {
+		t.Fatal("Login() error = nil, want redirect rejection")
+	}
+	if !errors.Is(err, errQBSessionRedirectForbidden) {
+		t.Fatalf("Login() error = %v, want cross-origin redirect error", err)
+	}
+	if targetHits.Load() != 0 {
+		t.Fatalf("redirect target requests = %d, want 0", targetHits.Load())
 	}
 }

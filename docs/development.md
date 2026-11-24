@@ -21,6 +21,8 @@ npm run db:migrate
 npm run db:river:migrate
 ~~~
 
+根 `package.json` 的 `overrides` 把传递依赖 `js-yaml` 固定到 4.3.2。SDK 生成器依赖的 `@hey-api/json-schema-ref-parser` 精确声明了仍受 YAML 解析 CPU 耗尽公告影响的 4.2.0，生成与 `check:generated` 都经该链路解析 `contracts/openapi.yaml`。上游改用修复版本后，移除该覆盖并重跑 `npm run generate` 与 `npm run check:generated`。
+
 分别启动 API、Worker 和 Web：
 
 ~~~bash
@@ -82,14 +84,15 @@ npm run check:generated
 | `npm run check:integration` | 数据库迁移与 PostgreSQL 集成测试 |
 | `npm run test:e2e --workspace @emby-auto/web` | 浏览器测试 |
 | `npm run deploy:check` | Compose 配置 |
+| `npm run deploy:bundle:check` | Compose 发布包组装与包内构建路径 |
 | `npm run deploy:direct:check` | Linux 直接部署模板 |
-| `npm run deploy:install:check` | 安装器语法、安装与重试、校验失败和配置保护 |
+| `npm run deploy:install:check` | 安装器语法、安装与重试、校验失败、共享组目录权限与暂停态重跑 |
 
 读取规则由 `read_service_test.go` 覆盖。`list_sort_integration_test.go` 和 `list_pagination_order_integration_test.go` 检查所有排序方向、跨页完整性、筛选、Unicode 标题和游标边界；排序差分以旧 Go 排序规则为参考。`list_projection_integration_test.go` 和 `list_projection_lock_order_integration_test.go` 检查事务回滚、并发提交快照、批量写入与后台补算的锁顺序、维护 SQL 恢复和版本保护；迁移测试验证回滚后保留业务数据并可重新补算。
 
 `list_pagination_capacity_integration_test.go` 比较 64 条与 8192 条历史数据，在固定页大小下检查 SQL 次数、返回行数、候选 ID、分配量和补算批次。修改列表路径时保持这些约束，详情读取范围应随当前页的关联数据变化。
 
-安装器单元测试在临时目录中模拟系统服务与软件包操作，不会修改本机的服务、数据库或媒体目录。CI 还会在 GitHub 托管的 Ubuntu 22.04/24.04 临时设备上，用本次构建的发布包验证真实的软件包安装、systemd 服务、数据库连接和重复安装。`scripts/deploy/check-install-systemd.sh` 仅用于这些临时 CI 设备。
+安装器单元测试在临时目录中模拟系统服务与软件包操作，不会修改本机的服务、数据库或媒体目录。CI 还会在 GitHub 托管的 Ubuntu 22.04/24.04 临时设备上，用本次构建的发布包验证真实的软件包安装、systemd 服务、初始化状态（`databaseConfigured=false`）和重复安装；这些检查不连接 PostgreSQL，也不覆盖 Debian 12/13、Ubuntu 26.04 或 arm64 的运行态。`scripts/deploy/check-install-systemd.sh` 仅用于这些临时 CI 设备。
 
 ## 构建 Linux 发布包
 
@@ -105,7 +108,7 @@ TARGET_GOARCH=arm64 DIRECT_RELEASE_DIR=runtime/release/emby-auto-direct-arm64 np
 
 发布包包含 API、Worker、宿主控制器、后台状态命令、发布预检、stale operation 恢复、地址与暂存所有权迁移工具、网页、安装器、服务模板、部署文档和包内校验和。原生控制服务只接受 root 与配置的应用 UID；应用与维护命令使用数据库会话锁串行化后台转换。目录迁移依赖任务范围、设备与 inode 校验，恢复点使用私有权限并在变更前持久化。
 
-`v*` 标签触发 Release 工作流。公开 Release 附带 `install.sh`、两种架构的发布包及 `SHA256SUMS`；安装器依赖以下公开文件名：
+`v*` 标签触发 Release 工作流。公开 Release 附带 `install.sh`、两种架构的直接部署包、Compose 发布包及 `SHA256SUMS`；Compose 发布包保留仓库相对路径并包含构建所需源码，解压后可直接构建。安装器依赖以下公开文件名：
 
 ~~~text
 install.sh
@@ -114,4 +117,4 @@ emby-auto-direct-arm64-linux-arm64.tar.gz
 SHA256SUMS
 ~~~
 
-变更上述名称时需要同步安装器与发布流程。首次发布安装器后，README 中的一键安装地址才会在 GitHub Release 上可用。
+变更上述名称时需要同步安装器与发布流程。首次发布安装器后，README 中的一键安装地址才会在 GitHub Release 上可用。带预发布后缀的标签发布为 GitHub 预发布，不更新 `releases/latest`。

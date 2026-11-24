@@ -20,6 +20,12 @@ else
   source "${ROOT_DIR}/.env.example"
 fi
 set +a
+# 隔离 E2E 以当前用户运行，导入库只能切换到当前 UID；非特权 runner 无法 chown 到固定 1000。
+e2e_current_uid="$(id -u)"
+if [[ "${e2e_current_uid}" != "0" ]]; then
+  EMBY_MEDIA_OWNER_UID="${e2e_current_uid}"
+  export EMBY_MEDIA_OWNER_UID
+fi
 BASE_DATABASE_URL="${TEST_DATABASE_URL:-${DATABASE_URL:-}}"
 if [[ -z "${BASE_DATABASE_URL}" ]]; then
   echo "TEST_DATABASE_URL or DATABASE_URL is required" >&2

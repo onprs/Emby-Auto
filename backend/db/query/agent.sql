@@ -458,6 +458,8 @@ FROM acquisitions AS acquisition
 JOIN tmdb_seasons AS season ON season.series_id = acquisition.series_id
 JOIN media_episodes AS episode ON episode.season_id = season.id
 WHERE acquisition.id = sqlc.arg(acquisition_id)
+  AND season.present
+  AND episode.present
 ORDER BY season.season_number, episode.episode_number;
 
 -- name: GetAgentCatalogContext :one
@@ -509,6 +511,31 @@ INSERT INTO agent_resolutions (
 )
 ON CONFLICT (id) DO UPDATE
 SET id = agent_resolutions.id
+RETURNING (xmax = 0) AS inserted;
+
+-- name: RequeueInactiveAgentResolution :one
+UPDATE agent_resolutions
+SET status = 'queued',
+    operation_id = sqlc.arg(operation_id),
+    proposal = '{}'::jsonb,
+    validation = '{}'::jsonb,
+    error_code = NULL,
+    error_message = NULL,
+    input_tokens = NULL,
+    output_tokens = NULL,
+    tool_call_count = 0,
+    latency_milliseconds = NULL,
+    reviewed_by = NULL,
+    review_decision = NULL,
+    reviewed_at = NULL,
+    completed_at = NULL,
+    started_at = NULL,
+    version = version + 1,
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND status IN ('cancelled', 'expired')
+  AND version = sqlc.arg(expected_version)
+  AND version < 10
 RETURNING *;
 
 -- name: GetAgentResolutionDashboardStats :one
@@ -563,6 +590,8 @@ SET status = 'running',
     version = version + 1,
     updated_at = now()
 WHERE id = sqlc.arg(id)
+  AND operation_id = sqlc.arg(operation_id)
+  AND version = sqlc.arg(expected_version)
   AND status IN ('queued', 'running')
 RETURNING *;
 
@@ -579,6 +608,8 @@ SET status = 'proposed',
     version = version + 1,
     updated_at = now()
 WHERE id = sqlc.arg(id)
+  AND operation_id = sqlc.arg(operation_id)
+  AND version = sqlc.arg(expected_version)
   AND status = 'running'
 RETURNING *;
 
@@ -594,6 +625,20 @@ WHERE id = sqlc.arg(id)
   AND status IN ('running', 'proposed', 'review_required')
 RETURNING *;
 
+-- name: CompleteSubtitleAgentResolution :one
+UPDATE agent_resolutions
+SET status = sqlc.arg(status),
+    validation = sqlc.arg(validation),
+    completed_at = now(),
+    applied_at = CASE WHEN sqlc.arg(status)::text = 'applied' THEN now() ELSE NULL END,
+    version = version + 1,
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND operation_id = sqlc.arg(operation_id)
+  AND version = sqlc.arg(expected_version)
+  AND status IN ('proposed', 'review_required')
+RETURNING *;
+
 -- name: FailAgentResolution :one
 UPDATE agent_resolutions
 SET status = sqlc.arg(status),
@@ -603,6 +648,8 @@ SET status = sqlc.arg(status),
     version = version + 1,
     updated_at = now()
 WHERE id = sqlc.arg(id)
+  AND operation_id = sqlc.arg(operation_id)
+  AND version = sqlc.arg(expected_version)
   AND status IN ('queued', 'running', 'proposed')
 RETURNING *;
 
@@ -616,6 +663,8 @@ SET status = 'failed',
     version = version + 1,
     updated_at = now()
 WHERE id = sqlc.arg(id)
+  AND operation_id = sqlc.arg(operation_id)
+  AND version = sqlc.arg(expected_version)
   AND status IN ('running', 'proposed')
 RETURNING *;
 
@@ -646,6 +695,32 @@ WHERE id = sqlc.arg(id)
   AND status IN ('failed', 'rejected')
 RETURNING *;
 
+-- name: RequeueSubtitleAgentResolution :one
+UPDATE agent_resolutions
+SET status = 'queued',
+    operation_id = sqlc.arg(operation_id),
+    proposal = '{}'::jsonb,
+    validation = '{}'::jsonb,
+    error_code = NULL,
+    error_message = NULL,
+    input_tokens = NULL,
+    output_tokens = NULL,
+    tool_call_count = 0,
+    latency_milliseconds = NULL,
+    reviewed_by = NULL,
+    review_decision = NULL,
+    reviewed_at = NULL,
+    completed_at = NULL,
+    applied_at = NULL,
+    started_at = NULL,
+    version = version + 1,
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND operation_id = sqlc.arg(previous_operation_id)
+  AND version = sqlc.arg(expected_version)
+  AND status IN ('failed', 'rejected')
+RETURNING *;
+
 -- name: MarkAgentResolutionOperationTerminal :one
 UPDATE agent_resolutions
 SET status = sqlc.arg(status),
@@ -655,6 +730,7 @@ SET status = sqlc.arg(status),
     version = version + 1,
     updated_at = now()
 WHERE id = sqlc.arg(id)
+  AND operation_id = sqlc.arg(operation_id)
   AND status IN ('queued', 'running', 'proposed')
 RETURNING *;
 
@@ -733,4 +809,6 @@ JOIN media_episodes AS episode ON episode.season_id = season.id
 WHERE scope.id = sqlc.arg(scope_id)
   AND season.season_number > 0
   AND episode.episode_number > 0
+  AND season.present
+  AND episode.present
 ORDER BY season.season_number, episode.episode_number;

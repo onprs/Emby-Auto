@@ -27,6 +27,7 @@ type RuntimeConfigurationService interface {
 
 type EventSource interface {
 	List(context.Context, *uuid.UUID, int32) ([]domain.Event, error)
+	Head(context.Context) (*uuid.UUID, error)
 	Stats(context.Context) (domain.EventStats, error)
 }
 

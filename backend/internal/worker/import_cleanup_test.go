@@ -16,10 +16,18 @@ import (
 )
 
 type taskImportStoreStub struct {
-	command     domain.ImportCommand
-	beginErr    error
-	completion  domain.ImportCompletion
-	completeErr error
+	command           domain.ImportCommand
+	beginErr          error
+	completion        domain.ImportCompletion
+	completeErr       error
+	onComplete        func()
+	recovery          domain.ImportRecoveryState
+	recoveryErr       error
+	recoveryCalls     int
+	onRecovery        func(domain.ImportCompletion) error
+	admissionCalls    int
+	admissionErr      error
+	admissionOccupied bool
 }
 
 type testImportedLibraryAccess struct {
@@ -33,7 +41,12 @@ func (access *testImportedLibraryAccess) Apply(path string) error {
 	if access.err != nil && (access.failAfter == 0 || len(access.paths) >= access.failAfter) {
 		return access.err
 	}
-	return os.Chmod(path, importedLibraryPathMode)
+	if info, err := os.Lstat(path); err != nil {
+		return err
+	} else if info.IsDir() {
+		return os.Chmod(path, importedLibraryDirMode)
+	}
+	return os.Chmod(path, importedLibraryFileMode)
 }
 
 func (access *testImportedLibraryAccess) ApplyTree(ctx context.Context, root string) error {
@@ -51,6 +64,21 @@ func (access *testImportedLibraryAccess) ApplyTree(ctx context.Context, root str
 	})
 }
 
+func (access *testImportedLibraryAccess) ValidateTree(ctx context.Context, root string) error {
+	return filepath.WalkDir(root, func(_ string, entry os.DirEntry, err error) error {
+		if cause := context.Cause(ctx); cause != nil {
+			return cause
+		}
+		if err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return &unsupportedLibraryTreeError{reason: "test access rejects symlinks"}
+		}
+		return nil
+	})
+}
+
 func newTestImportedLibraryAccess() *testImportedLibraryAccess {
 	return &testImportedLibraryAccess{}
 }
@@ -61,7 +89,63 @@ func (stub *taskImportStoreStub) BeginImport(context.Context, uuid.UUID, uuid.UU
 
 func (stub *taskImportStoreStub) CompleteImport(_ context.Context, completion domain.ImportCompletion) error {
 	stub.completion = completion
+	if stub.onComplete != nil {
+		stub.onComplete()
+	}
 	return stub.completeErr
+}
+
+func (stub *taskImportStoreStub) ObserveImportRecovery(
+	_ context.Context,
+	_ uuid.UUID,
+	_ uuid.UUID,
+	_ string,
+	_ string,
+) (domain.ImportRecoveryState, error) {
+	stub.recoveryCalls++
+	if stub.onRecovery != nil {
+		if err := stub.onRecovery(stub.completion); err != nil {
+			return domain.ImportRecoveryState{}, err
+		}
+	}
+	return stub.recovery, stub.recoveryErr
+}
+
+func (stub *taskImportStoreStub) PrepareImportDestination(
+	_ context.Context,
+	_ domain.ImportCompletion,
+) (bool, error) {
+	stub.admissionCalls++
+	if stub.admissionErr != nil {
+		return false, stub.admissionErr
+	}
+	return !stub.admissionOccupied, nil
+}
+
+func (stub *taskImportStoreStub) RunImportCompensation(
+	_ context.Context,
+	_ domain.ImportCompletion,
+	failureRetryable bool,
+	rollback func() bool,
+) (domain.ImportRecoveryState, error) {
+	stub.recoveryCalls++
+	if stub.onRecovery != nil {
+		if err := stub.onRecovery(stub.completion); err != nil {
+			return domain.ImportRecoveryState{}, err
+		}
+	}
+	state := stub.recovery
+	if state.Succeeded || state.DestinationClaimed || stub.recoveryErr != nil {
+		return state, stub.recoveryErr
+	}
+	// 桩语义与真实服务 observeImportRecoveryLocked 一致：
+	// - 失败可重试且任务仍活跃（非取消）→ 保留文件供重试采用；
+	// - 失败不可重试，或任务已取消（确知不会重试）→ 持锁回滚。
+	if failureRetryable && state.TaskState != domain.TaskCancelled {
+		return state, nil
+	}
+	rollback()
+	return state, nil
 }
 
 type cleanupStoreStub struct {
@@ -166,14 +250,14 @@ func TestEmbyImportCopiesAndCommitsValidatedPair(t *testing.T) {
 	}
 	assertFileContent(t, wantVideo, videoContent)
 	assertFileContent(t, wantSubtitle, subtitleContent)
-	assertFilePermissions(t, filepath.Dir(wantDirectory), importedLibraryPathMode)
-	assertFilePermissions(t, wantDirectory, importedLibraryPathMode)
-	assertFilePermissions(t, metadataDirectory, importedLibraryPathMode)
-	assertFilePermissions(t, metadataPath, importedLibraryPathMode)
-	assertFilePermissions(t, seriesMetadataPath, importedLibraryPathMode)
-	assertFilePermissions(t, artworkPath, importedLibraryPathMode)
-	assertFilePermissions(t, wantVideo, importedLibraryPathMode)
-	assertFilePermissions(t, wantSubtitle, importedLibraryPathMode)
+	assertFilePermissions(t, filepath.Dir(wantDirectory), importedLibraryDirMode)
+	assertFilePermissions(t, wantDirectory, importedLibraryDirMode)
+	assertFilePermissions(t, metadataDirectory, importedLibraryDirMode)
+	assertFilePermissions(t, metadataPath, importedLibraryFileMode)
+	assertFilePermissions(t, seriesMetadataPath, importedLibraryFileMode)
+	assertFilePermissions(t, artworkPath, importedLibraryFileMode)
+	assertFilePermissions(t, wantVideo, importedLibraryFileMode)
+	assertFilePermissions(t, wantSubtitle, importedLibraryFileMode)
 	assertFileContent(t, videoPath, videoContent)
 	matches, err := filepath.Glob(filepath.Join(wantDirectory, "*.part*"))
 	if err != nil || len(matches) != 0 {
@@ -236,9 +320,9 @@ func TestEmbyImportCopiesMoviePairToMovieLibraryTitleDirectory(t *testing.T) {
 	wantSubtitle := filepath.Join(wantDirectory, baseName+".ass")
 	assertFileContent(t, wantVideo, videoContent)
 	assertFileContent(t, wantSubtitle, validASSFixture)
-	assertFilePermissions(t, wantDirectory, importedLibraryPathMode)
-	assertFilePermissions(t, wantVideo, importedLibraryPathMode)
-	assertFilePermissions(t, wantSubtitle, importedLibraryPathMode)
+	assertFilePermissions(t, wantDirectory, importedLibraryDirMode)
+	assertFilePermissions(t, wantVideo, importedLibraryFileMode)
+	assertFilePermissions(t, wantSubtitle, importedLibraryFileMode)
 	if _, err := os.Stat(animeRoot); err != nil {
 		t.Fatalf("anime library root was changed or removed: %v", err)
 	}
@@ -273,9 +357,9 @@ func TestEmbyImportCrashReplayUsesCommittedPairWithoutStagedFiles(t *testing.T) 
 	if store.completion.DestinationVideoPath != videoDestination || store.completion.DestinationSubtitlePath != subtitleDestination {
 		t.Fatalf("replay completion = %#v", store.completion)
 	}
-	assertFilePermissions(t, destination, importedLibraryPathMode)
-	assertFilePermissions(t, videoDestination, importedLibraryPathMode)
-	assertFilePermissions(t, subtitleDestination, importedLibraryPathMode)
+	assertFilePermissions(t, destination, importedLibraryDirMode)
+	assertFilePermissions(t, videoDestination, importedLibraryFileMode)
+	assertFilePermissions(t, subtitleDestination, importedLibraryFileMode)
 }
 
 func TestEmbyImportRejectsDifferentExistingDestination(t *testing.T) {
@@ -437,6 +521,55 @@ func TestCleanupRemovesStagedPairButProtectsSharedDownload(t *testing.T) {
 	}
 	if !pathsAbsent(video, subtitle) {
 		t.Fatal("staged artifacts remain while cleanup waits on sibling tasks")
+	}
+}
+
+func TestCleanupReclaimsLeftoverMediaTemporariesInTaskDirectory(t *testing.T) {
+	root := t.TempDir()
+	stagingRoot := filepath.Join(root, "staging")
+	taskID := uuid.New()
+	stage := filepath.Join(stagingRoot, taskID.String())
+	if err := os.MkdirAll(stage, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(stage, "episode.mkv")
+	subtitle := filepath.Join(stage, "episode.ass")
+	if err := os.WriteFile(video, []byte("video"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subtitle, validASSFixture, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	// 崩溃残留的临时文件没有年龄限制：任务进入清理阶段时不会再有本任务的媒体操作。
+	leakedTemporary := filepath.Join(stage, ".episode."+uuid.New().String()+".part.mkv")
+	unrelated := filepath.Join(stage, "episode.nfo")
+	outsideTaskDirectory := filepath.Join(stagingRoot, ".other."+uuid.New().String()+".part.mkv")
+	for path, content := range map[string]string{leakedTemporary: "leaked", unrelated: "metadata", outsideTaskDirectory: "other task"} {
+		if err := os.WriteFile(path, []byte(content), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := &cleanupStoreStub{command: domain.CleanupCommand{
+		TaskID: taskID, CleanupID: uuid.New(), TaskState: domain.TaskImported, CleanupState: domain.CleanupQueued,
+		StagedVideoPath: video, StagedSubtitlePath: subtitle, DownloadRemovable: false,
+	}}
+	handler := NewCleanupRunHandler(
+		&downloadConfigurationStub{configuration: domain.Configuration{Settings: domain.RuntimeSettings{Paths: domain.PathSettings{StagingRoot: stagingRoot}}}},
+		store,
+		func(qbittorrent.ClientOptions) (CleanupTorrentClient, error) { return &cleanupTorrentStub{}, nil },
+	)
+	err := handler.Handle(context.Background(), domain.Operation{ID: uuid.New(), ResourceType: "episode_task", ResourceID: taskID, Payload: []byte(`{"cleanupId":"` + store.command.CleanupID.String() + `"}`)})
+	var snoozeErr *river.JobSnoozeError
+	if !errors.As(err, &snoozeErr) {
+		t.Fatalf("Handle() error = %#v, want cleanup guard snooze", err)
+	}
+	if !pathsAbsent(video, subtitle, leakedTemporary) {
+		t.Fatal("staged artifacts or leaked temporary files remain after cleanup")
+	}
+	for _, kept := range []string{unrelated, outsideTaskDirectory} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Fatalf("cleanup removed unrelated file %q: %v", kept, err)
+		}
 	}
 }
 

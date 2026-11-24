@@ -26,6 +26,19 @@ export function TMDbSeriesPicker({ value, onChange }: { value: SeriesSelection |
     retry: false,
   });
 
+  const submit = () => {
+    const next = query.trim();
+    if (!next) {
+      return;
+    }
+    if (next === submitted) {
+      // 关键词未变时 setSubmitted 不会触发新查询；显式重试，失败后不必先改关键词。
+      void results.refetch();
+      return;
+    }
+    setSubmitted(next);
+  };
+
   useEffect(() => {
     if (value) {
       setSubmitted('');
@@ -60,16 +73,16 @@ export function TMDbSeriesPicker({ value, onChange }: { value: SeriesSelection |
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
               event.preventDefault();
-              setSubmitted(query.trim());
+              submit();
             }
           }}
         />
-        <Button type="button" variant="outline" onClick={() => setSubmitted(query.trim())} disabled={!query.trim() || results.isFetching}>
+        <Button type="button" variant="outline" onClick={submit} disabled={!query.trim() || results.isFetching}>
           查询
         </Button>
       </div>
       {submitted ? (
-        results.isPending ? (
+        results.isFetching ? (
           <p className="text-sm text-zinc-500">查询中…</p>
         ) : results.error ? (
           <p className="text-sm text-red-600" role="alert">

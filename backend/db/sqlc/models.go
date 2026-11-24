@@ -227,6 +227,7 @@ type EmbyLibraryItem struct {
 	UpstreamPayload []byte             `db:"upstream_payload" json:"upstream_payload"`
 	CreatedAt       pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	TmdbProviderID  *string            `db:"tmdb_provider_id" json:"tmdb_provider_id"`
 }
 
 type EmbyScanRun struct {
@@ -366,6 +367,7 @@ type MediaEpisode struct {
 	UpstreamPayload []byte             `db:"upstream_payload" json:"upstream_payload"`
 	CreatedAt       pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	Present         bool               `db:"present" json:"present"`
 }
 
 type MediaSeries struct {
@@ -415,6 +417,18 @@ type OperationAttempt struct {
 	StartedAt    pgtype.Timestamptz `db:"started_at" json:"started_at"`
 	HeartbeatAt  pgtype.Timestamptz `db:"heartbeat_at" json:"heartbeat_at"`
 	FinishedAt   pgtype.Timestamptz `db:"finished_at" json:"finished_at"`
+}
+
+type OperationSubtitleBinding struct {
+	OperationID           pgtype.UUID        `db:"operation_id" json:"operation_id"`
+	BindingVersion        int32              `db:"binding_version" json:"binding_version"`
+	Phase                 string             `db:"phase" json:"phase"`
+	Attempt               int32              `db:"attempt" json:"attempt"`
+	AttemptID             pgtype.UUID        `db:"attempt_id" json:"attempt_id"`
+	OperationAttemptCount int32              `db:"operation_attempt_count" json:"operation_attempt_count"`
+	Binding               []byte             `db:"binding" json:"binding"`
+	CreatedAt             pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt             pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 type ReleaseCandidate struct {
@@ -630,6 +644,7 @@ type TmdbSeason struct {
 	UpstreamPayload []byte             `db:"upstream_payload" json:"upstream_payload"`
 	CreatedAt       pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	Present         bool               `db:"present" json:"present"`
 }
 
 type TranscodeProfile struct {

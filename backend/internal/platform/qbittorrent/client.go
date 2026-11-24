@@ -18,17 +18,26 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
 	maxErrorBodyBytes                       = 64 << 10
+	maxJSONBodyBytes                        = 16 << 20
 	maxTorrentRateLimitBytesPerSecond int64 = math.MaxInt32 - 1 // MaxInt32 在 qBittorrent 中表示不限速。
 	ManagedCategory                         = "emby_auto"
 	RuntimePausedTag                        = "emby_auto_runtime_paused"
 )
 
 var ErrTorrentHashNotConfirmed = errors.New("qBittorrent added torrent hash was not confirmed")
+
+const qBittorrentMaxRedirects = 3
+
+var (
+	errQBSessionRedirectLimit     = errors.New("qBittorrent redirect limit exceeded")
+	errQBSessionRedirectForbidden = errors.New("qBittorrent redirect target is outside the configured origin")
+)
 
 type Torrent struct {
 	Hash          string  `json:"hash"`
@@ -72,6 +81,7 @@ type Client struct {
 	pollInterval   time.Duration
 	confirmTimeout time.Duration
 	httpClient     *http.Client
+	loginMutex     sync.Mutex
 }
 
 type AddRequest struct {
@@ -146,6 +156,22 @@ func NewClient(options ClientOptions) (*Client, error) {
 		httpClient = &clone
 	}
 
+	previousRedirect := httpClient.CheckRedirect
+	httpClient.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if len(via) >= qBittorrentMaxRedirects {
+			return errQBSessionRedirectLimit
+		}
+		// 登录表单与 API 请求只应留在管理员配置的 qBittorrent 源站，
+		// 避免 307/308 把登录 POST 重放到其他主机。
+		if !sameQBOrigin(parsed, request.URL) {
+			return errQBSessionRedirectForbidden
+		}
+		if previousRedirect != nil {
+			return previousRedirect(request, via)
+		}
+		return nil
+	}
+
 	return &Client{
 		baseURL:        strings.TrimRight(parsed.String(), "/"),
 		username:       options.Username,
@@ -169,6 +195,12 @@ func newIsolatedQBTransport(base http.RoundTripper) (*http.Transport, error) {
 }
 
 func (client *Client) Login(ctx context.Context) error {
+	client.loginMutex.Lock()
+	defer client.loginMutex.Unlock()
+	return client.loginLocked(ctx)
+}
+
+func (client *Client) loginLocked(ctx context.Context) error {
 	response, err := client.postForm(ctx, "/api/v2/auth/login", url.Values{
 		"username": {client.username},
 		"password": {client.password},
@@ -197,8 +229,12 @@ func (client *Client) ListTorrents(ctx context.Context, category string) ([]Torr
 		return nil, fmt.Errorf("list qBittorrent torrents: %w", err)
 	}
 	defer func() { _ = response.Body.Close() }()
+	body, err := readBoundedJSONBody(response, "qBittorrent torrent response")
+	if err != nil {
+		return nil, fmt.Errorf("read qBittorrent torrents: %w", err)
+	}
 	var torrents []Torrent
-	if err := json.NewDecoder(response.Body).Decode(&torrents); err != nil {
+	if err := json.Unmarshal(body, &torrents); err != nil {
 		return nil, fmt.Errorf("decode qBittorrent torrents: %w", err)
 	}
 	return torrents, nil
@@ -301,8 +337,12 @@ func (client *Client) TorrentFiles(ctx context.Context, hash string) ([]TorrentF
 		return nil, fmt.Errorf("list qBittorrent torrent files: %w", err)
 	}
 	defer func() { _ = response.Body.Close() }()
+	body, err := readBoundedJSONBody(response, "qBittorrent torrent files response")
+	if err != nil {
+		return nil, fmt.Errorf("read qBittorrent torrent files: %w", err)
+	}
 	var files []TorrentFile
-	if err := json.NewDecoder(response.Body).Decode(&files); err != nil {
+	if err := json.Unmarshal(body, &files); err != nil {
 		return nil, fmt.Errorf("decode qBittorrent torrent files: %w", err)
 	}
 	return files, nil
@@ -520,8 +560,12 @@ func (client *Client) categoryExists(ctx context.Context, category string) (bool
 		return false, err
 	}
 	defer func() { _ = response.Body.Close() }()
+	body, err := readBoundedJSONBody(response, "qBittorrent torrent categories response")
+	if err != nil {
+		return false, fmt.Errorf("read qBittorrent torrent categories: %w", err)
+	}
 	categories := map[string]json.RawMessage{}
-	if err := json.NewDecoder(response.Body).Decode(&categories); err != nil {
+	if err := json.Unmarshal(body, &categories); err != nil {
 		return false, fmt.Errorf("decode qBittorrent torrent categories: %w", err)
 	}
 	_, exists := categories[category]
@@ -776,6 +820,16 @@ func (client *Client) do(request *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
+	if (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) && replayableAfterSessionExpiry(request) {
+		_ = response.Body.Close()
+		if loginErr := client.relogin(request.Context()); loginErr != nil {
+			return nil, loginErr
+		}
+		response, err = client.httpClient.Do(request.Clone(request.Context()))
+		if err != nil {
+			return nil, err
+		}
+	}
 	if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
 		return response, nil
 	}
@@ -785,6 +839,54 @@ func (client *Client) do(request *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("read qBittorrent error response: %w", readErr)
 	}
 	return nil, &HTTPError{StatusCode: response.StatusCode, Body: strings.TrimSpace(string(body))}
+}
+
+// replayableAfterSessionExpiry 仅允许幂等 GET 在重新登录后重放一次。
+// POST 可能已在上游产生副作用，交给操作级重试重新建立会话，避免重复添加/删除。
+func replayableAfterSessionExpiry(request *http.Request) bool {
+	return request.Method == http.MethodGet
+}
+
+func (client *Client) relogin(ctx context.Context) error {
+	client.loginMutex.Lock()
+	defer client.loginMutex.Unlock()
+	return client.loginLocked(ctx)
+}
+
+func sameQBOrigin(base, target *url.URL) bool {
+	if !strings.EqualFold(base.Scheme, target.Scheme) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSuffix(base.Hostname(), "."), strings.TrimSuffix(target.Hostname(), ".")) {
+		return false
+	}
+	return qBEffectivePort(base) == qBEffectivePort(target)
+}
+
+func qBEffectivePort(value *url.URL) string {
+	if port := value.Port(); port != "" {
+		return port
+	}
+	if strings.EqualFold(value.Scheme, "https") {
+		return "443"
+	}
+	return "80"
+}
+
+// readBoundedJSONBody 为成功响应提供与其它上游客户端一致的字节上限，
+// 避免单个异常或超大 JSON 响应在 Worker 中无限扩张内存。
+func readBoundedJSONBody(response *http.Response, label string) ([]byte, error) {
+	if response.ContentLength > maxJSONBodyBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", label, maxJSONBodyBytes)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxJSONBodyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", label, err)
+	}
+	if int64(len(body)) > maxJSONBodyBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", label, maxJSONBodyBytes)
+	}
+	return body, nil
 }
 
 func stopTimer(timer *time.Timer) {

@@ -39,7 +39,10 @@ export function SectionTabs({
   preserveFrom = false,
 }: SectionNavigationDefinition & { activeId?: string }) {
   return (
-    <div className="sticky top-14 z-20 border-b border-zinc-200/90 bg-white/90 backdrop-blur-md lg:top-16">
+    <div
+      className="sticky z-20 border-b border-zinc-200/90 bg-white/90 backdrop-blur-md"
+      style={{ top: 'calc(var(--app-header-height, 3.5rem) + var(--feedback-height, 0px))' }}
+    >
       <div className="mx-auto w-full max-w-[88rem] px-4 sm:px-6">
         <div className="flex items-stretch">
           <div className="hidden w-32 shrink-0 items-center gap-2 border-r border-zinc-200 py-3 pr-4 md:flex">

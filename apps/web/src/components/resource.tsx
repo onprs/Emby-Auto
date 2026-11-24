@@ -77,27 +77,46 @@ export function DetailErrorState({ title, message, onRetry }: { title: string; m
 
 export function PaginationControls({
   canGoBack,
+  canGoFirst = false,
+  historyTruncated = false,
   hasNext,
   onPrevious,
   onNext,
+  onFirst,
   isFetching,
 }: {
   canGoBack: boolean;
+  canGoFirst?: boolean;
+  historyTruncated?: boolean;
   hasNext: boolean;
   onPrevious: () => void;
   onNext: () => void;
+  onFirst?: () => void;
   isFetching?: boolean;
 }) {
+  const showFirstPage = historyTruncated && onFirst !== undefined;
   return (
-    <div className="flex items-center justify-end gap-2 px-1 py-3">
-      <Button type="button" variant="outline" size="default" onClick={onPrevious} disabled={!canGoBack || isFetching}>
-        <ChevronLeft />
-        上一页
-      </Button>
-      <Button type="button" variant="outline" size="default" onClick={onNext} disabled={!hasNext || isFetching}>
-        下一页
-        <ChevronRight />
-      </Button>
+    <div className="flex flex-col items-end gap-1 px-1 py-3">
+      {historyTruncated ? (
+        <p className="text-xs text-zinc-500" role="status">
+          更早的分页记录已省略
+        </p>
+      ) : null}
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {showFirstPage ? (
+          <Button type="button" variant="outline" size="default" onClick={onFirst} disabled={!canGoFirst || isFetching}>
+            回到第一页
+          </Button>
+        ) : null}
+        <Button type="button" variant="outline" size="default" onClick={onPrevious} disabled={!canGoBack || isFetching}>
+          <ChevronLeft />
+          上一页
+        </Button>
+        <Button type="button" variant="outline" size="default" onClick={onNext} disabled={!hasNext || isFetching}>
+          下一页
+          <ChevronRight />
+        </Button>
+      </div>
     </div>
   );
 }

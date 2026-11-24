@@ -12,11 +12,33 @@ import (
 	"strings"
 )
 
-const importedLibraryPathMode os.FileMode = 0o777
+// 入库后的媒体权限模型：应用账户（所有者）保持读写；独立运行的 Emby 服务账户
+// 只需要读取与遍历。目录 0755 提供 other 的读与执行（遍历），文件 0644 提供
+// other 的读；不向任何账户授予写入或文件执行位，避免入库媒体变为全局可写。
+const (
+	importedLibraryDirMode  os.FileMode = 0o755
+	importedLibraryFileMode os.FileMode = 0o644
+)
+
+// unsupportedLibraryTreeError 表示媒体库目录布局包含无法安全处理的对象。
+// 这类条件不会随重试变化，调用方应将其归类为不可重试的配置问题。
+type unsupportedLibraryTreeError struct {
+	reason string
+}
+
+func (err *unsupportedLibraryTreeError) Error() string {
+	return "unsupported imported library directory layout: " + err.reason
+}
+
+func unsupportedLibraryTree(reason string) error {
+	return &unsupportedLibraryTreeError{reason: reason}
+}
 
 type ImportedLibraryAccess interface {
 	Apply(string) error
 	ApplyTree(context.Context, string) error
+	// ValidateTree 在提交前检查目录树对象类型，不修改任何文件属性。
+	ValidateTree(context.Context, string) error
 }
 
 type osImportedLibraryAccess struct {
@@ -36,7 +58,13 @@ func (access osImportedLibraryAccess) Apply(path string) error {
 			return fmt.Errorf("set imported library owner: %w", err)
 		}
 	}
-	if err := os.Chmod(path, importedLibraryPathMode); err != nil {
+	mode := importedLibraryFileMode
+	if info, err := os.Lstat(path); err != nil {
+		return fmt.Errorf("inspect imported library path: %w", err)
+	} else if info.IsDir() {
+		mode = importedLibraryDirMode
+	}
+	if err := os.Chmod(path, mode); err != nil {
 		return fmt.Errorf("set imported library permissions: %w", err)
 	}
 	return nil
@@ -50,14 +78,34 @@ func (access osImportedLibraryAccess) ApplyTree(ctx context.Context, root string
 		if walkErr != nil {
 			return fmt.Errorf("walk imported library directory: %w", walkErr)
 		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("imported library directory contains a symlink")
-		}
-		if !entry.IsDir() && !entry.Type().IsRegular() {
-			return fmt.Errorf("imported library directory contains an unsupported filesystem object")
+		if err := validateImportedLibraryEntry(entry); err != nil {
+			return err
 		}
 		return access.Apply(path)
 	})
+}
+
+// ValidateTree 只检查目录树中是否存在符号链接、特殊对象或不可读条目。
+func (access osImportedLibraryAccess) ValidateTree(ctx context.Context, root string) error {
+	return filepath.WalkDir(root, func(_ string, entry os.DirEntry, walkErr error) error {
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
+		if walkErr != nil {
+			return fmt.Errorf("walk imported library directory: %w", walkErr)
+		}
+		return validateImportedLibraryEntry(entry)
+	})
+}
+
+func validateImportedLibraryEntry(entry os.DirEntry) error {
+	if entry.Type()&os.ModeSymlink != 0 {
+		return unsupportedLibraryTree("symbolic links are not supported")
+	}
+	if !entry.IsDir() && !entry.Type().IsRegular() {
+		return unsupportedLibraryTree("special filesystem objects are not supported")
+	}
+	return nil
 }
 
 type HostControlExecutor interface {
